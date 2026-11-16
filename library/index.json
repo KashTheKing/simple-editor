@@ -3317,13 +3317,55 @@
       "thumb": "thumbs/icons-warning.jpg"
     },
     {
+      "id": "skills/apply-cdl",
+      "kind": "skill",
+      "name": "apply-cdl",
+      "desc": "Apply an ASC CDL grade (slope, offset, power, saturation) from Resolve, Avid or a colourist to clips.",
+      "tags": [
+        "cdl",
+        "asc",
+        "grade",
+        "resolve",
+        "avid",
+        "color",
+        "converted"
+      ],
+      "file": "skills/apply-cdl.md",
+      "size": 2819,
+      "credit": "converted from the ASC CDL import step of the open DaVinci Resolve MCP server (samuelgursky/davinci-resolve-mcp, MIT) through /convert-from-editor; CDL maths is the public ASC formula",
+      "thumb": ""
+    },
+    {
+      "id": "skills/audio-to-keyframes",
+      "kind": "skill",
+      "name": "audio-to-keyframes",
+      "desc": "Make a layer pulse with the music - After Effects' Convert Audio to Keyframes, plus hit markers.",
+      "tags": [
+        "audio reactive",
+        "keyframes",
+        "music",
+        "pulse",
+        "after effects",
+        "converted"
+      ],
+      "file": "skills/audio-to-keyframes.md",
+      "size": 3604,
+      "credit": "converted from the audio-peaks-to-markers recipe of open After Effects MCP servers (TheLlamainator/after-effects-mcp, MIT) through /convert-from-editor",
+      "thumb": ""
+    },
+    {
       "id": "skills/b-roll",
       "kind": "skill",
       "name": "b-roll",
       "desc": "Cover talking-head sections with cutaway footage from your library.",
-      "tags": [],
+      "tags": [
+        "b-roll",
+        "cutaway",
+        "talking head",
+        "jump cut"
+      ],
       "file": "skills/b-roll.md",
-      "size": 2071,
+      "size": 2660,
       "credit": "",
       "thumb": ""
     },
@@ -3331,11 +3373,16 @@
       "id": "skills/captions",
       "kind": "skill",
       "name": "captions",
-      "desc": "Transcribe the timeline and add styled captions.",
-      "tags": [],
+      "desc": "Transcribe the timeline and add styled, readable captions.",
+      "tags": [
+        "captions",
+        "subtitles",
+        "transcript",
+        "accessibility"
+      ],
       "file": "skills/captions.md",
-      "size": 2080,
-      "credit": "",
+      "size": 3652,
+      "credit": "readability rules follow published timed-text style guides (line length, reading speed); social style after video-use (MIT)",
       "thumb": ""
     },
     {
@@ -3354,10 +3401,34 @@
       "kind": "skill",
       "name": "clean-audio",
       "desc": "Clean up speech audio: repair, level it and duck music under it.",
-      "tags": [],
+      "tags": [
+        "audio",
+        "voice",
+        "noise",
+        "ducking",
+        "repair"
+      ],
       "file": "skills/clean-audio.md",
-      "size": 2101,
+      "size": 2661,
       "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/color-grade",
+      "kind": "skill",
+      "name": "color-grade",
+      "desc": "Grade the edit in the colourist's order - normalise, balance, match, then a creative look.",
+      "tags": [
+        "color",
+        "grade",
+        "look",
+        "lut",
+        "colourist",
+        "technique"
+      ],
+      "file": "skills/color-grade.md",
+      "size": 3505,
+      "credit": "order follows the standard colourist workflow taught in Blackmagic's colour guides (paraphrased)",
       "thumb": ""
     },
     {
@@ -3365,10 +3436,35 @@
       "kind": "skill",
       "name": "color-match",
       "desc": "Make clips from different cameras or lighting look consistent.",
-      "tags": [],
+      "tags": [
+        "color",
+        "match",
+        "continuity",
+        "multicam"
+      ],
       "file": "skills/color-match.md",
-      "size": 2000,
+      "size": 2495,
       "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/convert-from-editor",
+      "kind": "skill",
+      "name": "convert-from-editor",
+      "desc": "Translate a Premiere Pro, DaVinci Resolve, Avid or After Effects workflow, skill or recipe into Simple Editor steps.",
+      "tags": [
+        "premiere",
+        "resolve",
+        "davinci",
+        "avid",
+        "after effects",
+        "convert",
+        "workflow",
+        "mcp"
+      ],
+      "file": "skills/convert-from-editor.md",
+      "size": 10690,
+      "credit": "concept mapping written for Simple Editor; tool names surveyed from open MCP servers for Premiere, Resolve and After Effects (MIT)",
       "thumb": ""
     },
     {
@@ -3387,10 +3483,36 @@
       "kind": "skill",
       "name": "cut-silences",
       "desc": "Remove silences and dead air from the selected clips (preview first).",
-      "tags": [],
+      "tags": [
+        "silence",
+        "jump cut",
+        "dead air",
+        "talking head",
+        "autocut"
+      ],
       "file": "skills/cut-silences.md",
-      "size": 1950,
-      "credit": "",
+      "size": 3700,
+      "credit": "tone presets and noise-floor threshold adapted from cut-video (MIT) and auto-editor (public domain)",
+      "thumb": ""
+    },
+    {
+      "id": "skills/deliver",
+      "kind": "skill",
+      "name": "deliver",
+      "desc": "Pre-flight check the edit (offline media, gaps, black frames, levels, captions, safe zones), then export with a preset.",
+      "tags": [
+        "export",
+        "deliver",
+        "render",
+        "qc",
+        "preflight",
+        "resolve",
+        "premiere",
+        "converted"
+      ],
+      "file": "skills/deliver.md",
+      "size": 3028,
+      "credit": "converted from the render-validation and guarded export steps of open DaVinci Resolve and Premiere Pro MCP servers (samuelgursky/davinci-resolve-mcp, hetpatel-11/Adobe_Premiere_Pro_MCP, MIT) through /convert-from-editor; self-check pattern after video-use (MIT)",
       "thumb": ""
     },
     {
@@ -3400,7 +3522,7 @@
       "desc": "Write a title, description and tags for the video from its transcript (answered in chat).",
       "tags": [],
       "file": "skills/description.md",
-      "size": 2068,
+      "size": 2074,
       "credit": "",
       "thumb": ""
     },
@@ -3420,9 +3542,15 @@
       "kind": "skill",
       "name": "highlight-reel",
       "desc": "Build a short highlight reel from the best moments of the selected footage.",
-      "tags": [],
+      "tags": [
+        "highlights",
+        "montage",
+        "best moments",
+        "sports",
+        "gaming"
+      ],
       "file": "skills/highlight-reel.md",
-      "size": 2034,
+      "size": 2439,
       "credit": "",
       "thumb": ""
     },
@@ -3433,8 +3561,43 @@
       "desc": "Add a short intro and outro (title, fade and end card) to the video.",
       "tags": [],
       "file": "skills/intro-outro.md",
-      "size": 2107,
+      "size": 2113,
       "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/jl-cuts",
+      "kind": "skill",
+      "name": "jl-cuts",
+      "desc": "Turn hard cuts into J and L cuts (sound leads or trails the picture) so dialogue flows.",
+      "tags": [
+        "j-cut",
+        "l-cut",
+        "split edit",
+        "dialogue",
+        "technique"
+      ],
+      "file": "skills/jl-cuts.md",
+      "size": 3081,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/loudness",
+      "kind": "skill",
+      "name": "loudness",
+      "desc": "Mix to a delivery loudness target (web, podcast, broadcast) with dialogue on top and music ducked.",
+      "tags": [
+        "loudness",
+        "lufs",
+        "mix",
+        "ducking",
+        "audio",
+        "technique"
+      ],
+      "file": "skills/loudness.md",
+      "size": 2813,
+      "credit": "targets from EBU R128, AES TD1008 and platform guidance; duck depth from video-use (MIT)",
       "thumb": ""
     },
     {
@@ -3449,13 +3612,66 @@
       "thumb": ""
     },
     {
+      "id": "skills/pacing",
+      "kind": "skill",
+      "name": "pacing",
+      "desc": "Measure the cut rhythm and tighten or loosen it toward a target style, without flattening it.",
+      "tags": [
+        "pacing",
+        "rhythm",
+        "shot length",
+        "asl",
+        "technique"
+      ],
+      "file": "skills/pacing.md",
+      "size": 3438,
+      "credit": "shot-length figures from Cutting et al. 2010/2011, AVE (Argaw et al. 2022), cut-video (MIT)",
+      "thumb": ""
+    },
+    {
+      "id": "skills/recap",
+      "kind": "skill",
+      "name": "recap",
+      "desc": "Build a short \"previously on\" / recap montage from the key moments of a longer edit.",
+      "tags": [
+        "recap",
+        "montage",
+        "summary",
+        "previously on",
+        "technique"
+      ],
+      "file": "skills/recap.md",
+      "size": 2615,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/reframe",
+      "kind": "skill",
+      "name": "reframe",
+      "desc": "Reframe a horizontal edit for vertical or square (Auto Reframe) keeping the subject in the safe zone.",
+      "tags": [
+        "reframe",
+        "auto reframe",
+        "vertical",
+        "9:16",
+        "square",
+        "premiere",
+        "converted"
+      ],
+      "file": "skills/reframe.md",
+      "size": 3063,
+      "credit": "converted from the Auto Reframe step of open Premiere Pro MCP servers (antipaster/Adobe-Premiere-Pro-MCP, MIT) through /convert-from-editor",
+      "thumb": ""
+    },
+    {
       "id": "skills/remove-fillers",
       "kind": "skill",
       "name": "remove-fillers",
       "desc": "Cut \"um\", \"uh\" and other filler words out of a transcribed clip.",
       "tags": [],
       "file": "skills/remove-fillers.md",
-      "size": 1874,
+      "size": 2035,
       "credit": "",
       "thumb": ""
     },
@@ -3464,9 +3680,14 @@
       "kind": "skill",
       "name": "review",
       "desc": "Review the edit and leave pacing notes as comments on the timeline.",
-      "tags": [],
+      "tags": [
+        "review",
+        "notes",
+        "feedback",
+        "qc"
+      ],
       "file": "skills/review.md",
-      "size": 2053,
+      "size": 2500,
       "credit": "",
       "thumb": ""
     },
@@ -3486,10 +3707,127 @@
       "kind": "skill",
       "name": "shorts",
       "desc": "Turn a clip into a vertical 9:16 short with captions and a hook.",
-      "tags": [],
+      "tags": [
+        "shorts",
+        "reels",
+        "tiktok",
+        "vertical",
+        "9:16",
+        "social"
+      ],
       "file": "skills/shorts.md",
-      "size": 2421,
-      "credit": "",
+      "size": 4232,
+      "credit": "hook, caption and safe-zone rules from published short-form guidance and video-use (MIT)",
+      "thumb": ""
+    },
+    {
+      "id": "skills/style-documentary",
+      "kind": "skill",
+      "name": "style-documentary",
+      "desc": "Edit interviews and footage in a calm documentary style - long takes, L-cuts into B-roll, natural pauses, muted grade.",
+      "tags": [
+        "style",
+        "documentary",
+        "interview",
+        "b-roll",
+        "slow",
+        "preset"
+      ],
+      "file": "skills/style-documentary.md",
+      "size": 3852,
+      "credit": "parameters derived from documentary shot-boundary statistics (BBC Planet Earth annotations: ~97% hard cuts), shot-length studies (Cutting et al.), cut-video (MIT) documentary tone",
+      "thumb": ""
+    },
+    {
+      "id": "skills/style-music-video",
+      "kind": "skill",
+      "name": "style-music-video",
+      "desc": "Cut your clips to a song, music-video style - shots on the beat, faster in the chorus, flashes and speed ramps on hits.",
+      "tags": [
+        "style",
+        "music video",
+        "montage",
+        "beat",
+        "edit to music",
+        "preset"
+      ],
+      "file": "skills/style-music-video.md",
+      "size": 3885,
+      "credit": "beat/bar ratios and cut anticipation from a CC BY study of official music videos (arXiv 2108.00970); transition mix from online-video statistics (ClipShots)",
+      "thumb": ""
+    },
+    {
+      "id": "skills/style-podcast-clips",
+      "kind": "skill",
+      "name": "style-podcast-clips",
+      "desc": "Pull 3-5 standalone clips from a podcast or interview, each with a hook, tight pauses, big captions and clean voice.",
+      "tags": [
+        "style",
+        "podcast",
+        "clips",
+        "interview",
+        "captions",
+        "social",
+        "preset"
+      ],
+      "file": "skills/style-podcast-clips.md",
+      "size": 4390,
+      "credit": "parameters derived from cut-video (MIT) and video-use (MIT) caption/loudness rules; AES TD1008 talk loudness",
+      "thumb": ""
+    },
+    {
+      "id": "skills/style-shorts",
+      "kind": "skill",
+      "name": "style-shorts",
+      "desc": "Restyle a vertical clip for TikTok / Shorts / Reels - hook first, tight cuts, word-by-word captions, punch-ins, safe zones.",
+      "tags": [
+        "style",
+        "shorts",
+        "tiktok",
+        "reels",
+        "captions",
+        "vertical",
+        "preset"
+      ],
+      "file": "skills/style-shorts.md",
+      "size": 4291,
+      "credit": "parameters derived from short-form datasets (AutoShot: ~13.6 shots per short), video-use (MIT) caption rules, platform safe-zone guidance",
+      "thumb": ""
+    },
+    {
+      "id": "skills/style-trailer",
+      "kind": "skill",
+      "name": "style-trailer",
+      "desc": "Cut a cinematic three-act trailer from your footage - setup, rising conflict, a fast montage to the title, then a button.",
+      "tags": [
+        "style",
+        "trailer",
+        "cinematic",
+        "teaser",
+        "three act",
+        "preset"
+      ],
+      "file": "skills/style-trailer.md",
+      "size": 4040,
+      "credit": "structure from common trailer practice (three acts and a final button); shot-length bands from Cutting et al. 2011 and AVE (Argaw et al. 2022), numbers only",
+      "thumb": ""
+    },
+    {
+      "id": "skills/style-vlog",
+      "kind": "skill",
+      "name": "style-vlog",
+      "desc": "Edit talking-head footage in the fast-cut YouTube vlog style - jump cuts, punch-ins, B-roll, punchy captions.",
+      "tags": [
+        "style",
+        "vlog",
+        "youtube",
+        "jump cut",
+        "talking head",
+        "preset"
+      ],
+      "file": "skills/style-vlog.md",
+      "size": 4943,
+      "credit": "parameters derived from cut-video (MIT) pacing targets, video-use (MIT) caption and loudness rules, and online-video transition statistics (ClipShots)",
       "thumb": ""
     },
     {
@@ -3497,10 +3835,15 @@
       "kind": "skill",
       "name": "sync-to-beat",
       "desc": "Cut or mark the video to the beat of the music track.",
-      "tags": [],
+      "tags": [
+        "beat",
+        "music",
+        "rhythm",
+        "cut to music"
+      ],
       "file": "skills/sync-to-beat.md",
-      "size": 2044,
-      "credit": "",
+      "size": 2998,
+      "credit": "beat and bar ratios from a CC BY study of official music videos (arXiv 2108.00970)",
       "thumb": ""
     },
     {
@@ -3510,7 +3853,7 @@
       "desc": "Find strong still frames and export one as a thumbnail image.",
       "tags": [],
       "file": "skills/thumbnail-frame.md",
-      "size": 1962,
+      "size": 1996,
       "credit": "",
       "thumb": ""
     },
@@ -3543,7 +3886,7 @@
       "desc": "Add quick punch-in zooms on emphasised moments to a talking clip.",
       "tags": [],
       "file": "skills/zoom-punch.md",
-      "size": 2020,
+      "size": 2046,
       "credit": "",
       "thumb": ""
     }

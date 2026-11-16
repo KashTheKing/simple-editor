@@ -280,7 +280,9 @@ Style requested by the user: $ARGS
 
 Header between the two `---` lines, one `key: value` per line: `name` (required; lowercase letters,
 digits and `-`; equals the file name), `description` (required; one line, shown in the `/` list),
-`args` (optional hint shown after the name). The body is Markdown. `$ARGS` is replaced by what the
+`args` (optional hint shown after the name), `tags` (optional, comma separated, searched in the Gallery)
+and `credit` (optional: where the technique or numbers came from, with the licence when it was adapted from someone
+else's work). The body is Markdown. `$ARGS` is replaced by what the
 user typed after the name (empty when nothing); a body without `$ARGS` gets the arguments appended as
 a last line. Write for an assistant that edits through the app's tools (`docs/customizing.md` lists
 them): say what to inspect first, which tools to call, what to check, and when to stop and ask. Name

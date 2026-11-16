@@ -6,7 +6,7 @@ args: "[platform or tone, e.g. 'short, funny']"
 Draft publishing text for the finished video. This skill only answers in chat; it edits nothing.
 
 1. Call `editor.context` and `project.summary` (length, name, notes). Read `notes.get` for any brief the user wrote down.
-2. Get the words: `transcript.get` with no argument returns every transcribed clip. If there is no transcript, say that writing from the picture alone is a guess, and ask whether to transcribe (`transcribe.run {clip_id, cues: false}` takes a while). If the user declines, use project name, notes, marker names (`markers.list`) and a look at `render.contact_sheet {from: 0, to: <end>, count: 9}`.
+2. Get the words: `transcript.get` with no argument returns every transcribed clip. If there is no transcript, say that writing from the picture alone is a guess, and ask whether to transcribe (`transcribe.run {clip_id, cues: false}` takes a while). If the user declines, use project name, notes, marker names (`markers.list`) and a look at `render.contact_sheet {from: 0, to: <end - 0.1>, count: 9}`.
 3. Understand the video: what it is about, who for, the promise, the strongest moment. Use only what the transcript and pictures support. Never invent facts, numbers, names or links.
 4. Write, using $ARGS for platform and tone (default: long-form video site, friendly and clear):
    - 3 title options, each under 60 characters, no clickbait that the video does not deliver.

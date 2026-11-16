@@ -674,3 +674,11 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   `ui/mod.rs`. If that branch merges first, drop this copy (identical content: git should take it as the same file).
 - se-html helper publishing (2026-11-14): the install 404ed because library/bin/se-html.json was never on main. Fixed: exe is the release asset se-html-v0.1.0, manifest committed to origin/main only. How to ship an update: tools/se-html/README.md, "Ship (and update) the helper".
 - Corrupt-project repair (2026-11-15): `model/repair.rs` (`Project::load_repaired`) salvages BOM/NUL/trailing garbage, truncated files, and drops only damaged fields/entries/clips. `open_project` falls back to it (original copied to `<name>.sedit.damaged`, opens unsaved, toast lists losses). `import_files` now opens a `.sedit` as a project instead of probing it as media (the "Can't import ... tedcaptions" error). Test: `SE_REPAIR_FILE=<path> cargo test real_file`. NOT live-checked in the UI. export_ui.rs tests were already broken by someone's uncommitted edit (missing `frame` helper).
+- Editing skills (2026-11-16, feat/editing-skills): 16 new library skills (techniques, 6 `style-*`, `/convert-from-editor` +
+  4 converted ones) and 13 upgraded, all run end to end on scratch instances twice (reports + contact sheets in the side-session
+  notes folder). `library_skills_name_real_tools_and_args` fails the build when a skill names a missing tool/argument or a
+  lowercase `clip.keyframe` property. Skill-writing gotchas found live: `edit.begin` closes after 30 s idle (measure first);
+  transcripts stay in source time on the original clip after cuts; trims don't carry linked audio (ripple video, then audio
+  without ripple); `audio.analyze` ignores clip gain; `color.auto` samples the playhead frame; `library.apply` has no
+  intensity (`clip.effects_bulk {params: {Intensity}}`); contact sheets cap at 16 and `to = end` is black.
+  `connecting_loads_the_index_once` fails on a machine with installed library effects in the real %APPDATA% (environmental).
