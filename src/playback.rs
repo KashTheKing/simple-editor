@@ -74,8 +74,14 @@ pub fn cache_budget_bytes(cache_mb: u32) -> usize {
         None => DEFAULT_CACHE_BYTES,
     }
 }
-/// How far past the playhead the prefetcher keeps frames ready (seconds).
+/// How far past the playhead the prefetcher keeps frames ready (seconds) - `read_ahead_secs`
+/// stretches it up to `MAX_READ_AHEAD_SECS` while frames are expensive to make.
 const READ_AHEAD_SECS: f64 = 1.5;
+const MAX_READ_AHEAD_SECS: f64 = 4.0;
+/// ---- perf:cut-preroll ---- How much further than the read-ahead the timeline is looked at for
+/// clips coming up (`upcoming`): the time a pre-rolled decoder has for its seek before the
+/// prefetcher asks for its first frame (4 s ahead of the playhead at the default read-ahead).
+const PREROLL_LEAD_SECS: f64 = 2.5;
 /// Recently shown frames kept eviction-protected behind the playhead (seconds), so a short
 /// scrub-back replays from the cache.
 const TRAIL_SECS: f64 = 0.5;
@@ -92,8 +98,8 @@ const PAUSED_WAIT: Duration = Duration::from_millis(100);
 /// seeks come faster than this, so they never find a read-ahead decode in their way.
 const IDLE_REST: Duration = Duration::from_millis(60);
 /// Frames handed to the UI ahead of their time while the render thread decodes (`Shared::ahead`):
-/// a tenth of a second at 60 fps, more than any one decode should take.
-const AHEAD: i64 = 6;
+/// half a second at 60 fps, more than any one decode should take (a cut's seek is pre-rolled).
+const AHEAD: i64 = 30;
 /// Recycled frame buffers kept for the CPU compositor (cache evictions feed it).
 const FPOOL_KEEP: usize = 4;
 
@@ -1088,7 +1094,9 @@ fn render_thread(
         let frame_bytes = (w as usize * h as usize * 4).max(1);
         let avg = if gpu { lcache.avg_entry_bytes() } else { fcache.avg_entry_bytes() };
         let per_idx = avg.unwrap_or(frame_bytes).max(1);
-        let read_ahead = ((fps * READ_AHEAD_SECS).ceil() as i64).clamp(8, (budget / 2 / per_idx).max(8) as i64);
+        let cost = shared.frame_cost_us.load(Ordering::Relaxed) as f64 / 1e6;
+        let read_ahead =
+            ((fps * read_ahead_secs(cost, fps)).ceil() as i64).clamp(8, (budget / 2 / per_idx).max(8) as i64);
         let last_idx = (((duration * fps).ceil() as i64) - 1).max(idx);
         // keep the trail + horizon around the playhead eviction-protected: a scrub-back replays free
         // (direction-aware: reverse shuttling protects what's already been shown behind idx instead)
@@ -1250,8 +1258,9 @@ fn render_thread(
             ctx.request_repaint();
         }
         if playing {
-            // open what the next few seconds bring in, off this thread
+            // open what the next few seconds bring in, off this thread - and seek what starts there
             warm_clips(&project, &mut pool, t, t + WARM_SECS);
+            pool.preroll(&upcoming(&project, t, read_ahead as f64 / fps + PREROLL_LEAD_SECS, rate));
             // Pacing window until frame idx+1 is due on the grid: pre-render upcoming frames into the
             // cache, then sleep out whatever is left. A slow prefetch can overrun the window by one
             // render - the same stall the live path would have hit at that frame's due time, just earlier.
@@ -1318,6 +1327,7 @@ fn render_thread(
             // decode. Frames made while a source was still opening are redone when it arrives
             // (`pool.collect`, top of the loop); until then this waits on the channel, not in a spin.
             idle = false;
+            pool.preroll(&upcoming(&project, t, read_ahead as f64 / fps + PREROLL_LEAD_SECS, 1.0)); // Play is next
             let hi = (idx + ((fps * win).ceil() as i64).min(read_ahead)).min(last_idx);
             match (idx..=hi).find(|i| !cached!(*i)) {
                 Some(i) => match rx.try_recv() {
@@ -1873,6 +1883,81 @@ fn warm_clips(project: &Project, pool: &mut DecoderPool, lo: f64, hi: f64) {
             if let Some(a) = project.asset(c.asset).filter(|_| matches!(c.kind, ClipKind::Video | ClipKind::Image)) {
                 // the first frame this window shows of it is decoded along with the open
                 pool.warm(&a.path, Some(c.src_time(c.start.max(lo)).max(0.0)));
+            }
+        }
+    }
+}
+
+// ---- perf:cut-preroll ----
+
+/// Seconds of read-ahead for frames that cost `cost` seconds each to make (0 = not known yet):
+/// `READ_AHEAD_SECS` while a frame takes under half its own duration, stretching to
+/// `MAX_READ_AHEAD_SECS` when it takes all of it - expensive frames get a deeper buffer to ride out a slow
+/// one with. The cache budget still caps the frames this comes to (the caller's clamp), which is
+/// what keeps it inside RAM. Half-second steps, so the window does not wobble with every frame.
+fn read_ahead_secs(cost: f64, fps: f64) -> f64 {
+    let load = ((cost * fps - 0.5) / 0.5).clamp(0.0, 1.0);
+    ((READ_AHEAD_SECS + (MAX_READ_AHEAD_SECS - READ_AHEAD_SECS) * load) * 2.0).round() / 2.0
+}
+
+/// The video clips that come on screen within `secs` of timeline time `t`, in the direction of
+/// play, and start with a seek: `(source path, the source time of their first frame)` for
+/// `DecoderPool::preroll`. Clips inside nested sequences count too, at the time their sequence
+/// clip shows them. A clip that carries on the source of the clip right before it on its track
+/// (a plain split) reads on through the cut and is left out.
+/// ponytail: the first frame is where the clip itself starts; a transition shows it earlier, and
+/// its first frames then still seek.
+fn upcoming(project: &Project, t: f64, secs: f64, rate: f64) -> Vec<(&str, f64)> {
+    let fwd = rate >= 0.0;
+    let (lo, hi) = if fwd { (t, t + secs) } else { (t - secs, t) };
+    let tracks = project.tracks.iter().enumerate().filter(|(ti, _)| project.active(*ti)).map(|(_, tr)| tr);
+    let mut out = Vec::new();
+    upcoming_in(project, tracks, (lo, hi), fwd, false, 0, &mut out);
+    out
+}
+
+/// `upcoming` over `tracks` (a timeline's, or a nested sequence's in its own time) for the window
+/// `(lo, hi)`; `entering`: the window starts where these tracks come on screen, so what they show
+/// right there comes on too.
+fn upcoming_in<'p>(
+    project: &'p Project,
+    tracks: impl Iterator<Item = &'p crate::model::Track>,
+    (lo, hi): (f64, f64),
+    fwd: bool,
+    entering: bool,
+    depth: usize,
+    out: &mut Vec<(&'p str, f64)>,
+) {
+    let fd = project.frame_dur();
+    for track in tracks.filter(|tr| tr.kind == TrackKind::Video) {
+        for c in track.clips.iter().filter(|c| c.enabled && c.start < hi && c.end() > lo) {
+            // where it comes on screen in the direction of play, and its first frame there
+            let (edge, first) = if fwd { (c.start, c.start.max(lo)) } else { (c.end(), c.end().min(hi) - fd) };
+            let comes = if fwd { edge > lo && edge <= hi } else { edge >= lo && edge < hi };
+            let comes = comes || (entering && c.contains(if fwd { lo } else { hi - 1e-6 }));
+            match c.kind {
+                ClipKind::Video if comes => {
+                    let Some(a) = project.asset(c.asset) else { continue };
+                    let at = c.src_time(first).max(0.0);
+                    let split = |p: &&Clip| {
+                        p.enabled
+                            && p.kind == ClipKind::Video
+                            && p.asset == c.asset
+                            && !p.reverse
+                            && !c.reverse
+                            && (p.end() - c.start).abs() < 1e-3
+                            && (0.0..=0.5).contains(&(at - p.src_end()))
+                    };
+                    if !(fwd && track.clips.iter().any(|p| split(&p))) {
+                        out.push((a.path.as_str(), at));
+                    }
+                }
+                ClipKind::Sequence if depth < 8 => {
+                    let Some(sq) = project.sequence(c.sequence) else { continue };
+                    let (a, b) = (c.src_time(c.start.max(lo)), c.src_time(c.end().min(hi)));
+                    upcoming_in(project, sq.tracks.iter(), (a.min(b), a.max(b)), fwd, comes, depth + 1, out);
+                }
+                _ => {}
             }
         }
     }
@@ -4053,5 +4138,144 @@ mod tests {
         // reverse looks behind
         assert!(!lands_cold(100, 45, 600, -1.0, |i| (85..=100).contains(&i)));
         assert!(lands_cold(100, 45, 600, -1.0, |i| (90..=100).contains(&i)));
+    }
+
+    // ---- perf:cut-preroll (#159) ----
+
+    /// A 120 s 1080p60 H.264 file with a keyframe every 10 s (GOP 600), made once per machine.
+    fn long_gop_mp4() -> Option<String> {
+        let dir = std::env::temp_dir().join("se-bench");
+        let _ = std::fs::create_dir_all(&dir);
+        let mp4 = dir.join("gop600-120s-1080p60.mp4");
+        if !mp4.exists() {
+            let part = dir.join(format!("gop600-{}.part.mp4", std::process::id()));
+            let ok = std::process::Command::new(media::ffpipe::ffmpeg_exe()?)
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=60", "-t", "120"])
+                .args(["-c:v", "libx264", "-preset", "ultrafast", "-g", "600", "-keyint_min", "600"])
+                .args(["-sc_threshold", "0", "-pix_fmt", "yuv420p"])
+                .arg(&part)
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok || std::fs::rename(&part, &mp4).is_err() && !mp4.exists() {
+                return None;
+            }
+        }
+        Some(mp4.to_string_lossy().into_owned())
+    }
+
+    /// Which clips the look-ahead pre-rolls: those starting in the window in the direction of play,
+    /// with the source time of their first frame - not a plain split (it reads on), not one past the
+    /// window, and inside a nested sequence at the time its sequence clip shows them.
+    #[test]
+    fn the_look_ahead_prerolls_the_clips_that_start_with_a_seek() {
+        let mut project = Project::new();
+        project.fps = 30.0;
+        let x = project.add_asset(fake_asset("Video", "C:\\x.mp4", 600.0));
+        let y = project.add_asset(fake_asset("Video", "C:\\y.mp4", 600.0));
+        let z = project.add_asset(fake_asset("Video", "C:\\z.mp4", 600.0));
+        let clip = |p: &mut Project, asset, start, src_in, dur| {
+            let mut c = Clip::new(p.new_id(), ClipKind::Video, "c", start, dur);
+            (c.asset, c.src_in) = (asset, src_in);
+            c
+        };
+        let a = clip(&mut project, x, 0.0, 1.0, 3.0);
+        let b = clip(&mut project, x, 3.0, 105.0, 3.0); // a jump deep into the same file
+        let split = clip(&mut project, x, 6.0, 108.0, 2.0); // carries on where b ends
+        let other = clip(&mut project, y, 8.0, 40.0, 2.0);
+        project.tracks[0].clips.extend([a, b, split, other]);
+        let got = |p: &Project, t, secs, rate| -> Vec<(String, f64)> {
+            upcoming(p, t, secs, rate).into_iter().map(|(s, at)| (s.to_string(), (at * 1e3).round() / 1e3)).collect()
+        };
+        assert_eq!(got(&project, 0.0, 4.0, 1.0), [("C:\\x.mp4".to_string(), 105.0)]);
+        assert!(got(&project, 0.0, 2.0, 1.0).is_empty(), "the cut is past the window");
+        assert!(got(&project, 3.0, 2.0, 1.0).is_empty(), "on screen already: nothing comes on");
+        assert!(got(&project, 4.0, 3.0, 1.0).is_empty(), "a plain split reads on");
+        assert_eq!(got(&project, 5.0, 4.0, 1.0), [("C:\\y.mp4".to_string(), 40.0)]);
+        // playing backwards, a clip comes on at its end: its last frame
+        assert_eq!(got(&project, 4.0, 2.0, -1.0), [("C:\\x.mp4".to_string(), 3.967)]);
+
+        // a nested sequence at 12 s: what it shows from its first frame, and a clip inside that starts later
+        let sid = project.new_sequence("seq", 1920, 1080, 30.0);
+        let first = clip(&mut project, z, 0.0, 7.0, 5.0);
+        let later = clip(&mut project, z, 2.0, 50.0, 3.0);
+        project.sequence_mut(sid).unwrap().tracks[0].clips.extend([first, later]);
+        project.insert_sequence_clip(sid, 12.0, None).expect("sequence clip");
+        let z = |at: f64| ("C:\\z.mp4".to_string(), at);
+        assert_eq!(got(&project, 10.0, 3.0, 1.0), [z(7.0)], "the sequence comes on: its first frame");
+        assert_eq!(got(&project, 10.0, 5.0, 1.0), [z(7.0), z(50.0)]);
+        assert_eq!(got(&project, 13.0, 2.0, 1.0), [z(50.0)], "inside it, at the sequence's own time");
+    }
+
+    /// #159: a cut from one clip of a long recording to another clip of it 105 s in - half a GOP
+    /// past a keyframe, 300 frames to decode before the first one shows - plays straight through:
+    /// the decoder for the second clip is opened and seeked ahead of the cut, off the clock.
+    /// Timing on real media, so not a regular test (a full parallel `cargo test` starves it):
+    /// `cargo test a_cut_deep_into -- --ignored --nocapture` (before #159: a 1.9 s+ freeze at the cut).
+    #[test]
+    #[ignore]
+    fn a_cut_deep_into_a_long_gop_file_plays_without_a_gap() {
+        let Some(path) = long_gop_mp4() else {
+            eprintln!("ffmpeg missing; skipped");
+            return;
+        };
+        let asset = media::probe(&path, Backend::Mf).expect("probe");
+        let mut project = Project::from_media(asset);
+        let cut = 3.0;
+        let a = &mut project.tracks[0].clips[0];
+        (a.src_in, a.duration) = (1.0, cut);
+        let mut b = a.clone();
+        (b.start, b.src_in) = (cut, 105.0);
+        b.id = project.new_id();
+        project.tracks[0].clips.push(b);
+        let fd = 1.0 / project.fps;
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Mf, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(480, 270, 1280);
+        p.seek(0.0);
+        let opened = Instant::now(); // (the first open can be slow on a busy machine: not what this times)
+        while p.take_whole_frame().is_none_or(|f| f.width != 480) {
+            assert!(opened.elapsed() < Duration::from_secs(20), "no first frame");
+            sleep(Duration::from_millis(10));
+        }
+        // Play as the app does: through the play gate (`ui::app::playgate`), a second buffered first
+        p.preroll(1.0);
+        while !p.video_report(1.0).0 {
+            assert!(opened.elapsed() < Duration::from_secs(30), "the play gate never filled");
+            sleep(Duration::from_millis(10));
+        }
+        p.play();
+        // when each new frame reached the UI, polled the way the UI does
+        let mut shown: Vec<(Instant, f64)> = Vec::new();
+        let (mut buffered, mut partial) = (false, 0);
+        let start = Instant::now();
+        while p.time() < cut + 0.25 && start.elapsed() < Duration::from_secs(15) {
+            if let Some(f) = p.take_frame() {
+                shown.push((Instant::now(), f.pts));
+                partial += p.is_partial() as usize; // shown without the clip: its decoder was not ready
+            }
+            // (a machine too busy to play at all buffers anywhere: only the cut is this test's business)
+            buffered |= p.is_buffering() && (cut - 0.25..cut + 0.25).contains(&p.time());
+            sleep(Duration::from_millis(1));
+        }
+        let end = Instant::now();
+        p.pause();
+        // the frames a seek at the cut would hold back, from just before it to a quarter second in (a
+        // freeze that outlasts the run counts up to its end: the frames that never came)
+        let span = cut - 2.0 * fd..cut + 0.25;
+        let near: Vec<(Instant, f64)> =
+            shown.into_iter().filter(|s| span.contains(&s.1)).chain([(end, span.end)]).collect();
+        let gap = near.windows(2).map(|w| (w[1].0 - w[0].0).as_secs_f64()).fold(0.0, f64::max);
+        let frames = near.len() - 1;
+        eprintln!(
+            "cut-preroll: {frames} frames across the cut, worst gap {:.1} ms, buffered {buffered}, partial {partial}",
+            gap * 1e3
+        );
+        assert!(frames as f64 >= 0.8 * (span.end - span.start) / fd, "only {frames} frames across the cut");
+        assert!(
+            !buffered && partial == 0 && gap <= 2.0 * fd,
+            "worst gap {:.1} ms at the cut (buffered: {buffered})",
+            gap * 1e3
+        );
     }
 }

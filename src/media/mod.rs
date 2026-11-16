@@ -298,7 +298,23 @@ pub struct DecoderPool {
     arrived: bool,
     /// Open video zero-copy and hand out GPU frames from `frames_arc` (`set_gpu_frames`).
     gpu_frames: bool,
+    /// Second decoders of open sources, opened and seeked on threads of their own to where a clip
+    /// coming up starts (`preroll`): (resolved path, source time, the opening - None once taken in).
+    prerolls: Vec<(String, f64, Option<Opening>)>,
+    /// The source time each open decoder (by resolved path) was last asked for, and at what size: is
+    /// a request a read on or a seek (`take_preroll`), and what size a pre-roll decodes at (`preroll`).
+    pos: HashMap<String, (f64, u32, u32)>,
+    /// A frame went without a source whose pre-roll was still seeking: `collect` says when it is done.
+    prerolling: bool,
 }
+
+type Opening = std::thread::JoinHandle<Option<Box<dyn VideoSource>>>;
+
+/// A request this far past a decoder's last frame (source seconds) reads on instead of seeking:
+/// less than MF's own forward window (`mf::VIDEO_FWD_HNS`, 1.5 s), so a read on stays cheap.
+const READ_ON: f64 = 0.5;
+/// Pre-rolled decoders opening at once (each is an open plus a seek into a GOP).
+const PREROLLS: usize = 4;
 
 /// Byte-budgeted LRU of decoded source frames, keyed by (SOURCE path, request time in µs, w, h) -
 /// a still (`VideoSource::is_still`) by `STILL_T`, since its picture is the same at every time.
@@ -427,6 +443,9 @@ impl DecoderPool {
             exact: false,
             arrived: false,
             gpu_frames: false,
+            prerolls: Vec::new(),
+            pos: HashMap::new(),
+            prerolling: false,
         }
     }
     /// The GPU preview's pool: open video zero-copy (`mf::open_video_gpu`, once `engine::gpu::interop`
@@ -454,20 +473,89 @@ impl DecoderPool {
         self.open_on_thread(path, first);
     }
     fn open_on_thread(&mut self, path: String, first: Option<f64>) {
+        let opening = self.spawn_open(&path, first, None);
+        self.warming.insert(path, opening);
+    }
+    /// Open `path` on a thread of its own, decoding (and dropping) its frame at `first`, at `size`
+    /// (default: native): MF settles its output size on the first request, and a pre-roll that
+    /// settled on another size than the preview asks for would renegotiate - and seek again - at the cut.
+    fn spawn_open(&self, path: &str, first: Option<f64>, size: Option<(u32, u32)>) -> Opening {
         mf::init_thread(); // COM must stay up on the thread that will use the reader
-        let (b, p, still, gpu) = (self.backend, path.clone(), self.stills.get(&path).copied(), self.gpu_frames);
-        let opening = std::thread::spawn(move || {
+        let (b, p, still, gpu) = (self.backend, path.to_string(), self.stills.get(path).copied(), self.gpu_frames);
+        std::thread::spawn(move || {
             let mut v = open_known(&p, b, still, gpu).ok()?;
             if let Some(t) = first.filter(|_| !v.is_still()) {
-                let (w, h) = v.size();
+                let (w, h) = size.unwrap_or(v.size());
                 // a zero-copy source leaves it on the GPU: no full-size readback just to warm up
                 if v.frame_gpu(t, w, h).is_none() {
                     v.frame_at(t, w, h, &mut Frame::default());
                 }
             }
             Some(v)
-        });
-        self.warming.insert(path, opening);
+        })
+    }
+    /// The clips coming up that start with a seek (`playback::upcoming`): `(source path, the source
+    /// time the clip starts at)`. Each is made ready to show its first frame before the cut gets
+    /// here: a source nobody has open is opened there (`warm`); an open one gets a second decoder,
+    /// opened and seeked to it on a thread of its own - a seek deep into a long GOP decodes hundreds
+    /// of frames, off the clock here - and the first request there takes it over (`take_preroll`).
+    /// Pre-rolls no longer coming up go (their threads finish detached and drop the decoder).
+    /// ponytail: the second decoder replaces the first at the cut; two clips of one file on screen
+    /// at once (picture in picture) still share one decoder and seek between them, as before.
+    pub fn preroll(&mut self, wants: &[(&str, f64)]) {
+        let wants: Vec<(String, f64)> = wants.iter().map(|&(p, at)| (self.resolved(p), at)).collect();
+        let same = |e: &(String, f64, Option<Opening>), p: &str, at: f64| e.0 == p && (e.1 - at).abs() < 1e-3;
+        self.prerolls.retain(|e| wants.iter().any(|w| same(e, &w.0, w.1)));
+        for (path, at) in wants {
+            if self.prerolls.iter().any(|e| same(e, &path, at)) {
+                continue;
+            }
+            match self.videos.get(&path) {
+                None => self.warm(&path, Some(at)),
+                Some((_, Some(v))) if !v.is_still() => {
+                    let pos = self.pos.get(&path).copied();
+                    let there = pos.is_some_and(|p| (0.0..=READ_ON).contains(&(at - p.0)));
+                    if !there && self.prerolls.iter().filter(|e| e.2.is_some()).count() < PREROLLS {
+                        // at the size the decoder in use is asked for: the same footage, the same preview
+                        let opening = self.spawn_open(&path, Some(at), pos.map(|p| (p.1, p.2)));
+                        self.prerolls.push((path, at, Some(opening)));
+                    }
+                }
+                _ => {} // a still, a failed open, or a decoder at work in `frames_arc`
+            }
+        }
+    }
+    /// A request for `t` from the source at `key` (resolved): if the decoder in use would have to
+    /// seek for it and a pre-roll stands at that time, the pre-roll takes over. One still seeking
+    /// is waited for as a source still opening is (`deadline`): past it the frame goes without this
+    /// source (`take_missed`, false here) and is made again once the pre-roll is done (`collect`) -
+    /// the decoder in use seeking there instead would only take longer. Then notes where it is.
+    fn take_preroll(&mut self, key: &str, t: f64, w: u32, h: u32) -> bool {
+        let open = self.videos.get(key).is_some_and(|e| e.1.is_some());
+        let reads_on = open && self.pos.get(key).is_some_and(|p| (0.0..=READ_ON).contains(&(t - p.0)));
+        let at = |e: &(String, f64, Option<Opening>)| {
+            e.0 == key && e.2.is_some() && (e.1 - 1e-3..=e.1 + READ_ON).contains(&t)
+        };
+        if let Some(e) = self.prerolls.iter_mut().find(|e| !reads_on && !self.exact && at(e)) {
+            while !e.2.as_ref().is_some_and(|h| h.is_finished()) {
+                match self.deadline {
+                    Some(d) if Instant::now() >= d => {
+                        (self.missed, self.prerolling) = (true, true);
+                        return false;
+                    }
+                    Some(_) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                    None => break, // no deadline (a one-shot): `join` waits
+                }
+            }
+            if let Some(v) = e.2.take().and_then(|h| h.join().ok()).flatten() {
+                self.tick += 1;
+                if let Some(old) = self.videos.insert(key.to_string(), (self.tick, Some(v))) {
+                    std::thread::spawn(move || drop(old)); // closing a reader is not free either
+                }
+            }
+        }
+        self.pos.insert(key.to_string(), (t, w, h));
+        true
     }
     /// The stills the timeline shows, most urgent first, each with its `StillUse`: all of them are
     /// decoded now, in the background, as far as the still budget goes (preview pools only: the
@@ -510,11 +598,16 @@ impl DecoderPool {
                 self.open_on_thread(p, None);
             }
         }
-        std::mem::take(&mut self.arrived) || !done.is_empty()
+        // (one done, or none left waiting: never busy for good on a pre-roll that went away)
+        let fin = |e: &(String, f64, Option<Opening>), d: bool| e.2.as_ref().is_some_and(|h| h.is_finished() == d);
+        let rolled = self.prerolling
+            && (self.prerolls.iter().any(|e| fin(e, true)) || !self.prerolls.iter().any(|e| fin(e, false)));
+        self.prerolling &= !rolled;
+        std::mem::take(&mut self.arrived) || !done.is_empty() || rolled
     }
     /// Something is opening or waiting to: `collect` has work coming.
     pub fn busy(&self) -> bool {
-        !self.warming.is_empty() || !self.queue.is_empty()
+        !self.warming.is_empty() || !self.queue.is_empty() || self.prerolling
     }
     /// See `deadline`. The render thread sets it around each preview frame and clears it again.
     pub fn set_deadline(&mut self, deadline: Option<Instant>) {
@@ -549,6 +642,7 @@ impl DecoderPool {
             victims.extend(map.get(src).cloned());
             self.videos.retain(|k, _| !victims.iter().any(|v| v.eq_ignore_ascii_case(k)));
             self.warming.retain(|k, _| !victims.iter().any(|v| v.eq_ignore_ascii_case(k)));
+            self.prerolls.retain(|e| !victims.iter().any(|v| v.eq_ignore_ascii_case(&e.0)));
             self.source_cache.evict_path(src);
         }
         self.proxies = map;
@@ -574,6 +668,9 @@ impl DecoderPool {
             out.make_rgba();
             return true;
         }
+        if !self.take_preroll(&self.resolved(path), t, w, h) {
+            return false;
+        }
         let Some(dec) = self.video(path) else { return false };
         if let Some(f) = dec.still(w, h) {
             out.copy_from(&f); // kept by the decoder itself
@@ -594,6 +691,9 @@ impl DecoderPool {
         }
         if spare.is_empty() {
             spare.extend(self.source_cache.free.pop());
+        }
+        if !self.take_preroll(&self.resolved(path), t, w, h) {
+            return None;
         }
         let dec = self.video(path)?;
         if let Some(f) = dec.still(w, h) {
@@ -646,6 +746,10 @@ impl DecoderPool {
             let key = self.resolved(p);
             if let Some(g) = groups.iter_mut().find(|g| g.0 == key) {
                 g.2.push(i);
+                self.pos.insert(key, (jobs[i].1, jobs[i].2, jobs[i].3));
+                continue;
+            }
+            if !self.take_preroll(&key, jobs[i].1, jobs[i].2, jobs[i].3) {
                 continue;
             }
             // (`video` never evicts a taken decoder: its slot reads as empty until it is put back)
@@ -836,6 +940,9 @@ impl DecoderPool {
     pub fn clear(&mut self) {
         self.videos.clear();
         self.warming.clear(); // detached: each finishes its open and drops the result
+        self.prerolls.clear();
+        self.pos.clear();
+        self.prerolling = false;
         self.queue.clear();
         self.audios.clear();
         self.source_cache.clear(); // a caller may be about to overwrite a source file
@@ -844,6 +951,11 @@ impl DecoderPool {
     #[cfg(test)]
     pub fn insert_opening(&mut self, path: &str, opening: std::thread::JoinHandle<Option<Box<dyn VideoSource>>>) {
         self.warming.insert(path.to_string(), opening);
+    }
+    /// Test-only: a second decoder for `path` pre-rolled to `at` on `opening`.
+    #[cfg(test)]
+    pub fn insert_preroll(&mut self, path: &str, at: f64, opening: Opening) {
+        self.prerolls.push((path.to_string(), at, Some(opening)));
     }
     /// Test-only: is a live decoder open for exactly this (resolved) path?
     #[cfg(test)]
@@ -1155,6 +1267,39 @@ mod tests {
         let mut out = Frame::default();
         assert!(pool.frame_at("C:\\b.mp4", 0.0, 1, 1, &mut out));
         assert_eq!((out.rgba.as_slice(), out.bgrx), (&[30u8, 20, 10, 255][..], false));
+    }
+
+    /// #159: a pre-rolled decoder takes over the request it was seeked for - and only when the one
+    /// in use would have to seek; `preroll` keeps one per clip coming up and lets go of the rest.
+    #[test]
+    fn a_preroll_takes_over_the_seek_it_was_made_for() {
+        let (first, second) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video("C:\\v.mp4", fake(&first));
+        let mut spare = Vec::new();
+        pool.frame_arc("C:\\v.mp4", 1.0, 8, 8, &mut spare);
+        let ready = fake(&second);
+        pool.insert_preroll("C:\\v.mp4", 105.0, std::thread::spawn(move || Some(ready)));
+        pool.insert_preroll("C:\\v.mp4", 1.2, opening_after(0, &second));
+        pool.frame_arc("C:\\v.mp4", 1.2, 8, 8, &mut spare); // reads on: the pre-roll there is not needed
+        assert_eq!((first.load(Ordering::SeqCst), second.load(Ordering::SeqCst)), (2, 0));
+        pool.frame_arc("C:\\v.mp4", 105.0, 8, 8, &mut spare); // a seek: the pre-roll takes it
+        pool.frame_arc("C:\\v.mp4", 105.1, 8, 8, &mut spare);
+        assert_eq!((first.load(Ordering::SeqCst), second.load(Ordering::SeqCst)), (2, 2));
+        // the parallel path takes it over the same way
+        pool.insert_preroll("C:\\v.mp4", 300.0, opening_after(0, &first));
+        pool.frames_arc(&[("C:\\v.mp4", 300.0, 8, 8)], &mut spare);
+        assert_eq!((first.load(Ordering::SeqCst), second.load(Ordering::SeqCst)), (3, 2));
+
+        // `preroll`: one per clip coming up, none where the decoder in use already is, none for a
+        // clip no longer coming up
+        pool.prerolls.clear();
+        pool.preroll(&[("C:\\v.mp4", 300.2), ("C:\\v.mp4", 50.0)]);
+        assert_eq!(pool.prerolls.iter().map(|e| e.1).collect::<Vec<_>>(), [50.0]);
+        pool.preroll(&[("C:\\v.mp4", 50.0)]);
+        assert_eq!(pool.prerolls.len(), 1, "asked again: the same one");
+        pool.preroll(&[]);
+        assert!(pool.prerolls.is_empty(), "passed: let go");
     }
 
     /// A video frame decoded through `frame_arc` is the cached frame itself (no copy), a replay is
