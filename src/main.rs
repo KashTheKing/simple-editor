@@ -21,6 +21,7 @@ mod scripting;
 mod selftest;
 mod settings;
 mod theme;
+mod theme_import;
 mod ui;
 mod winpos;
 

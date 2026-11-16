@@ -134,6 +134,11 @@ pub struct PaletteOverride {
     pub clip_sequence: Option<[u8; 3]>,
     pub clip_shape: Option<[u8; 3]>,
     pub clip_adjust: Option<[u8; 3]>,
+    pub playhead: Option<[u8; 3]>,
+    /// Corner radius (px) for widgets/windows/custom surfaces; `None` = the Look setting decides.
+    pub rounding: Option<u8>,
+    /// Corner radius (px) for timeline clips.
+    pub clip_rounding: Option<u8>,
 }
 
 /// `palette(ctx)` layered with a user override. "system" mode (the default, everything `None`) is
@@ -204,6 +209,15 @@ fn apply_overrides(p: &mut Palette, ov: &PaletteOverride) {
     if let Some(c) = ov.clip_adjust {
         p.clip_adjust = rgb(c);
     }
+    if let Some(c) = ov.playhead {
+        p.playhead = rgb(c);
+    }
+    if let Some(r) = ov.rounding {
+        p.rounding = r as f32;
+    }
+    if let Some(r) = ov.clip_rounding {
+        p.clip_rounding = r as f32;
+    }
 }
 
 /// Darken an opaque colour by multiplying its RGB.
@@ -224,7 +238,7 @@ fn lighten(c: Color32, f: f32) -> Color32 {
 fn visuals(dark: bool, ov: &PaletteOverride, cozy: bool) -> Visuals {
     let mut v = if dark { Visuals::dark() } else { Visuals::light() };
     let accent = ov.accent.map(rgb).unwrap_or_else(system_accent);
-    let r = CornerRadius::same(if cozy { 8 } else { 2 });
+    let r = CornerRadius::same(ov.rounding.unwrap_or(if cozy { 8 } else { 2 }));
     v.window_corner_radius = r;
     v.menu_corner_radius = r;
     for w in [
@@ -384,6 +398,19 @@ pub fn palette(ctx: &egui::Context) -> Palette {
     Palette::new(ctx.style().visuals.dark_mode, system_accent())
 }
 
+/// WCAG contrast ratio between two sRGB colours (1..21).
+pub fn contrast(a: [u8; 3], b: [u8; 3]) -> f32 {
+    let l = |c: [u8; 3]| {
+        let f = |v: u8| {
+            let v = v as f32 / 255.0;
+            if v <= 0.03928 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+        };
+        0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2])
+    };
+    let (x, y) = (l(a), l(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
 /// Built-in theme preset names, in menu order.
 pub const PRESETS: &[&str] = &[
     "Charcoal Dark",
@@ -411,6 +438,12 @@ pub const PRESETS: &[&str] = &[
     "Ayu Dark",
     "Ayu Mirage",
     "Ayu Light",
+    "Premiere Pro Dark",
+    "Premiere Pro Light",
+    "DaVinci Resolve Dark",
+    "DaVinci Resolve Light",
+    "CapCut Dark",
+    "CapCut Light",
 ];
 
 /// A built-in theme as a ready-made override. `None` for unknown names.
@@ -491,6 +524,42 @@ pub fn preset(name: &str) -> Option<PaletteOverride> {
         "Ayu Light" => {
             Some((false, [252, 252, 252], [243, 244, 245], [232, 234, 237], [190, 195, 200], [92, 97, 101], [140, 145, 150], [255, 154, 0]))
         }
+        "Premiere Pro Dark" => {
+            Some((true, [29, 29, 29], [35, 35, 35], [47, 47, 47], [64, 64, 64], [212, 212, 212], [145, 145, 145], [38, 128, 235]))
+        }
+        "Premiere Pro Light" => {
+            Some((false, [232, 232, 232], [214, 214, 214], [200, 200, 200], [165, 165, 165], [26, 26, 26], [80, 80, 80], [20, 115, 230]))
+        }
+        "DaVinci Resolve Dark" => {
+            Some((true, [28, 28, 30], [40, 40, 46], [50, 50, 56], [66, 66, 74], [200, 200, 200], [142, 142, 150], [232, 120, 46]))
+        }
+        "DaVinci Resolve Light" => {
+            Some((false, [236, 236, 239], [224, 224, 228], [210, 210, 216], [172, 172, 180], [28, 28, 32], [85, 85, 92], [190, 85, 12]))
+        }
+        "CapCut Dark" => {
+            Some((true, [17, 17, 19], [24, 24, 27], [35, 35, 40], [50, 50, 56], [235, 235, 238], [150, 150, 158], [0, 210, 228]))
+        }
+        "CapCut Light" => {
+            Some((false, [246, 246, 248], [255, 255, 255], [238, 238, 242], [212, 212, 218], [20, 20, 24], [92, 92, 100], [0, 140, 160]))
+        }
+        "Premiere Pro Dark" => {
+            Some((true, [29, 29, 29], [35, 35, 35], [47, 47, 47], [64, 64, 64], [212, 212, 212], [145, 145, 145], [38, 128, 235]))
+        }
+        "Premiere Pro Light" => {
+            Some((false, [232, 232, 232], [214, 214, 214], [200, 200, 200], [165, 165, 165], [26, 26, 26], [80, 80, 80], [20, 115, 230]))
+        }
+        "DaVinci Resolve Dark" => {
+            Some((true, [28, 28, 30], [40, 40, 46], [50, 50, 56], [66, 66, 74], [200, 200, 200], [142, 142, 150], [232, 120, 46]))
+        }
+        "DaVinci Resolve Light" => {
+            Some((false, [236, 236, 239], [224, 224, 228], [210, 210, 216], [172, 172, 180], [28, 28, 32], [85, 85, 92], [190, 85, 12]))
+        }
+        "CapCut Dark" => {
+            Some((true, [17, 17, 19], [24, 24, 27], [35, 35, 40], [50, 50, 56], [235, 235, 238], [150, 150, 158], [0, 210, 228]))
+        }
+        "CapCut Light" => {
+            Some((false, [246, 246, 248], [255, 255, 255], [238, 238, 242], [212, 212, 218], [20, 20, 24], [92, 92, 100], [0, 140, 160]))
+        }
         "Charcoal Dark" => None,
         _ => return None,
     };
@@ -524,6 +593,84 @@ pub fn preset(name: &str) -> Option<PaletteOverride> {
         "SynthWave '84" => {
             ov.selection = Some([114, 241, 184]);
             ov.keyframe = Some([254, 222, 90]);
+        }
+        "Premiere Pro Dark" | "Premiere Pro Light" => {
+            let dark = name.ends_with("Dark");
+            ov.selection = Some([153, 153, 255]);
+            ov.playhead = Some(if dark { [45, 140, 235] } else { [20, 115, 230] });
+            let c = |d: [u8; 3], l: [u8; 3]| Some(if dark { d } else { l });
+            ov.clip_video = c([88, 100, 190], [150, 160, 225]);
+            ov.clip_audio = c([52, 140, 104], [140, 205, 175]);
+            ov.clip_image = c([150, 88, 170], [205, 160, 220]);
+            ov.clip_text = c([176, 100, 150], [225, 170, 205]);
+            ov.rounding = Some(2);
+            ov.clip_rounding = Some(2);
+        }
+        "DaVinci Resolve Dark" | "DaVinci Resolve Light" => {
+            let dark = name.ends_with("Dark");
+            ov.selection = Some(if dark { [64, 200, 190] } else { [0, 128, 128] });
+            ov.playhead = Some([232, 60, 50]);
+            ov.keyframe = Some([255, 170, 40]);
+            let c = |d: [u8; 3], l: [u8; 3]| Some(if dark { d } else { l });
+            ov.clip_video = c([58, 108, 150], [150, 185, 215]);
+            ov.clip_audio = c([48, 120, 98], [140, 205, 185]);
+            ov.clip_image = c([110, 90, 150], [190, 175, 220]);
+            ov.clip_text = c([160, 112, 56], [225, 195, 140]);
+            ov.waveform = c([118, 200, 120], [30, 110, 60]);
+            ov.rounding = Some(2);
+            ov.clip_rounding = Some(0);
+        }
+        "CapCut Dark" | "CapCut Light" => {
+            let dark = name.ends_with("Dark");
+            ov.selection = Some(if dark { [0, 210, 228] } else { [0, 140, 160] });
+            ov.playhead = Some(if dark { [255, 255, 255] } else { [30, 30, 34] });
+            let c = |d: [u8; 3], l: [u8; 3]| Some(if dark { d } else { l });
+            ov.clip_video = c([40, 76, 88], [150, 205, 218]);
+            ov.clip_audio = c([34, 84, 120], [150, 190, 225]);
+            ov.clip_image = c([84, 70, 140], [190, 178, 230]);
+            ov.clip_text = c([150, 108, 40], [235, 205, 140]);
+            ov.waveform = c([90, 210, 225], [0, 120, 140]);
+            ov.rounding = Some(8);
+            ov.clip_rounding = Some(5);
+        }
+        "Premiere Pro Dark" | "Premiere Pro Light" => {
+            let dark = name.ends_with("Dark");
+            ov.selection = Some([153, 153, 255]);
+            ov.playhead = Some(if dark { [45, 140, 235] } else { [20, 115, 230] });
+            let c = |d: [u8; 3], l: [u8; 3]| Some(if dark { d } else { l });
+            ov.clip_video = c([88, 100, 190], [150, 160, 225]);
+            ov.clip_audio = c([52, 140, 104], [140, 205, 175]);
+            ov.clip_image = c([150, 88, 170], [205, 160, 220]);
+            ov.clip_text = c([176, 100, 150], [225, 170, 205]);
+            ov.rounding = Some(2);
+            ov.clip_rounding = Some(2);
+        }
+        "DaVinci Resolve Dark" | "DaVinci Resolve Light" => {
+            let dark = name.ends_with("Dark");
+            ov.selection = Some(if dark { [64, 200, 190] } else { [0, 128, 128] });
+            ov.playhead = Some([232, 60, 50]);
+            ov.keyframe = Some([255, 170, 40]);
+            let c = |d: [u8; 3], l: [u8; 3]| Some(if dark { d } else { l });
+            ov.clip_video = c([58, 108, 150], [150, 185, 215]);
+            ov.clip_audio = c([48, 120, 98], [140, 205, 185]);
+            ov.clip_image = c([110, 90, 150], [190, 175, 220]);
+            ov.clip_text = c([160, 112, 56], [225, 195, 140]);
+            ov.waveform = c([118, 200, 120], [30, 110, 60]);
+            ov.rounding = Some(2);
+            ov.clip_rounding = Some(0);
+        }
+        "CapCut Dark" | "CapCut Light" => {
+            let dark = name.ends_with("Dark");
+            ov.selection = Some(if dark { [0, 210, 228] } else { [0, 140, 160] });
+            ov.playhead = Some(if dark { [255, 255, 255] } else { [30, 30, 34] });
+            let c = |d: [u8; 3], l: [u8; 3]| Some(if dark { d } else { l });
+            ov.clip_video = c([40, 76, 88], [150, 205, 218]);
+            ov.clip_audio = c([34, 84, 120], [150, 190, 225]);
+            ov.clip_image = c([84, 70, 140], [190, 178, 230]);
+            ov.clip_text = c([150, 108, 40], [235, 205, 140]);
+            ov.waveform = c([90, 210, 225], [0, 120, 140]);
+            ov.rounding = Some(8);
+            ov.clip_rounding = Some(5);
         }
         _ => {}
     }
@@ -571,6 +718,25 @@ mod tests {
         assert!(preset("Nonexistent").is_none());
         // Charcoal Dark = stock: no colour overrides.
         assert_eq!(preset("Charcoal Dark").unwrap().background, None);
+    }
+
+    #[test]
+    fn new_themes_have_both_variants_and_readable_text() {
+        let c = |a: Color32, b: Color32| contrast([a.r(), a.g(), a.b()], [b.r(), b.g(), b.b()]);
+        for fam in ["Premiere Pro", "DaVinci Resolve", "CapCut"] {
+            let d = preset(&format!("{fam} Dark")).expect(fam);
+            let l = preset(&format!("{fam} Light")).expect(fam);
+            assert_eq!((d.mode.as_str(), l.mode.as_str()), ("dark", "light"), "{fam}");
+            for ov in [d, l] {
+                let p = palette_with(&egui::Context::default(), &ov);
+                for bg in [p.bg, p.panel, p.header] {
+                    assert!(c(p.text, bg) >= 4.5, "{} text on bg", ov.preset);
+                }
+                assert!(c(p.text_dim, p.panel) >= 4.5, "{} dim text", ov.preset);
+                // clip labels are drawn white or black, whichever reads better
+                assert!(c(Color32::WHITE, p.clip_video).max(c(Color32::BLACK, p.clip_video)) >= 4.5, "{}", ov.preset);
+            }
+        }
     }
 
     /// The ordered-candidate lookup for both families must find a usable font even when the primary

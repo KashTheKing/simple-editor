@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Premiere Pro, DaVinci Resolve and CapCut themes**, each in a dark and a light variant (greys, accents, clip colours, playhead and corner radii), in Settings > Appearance > Theme. **Import theme** now also reads Premiere Pro preferences (UI brightness and highlight colour) and CapCut preferences (dark/light); Resolve has no theme file and says so.
+
 ## 1.3.0
 
 ### Performance: peak playback
