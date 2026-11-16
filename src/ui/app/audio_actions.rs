@@ -120,6 +120,25 @@ pub fn act(app: &mut App, a: Action) -> bool {
             app.after_edit();
             true
         }
+        // ---- ws:audio-visualizer ----
+        Action::AddAudioVisualizer => {
+            let Some(&src) = crate::ui::autocut_ui::audio_targets(&app.project, &app.selection).first() else {
+                app.toast("Select an audio clip (or a video clip with linked audio)");
+                return true;
+            };
+            let before = app.project.to_json();
+            let backend = app.backend();
+            let style = crate::engine::visualizer::find(None).expect("a built-in style");
+            match crate::engine::visualizer::add(&mut app.project, src, &style, backend) {
+                Ok(id) => {
+                    app.push_undo_labeled(before, "Add Audio Visualizer");
+                    app.selection = vec![id];
+                    app.after_edit();
+                }
+                Err(e) => app.toast(e),
+            }
+            true
+        }
         _ => false,
     }
 }

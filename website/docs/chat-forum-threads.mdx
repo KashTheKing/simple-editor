@@ -1,0 +1,108 @@
+---
+title: Fake chat, forum & comment threads
+description: Build a fake chat, forum thread or video comment section for skits and stories from a list, with typing animation, no HTML to write.
+---
+
+A **Chat Thread** is a fake chat (avatar, coloured name, timestamp, message, reactions, embeds), and by default it
+is just the people messaging: no window around it. A **Forum Thread** is a fake post with votes, flair and nested
+comments. **Video Comments** is a fake video comment section. All three are [HTML layers](html-layers.mdx) that
+the app writes for you from a list, so you never touch HTML. The look is generic: no logos or brand names.
+
+## Add one
+
+**Add ▸ Chat Thread**, **Forum Thread** or **Video Comments** puts a layer on top of the timeline with starter
+content so it looks right at once. The online library has ready-made cards: *Chat Thread* (messages only),
+*Chat DM typing*, *Chat server typing*, *Forum Thread*, *Video Comments* and *Video comment typing*. Select the
+clip: the Inspector's **Thread** section is the editor.
+
+## Add messages and comments
+
+- **+ Add message** (chat) or **+ Add comment** / **+ Add reply** (forum) adds an item and opens it.
+- Each row has fold, **↩** (a message that replies to it, or a reply under the comment), **▲ ▼** to move,
+  **⧉** to duplicate and **✖** to delete. Forum rows also have **⇤ ⇥** to nest less or more.
+- A new message follows the one before it by a minute, from the next person in the cast.
+- Open a row to set who it is from, the date and time, the text, pictures, an embed, reactions (emoji and a
+  count, with "me" highlighted), what it replies to, *edited* and *pinned*; for a forum comment its age, votes,
+  awards, an OP badge, *folded* and a "N more replies" stub.
+- **+ System line**, **+ Date divider** and **+ New line** add the grey "joined the server" line, the date rule
+  and the red NEW line.
+
+Text takes light markup: `**bold**`, `*italic*`, `` `code` ``, a fenced code block, `> quote`, `@mention`,
+`#channel`, links, `:fire:` or any emoji, and `||spoiler||` (it hides, then reveals).
+
+## The cast
+
+**Cast** lists the people: an avatar (any picture in your project, or a coloured circle with the initial), a
+name colour and a badge (`BOT`, `verified`, any short text). Change a person there and every one of their
+messages follows; rename them and the messages follow too. A new name typed anywhere joins the cast.
+
+## Many lines at once
+
+Open **Script and data**, paste lines and press **Add lines** (or **Replace all**):
+
+```
+Maya: ok so I finally found out who ate my lunch
+Jordan (4:32 PM): wait. tell me everything
+--- Today
+* dave joined the server
+```
+
+For a forum: `# post title`, `## post body`, then `name (3h, 4.2k): comment` with `>` or indentation for replies
+(`> bob: reply`, `>> cy: deeper`). **Show as lines** turns the current items back into lines to edit. **Copy /
+Export / Import JSON** moves a whole thread between projects.
+
+## Messages only, or the whole window
+
+A chat starts as **Messages only**. Under **Look**, switch on only what you want around the messages: server
+rail, channel list (or conversation list in a DM), member list, top bar with search, header (channel name and
+topic, or the other person's avatar, name and status in a DM; the names in a group DM), message box, the
+"X is typing…" line, date dividers, the red NEW line and a scrollbar. **Layout** picks *Server channel*, *DM*
+(two people) or *Group DM*. **Transparent background** drops the window colour so the messages sit over video.
+The **Messages only** box switches all of the surrounding UI off in one go.
+
+## Typing animation
+
+In **Animation**, **Type my messages in the message box, then send** makes the person at the screen (**You are**)
+type each of their messages into the message box key by key (**speed**, optional **typos** deleted with
+backspace, a blinking caret), wait a beat (**pause before send**), and send it: the text leaves the box and the
+message pops in while the list scrolls. The other people show "X is typing…" first. Every message can have its
+own speed, length, pause and start (**delay**); typing goes back and forth between people. The same
+works for video comments: add **+ Type a comment**: the comment box opens, the text is typed, the **Comment**
+button lights up and is pressed, the box closes and the comment lands at the top with its likes counting up.
+**Aim the mouse at the Comment button** keyframes the fake mouse (Mouse section) to glide there and click it. A
+reply can be typed too: tick *typed* on a reply and a reply box opens under its comment.
+
+## Video comments
+
+The section has the count and **Sort by** bar, the comment box with your avatar, and comments with avatar,
+@handle (a verified or creator badge), age, *(edited)*, text with line breaks, emoji, mentions and `0:42`
+timestamp links, likes, dislike, Reply, hearted by the creator, pinned by the creator, and a "N replies" fold
+with smaller nested replies. Light and dark looks, compact spacing, the same list editor, cast and script box
+(`@handle (3 days ago, 12K): comment`, `>` for a reply).
+
+## Look
+
+**Look** has the presets (Dark chat, Light chat, Compact chat; Classic forum, Card forum, Dark forum), theme,
+accent colour, font, corner radius, text size, spacing, width and height, how times are written (*Today at
+4:32 PM*, *11/13/2026 4:32 PM*, *4:32 PM*, *16:32*, *5 minutes ago*), grouping of a person's consecutive
+messages, the channel bar, message box, server rail and member list.
+
+## Animation
+
+Items arrive one after another: **First item at**, **Gap between**, a per-item delay, and for chat a **typing
+indicator** ("Maya is typing…") before each message. They **pop**, **slide**, **fade** or **cut** in, the thread
+scrolls so the newest stays in view, a message can **pulse**, forum vote counts **count up**, reactions pop.
+**Already there** makes the first N items part of the history. Everything is CSS timing worked out from the list,
+so any frame is exact, in the preview and in the export. The Inspector says how long it plays and **Fit clip**
+stretches the clip to it. A **scroll** parameter lets you keyframe the scroll by hand.
+
+## Under the hood
+
+A thread is stored as JSON inside the layer's page (`<meta name="se:thread">`), so it survives saving, **Save
+to Library** and copying the clip. **Make plain HTML** forgets the data and leaves ordinary HTML to hand-edit.
+Editing the HTML of a thread layer by hand is overwritten by the next change in the Thread section.
+
+## For AI agents
+
+`thread.create` {kind: chat | chat_typing | forum | comments | comments_typing, mode: server | dm | group, style, script?}, `thread.get`, `thread.add` {who, text, ...}, `thread.set` (an item with
+`id`, or the thread), `thread.remove`, `thread.move`, `thread.from_script` and `thread.cast`; see `docs/customizing.md` in the repository.

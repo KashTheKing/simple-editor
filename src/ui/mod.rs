@@ -17,12 +17,17 @@ pub mod find_ui;
 pub mod frame_ui;
 // ---- ws:inspector-gallery ----
 pub mod gallery;
+pub mod gallery_filter;
 pub mod guides;
+pub mod social;
 pub mod history_ui;
 pub mod spiky_ball;
+pub mod visualizer_ui; // ws:audio-visualizer
+pub mod audio_card; // ws:audio-visualizer
 // ---- ws:layout-modes-onboarding ----
 pub mod home;
 pub mod hud; // ws:perf-baseline
+pub mod perf_ui; // ws:perf-window
 pub mod import_ui;
 pub mod inspector;
 pub mod inspector_audio;
@@ -67,6 +72,11 @@ pub mod assistant_data;
 // ---- ws:html-layer ----
 pub mod html_code;
 pub mod html_ui;
+// ---- ws:thread-viewers ----
+pub mod list_rows; // the shared table rows (thread viewers and the browser layer's tab rows)
+pub mod thread_ui;
+// ---- ws:browser-layer ----
+mod browser_ui;
 
 use crate::model::{AnimLink, Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
 use crate::theme::Palette;
@@ -339,14 +349,17 @@ pub enum DragPayload {
     Sequence(Id),
     /// A saved template (Settings.templates) by name.
     Template(String),
-    /// An effect from the effects panel (dropped on a clip or the node canvas).
+    /// An effect from the Gallery's Effects tab (dropped on a clip or the node canvas).
     Effect(crate::model::EffectKind),
-    /// A transition from the transitions panel (dropped on a cut or the node canvas).
+    /// A transition from the Gallery's Transitions tab (dropped on a cut or the node canvas).
     Transition(crate::model::TransitionKind),
-    /// ws:shader-library: a library shader transition (its source) from the transitions panel.
-    ShaderTransition(String),
     /// A keyframe block (Gallery ▸ Animate) by name - applied to the clip it is dropped on.
     KeyBlock(String),
+    /// A Gallery card without a payload of its own (Looks, LUTs, Captions, Speed ramps, Titles): its tab
+    /// and name. The timeline's drop target decides what it means (a clip: apply; a track: place).
+    GalleryCard(gallery::GalleryTab, String),
+    /// A content-library item (full id, `effects/glow`) - installed first when it is not yet.
+    LibItem(String),
 }
 
 /// How far the pointer must travel while held before a click turns into a drag.

@@ -1,5 +1,224 @@
 # Changelog
 
+## 1.3.0
+
+### Performance: peak playback
+- **Nested sequences play on the GPU**: a sequence clip is drawn by the graphics card with the same shaders as the
+  timeline, instead of a full copy of the project rendered on the processor every frame.
+- **Zero-copy hardware decode**: decoded video stays on the graphics card (D3D11 → OpenGL interop) at every size, so
+  1440p 120 Mbit footage decodes about 2.5x faster (6.2 → 2.5 ms a frame) and 1080p about 3x (4.7 → 1.6 ms).
+- **No stall at cuts**: the decoder for the next clip is opened and seeked ahead of the cut (a cut deep into a long
+  recording went from a 2 s freeze to a 27 ms worst gap), and the read-ahead grows when frames are expensive.
+- **Opening big projects no longer freezes the editor**: the HTML-layer scan re-processed every saved web page every
+  2 s on the interface thread (minutes of freeze on a big project); now cached. Paused interface frame p95 6.95 ms.
+- **Background work never competes with playback**: proxies, HTML renders, thumbnails and transcription run at low
+  priority and pause while you play; proxies are built nearest-the-playhead first and only for footage that needs
+  one (over 1080p, over 50 Mbit, intra codecs like PNG / ProRes), with the hardware encoder; per-clip Proxies
+  auto / on / off in the Library menu.
+- **One disk-cache budget** (Settings ▸ General, default 30 GB) with least-recently-used cleanup across HTML
+  renders, pre-renders, proxies and waveforms, a low-disk warning, and pre-renders that only redo the sequence you
+  edited. `caches.prune`.
+- **HTML renders are ~50x smaller**: animated HTML layers render to H.264 (GPU encoder when present; transparent
+  layers as stacked colour-over-alpha) instead of lossless PNG movies, at the size they are shown (never above the
+  project size), superseded renders are deleted after an edit, and HTML renders get their own 1 GB cap. Old PNG
+  renders are cleaned up in the background; each HTML layer re-renders once in the new format.
+- **Performance window** (Window ▸ Performance…): live FPS in a donut chart of where each frame's time goes,
+  live tiles (dropped frames, worst gap, decode, cache, background jobs) coloured against the budgets, and a
+  Project tab ranking the heaviest sources and clips with Jump to and one-click fixes (Make proxy, Pre-render,
+  Free cache, Pause jobs). For AI agents: `perf.bench` (play a range in the live app and get dropped frames,
+  fps, worst gap, UI p95 and the cost breakdown against the budgets), `perf.report`, `perf.window`, `playback.trace`
+  (Chrome trace).
+- **Performance benchmark and gate**: `scripts/perf-bench.ps1` plays a copy of a project (or a synthetic stress
+  project) in a scratch profile and records `perf_log.csv`; `/se-verify` fails on dropped frames or regressions.
+
+### AI enhancer (optional add-on)
+- **AI Upscale in place**: right-click a video or picture clip ▸ AI Upscale ▸ ×2 / ×4, Game / Animation
+  (`realesr-animevideov3`) or Real-World (`realesrgan-x4plus`). Real-ESRGAN runs on the graphics card over
+  just the part of the source the clip shows (plus 1 s handles), at low priority, as a job with progress and
+  cancel; then the clip plays the upscaled file with its effects, transform, keyframes, transitions and timing
+  kept (one undo step). The new file sits beside the original (untouched) and in the "AI enhanced" bin. A clip
+  zoomed past 1.2× names its zoom in the menu. The upscaler is an **optional add-on** (about 45 MB, downloaded
+  only when you click Install in Settings ▸ General or accept the offer), so the app itself does not grow.
+  `enhance.status`, `enhance.install`, `enhance.upscale` MCP tools.
+
+### Audio visualizers
+- **Add Audio Visualizer** (right-click an audio clip ▸ Audio, or `audio.visualizer`): a full-frame layer over
+  the song that moves with it. Pick the style in the Inspector's Visualizer section: **Neon Orb**, **Spectrum
+  Bars** (the Source monitor's original bar field) or **Voxel Blocks** (a pixel-art block island whose columns
+  follow the spectrum, with a block dropping in and stacking on every beat, an orbiting camera, four palettes
+  and an optional transparent background). The music is analysed once into keyframes, so playback never pays
+  for it and the export matches the preview.
+- **Your own visualizers**: any GLSL effect in your library that declares `level`, `band1`..`band6`, `beat`,
+  `beats` or `bpm` shows up as a style. Shaders may now have up to 14 controls.
+- **Now playing**: sound with no picture and no visualizer shows its cover art and title / artist (or the
+  music-note icon) in the Source and Program monitors. The Source monitor's visualizer style is pickable from
+  its right-click menu.
+
+### Chat, forum and video-comment threads
+- **Lists are tables now** (a rule for every list in the app): UI list/row layout: any vertical list of rows is laid out as a table with fixed, aligned columns [drag handle][arrow][label, fills and truncates][fixed value columns][fixed right-aligned controls]; controls never float after variable-length text; form fields use two aligned columns (labels at one x, inputs at one x); reorder = drag handle + up/down + Alt+Up/Down, one undo step; use the shared helper (`ui::list_rows`). The thread editor's messages, comments and cast follow it; drag a row's grip to reorder (replies move with their comment, and a horizontal move picks the nesting), Esc cancels.
+- **Messages only, DMs, typing and video comments**: a chat is now just the people messaging by default;
+  server rail, channel / conversation list, member list, top bar, header, message box, typing line, date
+  dividers, NEW line, scrollbar and a transparent background are each a switch, with Server channel / DM /
+  Group DM layouts. New **typing animation**: your messages type into the message box key by key (speed,
+  typos with backspace, caret), then send, while the others "are typing"; all CSS timing, frame-exact. New
+  **Video Comments** thread (comment box, comments, likes, hearts, pins, replies) whose comment can be typed,
+  the Comment button pressed (the fake mouse can aim at it) and posted. Six Gallery cards.
+- **Fake chat and forum threads** (Add ▸ Chat Thread / Forum Thread, the online library, or `thread.create`):
+  build a chat window or a forum post with nested comments from a list instead of HTML. Inspector ▸ Thread has
+  + Add message / comment / reply, move, duplicate, delete and fold per item; a cast of people with avatars
+  from your project, name colours and badges (change one and all their messages follow); reactions, embeds,
+  replies, system lines, typing indicator, six looks, themes, fonts and times; a script box that turns plain
+  lines into messages, and JSON import / export. Items arrive one after another with exact CSS timing (pop,
+  slide, fade, typing dots, vote counts counting up, pulse), the newest always in view. `thread.*` MCP tools.
+
+### HTML layers
+- **A fast, small renderer for HTML layers** (optional, 11 MB): the app can draw HTML layers with its
+  own helper (`se-html`: Blitz, no browser, no JavaScript) instead of Microsoft Edge: ~25 MB of memory
+  instead of ~700 MB, a picture in milliseconds, no Edge process to start. Inspector > HTML > Renderer:
+  **Auto** (default) uses it when it is installed and the layer only uses CSS it can draw, else Edge,
+  and says why ("uses a backdrop filter: rendering with Edge"); Fast and Edge force one. Nothing
+  downloads until you press **Install** on the card the Inspector shows (the helper lives in
+  `%APPDATA%\SimpleEditor\bin`, size and SHA-256 checked); Edge keeps working meanwhile and is the
+  fallback if the helper fails on a layer. Export, the timeline render, live preview, `html.check`,
+  hover and the fake mouse all go through it; web page snapshots are still taken by Edge (the page runs
+  scripts once) and drawn by the helper afterwards. New tools `html.renderer`, `html.helper`; the
+  library templates were rewritten where they needed CSS the helper cannot draw (same look).
+  `simple-editor.exe` itself does not grow by a byte of Blitz: the helper is its own program.
+- **Long HTML layers render many times faster**, always at the project's frame rate: several copies of
+  Edge share the work (up to 4), and frames where nothing moves are reused. A 60 s layer shows a still
+  at once, a draft of the whole layer within seconds, then the 10 s around the playhead at full rate
+  (`html_render_window_secs`), then the rest. Edge starts in the background when a project with HTML
+  layers opens, and its processes now always close with the app.
+- **Live preview**: the Inspector's new Preview and the HTML editor show the page itself running, so a
+  field, parameter or code change shows at once while the timeline's frame-exact render catches up. Each
+  has its own player: a time bar, play / pause, frame steps, start / end, loop, follow playhead, timecode
+  (Space, Left / Right, Home / End); `html.preview` sets it over MCP.
+- **More fields for HTML layers**: font (installed and the app's own fonts, previewed as you hover),
+  select, toggle, range / radius / size sliders, shadow and outline. The library templates use them for
+  font, corner radius, shadow and outline, with their look unchanged.
+- **Your project's files by name**: `<img src="logo.png">`, `<video src="clip.mp4">`, CSS
+  `url("bg.jpg")` find the project's file of that name; missing names are listed in the Inspector.
+  Videos inside a layer are frame-exact on the timeline and in exports.
+### Playback
+- **Buffer before playing**: when the frames just ahead of the playhead are not decoded yet (the first Play
+  after opening a project, after a seek, over 4K or stacked layers, effects not compiled yet), Play now waits
+  up to 3 seconds for the next second of picture and sound, shows "Buffering" over the Monitor, and starts by
+  itself, instead of stuttering with the audio running ahead. When it is ready Play starts at once as before.
+  Space cancels it. Settings > Performance > Buffer before playing turns it off.
+### Library
+- **Import a folder as a bin.** Drop a folder from Explorer on the window, click the folder button next to
+  **+ Import**, or use **File ▸ Import ▸ Import Folder as Bin…** (also in the command palette, the empty-spot
+  menu, and **Browse**'s right-click ▸ **Import folder as bin**). The folder becomes a bin named after it with
+  every video, audio and image file inside in natural name order; sub-folders become nested bins (8 levels).
+  Hidden/system files and unsupported types are skipped and counted in the toast ("Imported 84 files into
+  'SFX' (3 skipped)"), files already in the Library are reused, it runs in the background, asks above 500
+  files and is one Undo step. A numbered PNG run in a folder still bakes into one clip, filed in its bin.
+- MCP: new `media.import_folder` (`path`, `recursive`, `bin_name`, `extensions`); `media.import` also accepts
+  folders in `paths`.
+### My Gallery
+- **Save to Gallery…** (right-click a clip, an effect row in the Inspector, a transition or an empty spot in
+  the Gallery; also Clip menu and the `gallery.save` tool): keep your own effect stacks / single effects,
+  transitions (with duration and shader controls), looks, caption styles, speed ramps, keyframe animations,
+  titles and templates, HTML layers, shader effects, LUTs and sounds. They show in the matching Gallery tab
+  marked **M**, with a **Mine** filter; right-click one for Rename, Edit tags, Duplicate, Replace with
+  current, Open file location and Delete (to a `.trash` folder). The old save paths (`stills.save`,
+  `keyblocks.save`, `templates.save`, Save Template) now write the same files.
+- **Plain files you can share**: `%APPDATA%\SimpleEditor\gallery\<kind>\<name>.json` (a sound is the audio
+  file with a small `.json` beside it) and an `index.json` that is rebuilt from the files when missing. Items
+  that used to live in `settings.json` move there once. **Folder** and **Import…** buttons per tab; drop
+  files, folders or a `.zip` onto the Gallery to import; a taken name is numbered, never overwritten.
+- **Sounds tab**: your sound effects as cards with waveform and length, preview on hover, click to add at the
+  playhead, drag onto an audio track (or below the last track for a new one). Nothing is decoded at start-up.
+- New tools: `gallery.save`, `gallery.import`, `gallery.manage`, `gallery.reveal`; `gallery.list {mine}`;
+  `gallery.apply {tab: "Sounds", at, track}`.
+
+### Gallery
+- **One grid, one header, everywhere.** Every Gallery tab (Animate, Looks, Luts, Captions, Speed, Effects,
+  Transitions, Templates, Titles, Sounds, HTML, Icons, Skills) is a wrapping grid that fills the panel and
+  reflows when you resize it, with the tab strip and a search header pinned above it: one search box (names,
+  tags, descriptions; <kbd>Ctrl+F</kbd> over the pane focuses it, <kbd>Esc</kbd> clears it), **All / Built-in /
+  Mine / Installed / Online** chips, a category menu (effect categories, transition kinds, tags), a sort order
+  (Default, Name, Recent, Most used), the result count and an **S / M / L** card size.
+- **The online library is not a separate screen any more**, and nothing is fetched until you ask. The
+  "use online library or a folder" choice is gone: each tab shows the built-in cards, yours, what is installed
+  and, after you click **Browse online library** once (remembered), the online items - the small index only.
+  Clicking an online card downloads just that item (progress on the card) and uses it. **Use a folder** and
+  **Turn the online library off** moved to the tab's **⋯** menu. The Library panel no longer repeats the
+  Effects / Adjustment-layer lists the Gallery has.
+- New tool `gallery.connect`; `gallery.list` takes `source`, `query`, `category`, `sort` and `detail` (and
+  lists library items); `library.list` shows only installed items until the library is connected.
+- **Effects and Transitions are Gallery tabs now**; the separate Effects and Transitions panes are gone.
+  Each tab lists the built-in cards and the online library's (installed or not, cloud mark) in one grid under
+  one search. <kbd>Ctrl+3</kbd> / <kbd>Ctrl+4</kbd> open the Gallery on that tab. A saved layout, page or
+  profile that still has the old panes loads with one Gallery tab where they were; `layout.surface`,
+  `layout.pin` and `ui.screenshot` still accept the names "Effects" and "Transitions" (they mean the Gallery).
+  New tool `gallery.tab`; `gallery.apply` takes tab `Effects` and, for Transitions, `where`
+  (`start | end | connection | all`).
+- **Drag any Gallery card onto the timeline**: effects, looks, LUTs, caption styles, speed ramps and keyframe
+  blocks onto a clip (the whole selection when you drop on one of several selected clips); transitions onto a
+  cut or a clip edge (snaps to the nearest edge); templates, titles, HTML layers and icons onto an empty video
+  track or the lane below the last one. The target lights up while you drag, <kbd>Esc</kbd> cancels, a
+  library item that is not installed yet downloads first, and a click still just applies the card.
+- **Right-click a transition card**: Apply to Start, Apply to End, Apply to Connection (when the clip touches
+  another one) and Apply to All (with two or more clips selected). The length is never more than half of the
+  shorter clip it touches.
+- **Fixed: the Animate tab ran off the right edge in one row**, so most keyframe blocks could not be reached.
+  Every Gallery card now wraps to the pane's width and the pane scrolls down to the last row.
+- **Browser window layer** (Clip ▸ Add ▸ Add Browser Window, or Gallery ▸ Titles ▸ Browser Window):
+  everything on the tracks below shows inside a drawn browser window with tabs, an address bar, a load
+  bar, a shadow and a background. Looks: Light, Dark, Minimal, Mobile. Scroll and zoom the page with
+  keyframes; the address can type itself out; **Next page here** cuts the page and runs the load bar.
+- **Fake mouse** on the browser layer: arrow, hand and text pointers, click ripples, drags, wheel marks
+  and a keystroke overlay. **Record mouse** plays the timeline and turns your real mouse over the viewer
+  into a few editable keyframes and click marks (re-record any part); or click waypoints on the viewer.
+- **Import Web Page…** (Clip ▸ Add): a real page by address or from a saved `.mhtml` / `.html` file becomes a
+  real HTML layer under a browser layer (effects, masks and fields work on it), stored on your computer
+  with its scripts removed, with a map of its links and buttons. **Make editable** turns its headings
+  and labels into fields. **Sign in…** opens a browser profile kept only for Simple Editor so you can import a
+  page as you see it; the editor never sees your password.
+- **Scroll and zoom without blur**: scrolling and zooming a browser layer enlarge the page itself, and
+  **Sharpen zooms** redraws an imported page at exactly the zoom you rest on (crisp at 800 %).
+  **Zoom in ×2** zooms to where the mouse is.
+- **Go to it** and **Click and go**: the mouse finds a link or button by its text, eases onto it with a
+  slight overshoot, and one step clicks it and changes to the next page with a fade, a load bar and the
+  new address and tab title.
+- **Window zoom** on a browser layer: the whole browser and the mouse cursor zoom together, redrawn at the
+  zoomed size (`browser.animate {preset: "zoom_to", whole: true}`).
+- **Display ▸ Page only** on a browser layer: just the page, edge to edge, no window around it.
+- Fixed: a polygon mask on a clip was drawn in the wrong place in the preview (it was right in a nested
+  sequence and wrong everywhere else).
+- 7 new tools for scripts and the assistant, most with an `action` argument: `browser.add`, `browser.set` (read or
+  change), `browser.animate`, `browser.page` (fit, next, click_go, elements, sharpen, make_editable),
+  `browser.import` (import, jobs, sign_in), `cursor.set` (move_to, path, event, press, tidy, samples) and
+  `cursor.record` (start, stop).
+### Social guides, remade from the real apps
+- **Measured, not guessed.** Every platform's guide was re-made from its real logged-out web pages
+  (buttons, text sizes, bars, the comment sheets) and the platforms' own safe-zone documents, and stored
+  as one small data file with a "verified on" date and where it came from. New: YouTube long form (title
+  bar, controls, captions, watermark, end screens), Instagram post (4:5 and the 3:4 / 1:1 grid crops),
+  Facebook Reels, Snapchat Spotlight and X video, besides TikTok, Reels and Shorts.
+- **Three modes** (right-click the Preview > Social Guides): **Safe zone** (danger, caution and safe
+  areas with percentages, plus the phone's status bar and home indicator), **UI preview** (the app's
+  buttons as plain silhouettes with your profile filled in), and **Device preview**.
+- **Device preview**: your video inside a drawn iPhone, Android, small phone, tablet or desktop browser
+  with the app's UI on top. Click **Comments** and the sheet slides up while the video shrinks into the
+  part above it (where the app does that); click the caption, avatar, sound, Share or the three dots for the
+  other sheets; the progress bar follows the playhead. View only: it never changes the project or the export.
+- **Desktop player views**: with the Desktop browser device, YouTube long form shows its default, theatre and
+  fullscreen layouts (measured on the real site); click the control bar's buttons, press T / F (Esc leaves
+  fullscreen) or use Social Guides ▸ Player view, and the player glides between them.
+- The device is clipped to its rounded screen and body: no video, silhouette or sheet corner is drawn outside it.
+- **Worst case of all platforms**: one safe area for every vertical platform at once.
+- **Profiles** (Settings > Social): handle, name, picture, verified badge, followers, caption, hashtags,
+  sound, counts and sample comments, several per network. **Fetch from my public profile** reads the
+  public page's name, picture and follower text (no login, no cookies, only when you click, and it shows
+  exactly what it found before it applies anything).
+- **Updatable without a release**: drop a newer `guides.json` in `%APPDATA%\SimpleEditor\library\guides`, or
+  Settings > Social > Check the library for updated guides.
+- MCP: `guides.list`, `guides.set`, `guides.preview` (a picture of the device with a sheet open),
+  `profile.get`, `profile.set`, `profile.fetch`; `render.frame` and `render.contact_sheet` take `guide`.
+- Old settings load unchanged (the five old guide names map to their new platforms).
+
 ## 1.2.0
 
 The biggest release yet: an AI **Assistant** that edits your project while you watch, HTML + CSS

@@ -13,15 +13,19 @@
 <meta name="se:field" content="likes | text | 2.4K">
 <meta name="se:field" content="avatar | image | ">
 <meta name="se:field" content="accent | color | #3b82f6">
+<meta name="se:field" content="font | font | Segoe UI">
+<meta name="se:field" content="radius | radius | 26 | 0 | 120">
+<meta name="se:field" content="shadow | toggle | on | 0 18px 40px rgba(0, 0, 0, .32), 0 3px 8px rgba(0, 0, 0, .2) | none">
+<meta name="se:field" content="outline | outline | 0 #ffffff">
 <style>
   :root { --accent: {{accent}}; }
   html, body { margin: 0; background: transparent; overflow: hidden; }
   body { width: 100vw; height: 100vh; display: grid; place-items: center;
-    font-family: "Segoe UI", Arial, sans-serif; }
+    font-family: {{font}}; }
 
   .card { box-sizing: border-box; width: 820px; display: flex; gap: 20px; padding: 24px 30px 22px 24px;
-    background: #fff; color: #0f0f0f; border-radius: 26px;
-    box-shadow: 0 18px 40px rgba(0, 0, 0, .32), 0 3px 8px rgba(0, 0, 0, .2);
+    background: #fff; color: #0f0f0f; border-radius: {{radius}}; outline: {{outline}}; outline-offset: -1px;
+    box-shadow: {{shadow}};
     animation: up .65s cubic-bezier(.2, 1.25, .35, 1) both; }
   .avatar { position: relative; flex: none; width: 72px; height: 72px; border-radius: 50%; overflow: hidden;
     background: var(--accent); animation: avIn .45s cubic-bezier(.2, 1.6, .4, 1) .3s both; }

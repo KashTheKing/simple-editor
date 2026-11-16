@@ -22,6 +22,7 @@ fn asset(id: Id, dur: f64, streams: usize) -> Asset {
         range: None,
         effects: Vec::new(),
         html: None,
+        proxy: None,
     }
 }
 

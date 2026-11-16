@@ -128,6 +128,10 @@ pub struct TimelineState {
     pub scroll_y: f32,
     /// Width of the header column in points.
     pub header_w: f32,
+    /// A Gallery card being dragged over the lanes: how long the clip it would place is (seconds, for the
+    /// hover ghost), and the key of the payload it was measured for. Set by the app (`timeline_pane`).
+    pub drag_len: f64,
+    pub drag_key: String,
     /// Content rect (lanes area, excluding header & ruler) from the last frame - used by the app for file drops.
     pub lanes_rect: egui::Rect,
     /// Active move/trim gesture.
@@ -160,6 +164,8 @@ pub struct TimelineState {
     /// hatched; Delete closes it (`Project::close_gap_at`, ripple tracks only). Dropped by any clip
     /// click / band / Esc, and whenever it stops being a gap.
     pub gap_sel: Option<(usize, f64, f64)>,
+    /// Track ids selected by clicking their headers (Ctrl/Shift+click adds); Delete removes them.
+    pub sel_tracks: Vec<Id>,
     // ---- ws:pro-timeline ----
     /// Header inline-rename buffer: (track index, in-progress name). `header::draw_header` owns the
     /// TextEdit; commits on Enter, cancels on a click elsewhere.
@@ -193,6 +199,8 @@ impl Default for TimelineState {
             scroll_x: 0.0,
             scroll_y: 0.0,
             header_w: 150.0,
+            drag_len: 3.0,
+            drag_key: String::new(),
             lanes_rect: egui::Rect::NOTHING,
             drag: None,
             user_panned: false,
@@ -207,6 +215,7 @@ impl Default for TimelineState {
             mini_graph_open: Vec::new(),
             edit_point: None,
             gap_sel: None,
+            sel_tracks: Vec::new(),
             track_rename: None,
             view_idx: 0,
             rollers: Vec::new(),
@@ -360,6 +369,10 @@ pub struct TimelineResponse {
     /// Other dnd payloads (Sequence / Template / Effect / Transition) dropped on the lanes - the app
     /// places them; an Effect or a Transition goes onto the clip that contains the reported time.
     pub dropped_other: Vec<(DragPayload, f64, Option<usize>)>,
+    /// One entry per `dropped_other` one: where a Gallery card (`gallery_drop::drop_kind`) landed - the clip(s),
+    /// the cut or the track it resolved to. None for any other payload, or when the pointer was not on a
+    /// valid target (the app then says so instead of swallowing the gesture).
+    pub dropped_aims: Vec<Option<gallery_drop::Aim>>,
     /// Actions requested from the timeline's context menus (Retime, AddTransition, FreezeFrame, AutoCut, …).
     pub actions: Vec<crate::hotkeys::Action>,
     /// Container media replacement request - (clip id, pair mode).
@@ -459,6 +472,7 @@ enum Gesture {
 /// Enable / Add Track / container make-unmake push their Action instead, one code path each).
 enum Act {
     RemoveTrack(usize),
+    RemoveTracks(Vec<Id>),
     Mute(usize),
     Solo(usize),
     /// A library asset dropped at (time, track under the pointer); the `GestureKind` is `arm()`'s
@@ -495,6 +509,8 @@ enum Act {
     EaseBlock(Id, usize, Ease),
     DelBlock(Id, usize),
     RemoveTransition(Id),
+    /// "Save to Gallery…" on a transition band: select it, then ask the app for the dialog.
+    SaveTransition(Id),
     RemoveTransitions(Vec<Id>),
     /// Right-click quick-change: absolute-overwrite every listed transition's kind. Unlike
     /// `inspector.rs`'s `transition_section` (diff-against-first, only fields the user actually
@@ -534,6 +550,7 @@ enum Act {
 
 mod arm;
 mod cue_lane;
+pub(crate) mod gallery_drop;
 mod gestures;
 mod header;
 mod menus;
@@ -827,6 +844,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             &mut track_toggle,
             &mut state.track_rename,
             state.show_kinds,
+            &mut state.sel_tracks,
         ) {
             act = Some(a);
         }
@@ -870,6 +888,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             // ws:html-layer: a layer made from HTML source has its own colour, a </> mark and no filmstrip
             // (its picture is a cache of the code, not footage)
             let is_html = clip.uses_asset() && c.project.asset(clip.asset).is_some_and(|a| a.html.is_some());
+            let mut slow_tip: Option<(Rect, String)> = None;
             let mut color = label_color(c.project, clip_label, if is_html { HTML_CLIP } else { pal.clip_color(clip.kind) });
             if !clip.enabled || !active {
                 color = color.gamma_multiply(0.5);
@@ -967,8 +986,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 let pill = Rect::from_min_size(name_pos, vec2(25.0, 14.0));
                 name_pc.rect_filled(pill, CornerRadius::same(3), Color32::from_black_alpha(130));
                 name_pc.text(pill.center(), Align2::CENTER_CENTER, "</>", small.clone(), Color32::WHITE);
+                let mut text_x = pill.right() + 4.0;
+                // a ⚠ mark when the layer needs the slow, frame-by-frame render; hover says why
+                let why = c.project.asset(clip.asset).and_then(|a| a.html.as_ref()).map(crate::engine::html::slow_reasons);
+                if let Some(why) = why.filter(|w| !w.is_empty() && vis.width() > 60.0) {
+                    let mark = Rect::from_min_size(pos2(text_x, name_pos.y), vec2(16.0, 14.0));
+                    name_pc.rect_filled(mark, CornerRadius::same(3), Color32::from_rgb(196, 132, 20));
+                    name_pc.text(mark.center(), Align2::CENTER_CENTER, "!", small.clone(), Color32::BLACK);
+                    text_x = mark.right() + 4.0;
+                    let tip = format!(
+                        "Rendered frame by frame - may be slower to render\n\n{}\n\nPlayback is not affected once it is rendered.",
+                        why.iter().map(|w| format!("• {w}")).collect::<Vec<_>>().join("\n")
+                    );
+                    slow_tip = Some((mark, tip));
+                }
                 if c.view.clip_text {
-                    name_pc.text(pos2(pill.right() + 4.0, name_pos.y), Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
+                    name_pc.text(pos2(text_x, name_pos.y), Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
                 }
             } else if c.view.clip_text {
                 name_pc.text(name_pos, Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
@@ -1144,6 +1177,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             // Blade is on the toolbar now); with the Blade active a hairline shows where a click cuts.
             // The later marker_hits registration still wins hit-testing over it.
             let br = ui.interact(vis, cid, Sense::click_and_drag());
+            if let Some((mark, tip)) = slow_tip.take().filter(|(m, _)| br.hover_pos().is_some_and(|p| m.contains(p))) {
+                br.clone().on_hover_text(tip);
+            }
             if c.tool == Tool::Cut {
                 let br = br.clone().on_hover_cursor(CursorIcon::Crosshair);
                 if let Some(pos) = pointer.filter(|_| br.hovered()) {
@@ -1208,6 +1244,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 shared_effects: &shared_effects,
                 // ---- ws:html-layer ----
                 html: clip.uses_asset() && c.project.asset(clip.asset).is_some_and(|a| a.html.is_some()),
+                shape: clip.shape.is_some(),
+                // ---- ws:ai-enhancer ----
+                zoom: clip.scale.keys.iter().map(|k| k.v).fold(clip.scale.value, f64::max)
+                    * clip.scale_x.value.max(clip.scale_y.value),
             };
             let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();
@@ -1851,6 +1891,31 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     // here so the app's late Delete poll doesn't also fire; curves.rs claims Delete the same way.
     // ponytail: Backspace (Lift) and a hidden Timeline pane fall through to the app's
     // clip delete - route this through an ACT_HANDLERS entry if either ever matters.
+    // a click in the lanes leaves track selection; Delete on selected track headers removes them
+    // (a confirm first when any of them holds clips)
+    if lanes_resp.clicked() || lanes_resp.drag_started() {
+        state.sel_tracks.clear();
+    }
+    state.sel_tracks.retain(|id| c.project.tracks.iter().any(|t| t.id == *id));
+    if !state.sel_tracks.is_empty()
+        && !ui.ctx().wants_keyboard_input()
+        && ui.input_mut(|i| {
+            i.consume_key(egui::Modifiers::NONE, egui::Key::Delete) || i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+        })
+    {
+        let ids = std::mem::take(&mut state.sel_tracks);
+        let clips: usize = c.project.tracks.iter().filter(|t| ids.contains(&t.id)).map(|t| t.clips.len()).sum();
+        if clips == 0 {
+            act = Some(Act::RemoveTracks(ids));
+        } else {
+            let n = ids.len();
+            crate::ui::confirm::ask_app(
+                format!("Delete {n} track{}?", if n == 1 { "" } else { "s" }),
+                format!("{clips} clip{} on {} will be deleted too. You can undo this.", if clips == 1 { "" } else { "s" }, if n == 1 { "it" } else { "them" }),
+                move |app| app.delete_tracks(&ids),
+            );
+        }
+    }
     if let Some((ti, a, b)) = state.gap_sel {
         if !ui.ctx().wants_keyboard_input() && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete))
         {
@@ -1955,27 +2020,17 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     );
                 }
             }
-            // an effect lands on ONE clip and a transition on ONE cut, so they highlight what is under
-            // the pointer instead of a ghost clip that would lie about a duration
-            let target = match &*payload {
-                DragPayload::Effect(k) => drop_on_clip(state, c.project, pos, t)
-                    .filter(|(_, cl)| (cl.kind == ClipKind::Audio) == k.applies_to_audio())
-                    .map(|(r, _)| r),
-                DragPayload::KeyBlock(_) => drop_on_clip(state, c.project, pos, t).map(|(r, _)| r),
-                DragPayload::Transition(_) | DragPayload::ShaderTransition(_) => drop_on_clip(state, c.project, pos, t).map(|(r, cl)| {
-                    // the half you are over picks the cut (same rule the app applies on release)
-                    let x = if crate::ui::transitions_ui::drop_at_end(cl, t) { r.right() } else { r.left() };
-                    Rect::from_min_max(pos2(x - 6.0, r.top()), pos2(x + 6.0, r.bottom()))
-                }),
-                _ => None,
-            };
-            if let Some(hit) = target {
-                lp.rect_filled(hit, 0, pal.selection.gamma_multiply(0.35));
-                lp.rect_stroke(hit, 0, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
-            } else if !matches!(
-                &*payload,
-                DragPayload::Effect(_) | DragPayload::Transition(_) | DragPayload::ShaderTransition(_) | DragPayload::KeyBlock(_)
-            ) {
+            // a Gallery card lights what it would land on (clips / a cut / a ghost clip - see `gallery_drop`);
+            // anything else (media) shows the ghost clip of its length
+            let ti = state.track_at(pos.y, c.project);
+            let below = ti.is_none() && pos.y > gallery_drop::row_end(state, c.project) && pos.y <= lanes.bottom();
+            let thr = (gallery_drop::EDGE_PX / state.zoom) as f64;
+            if gallery_drop::drop_kind(&payload).is_some() {
+                let aim = gallery_drop::aim(c.project, c.selection, &payload, t, ti, below, thr);
+                if let Some(a) = aim {
+                    gallery_drop::paint(&lp, &pal, state, c.project, &a, state.drag_len);
+                }
+            } else {
                 let dur = match &*payload {
                     DragPayload::Asset(aid) => {
                         c.project.asset(*aid).map(|a| if a.kind == ClipKind::Image { 5.0 } else { a.duration })
@@ -1984,7 +2039,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     _ => None,
                 }
                 .unwrap_or(2.0);
-                let ti = state.track_at(pos.y, c.project).or_else(|| c.project.video_tracks().first().copied());
+                let ti = ti.or_else(|| c.project.video_tracks().first().copied());
                 if let Some((ti, top)) = ti.and_then(|ti| Some((ti, row_top(state, c.project, ti)?))) {
                     let h = c.project.tracks[ti].height;
                     let ghost =
@@ -2010,7 +2065,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     act = Some(Act::DropAsset(*aid, t, ti, kind));
                 }
                 DragPayload::Path(p) => out.dropped_files.push((PathBuf::from(p), t, ti)),
-                other => out.dropped_other.push((other.clone(), t, ti)),
+                other => {
+                    // (a Gallery card also reports where it resolved to - the same `aim` the hover lit)
+                    let below = ti.is_none() && pos.y > gallery_drop::row_end(state, c.project) && pos.y <= lanes.bottom();
+                    let thr = (gallery_drop::EDGE_PX / state.zoom) as f64;
+                    out.dropped_aims.push(gallery_drop::aim(c.project, c.selection, other, t, ti, below, thr));
+                    out.dropped_other.push((other.clone(), t, ti));
+                }
             }
         }
     }
@@ -2200,6 +2261,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 changed = c.library_selected.is_some_and(|aid| p.replace_clip(cid, aid));
             }
             Act::RemoveTrack(ti) => p.remove_track(ti),
+            Act::RemoveTracks(ids) => {
+                label = "Delete tracks";
+                remove_tracks(p, &ids);
+            }
             Act::Mute(ti) => p.tracks[ti].muted = !p.tracks[ti].muted,
             Act::Solo(ti) => p.tracks[ti].solo = !p.tracks[ti].solo,
             Act::DropAsset(aid, t, ti, kind) => {
@@ -2297,6 +2362,13 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         }
                     }
                 }
+            }
+            Act::SaveTransition(tid) => {
+                changed = false;
+                c.sel_transitions.clear();
+                c.sel_transitions.push(tid);
+                c.selection.clear();
+                out.actions.push(crate::hotkeys::Action::SaveToGallery);
             }
             Act::RemoveTransition(tid) => p.remove_transition(tid),
             Act::MoveTransition(tid, pos) => {
@@ -2483,4 +2555,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         }
     }
     out
+}
+
+/// Removes the tracks with these ids (clips and all), renaming the rest V1.. / A1...
+pub(crate) fn remove_tracks(p: &mut crate::model::Project, ids: &[Id]) {
+    while let Some(i) = p.tracks.iter().position(|t| ids.contains(&t.id)) {
+        p.remove_track(i);
+    }
 }

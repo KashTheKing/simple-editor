@@ -70,6 +70,9 @@ pub(super) fn transition_menu(ui: &mut egui::Ui, tr: &crate::model::Transition, 
         *act = Some(if many { Act::RemoveTransitions(sel.to_vec()) } else { Act::RemoveTransition(tr.id) });
     }
     ui.separator();
+    if menu::row(ui, None, "Save to Gallery…", "").clicked() {
+        *act = Some(Act::SaveTransition(tr.id));
+    }
     menu::sub(ui, Some(Glyph::Transition), "Change Type", |ui| {
         for k in TransitionKind::ALL {
             if menu::check(ui, k == tr.kind, k.name(), "").clicked() {
@@ -220,6 +223,12 @@ pub(super) struct ClipMenu<'a> {
     // ---- ws:html-layer ----
     /// The clip's asset is an HTML layer / scene.
     pub html: bool,
+    /// A shape clip: offers "Convert to HTML Layer".
+    pub shape: bool,
+    // ---- ws:ai-enhancer ----
+    /// The clip's largest zoom (scale × the larger axis factor, keys included): past
+    /// `enhance::OFFER_ZOOM` the AI Upscale entry says so (the zoom is where an upscale shows).
+    pub zoom: f64,
 }
 
 /// The clip body / edge right-click menu. Actions run on the selection (a right-click on an unselected
@@ -233,6 +242,12 @@ pub(super) fn clip_menu(
     edit_labels: &mut bool,
 ) {
     use Action::*;
+    // ---- ws:ai-enhancer ----
+    let upscalable = m.native_size && !m.sequence && !m.html;
+    let zoomed = m.zoom > crate::engine::enhance::OFFER_ZOOM;
+    let upscale_rows = |ui: &mut egui::Ui| {
+        acts(ui, &[Some(AiUpscale2Game), Some(AiUpscale2Real), Some(AiUpscale4Game), Some(AiUpscale4Real)])
+    };
     menu::scroll(ui, |ui| {
         acts(ui, &[Some(CutClips), Some(CopyClips), Some(PasteClips)]);
         menu::sub(ui, None, "Attributes", |ui| acts(ui, &[Some(CopyAttributes), Some(PasteAttributes)]));
@@ -250,6 +265,9 @@ pub(super) fn clip_menu(
                 }
                 if menu::row(ui, None, "Fit to Screen", "").clicked() {
                     *act = Some(Act::FitToScreen);
+                }
+                if upscalable && !zoomed {
+                    menu::sub(ui, None, "AI Upscale", upscale_rows);
                 }
             });
         }
@@ -285,6 +303,7 @@ pub(super) fn clip_menu(
                 }
                 acts(ui, &[Some(Normalize), Some(MatchLoudness), Some(AutoDuck), None]);
                 acts(ui, &[Some(DetectBeats), Some(SplitAtBeats), None, Some(AutoCut)]);
+                acts(ui, &[None, Some(AddAudioVisualizer)]); // ws:audio-visualizer
             });
         }
         menu::sub(ui, Some(Glyph::Sequence), "Nest", |ui| {
@@ -312,6 +331,11 @@ pub(super) fn clip_menu(
                 acts(ui, &[Some(TranscribeClip), Some(ViewTranscript), Some(ExportTranscript)])
             });
         }
+        // ---- ws:ai-enhancer ---- the optional Real-ESRGAN add-on (an action offers to install it first).
+        // Under Transform; a clip zoomed past OFFER_ZOOM gets it at the top level, where the zoom shows.
+        if upscalable && zoomed {
+            menu::sub(ui, None, &format!("AI Upscale — zoomed {:.1}×", m.zoom), upscale_rows);
+        }
         menu::sub(ui, Some(Glyph::Swatch), "Label", |ui| label_menu(ui, m.labels, act, edit_labels));
         // second way into the inline keyframe graph (the zoomed-in corner icon is the first)
         if let Some(open) = m.graph_open {
@@ -323,10 +347,13 @@ pub(super) fn clip_menu(
         if menu::item(ui, ReplaceWithLibrarySelection, m.library_selected.is_some()) {
             *act = Some(Act::ReplaceClip(m.id));
         }
-        acts(ui, &[None, Some(SaveTemplate)]);
+        acts(ui, &[None, Some(SaveToGallery), Some(SaveTemplate)]);
         // ---- ws:html-layer ----
         if m.html {
             acts(ui, &[Some(EditHtml), Some(SaveHtmlToLibrary)]);
+        }
+        if m.shape {
+            acts(ui, &[Some(ShapesToHtml)]);
         }
         // ---- ws:assistant-pane ---- (the right-click already selected the clip)
         crate::ui::assistant_ui::add_to_assistant_row(ui, crate::ui::assistant_data::Pin::Clips);

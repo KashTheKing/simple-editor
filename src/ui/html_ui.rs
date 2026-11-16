@@ -1,7 +1,7 @@
 //! ---- ws:html-layer ----
 //! The HTML editor window (same shape as the shader editor): the whole file on the left, a live
-//! preview on the right (rendered off the UI thread ~400 ms after typing stops; the old picture stays
-//! until the new one arrives), a scrub bar, the library rule findings and any render error, Apply,
+//! preview on the right (the page itself running in Edge, `html::live_show`: every keystroke, field and
+//! param shows at once; it plays in real time, or holds the scrub bar's moment), a scrub bar, the library rule findings and any render error, Apply,
 //! and an "Ask the assistant" box. Non-modal. Also the Inspector's "Fields" section of an HTML clip.
 //! Hand-offs to the app (`html_ctl` drains them each frame): which clip to open in the editor, and
 //! that a field value changed (re-render).
@@ -10,7 +10,6 @@ use crate::engine::html;
 use crate::model::{Id, Project};
 use eframe::egui;
 use std::cell::{Cell, RefCell};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 thread_local! {
@@ -55,14 +54,20 @@ pub fn take_edit_request() -> Option<Id> {
     EDIT.with(|e| e.borrow_mut().take())
 }
 
+/// ws:thread-viewers: a thread edit wants the layer rendered again.
+pub fn mark_edited() {
+    EDITED.with(|e| e.set(true));
+}
+
 /// A field value was changed in the Inspector since the last call.
 pub fn take_fields_edited() -> bool {
     EDITED.with(|e| e.replace(false))
 }
 
 /// What is wrong with a clip's source. The library's own rules (a `<title>`, `se:desc`, `se:tags` ...)
-/// only matter for a library item, so a plain imported page is not nagged about them.
-pub fn problems(src: &str) -> Vec<String> {
+/// only matter for a library item, so a plain imported page is not nagged about them. Files it names
+/// that the project does not have ("missing: image.png") are always listed. `base`: a linked file's folder.
+pub fn problems(src: &str, base: &str) -> Vec<String> {
     // a captured web page is a picture of a page: forms, inputs and network links in it are dropped or
     // left alone when it renders, so listing them would only be noise
     let page = html::parse(src).fullpage;
@@ -70,12 +75,300 @@ pub fn problems(src: &str) -> Vec<String> {
         .into_iter()
         .filter(|l| !l.starts_with("missing ") && !l.starts_with("contains <link>"))
         .filter(|l| !(page && (l.starts_with("contains a network URL") || l.ends_with("(not allowed)"))))
+        .chain(html::media_warnings(src, &[], base))
         .collect()
 }
 
-const DEBOUNCE: Duration = Duration::from_millis(400);
 /// The preview renders with its longer side at this many pixels.
 const PREVIEW_PX: f64 = 480.0;
+
+/// The live picture of a page in an egui texture, with a small player of its own: a time bar,
+/// play / pause, frame steps, start / end, loop, "follow the playhead", and a timecode. Held (the
+/// default) it shows exactly the moment the frame-exact renderer gives; playing, the page runs in real
+/// time from there. The request is built only when its inputs change (a web page can be a few hundred
+/// KB to prepare), the texture only when a new picture is in. Keys while it has focus: Space, Left /
+/// Right (a frame), Home / End.
+pub struct LivePreview {
+    /// Which live tab (`html::LIVE_INSPECTOR` / `LIVE_EDITOR`).
+    pub slot: usize,
+    key: u64,
+    page: Option<(String, (u32, u32), f64)>,
+    shown: Option<std::sync::Arc<crate::media::Frame>>,
+    tex: Option<egui::TextureHandle>,
+    /// The held moment (seconds of the layer), or where playing started.
+    pub t: f64,
+    pub playing: bool,
+    /// When playing started (wall clock).
+    started: Option<std::time::Instant>,
+    pub looping: bool,
+    /// Follow the timeline playhead (when it is over the clip).
+    pub follow: bool,
+    epoch: u64,
+    /// The picture shows the current request (false while a change is on its way).
+    pub current: bool,
+}
+
+impl Default for LivePreview {
+    fn default() -> Self {
+        LivePreview {
+            slot: html::LIVE_INSPECTOR,
+            key: 0,
+            page: None,
+            shown: None,
+            tex: None,
+            t: 0.0,
+            playing: false,
+            started: None,
+            looping: true,
+            follow: false,
+            epoch: 0,
+            current: false,
+        }
+    }
+}
+
+/// What a live preview shows.
+pub struct LiveInput<'a> {
+    pub src: &'a str,
+    pub fields: &'a [(String, String)],
+    pub base: &'a str,
+    pub width: u32,
+    pub params: &'a [(String, crate::model::Animated)],
+    pub duration: f64,
+    /// The project's frame rate (frame steps, timecode).
+    pub fps: f64,
+    /// The playhead in the layer's own time when it is over the clip (for "follow playhead"); None in
+    /// the editor window or when the playhead is elsewhere.
+    pub playhead: Option<f64>,
+    /// The layer's Renderer setting and its fake mouse (the fast renderer applies hover from it).
+    pub renderer: crate::model::HtmlRenderer,
+    pub mouse: Option<&'a crate::model::Mouse>,
+}
+
+/// `t` seconds as HH:MM:SS:FF and the frame number, at `fps`.
+pub fn timecode(t: f64, fps: f64) -> (String, i64) {
+    let fps = if fps > 0.0 { fps } else { 30.0 };
+    let f = (t.max(0.0) * fps).round() as i64;
+    let per = fps.round().max(1.0) as i64;
+    let (s, ff) = (f / per, f % per);
+    (format!("{:02}:{:02}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60, ff), f)
+}
+
+impl LivePreview {
+    pub fn for_slot(slot: usize) -> Self {
+        LivePreview { slot, ..Default::default() }
+    }
+
+    /// The moment on screen now (the held one, or where real-time playback has got to).
+    pub fn now(&self, duration: f64) -> f64 {
+        let d = duration.max(0.01);
+        match (self.playing, self.started) {
+            (true, Some(at)) => {
+                let e = self.t + at.elapsed().as_secs_f64();
+                if !self.looping {
+                    e.min(d)
+                } else if e < d {
+                    e
+                } else {
+                    (e - d) % d
+                }
+            }
+            _ => self.t.clamp(0.0, d),
+        }
+    }
+
+    /// Hold `t` (a seek, a step, the bar): paused, as the user expects after picking a moment.
+    pub fn hold(&mut self, t: f64, duration: f64) {
+        self.t = t.clamp(0.0, duration.max(0.0));
+        self.playing = false;
+        self.started = None;
+        self.epoch += 1;
+    }
+
+    /// Play from the moment on screen.
+    pub fn play(&mut self, duration: f64) {
+        let mut t = self.now(duration);
+        if t >= duration - 1e-6 {
+            t = 0.0; // at the end: from the start
+        }
+        self.t = t;
+        self.playing = true;
+        self.started = Some(std::time::Instant::now());
+        self.epoch += 1;
+    }
+
+    pub fn toggle(&mut self, duration: f64) {
+        if self.playing {
+            let t = self.now(duration);
+            self.hold(t, duration);
+        } else {
+            self.play(duration);
+        }
+    }
+
+    /// Picture, time bar and buttons. Never blocks; repaints come from new pictures (and the clock
+    /// while playing) only.
+    pub fn show(&mut self, ui: &mut egui::Ui, height: f32, inp: &LiveInput) {
+        use std::hash::{Hash, Hasher};
+        let d = inp.duration.max(0.01);
+        let step = 1.0 / if inp.fps > 0.0 { inp.fps } else { 30.0 };
+        if self.follow {
+            if let Some(p) = inp.playhead {
+                if self.playing || (p - self.t).abs() > 1e-9 {
+                    self.hold(p, d);
+                }
+            }
+        }
+        // a non-looping run that reached the end holds there
+        if self.playing && !self.looping && self.now(d) >= d {
+            self.hold(d, d);
+        }
+        let mut h = std::hash::DefaultHasher::new();
+        (inp.src, inp.fields, inp.base, inp.width).hash(&mut h);
+        let key = h.finish();
+        if self.key != key || self.page.is_none() {
+            let (tpl, page) = html::prepare_in(inp.src, inp.fields, inp.base);
+            let size = if inp.width > 0 { (inp.width.clamp(2, 3840), tpl.size.1) } else { tpl.size };
+            let scale = (PREVIEW_PX / size.0.max(size.1) as f64).min(1.0);
+            if self.page.is_some() && self.playing {
+                self.play(d); // an edit while playing goes on from where it is, not from the start
+            }
+            self.page = Some((page, size, scale));
+            self.key = key;
+        }
+        // the picture
+        let w = ui.available_width();
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, height), egui::Sense::click());
+        if resp.clicked() {
+            resp.request_focus();
+        }
+        if resp.double_clicked() {
+            self.toggle(d);
+        }
+        if resp.has_focus() {
+            let (space, left, right, home, end) = ui.input_mut(|i| {
+                let k = |i: &mut egui::InputState, key| i.consume_key(egui::Modifiers::NONE, key);
+                (k(i, egui::Key::Space), k(i, egui::Key::ArrowLeft), k(i, egui::Key::ArrowRight), k(i, egui::Key::Home), k(i, egui::Key::End))
+            });
+            let now = self.now(d);
+            if space {
+                self.toggle(d);
+            } else if left {
+                self.hold(now - step, d);
+            } else if right {
+                self.hold(now + step, d);
+            } else if home {
+                self.hold(0.0, d);
+            } else if end {
+                self.hold(d - step, d);
+            }
+        }
+        if let Some((page, size, scale)) = &self.page {
+            let params = html::param_values(inp.src, inp.params, self.now(d));
+            let fast = crate::engine::blitz::choose(inp.renderer, inp.src).engine == crate::engine::blitz::Engine::Blitz;
+            let req = html::LiveReq {
+                page: page.clone(),
+                size: *size,
+                scale: *scale,
+                // playing, params hold their value at the start (a keyframed one moves when held / stepped)
+                params,
+                at: self.t,
+                playing: self.playing,
+                looping: self.looping,
+                epoch: self.epoch,
+                duration: d,
+                fast,
+                base: inp.base.to_string(),
+                src_key: crate::engine::blitz::source_key(inp.src),
+                ptr: inp.mouse.map(|m| m.state(self.t)),
+            };
+            let ctx = ui.ctx().clone();
+            if let Some((f, current)) = html::live_show(self.slot, req, move || ctx.request_repaint()) {
+                self.current = current;
+                if !self.shown.as_ref().is_some_and(|s| std::sync::Arc::ptr_eq(s, &f)) {
+                    let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
+                    match &mut self.tex {
+                        Some(t) => t.set(img, egui::TextureOptions::LINEAR),
+                        None => self.tex = Some(ui.ctx().load_texture("html_live", img, egui::TextureOptions::LINEAR)),
+                    }
+                    self.shown = Some(f);
+                }
+            }
+        }
+        checker(ui.painter(), rect);
+        if let Some(t) = &self.tex {
+            let [tw, th] = t.size().map(|v| v as f32);
+            let k = (rect.width() / tw).min(rect.height() / th);
+            let r = egui::Rect::from_center_size(rect.center(), egui::vec2(tw * k, th * k));
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            ui.painter().image(t.id(), r, uv, egui::Color32::WHITE);
+        }
+        if resp.has_focus() {
+            ui.painter().rect_stroke(rect, 2.0, ui.visuals().selection.stroke, egui::StrokeKind::Inside);
+        }
+        // the time bar: click or drag to hold a moment
+        let now = self.now(d);
+        let (bar, br) = ui.allocate_exact_size(egui::vec2(w, 12.0), egui::Sense::click_and_drag());
+        let pal = ui.visuals();
+        ui.painter().rect_filled(bar.shrink2(egui::vec2(0.0, 3.0)), 3.0, pal.widgets.inactive.bg_fill);
+        let x = bar.left() + bar.width() * (now / d) as f32;
+        let filled = egui::Rect::from_min_max(bar.left_top() + egui::vec2(0.0, 3.0), egui::pos2(x, bar.bottom() - 3.0));
+        ui.painter().rect_filled(filled, 3.0, pal.selection.bg_fill);
+        ui.painter().circle_filled(egui::pos2(x, bar.center().y), 5.0, pal.strong_text_color());
+        if let Some(p) = br.interact_pointer_pos().filter(|_| br.clicked() || br.dragged()) {
+            let f = ((p.x - bar.left()) / bar.width().max(1.0)).clamp(0.0, 1.0) as f64;
+            let t = (f * d / step).round() * step; // on a frame
+            self.hold(t, d);
+            self.follow = false;
+        }
+        // the buttons and the readout
+        ui.horizontal(|ui| {
+            let b = |ui: &mut egui::Ui, text: &str, tip: &str| ui.small_button(text).on_hover_text(tip).clicked();
+            if b(ui, "⏮", "Start (Home)") {
+                self.hold(0.0, d);
+            }
+            if b(ui, "◀", "Previous frame (Left)") {
+                self.hold(now - step, d);
+            }
+            if b(ui, if self.playing { "⏸" } else { "▶" }, "Play / pause (Space)") {
+                self.toggle(d);
+            }
+            if b(ui, "▶|", "Next frame (Right)") {
+                self.hold(now + step, d);
+            }
+            if b(ui, "⏭", "End (End)") {
+                self.hold(d - step, d);
+            }
+            if ui.selectable_label(self.looping, "⟲").on_hover_text("Loop").clicked() {
+                self.looping = !self.looping;
+                self.epoch += 1;
+            }
+            if inp.playhead.is_some() || self.follow {
+                ui.checkbox(&mut self.follow, "Follow playhead")
+                    .on_hover_text("Show the moment under the timeline playhead");
+            }
+            let (tc, f) = timecode(now, inp.fps);
+            ui.weak(format!("{tc} · frame {f}"));
+        });
+        if self.playing {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33)); // the clock, the bar
+        }
+    }
+}
+
+/// A grey checkerboard (what "transparent" looks like in an editor).
+fn checker(p: &egui::Painter, rect: egui::Rect) {
+    p.rect_filled(rect, 2.0, egui::Color32::from_rgb(0x2b, 0x2f, 0x3a));
+    let s = 12.0;
+    let (nx, ny) = ((rect.width() / s).ceil() as i32, (rect.height() / s).ceil() as i32);
+    for y in 0..ny {
+        for x in (y % 2..nx).step_by(2) {
+            let min = rect.min + egui::vec2(x as f32 * s, y as f32 * s);
+            let r = egui::Rect::from_min_size(min, egui::vec2(s, s)).intersect(rect);
+            p.rect_filled(r, 0.0, egui::Color32::from_rgb(0x36, 0x3b, 0x48));
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct HtmlUi {
@@ -89,6 +382,7 @@ pub struct HtmlUi {
     /// The layout width (0 = the template's).
     pub width: u32,
     pub mouse: Option<crate::model::Mouse>,
+    pub renderer: crate::model::HtmlRenderer,
     /// The page's param tracks (the preview shows them at the scrub time).
     pub params: crate::engine::html::Params,
     /// The clip being edited.
@@ -101,10 +395,9 @@ pub struct HtmlUi {
     pub lint: Vec<String>,
     pub error: String,
     pub ask: String,
-    /// When the preview should be rendered next; None = up to date.
-    due: Option<Instant>,
-    job: Option<mpsc::Receiver<Result<crate::media::Frame, String>>>,
-    tex: Option<egui::TextureHandle>,
+    /// The project's frame rate (the preview's frame steps).
+    pub fps: f64,
+    pub(crate) live: LivePreview,
 }
 
 impl HtmlUi {
@@ -117,60 +410,15 @@ impl HtmlUi {
         self.fields = fields;
         self.duration = if duration > 0.0 { duration } else { tpl.duration };
         self.t = tpl.thumb_at().min(self.duration);
-        self.lint = problems(src);
+        if self.live.slot != html::LIVE_EDITOR {
+            self.live = LivePreview::for_slot(html::LIVE_EDITOR);
+        }
+        let t = self.t;
+        self.live.hold(t, self.duration);
+        self.lint = problems(src, &self.base);
         self.error.clear();
-        self.due = Some(Instant::now());
     }
 
-    /// Start the preview render if one is due and none is running.
-    fn kick(&mut self, ctx: &egui::Context) {
-        if self.job.is_some() || self.due.is_none_or(|d| d > Instant::now()) {
-            return;
-        }
-        self.due = None;
-        let (tx, rx) = mpsc::channel();
-        let (src, fields, t, ctx, base, params, width, mouse) = (
-            self.src.clone(),
-            self.fields.clone(),
-            self.t,
-            ctx.clone(),
-            self.base.clone(),
-            self.params.clone(),
-            self.width,
-            self.mouse.clone(),
-        );
-        let size = html::parse(&src).size;
-        let scale = (PREVIEW_PX / size.0.max(size.1) as f64).min(1.0);
-        let spawned = std::thread::Builder::new().name("html-preview".into()).spawn(move || {
-            let _ = tx.send(html::render_frame_in(&src, &fields, scale, t, &html::View { base: &base, params: &params, width, mouse: mouse.as_ref() }));
-            ctx.request_repaint();
-        });
-        match spawned {
-            Ok(_) => self.job = Some(rx),
-            Err(e) => self.error = e.to_string(),
-        }
-    }
-
-    fn poll(&mut self, ctx: &egui::Context) {
-        let Some(rx) = &self.job else { return };
-        match rx.try_recv() {
-            Ok(Ok(f)) => {
-                let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
-                match &mut self.tex {
-                    Some(t) => t.set(img, egui::TextureOptions::LINEAR),
-                    None => self.tex = Some(ctx.load_texture("html_preview", img, egui::TextureOptions::LINEAR)),
-                }
-                self.error.clear();
-                self.job = None;
-            }
-            Ok(Err(e)) => {
-                self.error = e;
-                self.job = None;
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
-            Err(mpsc::TryRecvError::Disconnected) => self.job = None,
-        }
-    }
 }
 
 /// What the window asks the app to do this frame.
@@ -188,8 +436,6 @@ pub fn show(ctx: &egui::Context, st: &mut HtmlUi) -> EditorResponse {
         st.placed = false;
         return resp;
     }
-    st.poll(ctx);
-    st.kick(ctx);
     // a real window of its own: resize it, maximise it, drag it to another monitor, F11 for full screen
     let mut builder = egui::ViewportBuilder::default()
         .with_title(format!("HTML Editor - {}", if st.name.is_empty() { "layer" } else { &st.name }))
@@ -205,13 +451,6 @@ pub fn show(ctx: &egui::Context, st: &mut HtmlUi) -> EditorResponse {
     });
     if close {
         st.open = false;
-    }
-    if !st.open {
-        st.due = None; // a closed window renders nothing more (a running render just finishes)
-    } else if st.job.is_none() {
-        if let Some(d) = st.due {
-            ctx.request_repaint_after(d.saturating_duration_since(Instant::now()));
-        }
     }
     resp
 }
@@ -241,8 +480,7 @@ fn body(ui: &mut egui::Ui, st: &mut HtmlUi, resp: &mut EditorResponse) {
             egui::ScrollArea::both().id_salt("html_src").show(ui, |ui| {
                 let r = crate::ui::html_code::code_edit(ui, egui::Id::new("html_editor_source"), &mut st.src, rows);
                 if r.changed() {
-                    st.due = Some(Instant::now() + DEBOUNCE);
-                    st.lint = problems(&st.src);
+                    st.lint = problems(&st.src, &st.base);
                 }
             });
         }
@@ -250,25 +488,23 @@ fn body(ui: &mut egui::Ui, st: &mut HtmlUi, resp: &mut EditorResponse) {
         let ui = &mut cols[1];
         ui.horizontal(|ui| {
             resp.apply = ui.button("Apply").on_hover_text("Use this source for the clip and render it").clicked();
-            if st.job.is_some() || st.due.is_some() {
-                ui.spinner();
-            }
         });
         let w = ui.available_width();
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(w, w * 9.0 / 16.0), egui::Sense::hover());
-        ui.painter().rect_filled(rect, 2.0, egui::Color32::from_rgb(0x2b, 0x2f, 0x3a));
-        if let Some(t) = &st.tex {
-            let [tw, th] = t.size().map(|v| v as f32);
-            let k = (rect.width() / tw).min(rect.height() / th);
-            let r = egui::Rect::from_center_size(rect.center(), egui::vec2(tw * k, th * k));
-            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            ui.painter().image(t.id(), r, uv, egui::Color32::WHITE);
-        }
-        let max = st.duration.max(0.1);
-        let r = ui.add(egui::Slider::new(&mut st.t, 0.0..=max).suffix(" s").text("time"));
-        if r.changed() {
-            st.due = Some(Instant::now()); // as soon as the running render is done
-        }
+        let src = st.src.clone();
+        let inp = LiveInput {
+            src: &src,
+            fields: &st.fields,
+            base: &st.base,
+            width: st.width,
+            params: &st.params,
+            duration: st.duration,
+            fps: st.fps,
+            playhead: None,
+            renderer: st.renderer,
+            mouse: st.mouse.as_ref(),
+        };
+        st.live.show(ui, w * 9.0 / 16.0, &inp);
+        st.t = st.live.now(st.duration);
         if !st.error.is_empty() {
             ui.colored_label(ui.visuals().error_fg_color, &st.error);
         }
@@ -299,7 +535,7 @@ fn body(ui: &mut egui::Ui, st: &mut HtmlUi, resp: &mut EditorResponse) {
 // ---------------------------------------------------------------------------------------------------
 // the Inspector's Fields section
 
-fn hex_rgba(s: &str) -> [u8; 4] {
+pub(crate) fn hex_rgba(s: &str) -> [u8; 4] {
     let h = s.trim().trim_start_matches('#');
     let d = |i: usize, n: usize| u8::from_str_radix(h.get(i..i + n).unwrap_or("0"), 16).unwrap_or(0);
     match h.len() {
@@ -312,7 +548,7 @@ fn hex_rgba(s: &str) -> [u8; 4] {
     }
 }
 
-fn rgba_hex(c: [u8; 4]) -> String {
+pub(crate) fn rgba_hex(c: [u8; 4]) -> String {
     match c[3] {
         255 => format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]),
         a => format!("#{:02x}{:02x}{:02x}{a:02x}", c[0], c[1], c[2]),
@@ -538,7 +774,7 @@ Save in your code editor and the clip updates; edit here and the file follows.",
     let lint = match ui.data(|d| d.get_temp::<(u64, Vec<String>)>(lid)) {
         Some((k, l)) if k == key => l,
         _ => {
-            let l = problems(&src);
+            let l = problems(&src, &h.file.rsplit_once(['\\', '/']).map(|(d, _)| d.to_string()).unwrap_or_default());
             ui.data_mut(|d| d.insert_temp(lid, (key, l.clone())));
             l
         }
@@ -546,6 +782,7 @@ Save in your code editor and the clip updates; edit here and the file follows.",
     for l in lint.iter().take(3) {
         ui.colored_label(ui.visuals().warn_fg_color, l);
     }
+    let renderer_changed = renderer_row(ui, clip, h.renderer, &src, key);
 
     // ask the assistant about this clip
     let aid_ask = ui.make_persistent_id(("html_ask", clip));
@@ -561,6 +798,14 @@ Save in your code editor and the clip updates; edit here and the file follows.",
     });
     ui.data_mut(|d| d.insert_temp(aid_ask, ask));
 
+    if let Some(r) = renderer_changed.filter(|r| *r != h.renderer) {
+        undo(project);
+        if let Some(x) = project.asset_mut(aid).and_then(|a| a.html.as_mut()) {
+            x.renderer = r;
+        }
+        EDITED.with(|e| e.set(true));
+        return true;
+    }
     if let Some(w) = width_changed.filter(|w| *w != h.width) {
         undo(project);
         if let Some(x) = project.asset_mut(aid).and_then(|a| a.html.as_mut()) {
@@ -585,6 +830,59 @@ Save in your code editor and the clip updates; edit here and the file follows.",
     }
     EDITED.with(|e| e.set(true));
     true
+}
+
+/// The Renderer row of the Inspector's HTML section: the setting, what draws the layer now and why, and
+/// (when the fast renderer is not installed) the one-click install card. Returns a new setting if picked.
+/// Nothing here starts a process or touches the network: the decision is `engine::blitz::choose`, and the
+/// download only starts from the button.
+fn renderer_row(ui: &mut egui::Ui, clip: Id, current: crate::model::HtmlRenderer, src: &str, key: u64) -> Option<crate::model::HtmlRenderer> {
+    use crate::engine::blitz;
+    use crate::model::HtmlRenderer as R;
+    let mut picked = None;
+    // the lint scan reads the whole source: once per change of the text / setting / install state
+    let installed = blitz::available();
+    let cid = ui.make_persistent_id(("html_renderer_choice", clip));
+    let c = match ui.data(|d| d.get_temp::<(u64, crate::model::HtmlRenderer, bool, blitz::Choice)>(cid)) {
+        Some((k, r, i, c)) if k == key && r == current && i == installed => c,
+        _ => {
+            let c = blitz::choose_with(current, src, installed);
+            ui.data_mut(|d| d.insert_temp(cid, (key, current, installed, c.clone())));
+            c
+        }
+    };
+    ui.horizontal(|ui| {
+        ui.label("Renderer");
+        let mut r = current;
+        egui::ComboBox::from_id_salt(("html_renderer", clip)).selected_text(current.label()).show_ui(ui, |ui| {
+            for v in [R::Auto, R::Blitz, R::Edge] {
+                ui.selectable_value(&mut r, v, v.label());
+            }
+        })
+        .response
+        .on_hover_text("Auto: the fast built-in renderer when it can draw this layer, else Edge. The fast one uses ~25 MB instead of ~700 MB and starts instantly.");
+        if r != current {
+            picked = Some(r);
+        }
+        ui.weak(if c.engine == blitz::Engine::Blitz { "drawn by the fast renderer" } else { "drawn by Edge" });
+    });
+    if let Some(why) = &c.reason {
+        ui.colored_label(ui.visuals().warn_fg_color, why);
+    }
+    if !blitz::available() && current != R::Edge {
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label("Install the fast HTML renderer (about 11 MB)");
+                if blitz::installing() {
+                    ui.add(egui::Spinner::new());
+                    ui.weak("installing, see Jobs");
+                } else if ui.button("Install").on_hover_text("Downloads it from the library once; until then layers are drawn with Edge").clicked() {
+                    blitz::start_install();
+                }
+            });
+        });
+    }
+    picked
 }
 
 /// Keys for one click at `at`: the button goes down and, 0.18 s later, up (a step: it holds each value).
@@ -718,9 +1016,106 @@ pub fn params_section(
     true
 }
 
+/// The font under the pointer in an open font list: (clip, field, family). The Inspector preview shows
+/// it until the pointer leaves the list.
+struct HoverFont(Cell<Option<(Id, String, String)>>);
+
+impl HoverFont {
+    fn set(&self, v: Option<(Id, String, String)>) {
+        let old = self.0.take();
+        self.0.set(v.or(old));
+    }
+    fn get(&self) -> Option<(Id, String, String)> {
+        let v = self.0.take();
+        self.0.set(v.clone());
+        v
+    }
+    fn clear_field(&self, clip: Id, field: &str) {
+        let v = self.0.take();
+        self.0.set(v.filter(|(c, f, _)| !(*c == clip && f == field)));
+    }
+    /// Another clip's Fields are drawn: its hover is gone.
+    fn set_if_some_differs(&self, clip: Id) {
+        let v = self.0.take();
+        self.0.set(v.filter(|(c, _, _)| *c == clip));
+    }
+}
+
+thread_local! {
+    static HOVER_FONT: HoverFont = const { HoverFont(Cell::new(None)) };
+    static INSPECTOR_LIVE: RefCell<LivePreview> = RefCell::new(LivePreview::for_slot(html::LIVE_INSPECTOR));
+    /// `html.preview` asks: (clip, hold this second, play / pause).
+    static PREVIEW_ASK: RefCell<Option<(Id, Option<f64>, Option<bool>)>> = const { RefCell::new(None) };
+    /// The Inspector preview's state as last drawn: (clip, time, playing).
+    static PREVIEW_STATE: Cell<Option<(Id, f64, bool)>> = const { Cell::new(None) };
+}
+
+/// `html.preview`: set the Inspector preview of `clip` (shown when the clip is selected).
+pub fn ask_preview(clip: Id, t: Option<f64>, playing: Option<bool>) {
+    PREVIEW_ASK.with(|a| *a.borrow_mut() = Some((clip, t, playing)));
+}
+
+/// The Inspector preview's (clip, time, playing) as last drawn.
+pub fn preview_state() -> Option<(Id, f64, bool)> {
+    PREVIEW_STATE.with(Cell::get)
+}
+
+/// The Inspector's live preview of an HTML clip: the page itself, so a field or param edit shows at
+/// once while the frame-exact render (what the timeline and export use) catches up. `at`: the clip's own
+/// time under the playhead (held there, the same moment the timeline shows); None = play live.
+pub fn live_section(ui: &mut egui::Ui, project: &Project, clip: Id, at: Option<f64>) {
+    let fps = if project.fps > 0.0 { project.fps } else { 30.0 };
+    let Some(a) = project.clip(clip).and_then(|c| project.asset(c.asset)) else { return };
+    let Some(h) = a.html.as_ref() else { return };
+    let tpl = template_of(a.id, &h.src);
+    let base = std::path::Path::new(&h.file).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    let (mut fields, params) = (h.field_list(), html::params_of(&h.src, &h.params));
+    if let Some((_, f, fam)) = HOVER_FONT.with(HoverFont::get).filter(|(c, _, _)| *c == clip) {
+        fields.retain(|(k, _)| *k != f);
+        fields.push((f, fam));
+    }
+    let w = ui.available_width();
+    let (sw, sh) = (tpl.size.0.max(1) as f32, tpl.size.1.max(1) as f32);
+    let hgt = (w * sh / sw).clamp(60.0, 240.0);
+    let d = h.duration;
+    let inp = LiveInput { src: &h.src, fields: &fields, base: &base, width: h.width, params: &params, duration: d, fps, playhead: at, renderer: h.renderer, mouse: h.mouse.as_ref() };
+    INSPECTOR_LIVE.with(|l| {
+        let mut l = l.borrow_mut();
+        if PREVIEW_STATE.with(Cell::get).map(|s| s.0) != Some(clip) {
+            // another clip: start on its representative moment, held
+            l.hold(tpl.thumb_at().min(d), d);
+            l.follow = false;
+        }
+        if let Some((c, t, play)) = PREVIEW_ASK.with(|a| a.borrow_mut().take_if(|x| x.0 == clip)) {
+            debug_assert_eq!(c, clip);
+            if let Some(t) = t {
+                l.hold(t, d);
+                l.follow = false;
+            }
+            match play {
+                Some(true) if !l.playing => l.play(d),
+                Some(false) if l.playing => {
+                    let now = l.now(d);
+                    l.hold(now, d);
+                }
+                _ => {}
+            }
+        }
+        l.show(ui, hgt, &inp);
+        PREVIEW_STATE.with(|s| s.set(Some((clip, l.now(d), l.playing))));
+    });
+}
+
 /// One control per `se:field` of the clip's template, plus "Edit HTML…". One undo step per committed
 /// change; the re-render is the app's (`take_fields_edited`). True when the project changed.
-pub fn fields_section(ui: &mut egui::Ui, project: &mut Project, clip: Id, undo: &mut dyn FnMut(&Project)) -> bool {
+pub fn fields_section(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    clip: Id,
+    fonts: &[String],
+    undo: &mut dyn FnMut(&Project),
+) -> bool {
+    HOVER_FONT.with(|h| h.set_if_some_differs(clip));
     let Some(aid) = project.clip(clip).map(|c| c.asset) else { return false };
     let Some(h) = project.asset(aid).and_then(|a| a.html.clone()) else { return false };
     let tpl = template_of(aid, &h.src);
@@ -751,17 +1146,96 @@ pub fn fields_section(ui: &mut egui::Ui, project: &mut Project, clip: Id, undo: 
                         vals.insert(name, rgba_hex(c));
                     }
                 }
-                html::FieldType::Number => {
-                    let mut n = cur.trim().parse::<f64>().unwrap_or(0.0);
-                    let mut dv = egui::DragValue::new(&mut n);
-                    if let (Some(a), Some(b)) = (f.min, f.max) {
-                        dv = dv.range(a..=b).speed(((b - a) / 300.0).max(0.01));
-                    }
-                    let r = ui.add(dv);
+                html::FieldType::Number | html::FieldType::Range | html::FieldType::Radius | html::FieldType::Size => {
+                    let mut n = cur.trim().trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%').parse::<f64>().unwrap_or(0.0);
+                    let unit = f.unit();
+                    let r = match (f.ty, f.bounds()) {
+                        // a range kind with bounds: a slider (with its own number box)
+                        (t, (Some(a), Some(b))) if t != html::FieldType::Number && a < b => {
+                            let mut sl = egui::Slider::new(&mut n, a..=b).suffix(unit.clone());
+                            if f.step() > 0.0 {
+                                sl = sl.step_by(f.step());
+                            }
+                            ui.add(sl)
+                        }
+                        (_, (lo, hi)) => {
+                            let mut dv = egui::DragValue::new(&mut n).suffix(unit.clone());
+                            if let (Some(a), Some(b)) = (lo, hi) {
+                                dv = dv.range(a..=b).speed(((b - a) / 300.0).max(0.01));
+                            }
+                            ui.add(dv)
+                        }
+                    };
                     g.note(&r);
                     if r.changed() {
-                        vals.insert(name, html::field_value(f, &[(f.name.clone(), n.to_string())]));
+                        // stored as the number; the unit is the template's
+                        let v = html::field_value(f, &[(f.name.clone(), n.to_string())]);
+                        vals.insert(name, v.trim_end_matches(unit.as_str()).to_string());
                     }
+                }
+                html::FieldType::Font => {
+                    let mut pick: Option<String> = None;
+                    let r = egui::ComboBox::from_id_salt(("html_font", clip, &f.name)).selected_text(cur.clone()).height(320.0).show_ui(ui, |ui| {
+                        if fonts.is_empty() {
+                            ui.weak("Loading fonts…");
+                        }
+                        if !fonts.iter().any(|x| *x == cur) {
+                            let _ = ui.selectable_label(true, cur.as_str());
+                        }
+                        for fam in fonts {
+                            let r = ui.selectable_label(*fam == cur, fam);
+                            if r.hovered() {
+                                // the live preview shows the layer in the font under the pointer
+                                HOVER_FONT.with(|h| h.set(Some((clip, f.name.clone(), fam.clone()))));
+                            }
+                            if r.clicked() {
+                                pick = Some(fam.clone());
+                            }
+                        }
+                    });
+                    if r.inner.is_none() {
+                        HOVER_FONT.with(|h| h.clear_field(clip, &f.name));
+                    }
+                    if let Some(p) = pick {
+                        g.click();
+                        vals.insert(name, p);
+                    }
+                }
+                html::FieldType::Select => {
+                    let opts = f.options();
+                    let mut pick: Option<String> = None;
+                    egui::ComboBox::from_id_salt(("html_select", clip, &f.name)).selected_text(cur.clone()).show_ui(ui, |ui| {
+                        for (label, _) in &opts {
+                            if ui.selectable_label(label.eq_ignore_ascii_case(&cur), label).clicked() {
+                                pick = Some(label.clone());
+                            }
+                        }
+                    });
+                    if let Some(p) = pick {
+                        g.click();
+                        vals.insert(name, p);
+                    }
+                }
+                html::FieldType::Toggle => {
+                    let mut on = html::toggle_on(&cur);
+                    if ui.checkbox(&mut on, "").changed() {
+                        g.click();
+                        vals.insert(name, if on { "on" } else { "off" }.into());
+                    }
+                }
+                html::FieldType::Shadow | html::FieldType::Outline => {
+                    let (mut size, colour) = html::size_colour(&cur).unwrap_or((0.0, "#000000".into()));
+                    let mut c = hex_rgba(&colour);
+                    ui.horizontal(|ui| {
+                        let max = if f.ty == html::FieldType::Shadow { 120.0 } else { 40.0 };
+                        let r = ui.add(egui::Slider::new(&mut size, 0.0..=max).suffix("px"));
+                        g.note(&r);
+                        let rc = ui.color_edit_button_srgba_unmultiplied(&mut c);
+                        g.note(&rc);
+                        if r.changed() || rc.changed() {
+                            vals.insert(name.clone(), format!("{} {}", (size * 10.0).round() / 10.0, rgba_hex(c)));
+                        }
+                    });
                 }
                 html::FieldType::Image => {
                     ui.horizontal(|ui| {
@@ -833,8 +1307,46 @@ mod tests {
                 assert!(!r.apply && r.ask.is_none());
             });
         }
-        assert!(st.job.is_none(), "nothing was due, so nothing rendered");
         assert!(!ctx.has_requested_repaint(), "idle HTML editor requested a repaint");
+    }
+
+    /// A held live preview drawn again and again with nothing changed: the same request every frame
+    /// (no seek, no swap - the blink), and no frames asked for; playing asks for its clock.
+    #[test]
+    fn assert_no_idle_repaint_html_live_preview() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let src = html::icon_page("x", "<svg></svg>");
+        let mut lp = LivePreview::for_slot(html::LIVE_EDITOR);
+        lp.hold(1.25, 4.0);
+        let epoch = lp.epoch;
+        let inp = LiveInput { src: &src, fields: &[], base: "", width: 0, params: &[], duration: 4.0, fps: 60.0, playhead: None, renderer: crate::model::HtmlRenderer::Edge, mouse: None };
+        for _ in 0..30 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| lp.show(ui, 120.0, &inp));
+            });
+        }
+        assert_eq!((lp.epoch, lp.t, lp.playing), (epoch, 1.25, false), "held: nothing moved");
+        assert!(!ctx.has_requested_repaint(), "a held live preview requested a repaint");
+        lp.play(4.0);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| lp.show(ui, 120.0, &inp));
+        });
+        assert!(ctx.has_requested_repaint(), "playing, the clock moves");
+    }
+
+    #[test]
+    fn the_preview_player_steps_frames_loops_and_reads_out_timecode() {
+        let mut lp = LivePreview::default();
+        lp.hold(2.0, 4.0);
+        assert_eq!(lp.now(4.0), 2.0);
+        lp.hold(9.0, 4.0);
+        assert_eq!(lp.now(4.0), 4.0, "held inside the layer");
+        assert_eq!(timecode(1.5, 60.0), ("00:00:01:30".to_string(), 90));
+        assert_eq!(timecode(61.0 + 1.0 / 30.0, 30.0).0, "00:01:01:01");
+        lp.hold(4.0, 4.0);
+        lp.play(4.0);
+        assert!(lp.playing && lp.t == 0.0, "play at the end starts again from the start");
     }
 
     /// The Inspector's HTML section: drawing it is not an edit and asks for no frames; the source it
@@ -922,8 +1434,8 @@ mod tests {
 
     #[test]
     fn a_plain_page_is_not_nagged_about_library_metadata() {
-        assert!(problems("<html><body><p>hi</p></body></html>").is_empty());
-        assert!(!problems("<html><body><script>x()</script></body></html>").is_empty(), "script is still a problem");
+        assert!(problems("<html><body><p>hi</p></body></html>", "").is_empty());
+        assert!(!problems("<html><body><script>x()</script></body></html>", "").is_empty(), "script is still a problem");
     }
 
     /// Fields: drawing them is not an edit (no undo, no re-render); a stored value reaches the page.
@@ -944,7 +1456,7 @@ mod tests {
         // nothing touched: no edit
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                assert!(!fields_section(ui, &mut p, cid, &mut |_| undos += 1));
+                assert!(!fields_section(ui, &mut p, cid, &[], &mut |_| undos += 1));
             });
         });
         assert_eq!(undos, 0);

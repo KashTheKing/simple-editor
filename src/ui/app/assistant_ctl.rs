@@ -117,8 +117,10 @@ pub(super) struct AssistantRt {
     bypass: bool,
     /// A task script is running (tasks.* refuse re-entry from inside it).
     running_task: bool,
-    /// Whose conversations are loaded (`App::project_path`) and their store bucket.
-    loaded: Option<(Option<PathBuf>, String)>,
+    /// The project's chats are loaded into `App::assistant` (false after a project change, until idle).
+    loaded: bool,
+    /// The new project's chats, waiting for the running request (if any) to finish.
+    pending: Vec<aui::Conversation>,
     /// "Handle my comments": markers up to this id are not new; the candidate settling.
     comment_since: Option<Id>,
     comment_slot: Option<(Id, String, Instant)>,
@@ -589,39 +591,31 @@ fn pin_add(app: &mut App, pin: Pin) {
 // ---------------------------------------------------------------------------------------------------
 // store
 
-fn snapshot(app: &App) -> Option<(String, String, Vec<PathBuf>)> {
-    let (_, bucket) = app.assistant_rt.loaded.as_ref()?;
-    let (json, remove) = aui::snapshot(&app.assistant.convs);
-    Some((bucket.clone(), json, remove))
+/// The chats as the JSON array a project file stores them in (None until they are loaded).
+pub(super) fn chats_json(app: &App) -> Option<String> {
+    app.assistant_rt.loaded.then(|| aui::snapshot(&app.assistant.convs).0)
 }
 
-/// Save the conversations now, on this thread (the app is closing).
-pub(super) fn save_now(app: &mut App) {
-    if let Some((bucket, json, _)) = snapshot(app) {
-        let _ = aui::save(&aui::store_dir(), &bucket, &json);
-    }
+/// A different project is now open (`App::set_project`): its chats come from its file - or, for a
+/// project saved before chats lived in it, from the old per-user store - and a new one starts empty.
+pub(super) fn project_changed(app: &mut App, path: Option<&Path>) {
+    app.assistant_rt.pending = path
+        .map(|p| aui::chats_in_file(p).unwrap_or_else(|| aui::load(&aui::store_dir(), &aui::bucket(Some(p)))))
+        .unwrap_or_default();
+    app.assistant_rt.loaded = false;
 }
 
-/// Load the project's conversations when the project changed (saving the old ones), and save them off
-/// the UI thread when something changed.
+/// Swap the chats in once nothing is running, and count a chat change as an unsaved project change.
 fn sync_store(app: &mut App) {
-    let path = app.project_path.clone();
-    if app.assistant_rt.loaded.as_ref().is_none_or(|(p, _)| *p != path) && !busy(app) {
-        if app.assistant.dirty {
-            if let Some((bucket, json, remove)) = snapshot(app) {
-                aui::save_async(aui::store_dir(), bucket, json, remove);
-            }
-        }
-        let bucket = aui::bucket(path.as_deref());
-        app.assistant.load(aui::load(&aui::store_dir(), &bucket));
+    if !app.assistant_rt.loaded && !busy(app) {
+        let convs = std::mem::take(&mut app.assistant_rt.pending);
+        app.assistant.load(convs);
         app.assistant.dirty = false;
-        app.assistant_rt.loaded = Some((path, bucket));
+        app.assistant_rt.loaded = true;
         return;
     }
     if std::mem::take(&mut app.assistant.dirty) {
-        if let Some((bucket, json, remove)) = snapshot(app) {
-            aui::save_async(aui::store_dir(), bucket, json, remove);
-        }
+        app.dirty = true;
     }
 }
 

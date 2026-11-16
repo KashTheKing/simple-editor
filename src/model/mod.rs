@@ -35,6 +35,10 @@ pub enum ClipKind {
     /// An automation / adjustment layer: its effects (or node graph) apply to everything composited
     /// below it on lower video tracks, for as long as the clip lasts. Draws nothing of its own.
     Adjustment,
+    // ---- ws:browser-layer ----
+    /// A browser window (`Clip.browser`): everything composited below it shows inside the window,
+    /// with a fake mouse cursor on top. See `model::browser`.
+    Browser,
 }
 
 /// Resampling quality used when the compositor scales/rotates layers (export == preview).
@@ -253,7 +257,7 @@ impl AnimLink {
 }
 
 /// A scalar property that is either constant (`value`) or keyframed (`keys`, sorted by t).
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Animated {
     pub value: f64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -270,6 +274,22 @@ pub struct Animated {
     /// Last expression/path error, shown in the inspector. Transient.
     #[serde(skip)]
     pub link_err: Option<String>,
+}
+
+// ws:browser-layer (size): by hand and out of line. A clip clones dozens of these (every property of it
+// and of its text / shape / browser style), and the derived clone was spelled out at every one of them.
+impl Clone for Animated {
+    #[inline(never)]
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value,
+            keys: self.keys.clone(),
+            link: self.link.clone(),
+            baked: self.baked.clone(),
+            baked_rev: self.baked_rev,
+            link_err: self.link_err.clone(),
+        }
+    }
 }
 
 impl Animated {
@@ -603,15 +623,17 @@ pub(crate) fn dh() -> f32 {
 
 mod asset;
 mod audio;
+mod browser;
 mod clip;
 mod effect;
 mod graph;
-mod io;
+pub(crate) mod io;
 mod keyblocks;
 mod marker;
 pub mod ops;
 mod path;
 mod project;
+mod repair;
 mod shape;
 mod subtitle;
 mod text;
@@ -623,6 +645,7 @@ mod tests;
 
 pub use asset::*;
 pub use audio::*;
+pub use browser::*;
 pub use clip::*;
 pub use effect::*;
 pub use graph::*;

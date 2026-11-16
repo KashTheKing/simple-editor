@@ -74,8 +74,14 @@ pub fn cache_budget_bytes(cache_mb: u32) -> usize {
         None => DEFAULT_CACHE_BYTES,
     }
 }
-/// How far past the playhead the prefetcher keeps frames ready (seconds).
+/// How far past the playhead the prefetcher keeps frames ready (seconds) - `read_ahead_secs`
+/// stretches it up to `MAX_READ_AHEAD_SECS` while frames are expensive to make.
 const READ_AHEAD_SECS: f64 = 1.5;
+const MAX_READ_AHEAD_SECS: f64 = 4.0;
+/// ---- perf:cut-preroll ---- How much further than the read-ahead the timeline is looked at for
+/// clips coming up (`upcoming`): the time a pre-rolled decoder has for its seek before the
+/// prefetcher asks for its first frame (4 s ahead of the playhead at the default read-ahead).
+const PREROLL_LEAD_SECS: f64 = 2.5;
 /// Recently shown frames kept eviction-protected behind the playhead (seconds), so a short
 /// scrub-back replays from the cache.
 const TRAIL_SECS: f64 = 0.5;
@@ -92,8 +98,8 @@ const PAUSED_WAIT: Duration = Duration::from_millis(100);
 /// seeks come faster than this, so they never find a read-ahead decode in their way.
 const IDLE_REST: Duration = Duration::from_millis(60);
 /// Frames handed to the UI ahead of their time while the render thread decodes (`Shared::ahead`):
-/// a tenth of a second at 60 fps, more than any one decode should take.
-const AHEAD: i64 = 6;
+/// half a second at 60 fps, more than any one decode should take (a cut's seek is pre-rolled).
+const AHEAD: i64 = 30;
 /// Recycled frame buffers kept for the CPU compositor (cache evictions feed it).
 const FPOOL_KEEP: usize = 4;
 
@@ -293,6 +299,40 @@ struct Shared {
     /// The newest published frame lacks a layer whose source was not open in time; the whole
     /// frame follows. Written under the `frame` / `layers` lock it describes.
     partial: AtomicBool,
+    // ---- ws:play-gate ----
+    /// Buffer before playing: the contiguous run of whole cached frames the render thread last saw
+    /// from the paused playhead (`Player::video_report`).
+    cov: Mutex<Cov>,
+    /// Commands queued for the render thread so far (counted BEFORE each send). A `cov` made after the
+    /// render thread had drained all of them (`Cov::gen` = how many it had) is current; any command
+    /// still in flight makes the UI answer "not yet" instead of trusting it.
+    sent: AtomicU64,
+    /// The audio ring holds its first buffers for the paused playhead (device still stopped).
+    audio_ready: AtomicBool,
+    /// Cumulative `pause()` calls: the play gate cancels when this moves (any Stop/step/Pause).
+    pauses: AtomicU64,
+    /// Moving average of the time (µs) the render thread took to make one uncached frame; 0 = unknown.
+    frame_cost_us: AtomicU64,
+    /// µs from the clock starting to the audio ring holding its first block (0 = it was filled first).
+    audio_lag_us: AtomicU64,
+    // ---- ws:perf-window ---- (`Player::perf_sample`)
+    /// `worst_gap`'s twin for the Performance window, so it never steals `playback.status`'s reading.
+    win_gap: AtomicU64,
+    /// Bytes held by the render thread's frame + layer caches, and their budget.
+    cache_bytes: AtomicU64,
+    cache_budget: AtomicU64,
+}
+
+/// What the render thread has cached from a paused playhead: whole frames `lo..=hi` (grid indices),
+/// `cap` the last index it looks at (`read_ahead` past `lo`, or the last frame), made after `gen`
+/// commands had been drained.
+#[derive(Clone, Copy, Default)]
+struct Cov {
+    gen: u64,
+    fps: f64,
+    lo: i64,
+    hi: i64,
+    cap: i64,
 }
 
 // ---- ws:perf-baseline ----
@@ -358,6 +398,10 @@ enum Cmd {
     LayersAsync,
     /// Render-thread only: the pointer is over the timeline at this time - open what is there.
     Hint(f64),
+    // ---- ws:play-gate ----
+    /// Buffer before playing: fill this many seconds ahead of the paused playhead (frames into the
+    /// cache, audio into the ring) without moving the clock. Ended by `Play` or `Pause`.
+    Preroll(f64),
     Quit,
 }
 
@@ -405,6 +449,15 @@ impl Player {
             worst_gap: AtomicU64::new(0),
             partial: AtomicBool::new(false),
             ahead: Mutex::new(VecDeque::new()),
+            cov: Mutex::new(Cov::default()),
+            sent: AtomicU64::new(0),
+            audio_ready: AtomicBool::new(false),
+            pauses: AtomicU64::new(0),
+            frame_cost_us: AtomicU64::new(0),
+            audio_lag_us: AtomicU64::new(0),
+            win_gap: AtomicU64::new(0),
+            cache_bytes: AtomicU64::new(0),
+            cache_budget: AtomicU64::new(0),
         });
         let (render, rx) = mpsc::channel();
         let (s, c) = (shared.clone(), ctx.clone());
@@ -437,13 +490,27 @@ impl Player {
     }
     fn both(&self, c: Cmd) {
         let _ = self.audio.send(c.clone());
-        let _ = self.render.send(c);
+        let _ = self.send_render(c);
+    }
+    /// Queue a command for the render thread, counted first (`Shared::sent`) unless it cannot change
+    /// what is cached (`touches_cache`: the hover hint and the one-shot renders, which are frequent).
+    fn send_render(&self, c: Cmd) -> Result<(), mpsc::SendError<Cmd>> {
+        if touches_cache(&c) {
+            self.shared.sent.fetch_add(1, Ordering::AcqRel);
+        }
+        self.render.send(c)
     }
     /// Replace the project (cheap clone; called after every edit). Re-renders the current frame.
     pub fn set_project(&mut self, project: &Project) {
-        *lock(&self.shared.project) = Arc::new(project.clone());
+        // browser zooms: the page parts drawn at the scale they are shown at (not project clips)
+        *lock(&self.shared.project) = Arc::new(crate::engine::browser::render_view(project).into_owned());
         lock(&self.shared.clock).duration = project.duration();
         self.both(Cmd::SetProject);
+    }
+    /// The project this player draws (`set_project`'s, with `browser::render_view` applied): what a
+    /// compositor of its layers must be given.
+    pub fn project(&self) -> Arc<Project> {
+        lock(&self.shared.project).clone()
     }
     pub fn set_backend(&mut self, b: Backend) {
         self.both(Cmd::Backend(b));
@@ -451,12 +518,12 @@ impl Player {
     /// GPU preview: the render thread publishes decoded layers (`take_layers`) instead of a composited
     /// frame. Switching back to false resumes the CPU compositor on the next render.
     pub fn set_gpu(&mut self, on: bool) {
-        let _ = self.render.send(Cmd::Gpu(on));
+        let _ = self.send_render(Cmd::Gpu(on));
     }
     /// Byte budget for the render thread's caches (see `cache_budget_bytes`). Render-only, like
     /// `set_gpu`/`set_proxies` - the audio thread caches nothing.
     pub fn set_cache_bytes(&mut self, bytes: usize) {
-        let _ = self.render.send(Cmd::CacheBudget(bytes));
+        let _ = self.send_render(Cmd::CacheBudget(bytes));
     }
     /// Preview canvas size in pixels (the Player clamps width to `max_width`, keeping aspect).
     pub fn set_canvas(&mut self, w: u32, h: u32, max_width: u32) {
@@ -469,7 +536,7 @@ impl Player {
         if c.canvas != (w, h) {
             c.canvas = (w, h);
             drop(c);
-            let _ = self.render.send(Cmd::Canvas);
+            let _ = self.send_render(Cmd::Canvas);
         }
     }
     pub fn play(&mut self) {
@@ -492,6 +559,7 @@ impl Player {
             // this a bare Space after J J J would silently resume playing backward at -4x.
             c.rate = 1.0;
         }
+        self.shared.audio_lag_us.store(0, Ordering::Relaxed);
         self.both(Cmd::Play);
     }
     pub fn pause(&mut self) {
@@ -500,6 +568,7 @@ impl Player {
             c.base_t = c.now();
             c.playing = false;
         }
+        self.shared.pauses.fetch_add(1, Ordering::Relaxed);
         self.both(Cmd::Pause);
     }
     pub fn toggle(&mut self) {
@@ -555,6 +624,55 @@ impl Player {
     pub fn is_buffering(&self) -> bool {
         self.shared.buffering.load(Ordering::Relaxed)
     }
+    // ---- ws:play-gate ----
+
+    /// Buffer before playing: start filling `window` seconds ahead of the paused playhead - frames into
+    /// the cache, audio into the ring - without moving the clock. `play()` (or `pause()`) ends it.
+    pub fn preroll(&mut self, window: f64) {
+        self.shared.audio_ready.store(false, Ordering::Relaxed);
+        self.both(Cmd::Preroll(window));
+        self.ctx.request_repaint(); // the UI's next frame starts polling it (`playgate::tick`)
+    }
+    /// Is the cache holding the `window` seconds of whole frames after the paused playhead? (ready,
+    /// fraction 0..1). Cheap, never waits on a thread: it reads what the render thread last published,
+    /// and anything that could have changed the cache since makes it answer "not yet". Nothing to
+    /// render (no preview size yet) is ready.
+    pub fn video_report(&self, window: f64) -> (bool, f32) {
+        let (t, dur, canvas) = {
+            let mut c = lock(&self.shared.clock);
+            (c.now(), c.duration, c.canvas)
+        };
+        if canvas.0 == 0 || canvas.1 == 0 {
+            return (true, 1.0);
+        }
+        let fps = lock(&self.shared.project).fps.max(1.0);
+        let idx = (t * fps + 1e-6).floor() as i64;
+        let last = (((dur * fps).ceil() as i64) - 1).max(idx);
+        let need = ((window * fps).ceil() as i64).min(last - idx).max(0);
+        let cov = *lock(&self.shared.cov);
+        if cov.gen != self.shared.sent.load(Ordering::Acquire) || cov.fps != fps || idx < cov.lo || idx > cov.hi {
+            return (false, 0.0);
+        }
+        let want = (idx + need).min(cov.cap);
+        let have = (cov.hi.min(want) - idx + 1) as f32;
+        (cov.hi >= want, (have / (want - idx + 1) as f32).clamp(0.0, 1.0))
+    }
+    /// The audio ring holds its first buffers for the paused playhead (see `preroll`).
+    pub fn audio_ready(&self) -> bool {
+        self.shared.audio_ready.load(Ordering::Relaxed)
+    }
+    /// Cumulative `pause()` calls (the play gate cancels when it moves).
+    pub fn pauses(&self) -> u64 {
+        self.shared.pauses.load(Ordering::Relaxed)
+    }
+    /// Seconds the render thread recently took to make one frame that was not cached; None = unknown.
+    pub fn frame_cost(&self) -> Option<f64> {
+        Some(self.shared.frame_cost_us.load(Ordering::Relaxed)).filter(|&us| us > 0).map(|us| us as f64 / 1e6)
+    }
+    /// ms from the clock starting to the audio ring holding its first block (0 when it was filled first).
+    pub fn audio_start_lag_ms(&self) -> f64 {
+        self.shared.audio_lag_us.load(Ordering::Relaxed) as f64 / 1e3
+    }
     /// How many frames/layer sets have been served from the RAM cache instead of rendered.
     pub fn cache_hits(&self) -> u64 {
         self.shared.cache_hits.load(Ordering::Relaxed)
@@ -564,20 +682,20 @@ impl Player {
     /// Not a hot path (MCP `render.frame` tool): allocates a fresh frame per call.
     pub fn render_once(&self, t: f64, max_w: u32) -> Option<Arc<Frame>> {
         let (tx, rx) = mpsc::sync_channel(1);
-        self.render.send(Cmd::RenderOnce(t, max_w, tx)).ok()?;
+        self.send_render(Cmd::RenderOnce(t, max_w, tx)).ok()?;
         rx.recv_timeout(Duration::from_secs(3)).ok()
     }
     /// Synchronously decode the layers at `t` (at most `max_w` px wide) on the render thread, for a
     /// one-off GPU render on the UI thread (export-frame, MCP tools). None if it takes longer than 3 s.
     pub fn layers_once(&self, t: f64, max_w: u32) -> Option<Arc<LayerSet>> {
         let (tx, rx) = mpsc::sync_channel(1);
-        self.render.send(Cmd::LayersOnce(t, max_w, tx)).ok()?;
+        self.send_render(Cmd::LayersOnce(t, max_w, tx)).ok()?;
         rx.recv_timeout(Duration::from_secs(3)).ok()
     }
     /// Swap the preview proxy map (source path -> proxy file). Video only: the render thread's pool
     /// re-resolves every decode through it; audio always reads the originals.
     pub fn set_proxies(&mut self, map: HashMap<String, String>) {
-        let _ = self.render.send(Cmd::Proxies(map));
+        let _ = self.send_render(Cmd::Proxies(map));
     }
     /// Synchronously drop every decoder on both threads (before overwriting a source file).
     pub fn release_files(&mut self) {
@@ -654,7 +772,7 @@ impl Player {
     pub fn hint(&mut self, t: f64) {
         let q = (t * 4.0).floor() as i64;
         if q != std::mem::replace(&mut self.hinted, q) {
-            let _ = self.render.send(Cmd::Hint(t));
+            let _ = self.send_render(Cmd::Hint(t));
         }
     }
     /// (frames published so far, longest wait in ms between two publishes since the last call).
@@ -663,13 +781,27 @@ impl Player {
     pub fn publish_stats(&self) -> (u64, f64) {
         (self.shared.published.load(Ordering::Relaxed), self.shared.worst_gap.swap(0, Ordering::Relaxed) as f64 / 1e3)
     }
+    // ---- ws:perf-window ----
+    /// The Performance window's sample: (frames published, dropped, longest wait between two frames in ms
+    /// since its last sample, RAM cache bytes, RAM cache budget, frames queued ahead of the clock).
+    pub fn perf_sample(&self) -> (u64, u64, f64, u64, u64, usize) {
+        let s = &self.shared;
+        (
+            s.published.load(Ordering::Relaxed),
+            s.dropped.load(Ordering::Relaxed),
+            s.win_gap.swap(0, Ordering::Relaxed) as f64 / 1e3,
+            s.cache_bytes.load(Ordering::Relaxed),
+            s.cache_budget.load(Ordering::Relaxed),
+            lock(&s.ahead).len(),
+        )
+    }
     /// Queue a non-blocking one-shot layer decode at `t` (at most `max_w` px wide); returns a request
     /// id. Newest request always wins - an in-flight older request's reply is never surfaced once a
     /// newer one has been queued. Never blocks the caller (unlike `layers_once`).
     pub fn request_layers(&self, t: f64, max_w: u32) -> u64 {
         let id = self.shared.next_req.fetch_add(1, Ordering::Relaxed) + 1;
         *lock(&self.shared.req) = Some((id, t, max_w));
-        let _ = self.render.send(Cmd::LayersAsync);
+        let _ = self.send_render(Cmd::LayersAsync);
         id
     }
     /// Poll for `request_layers`' async reply (consumes it). `None` until ready, or forever for a
@@ -706,6 +838,8 @@ fn render_thread(
     let mut comp = Compositor::new();
     let mut shapes = ShapeRasterizer::new();
     let mut project = lock(&shared.project).clone();
+    // ws:nested-gpu: nested sequences as projects of their own, made once per project
+    let mut nest = Nest::default();
     let mut dirty = false;
     let mut pending: Option<Cmd> = None;
     // GPU mode state + recycled layer buffers
@@ -733,6 +867,15 @@ fn render_thread(
     let (mut rested_at, mut heading) = (-1i64, 0i64);
     // the canvas size the cached frames were made at (`step_canvas`)
     let mut made_at = (0u32, 0u32);
+    // ---- ws:play-gate ----
+    // commands drained so far (`Shared::sent` counts the ones queued)
+    let mut seen = 0u64;
+    // buffer before playing: seconds ahead of the paused playhead being filled, and whether the
+    // window is complete (the thread then waits for a command instead of looking again)
+    let mut pre: Option<f64> = None;
+    let mut pre_done = false;
+    // `Clock::wraps` last seen: a loop wrap onto a cold cache is a stall
+    let mut last_wraps = 0u64;
     // clear both caches, recycling their buffers (`drain` so a per-edit clear does not thrash the allocator)
     macro_rules! clear_caches {
         () => {
@@ -764,11 +907,16 @@ fn render_thread(
         };
     }
     loop {
+        let _s = crate::perf::span("render_frame");
+        // ws:perf-window: what the caches hold, for the Performance window (two relaxed stores)
+        shared.cache_bytes.store((fcache.bytes + lcache.bytes) as u64, Ordering::Relaxed);
+        shared.cache_budget.store(budget as u64, Ordering::Relaxed);
         let playing = {
             let mut c = lock(&shared.clock);
             c.now();
             c.playing
         };
+        let pre_busy = pre.is_some() && !pre_done;
         // a source finished opening: the frames that went without it are redone, this one first
         if pool.collect() && !partial.is_empty() {
             for i in partial.drain(..) {
@@ -781,7 +929,7 @@ fn render_thread(
             }
             dirty = true;
         }
-        if pending.is_none() && !dirty && !playing && !stall && !idle {
+        if pending.is_none() && !dirty && !playing && !stall && !idle && !pre_busy {
             // idle: block, zero CPU - looking in now and then only while sources are still opening
             pending = if pool.busy() {
                 match rx.recv_timeout(Duration::from_millis(10)) {
@@ -806,6 +954,8 @@ fn render_thread(
                 },
             };
             idle = true;
+            seen += touches_cache(&c) as u64;
+            pre_done = false;
             match c {
                 Cmd::SetProject => {
                     let new = lock(&shared.project).clone();
@@ -820,6 +970,7 @@ fn render_thread(
                         }
                     }
                     project = new;
+                    nest.views.clear(); // (cached sets still hold the views they were made with)
                 }
                 Cmd::Seek => {
                     dirty = true;
@@ -828,7 +979,16 @@ fn render_thread(
                     // rate) reads the whole jump as decode falling behind, not an intentional skip.
                     last_pub = -1;
                 }
-                Cmd::Play | Cmd::Pause => dirty = true,
+                Cmd::Play | Cmd::Pause => {
+                    dirty = true;
+                    // the clock (or the user) takes over from the buffering; time spent buffering is
+                    // not a wait between two frames (`Shared::worst_gap`)
+                    if pre.take().is_some() {
+                        mark = Instant::now();
+                    }
+                }
+                // ---- ws:play-gate ----
+                Cmd::Preroll(w) => pre = (w > 0.0).then_some(w),
                 // (the caches are cleared below, once the size frames are made at really changes)
                 Cmd::Canvas => dirty = true,
                 Cmd::Backend(b) => {
@@ -839,6 +999,7 @@ fn render_thread(
                 Cmd::Gpu(on) => {
                     if gpu != on {
                         gpu = on;
+                        pool.set_gpu_frames(on); // #158: zero-copy decode for the GPU preview
                         *lock(&shared.layers) = None;
                         dirty = true;
                         clear_caches!();
@@ -888,7 +1049,18 @@ fn render_thread(
                     let exact = w > lock(&shared.clock).canvas.0;
                     pool.set_exact(exact);
                     guarded(&mut pool, |pool| {
-                        set = layers_with(&project, t, w, h, pool, &mut spare_layers, text, &mut shapes, &mut comp)
+                        set = layers_with(
+                            &project,
+                            t,
+                            w,
+                            h,
+                            pool,
+                            &mut spare_layers,
+                            text,
+                            &mut shapes,
+                            &mut comp,
+                            &mut nest,
+                        )
                     });
                     pool.set_exact(false);
                     let _ = reply.send(Arc::new(set));
@@ -914,7 +1086,18 @@ fn render_thread(
                         let mut set = LayerSet::default();
                         let text = &mut TextRef::Shared(&text);
                         guarded(&mut pool, |pool| {
-                            set = layers_with(&project, t, w, h, pool, &mut spare_layers, text, &mut shapes, &mut comp)
+                            set = layers_with(
+                                &project,
+                                t,
+                                w,
+                                h,
+                                pool,
+                                &mut spare_layers,
+                                text,
+                                &mut shapes,
+                                &mut comp,
+                                &mut nest,
+                            )
                         });
                         *lock(&shared.reply) = Some((id, Arc::new(set)));
                     }
@@ -923,10 +1106,10 @@ fn render_thread(
                 Cmd::Quit => return,
             }
         }
-        let (playing, t, (w, h), duration, rate) = {
+        let (playing, t, (w, h), duration, rate, wraps) = {
             let mut c = lock(&shared.clock);
             let t = c.now();
-            (c.playing, t, c.canvas, c.duration, c.rate)
+            (c.playing, t, c.canvas, c.duration, c.rate, c.wraps)
         };
         // the CPU frame is drawn scaled into the pane anyway, so it is made at a step of the
         // project's size: dragging a pane divider keeps the caches (and the decoders' output size).
@@ -940,13 +1123,13 @@ fn render_thread(
         if std::mem::take(&mut preload) {
             pool.set_stills(stills(&project, t));
         }
-        if !playing && !dirty && !stall && !idle {
+        if !playing && !dirty && !stall && !idle && !pre_busy {
             continue;
         }
         let force = std::mem::take(&mut dirty);
         let fps = project.fps.max(1.0);
         if w == 0 || h == 0 {
-            (stall, idle) = (false, false);
+            (stall, idle, pre_done) = (false, false, true);
             shared.buffering.store(false, Ordering::Relaxed);
             if playing {
                 std::thread::sleep(Duration::from_secs_f64(1.0 / fps)); // nothing to render, keep pace
@@ -963,7 +1146,9 @@ fn render_thread(
         let frame_bytes = (w as usize * h as usize * 4).max(1);
         let avg = if gpu { lcache.avg_entry_bytes() } else { fcache.avg_entry_bytes() };
         let per_idx = avg.unwrap_or(frame_bytes).max(1);
-        let read_ahead = ((fps * READ_AHEAD_SECS).ceil() as i64).clamp(8, (budget / 2 / per_idx).max(8) as i64);
+        let cost = shared.frame_cost_us.load(Ordering::Relaxed) as f64 / 1e6;
+        let read_ahead =
+            ((fps * read_ahead_secs(cost, fps)).ceil() as i64).clamp(8, (budget / 2 / per_idx).max(8) as i64);
         let last_idx = (((duration * fps).ceil() as i64) - 1).max(idx);
         // keep the trail + horizon around the playhead eviction-protected: a scrub-back replays free
         // (direction-aware: reverse shuttling protects what's already been shown behind idx instead)
@@ -987,7 +1172,8 @@ fn render_thread(
         macro_rules! render_idx {
             ($i:expr, $wait:expr) => {{
                 let hits = shared.cache_hits.load(Ordering::Relaxed);
-                pool.set_deadline(Some(Instant::now() + $wait));
+                let began_at = Instant::now();
+                pool.set_deadline(Some(began_at + $wait));
                 let out = if gpu {
                     let (set, ok) = gpu_cached(
                         &mut lcache,
@@ -1001,6 +1187,7 @@ fn render_thread(
                         &text,
                         &mut shapes,
                         &mut comp,
+                        &mut nest,
                         &shared.cache_hits,
                     );
                     (Some(set), None, ok)
@@ -1027,9 +1214,37 @@ fn render_thread(
                     if missed {
                         partial.push($i);
                     }
+                    // ---- ws:play-gate ---- what a frame costs here: it sizes the buffering window
+                    let us = began_at.elapsed().as_micros() as u64;
+                    let old = shared.frame_cost_us.load(Ordering::Relaxed);
+                    let new = if old == 0 { us.max(1) } else { (old * 7 + us) / 8 };
+                    shared.frame_cost_us.store(new, Ordering::Relaxed);
                 }
                 out
             }};
+        }
+        // ---- ws:play-gate ----
+        // the whole-frame run from the playhead, published for `Player::video_report`
+        macro_rules! publish_cov {
+            () => {{
+                let cap = (idx + read_ahead).min(last_idx);
+                let mut hi = idx - 1;
+                while hi < cap && cached!(hi + 1) && !partial.contains(&(hi + 1)) {
+                    hi += 1;
+                }
+                *lock(&shared.cov) = Cov { gen: seen, fps, lo: idx, hi, cap };
+            }};
+        }
+        // a loop wrap onto frames that are not cached is a stall before it is a late frame: hold the
+        // clock and refill (the same exit test as a stall, so it cannot flap)
+        if wraps != std::mem::replace(&mut last_wraps, wraps)
+            && playing
+            && !stall
+            && lands_cold(idx, read_ahead, last_idx, rate, |i| cached!(i))
+        {
+            stall = true;
+            shared.buffering.store(true, Ordering::Relaxed);
+            ctx.request_repaint();
         }
         // buffering: the clock ran STALL_BEHIND past the newest published frame and the due frame
         // still isn't cached - declare a stall instead of grinding out one late frame at a time.
@@ -1055,8 +1270,7 @@ fn render_thread(
                 }
             }
             // enough contiguous frames ready (hysteresis: a third of the horizon) -> resume
-            let (glo, ghi) = read_ahead_window(idx, (read_ahead / 3).max(2), last_idx, rate);
-            if stall && (glo..=ghi).all(|i| cached!(i)) {
+            if stall && !lands_cold(idx, read_ahead, last_idx, rate, |i| cached!(i)) {
                 stall = false;
                 shared.buffering.store(false, Ordering::Relaxed);
                 dirty = true; // republish the (now cached) due frame on the next pass
@@ -1093,12 +1307,14 @@ fn render_thread(
             last_pub = idx;
             shared.published.fetch_add(1, Ordering::Relaxed);
             shared.worst_gap.fetch_max(mark.elapsed().as_micros() as u64, Ordering::Relaxed);
+            shared.win_gap.fetch_max(mark.elapsed().as_micros() as u64, Ordering::Relaxed); // ws:perf-window
             mark = Instant::now();
             ctx.request_repaint();
         }
         if playing {
-            // open what the next few seconds bring in, off this thread
+            // open what the next few seconds bring in, off this thread - and seek what starts there
             warm_clips(&project, &mut pool, t, t + WARM_SECS);
+            pool.preroll(&upcoming(&project, t, read_ahead as f64 / fps + PREROLL_LEAD_SECS, rate));
             // Pacing window until frame idx+1 is due on the grid: pre-render upcoming frames into the
             // cache, then sleep out whatever is left. A slow prefetch can overrun the window by one
             // render - the same stall the live path would have hit at that frame's due time, just earlier.
@@ -1159,6 +1375,36 @@ fn render_thread(
                     break; // a decode panicked and the pool was cleared: stop prefetching this window
                 }
             }
+        } else if let (Some(win), false) = (pre, stall) {
+            // ---- ws:play-gate ---- Buffer before playing: the window ahead of the paused playhead,
+            // nearest frame first, one frame per pass so a seek or Pause is never behind more than one
+            // decode. Frames made while a source was still opening are redone when it arrives
+            // (`pool.collect`, top of the loop); until then this waits on the channel, not in a spin.
+            idle = false;
+            pool.preroll(&upcoming(&project, t, read_ahead as f64 / fps + PREROLL_LEAD_SECS, 1.0)); // Play is next
+            let hi = (idx + ((fps * win).ceil() as i64).min(read_ahead)).min(last_idx);
+            match (idx..=hi).find(|i| !cached!(*i)) {
+                Some(i) => match rx.try_recv() {
+                    Ok(c) => pending = Some(c),
+                    Err(TryRecvError::Disconnected) => return,
+                    Err(TryRecvError::Empty) => {
+                        mark = Instant::now();
+                        if !render_idx!(i, Duration::ZERO).2 {
+                            pre_done = true; // a decode panicked and the pool was cleared: say what is cached
+                        }
+                    }
+                },
+                None if (idx..=hi).any(|i| partial.contains(&i)) => match rx.recv_timeout(Duration::from_millis(5)) {
+                    Ok(c) => pending = Some(c),
+                    Err(RecvTimeoutError::Timeout) => {}
+                    Err(RecvTimeoutError::Disconnected) => return,
+                },
+                None => pre_done = true,
+            }
+            publish_cov!();
+            if pre_done {
+                ctx.request_repaint(); // the UI starts the clock now, not at its next poll
+            }
         } else if !stall {
             // Paused: pre-render what will be asked for next (`idle_order`) into the cache, so that
             // Play, a step or the scrub under way finds its frame there. It is the lowest work this
@@ -1190,7 +1436,9 @@ fn render_thread(
                 if !render_idx!(i, Duration::ZERO).2 {
                     break;
                 }
+                publish_cov!(); // ws:play-gate
             }
+            publish_cov!(); // ws:play-gate
         }
     }
 }
@@ -1251,6 +1499,24 @@ fn read_ahead_window(idx: i64, read_ahead: i64, last_idx: i64, rate: f64) -> (i6
     } else {
         ((idx - read_ahead).max(0), idx)
     }
+}
+
+/// ---- ws:play-gate ---- How long the playhead rests before the audio ring is filled for a Play from it.
+const PRE_REST: Duration = Duration::from_millis(150);
+
+/// ---- ws:play-gate ---- Can this command change what the render thread has cached (so a `Cov` made
+/// before it is stale)? The hover hint and the one-shot renders cannot.
+fn touches_cache(c: &Cmd) -> bool {
+    !matches!(c, Cmd::Hint(_) | Cmd::LayersAsync | Cmd::RenderOnce(..) | Cmd::LayersOnce(..))
+}
+
+/// ---- ws:play-gate ---- Is the playhead on a cold cache: the first third of the read-ahead (the
+/// window a stall waits for before it resumes) is not all cached. A loop wrap that lands cold is a
+/// stall before it is a late frame; using the stall's own exit test means a wrap cannot enter a stall
+/// that it would leave on the very next pass.
+fn lands_cold(idx: i64, read_ahead: i64, last_idx: i64, rate: f64, cached: impl Fn(i64) -> bool) -> bool {
+    let (lo, hi) = read_ahead_window(idx, (read_ahead / 3).max(2), last_idx, rate);
+    !(lo..=hi).all(cached)
 }
 
 /// Nearest-first, stride-sampled frame indices covering `[lo, hi]` - the order the prefetcher fills
@@ -1465,6 +1731,7 @@ fn gpu_cached(
     text: &Mutex<TextRasterizer>,
     shapes: &mut ShapeRasterizer,
     comp: &mut Compositor,
+    nest: &mut Nest,
     hits: &AtomicU64,
 ) -> (Arc<LayerSet>, bool) {
     if let Some(s) = cache.get(idx) {
@@ -1474,9 +1741,10 @@ fn gpu_cached(
     let t = idx as f64 / fps;
     let mut set = LayerSet::default();
     let ok = {
+        let _s = crate::perf::span("layer_decode"); // ws:perf-window: the player's decode, too
         let perf_t0 = Instant::now(); // ws:perf-baseline
         let ok = guarded(pool, |pool| {
-            set = layers_with(project, t, w, h, pool, spare, &mut TextRef::Shared(text), shapes, comp)
+            set = layers_with(project, t, w, h, pool, spare, &mut TextRef::Shared(text), shapes, comp, nest)
         });
         decode_stats::record(perf_t0.elapsed().as_micros() as u64); // ws:perf-baseline
         ok
@@ -1490,9 +1758,14 @@ fn gpu_cached(
         // pins every frame it ever played at 0 bytes. Capacity, not length: a recycled buffer that
         // once held a full frame still holds that much when a small layer is decoded into it
         let still = |id| project.clip(id).is_some_and(|c| c.kind == ClipKind::Image);
-        let own = |id, f: &Arc<Frame>| if Arc::strong_count(f) == 1 || !still(id) { f.rgba.capacity() } else { 0 };
-        let bytes: usize = set.layers.iter().map(|(id, f)| own(*id, f)).sum::<usize>()
-            + set.motion.iter().map(|(id, _, f)| own(*id, f)).sum::<usize>();
+        let own = |id, f: &Arc<Frame>| if Arc::strong_count(f) == 1 || !still(id) { f.bytes() } else { 0 };
+        // ws:nested-gpu: a nested sequence's layers count as much as the top level's
+        fn bytes(set: &LayerSet, own: &dyn Fn(crate::model::Id, &Arc<Frame>) -> usize) -> usize {
+            set.layers.iter().map(|(id, f)| own(*id, f)).sum::<usize>()
+                + set.motion.iter().map(|(id, _, f)| own(*id, f)).sum::<usize>()
+                + set.nested.iter().map(|n| bytes(&n.set, own)).sum::<usize>()
+        }
+        let bytes = bytes(&set, &own);
         for old in cache.insert(idx, bytes, set.clone()) {
             recycle(Some(old), spare);
         }
@@ -1504,9 +1777,10 @@ fn gpu_cached(
 /// visual clip on screen at `t` - **both** clips of a transition, which the renderer draws virtually
 /// extended past their own bounds - plus the subtitle bitmap under `LayerSet::SUBTITLES`. Media is
 /// decoded at the size the compositor would have used (placement, capped at the source's native size);
-/// text/shape clips are rasterised and nested sequences composited on the CPU, all at (w, h) - which is
-/// already the quality-scaled render size, so `gpu::render_size` must not be applied again. Adjustment
-/// layers need no bitmap (they re-process the canvas). Effects that `needs_motion()` also get neighbours.
+/// text/shape clips are rasterised, all at (w, h) - which is already the quality-scaled render size, so
+/// `gpu::render_size` must not be applied again - and a nested sequence is a `NestedSet` of its own.
+/// Adjustment layers need no bitmap (they re-process the canvas). Effects that `needs_motion()` also get
+/// neighbours.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_layers(
     project: &Project,
@@ -1519,7 +1793,43 @@ pub(crate) fn decode_layers(
     shapes: &mut ShapeRasterizer,
     comp: &mut Compositor,
 ) -> LayerSet {
-    layers_with(project, t, w, h, pool, spare, &mut TextRef::Own(text), shapes, comp)
+    let _s = crate::perf::span("layer_decode");
+    // ponytail: export and prerender may hand a changed project to the same caller state, so their
+    // sequence views are made per frame (one clone per nested sequence on screen, as before). Only the
+    // player keeps them across frames (`Nest` there is cleared on every SetProject).
+    layers_with(project, t, w, h, pool, spare, &mut TextRef::Own(text), shapes, comp, &mut Nest::default())
+}
+
+/// ws:nested-gpu: what `layers_with` carries down into nested sequences: how deep it is, and each
+/// sequence as a project of its own (`NestedSet::view`), kept until the project changes.
+#[derive(Default)]
+struct Nest {
+    /// (sequence, made from the open-for-editing project) -> the view
+    views: HashMap<(crate::model::Id, bool), Arc<Project>>,
+    depth: usize,
+}
+
+impl Nest {
+    /// The sequence `seq` as a project: its tracks at its size `qw`x`qh`, no subtitles (they belong to
+    /// the outer canvas). `editing`: it is the one open for editing, so `project` holds it already.
+    fn view(&mut self, project: &Project, seq: crate::model::Id, editing: bool, q: (u32, u32)) -> Option<Arc<Project>> {
+        if let Some(v) = self.views.get(&(seq, editing)) {
+            return Some(v.clone());
+        }
+        let tracks = if editing { None } else { Some(&project.sequence(seq)?.tracks) };
+        let mut sub = project.clone();
+        if let Some(tracks) = tracks {
+            sub.tracks.clone_from(tracks);
+            (sub.width, sub.height) = q;
+            sub.editing = Some(seq);
+        }
+        sub.show_subtitles = false;
+        // nothing draws these with subtitles off, and a transcript can be the biggest part of a project
+        (sub.subtitles, sub.transcripts) = (Vec::new(), Vec::new());
+        let v = Arc::new(sub);
+        self.views.insert((seq, editing), v.clone());
+        Some(v)
+    }
 }
 
 /// The text rasteriser `decode_layers` draws with: the caller's own, or the shared one - locked
@@ -1584,8 +1894,11 @@ fn layers_with(
     text: &mut TextRef,
     shapes: &mut ShapeRasterizer,
     comp: &mut Compositor,
+    nest: &mut Nest,
 ) -> LayerSet {
     let mut set = LayerSet::default();
+    // a clip's layer is a bitmap, or a nested sequence's own set
+    let has = |set: &LayerSet, id| set.get(id).is_some() || set.nested.iter().any(|n| n.id == id);
     let mut later = Deferred { jobs: Vec::new(), hole: Arc::new(Frame::default()) };
     // a cold frame (a scrub onto a stack of stills nothing has shown yet) opens its sources side by
     // side, not one after the other
@@ -1605,7 +1918,8 @@ fn layers_with(
     // ponytail: a node graph on screen turns all of this off for the frame - its Clip and Asset
     // nodes may sample layers that are hidden themselves. Follow the references if graph-heavy
     // timelines need the culling.
-    let cull = !tracks().flat_map(|(_, tr)| on_screen(tr, t)).any(|c| c.graph.is_some());
+    // (ws:browser-layer: so does a browser - it scrolls the layers below it, on or off the canvas)
+    let cull = !tracks().flat_map(|(_, tr)| on_screen(tr, t)).any(|c| c.graph.is_some() || c.kind == ClipKind::Browser);
     let near = [t - 2.0 * project.frame_dur(), t, t + 2.0 * project.frame_dur()];
     let covering = |c: &Clip| near.iter().all(|&t| c.contains(t) && covers(project, c, t, w, h));
     let unseen = |c: &Clip| near.iter().all(|&t| !can_show(project, project.width, c, t, w, h));
@@ -1616,8 +1930,8 @@ fn layers_with(
             }
             let Some(clip) = on_screen(track, t).find(|c| covering(c)) else { continue };
             // decoded on the spot: whether the tracks below are needed hangs on this frame
-            layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, None);
-            if set.get(clip.id).is_some() {
+            layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, nest, None);
+            if has(&set, clip.id) {
                 set.base = ti;
                 break;
             }
@@ -1631,14 +1945,14 @@ fn layers_with(
         // drawn past their own bounds, so filtering by `contains(t)` here would hard-cut every transition
         if let Some((_, left, right)) = track.transition_at(t) {
             for clip in [left, right].into_iter().flatten() {
-                layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, Some(&mut later));
+                layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, nest, Some(&mut later));
             }
             continue;
         }
         for clip in on_screen(track, t) {
             // (a cover candidate is in the set already, whether or not it ended up covering)
-            if set.get(clip.id).is_none() && !(cull && unseen(clip)) {
-                layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, Some(&mut later));
+            if !has(&set, clip.id) && !(cull && unseen(clip)) {
+                layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, nest, Some(&mut later));
             }
         }
     }
@@ -1670,6 +1984,81 @@ fn warm_clips(project: &Project, pool: &mut DecoderPool, lo: f64, hi: f64) {
             if let Some(a) = project.asset(c.asset).filter(|_| matches!(c.kind, ClipKind::Video | ClipKind::Image)) {
                 // the first frame this window shows of it is decoded along with the open
                 pool.warm(&a.path, Some(c.src_time(c.start.max(lo)).max(0.0)));
+            }
+        }
+    }
+}
+
+// ---- perf:cut-preroll ----
+
+/// Seconds of read-ahead for frames that cost `cost` seconds each to make (0 = not known yet):
+/// `READ_AHEAD_SECS` while a frame takes under half its own duration, stretching to
+/// `MAX_READ_AHEAD_SECS` when it takes all of it - expensive frames get a deeper buffer to ride out a slow
+/// one with. The cache budget still caps the frames this comes to (the caller's clamp), which is
+/// what keeps it inside RAM. Half-second steps, so the window does not wobble with every frame.
+fn read_ahead_secs(cost: f64, fps: f64) -> f64 {
+    let load = ((cost * fps - 0.5) / 0.5).clamp(0.0, 1.0);
+    ((READ_AHEAD_SECS + (MAX_READ_AHEAD_SECS - READ_AHEAD_SECS) * load) * 2.0).round() / 2.0
+}
+
+/// The video clips that come on screen within `secs` of timeline time `t`, in the direction of
+/// play, and start with a seek: `(source path, the source time of their first frame)` for
+/// `DecoderPool::preroll`. Clips inside nested sequences count too, at the time their sequence
+/// clip shows them. A clip that carries on the source of the clip right before it on its track
+/// (a plain split) reads on through the cut and is left out.
+/// ponytail: the first frame is where the clip itself starts; a transition shows it earlier, and
+/// its first frames then still seek.
+fn upcoming(project: &Project, t: f64, secs: f64, rate: f64) -> Vec<(&str, f64)> {
+    let fwd = rate >= 0.0;
+    let (lo, hi) = if fwd { (t, t + secs) } else { (t - secs, t) };
+    let tracks = project.tracks.iter().enumerate().filter(|(ti, _)| project.active(*ti)).map(|(_, tr)| tr);
+    let mut out = Vec::new();
+    upcoming_in(project, tracks, (lo, hi), fwd, false, 0, &mut out);
+    out
+}
+
+/// `upcoming` over `tracks` (a timeline's, or a nested sequence's in its own time) for the window
+/// `(lo, hi)`; `entering`: the window starts where these tracks come on screen, so what they show
+/// right there comes on too.
+fn upcoming_in<'p>(
+    project: &'p Project,
+    tracks: impl Iterator<Item = &'p crate::model::Track>,
+    (lo, hi): (f64, f64),
+    fwd: bool,
+    entering: bool,
+    depth: usize,
+    out: &mut Vec<(&'p str, f64)>,
+) {
+    let fd = project.frame_dur();
+    for track in tracks.filter(|tr| tr.kind == TrackKind::Video) {
+        for c in track.clips.iter().filter(|c| c.enabled && c.start < hi && c.end() > lo) {
+            // where it comes on screen in the direction of play, and its first frame there
+            let (edge, first) = if fwd { (c.start, c.start.max(lo)) } else { (c.end(), c.end().min(hi) - fd) };
+            let comes = if fwd { edge > lo && edge <= hi } else { edge >= lo && edge < hi };
+            let comes = comes || (entering && c.contains(if fwd { lo } else { hi - 1e-6 }));
+            match c.kind {
+                ClipKind::Video if comes => {
+                    let Some(a) = project.asset(c.asset) else { continue };
+                    let at = c.src_time(first).max(0.0);
+                    let split = |p: &&Clip| {
+                        p.enabled
+                            && p.kind == ClipKind::Video
+                            && p.asset == c.asset
+                            && !p.reverse
+                            && !c.reverse
+                            && (p.end() - c.start).abs() < 1e-3
+                            && (0.0..=0.5).contains(&(at - p.src_end()))
+                    };
+                    if !(fwd && track.clips.iter().any(|p| split(&p))) {
+                        out.push((a.path.as_str(), at));
+                    }
+                }
+                ClipKind::Sequence if depth < 8 => {
+                    let Some(sq) = project.sequence(c.sequence) else { continue };
+                    let (a, b) = (c.src_time(c.start.max(lo)), c.src_time(c.end().min(hi)));
+                    upcoming_in(project, sq.tracks.iter(), (a.min(b), a.max(b)), fwd, comes, depth + 1, out);
+                }
+                _ => {}
             }
         }
     }
@@ -1729,11 +2118,13 @@ fn still_need(project: &Project, clip: &Clip, size: (u32, u32)) -> (u32, u32) {
     if !(w.is_finite() && h.is_finite()) {
         return size;
     }
-    ((w.ceil() as u32).min(size.0), (h.ceil() as u32).min(size.1))
+    // ws:browser-layer: a browser above zooms the still in: that much more of it is kept
+    let z = crate::engine::browser::max_zoom_over(&project.tracks, clip.start, clip.end());
+    (((w * z).ceil() as u32).min(size.0), ((h * z).ceil() as u32).min(size.1))
 }
 
-/// One clip's layer: video/images decode, text/shapes rasterise, a nested sequence is composited on the
-/// CPU. Kinds the renderer draws without a bitmap (Adjustment) or not at all (Audio) push nothing.
+/// One clip's layer: video/images decode, text/shapes rasterise, a nested sequence becomes a
+/// `NestedSet` (its own layers, made by `layers_with`). Kinds the renderer draws without a bitmap (Adjustment) or not at all (Audio) push nothing.
 /// `later`: video frames that are not in the source cache are left to it (a hole in their place)
 /// instead of decoded here.
 #[allow(clippy::too_many_arguments)]
@@ -1749,6 +2140,7 @@ fn layer_for<'p>(
     shapes: &mut ShapeRasterizer,
     comp: &mut Compositor,
     set: &mut LayerSet,
+    nest: &mut Nest,
     mut later: Option<&mut Deferred<'p>>,
 ) {
     // Asset nodes sample footage that need not be on the timeline, so nothing else decodes it: one
@@ -1772,6 +2164,9 @@ fn layer_for<'p>(
         return;
     }
     let s = w as f32 / project.width.max(1) as f32;
+    // ws:browser-layer: text and shapes under a zoomed browser are drawn that much bigger (gpu::draw_clip
+    // places them at their own size again)
+    let sv = s * crate::engine::browser::draw_boost(&project.tracks, t, project.width, project.height);
     match clip.kind {
         ClipKind::Video | ClipKind::Image => {
             if clip.is_empty_container() {
@@ -1804,8 +2199,10 @@ fn layer_for<'p>(
             if !(p.w.is_finite() && p.h.is_finite()) {
                 return;
             }
-            let dw = (p.w.round().max(1.0) as u32).clamp(1, native.0);
-            let dh = (p.h.round().max(1.0) as u32).clamp(1, native.1);
+            // ws:browser-layer: under a zoomed browser the layer is shown that much bigger
+            let z = crate::engine::browser::zoom_on_screen(&project.tracks, t, project.width, project.height);
+            let dw = ((p.w * z).round().max(1.0) as u32).clamp(1, native.0);
+            let dh = ((p.h * z).round().max(1.0) as u32).clamp(1, native.1);
             // what the decoder really has: the proxy's size when one stands in for the footage
             let Some((src, still)) = pool.video(&asset.path).map(|d| (d.size(), d.is_still())) else { return };
             let (dw, dh) = layer_size(src, (dw, dh), still);
@@ -1841,19 +2238,22 @@ fn layer_for<'p>(
         }
         ClipKind::Text => {
             let Some(style) = &clip.text else { return };
-            let img = text.with(|tx| tx.render(style, s, clip.local(t)));
+            let img = text.with(|tx| tx.render(style, sv, clip.local(t)));
             if img.width > 1 || img.height > 1 {
                 set.layers.push((clip.id, img));
             }
         }
         ClipKind::Shape => {
             let Some(style) = &clip.shape else { return };
-            let img = shapes.render(style, s, clip.local(t));
+            let img = shapes.render(style, sv, clip.local(t));
             if !img.is_empty() {
                 set.layers.push((clip.id, img));
             }
         }
         ClipKind::Sequence => {
+            if nest.depth >= crate::engine::compose::MAX_DEPTH {
+                return;
+            }
             let editing = project.editing == Some(clip.sequence);
             let (qw, qh) = if editing {
                 (project.width, project.height) // its live size is swapped into the project
@@ -1874,20 +2274,30 @@ fn layer_for<'p>(
             let dh = (p.h.round() as u32).clamp(1, qh);
             let dur = project.sequence_duration(clip.sequence);
             let st = clip.src_time(t).clamp(0.0, (dur - 1e-6).max(0.0));
-            // ponytail: gpu.rs wants a nested sequence as a ready bitmap, so the CPU compositor renders
-            // it - through a shallow project view (one Project clone per frame while a sequence clip is
-            // on screen). Making `Compositor::render_tracks` pub would drop both the clone and this.
-            let mut sub = project.clone();
-            if !editing {
-                let Some(sq) = project.sequence(clip.sequence) else { return };
-                sub.tracks.clone_from(&sq.tracks);
-                (sub.width, sub.height) = (qw, qh);
-                sub.editing = Some(clip.sequence);
+            // ws:nested-gpu: the sequence's own layer tree, made by this same builder (parallel decode
+            // and all) against the sequence as a project of its own; gpu.rs draws it into a canvas
+            let Some(view) = nest.view(project, clip.sequence, editing, (qw, qh)) else { return };
+            nest.depth += 1;
+            let inner = layers_with(&view, st, dw, dh, pool, spare, text, shapes, comp, nest);
+            nest.depth -= 1;
+            set.nested.push(crate::engine::gpu::NestedSet { id: clip.id, view, t: st, w: dw, h: dh, set: inner });
+        }
+        // ---- ws:browser-layer ---- the window art, cursor sprite and overlays, under slot keys
+        ClipKind::Browser => {
+            use crate::engine::browser as br;
+            let Some(b) = &clip.browser else { return };
+            let rs = br::raster_scale(clip, s, clip.local(t));
+            let mut load = |p: &str, w: u32, h: u32| pool.frame_arc(p, 0.0, w, h, &mut Vec::new());
+            let l = text.with(|tx| comp.browser.layers(b, clip.local(t), s, rs, tx, &mut load));
+            for (slot, f) in [(br::BG, l.bg), (br::WINDOW, l.window), (br::CURSOR, l.cursor)] {
+                set.layers.extend(f.map(|f| (br::key(clip.id, slot), f)));
             }
-            sub.show_subtitles = false; // subtitles belong to the outer canvas
-            let mut frame = spare.pop().unwrap_or_default();
-            text.with(|tx| comp.render(&sub, st, dw, dh, pool, tx, &mut frame));
-            set.layers.push((clip.id, Arc::new(frame)));
+            if let Some((f, a)) = l.keys {
+                let mut one = Frame::new(1, 1);
+                one.rgba[3] = (a * 255.0) as u8;
+                set.layers.push((br::key(clip.id, br::KEYS), f));
+                set.layers.push((br::key(clip.id, br::KEYS_ALPHA), Arc::new(one)));
+            }
         }
         ClipKind::Audio | ClipKind::Adjustment => {}
     }
@@ -1941,12 +2351,19 @@ fn recycle(old: Option<Arc<LayerSet>>, spare: &mut Vec<Frame>) {
     // ponytail: a count, not bytes; a byte cap if 4K stacks make 16 spares show in RAM.
     const KEEP: usize = 16;
     let Some(Ok(set)) = old.map(Arc::try_unwrap) else { return };
-    let frames = set.layers.into_iter().map(|(_, f)| f).chain(set.motion.into_iter().map(|(_, _, f)| f));
+    // ws:nested-gpu: a nested sequence's own sets give theirs back too
+    let mut frames = Vec::new();
+    let mut sets = vec![set];
+    while let Some(set) = sets.pop() {
+        frames.extend(set.layers.into_iter().map(|(_, f)| f).chain(set.motion.into_iter().map(|(_, _, f)| f)));
+        sets.extend(set.nested.into_iter().map(|n| n.set));
+    }
     for f in frames {
         if spare.len() >= KEEP {
             return;
         }
-        if let Ok(f) = Arc::try_unwrap(f) {
+        // a GPU frame has no buffer to lend (and would hold its texture while it waited)
+        if let Some(f) = Arc::try_unwrap(f).ok().filter(|f| f.gpu.is_none()) {
             spare.push(f);
         }
     }
@@ -1972,15 +2389,39 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
     // frames), decimated/duplicated down to exactly BLOCK output frames; last_wraps detects a loop seam.
     let mut scratch = vec![0f32; BLOCK * 2 * 2];
     let mut last_wraps: u64 = 0;
+    // ---- ws:play-gate ----
+    // buffer before playing: the ring is being filled from the paused clock time `pre_at` with the
+    // device stopped; `Play` from that same time keeps it, so audio starts with the first frame
+    let mut pre = false;
+    let mut pre_at = 0.0;
+    // the playhead is paused somewhere new (a seek, an edit, a stop): once it has rested `PRE_REST`, fill
+    // the ring there as for a buffering Play, so the first Play of a cold project starts with its sound
+    let mut want_pre = false;
+    // after a Play that found the ring empty: the clock's start, until the first block is in the ring
+    let mut lag_from: Option<Instant> = None;
     let is_playing = || {
         let mut c = lock(&shared.clock);
         c.now();
         c.playing
     };
     loop {
-        if pending.is_none() && !running && !(stream.is_some() && is_playing()) {
-            let Ok(c) = rx.recv() else { return }; // idle (or no device): block, zero CPU
-            pending = Some(c);
+        if pending.is_none() && !running && !pre && !(stream.is_some() && is_playing()) {
+            if want_pre && !is_playing() {
+                match rx.recv_timeout(PRE_REST) {
+                    Ok(c) => pending = Some(c),
+                    Err(RecvTimeoutError::Timeout) => {
+                        want_pre = false;
+                        (pre, pre_at) = (true, lock(&shared.clock).now());
+                        lock(&ring).clear();
+                        mixed_until = pre_at;
+                        shared.audio_ready.store(false, Ordering::Relaxed);
+                    }
+                    Err(RecvTimeoutError::Disconnected) => return,
+                }
+            } else {
+                let Ok(c) = rx.recv() else { return }; // idle (or no device): block, zero CPU
+                pending = Some(c);
+            }
         }
         loop {
             let c = match pending.take() {
@@ -1992,13 +2433,59 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 },
             };
             match c {
-                Cmd::SetProject => project = lock(&shared.project).clone(),
-                Cmd::Play | Cmd::Seek => {
-                    lock(&ring).clear();
-                    mixed_until = lock(&shared.clock).now();
-                    filling = true;
+                Cmd::SetProject => {
+                    project = lock(&shared.project).clone();
+                    want_pre = true;
+                    if pre {
+                        // the buffered audio may be from the old project: fill again from the same time
+                        lock(&ring).clear();
+                        mixed_until = pre_at;
+                        shared.audio_ready.store(false, Ordering::Relaxed);
+                    }
                 }
-                Cmd::Pause => lock(&ring).clear(),
+                Cmd::Play | Cmd::Seek => {
+                    let (t, base) = {
+                        let mut c = lock(&shared.clock);
+                        (c.now(), c.base_t)
+                    };
+                    // Play from exactly where the buffering filled the ring: keep it (ws:play-gate)
+                    let kept = matches!(c, Cmd::Play) && pre && (base - pre_at).abs() < 1e-6 && !lock(&ring).is_empty();
+                    if kept {
+                        lag_from = None;
+                        shared.audio_lag_us.store(0, Ordering::Relaxed);
+                    } else {
+                        lock(&ring).clear();
+                        mixed_until = t;
+                        filling = true;
+                        if matches!(c, Cmd::Play) {
+                            lag_from = Some(lock(&shared.clock).base_at);
+                        }
+                        if pre {
+                            // a seek while buffering: fill again from there
+                            pre_at = t;
+                            shared.audio_ready.store(false, Ordering::Relaxed);
+                        }
+                    }
+                    want_pre = matches!(c, Cmd::Seek);
+                    if matches!(c, Cmd::Play) {
+                        pre = false;
+                    }
+                }
+                Cmd::Pause => {
+                    lock(&ring).clear();
+                    (pre, want_pre) = (false, true);
+                }
+                Cmd::Preroll(_) => {
+                    // ---- ws:play-gate ---- (a ring already filled from this very time is kept)
+                    let t = lock(&shared.clock).now();
+                    want_pre = false;
+                    if !(pre && (t - pre_at).abs() < 1e-6) {
+                        (pre, pre_at) = (true, t);
+                        lock(&ring).clear();
+                        mixed_until = t;
+                    }
+                    shared.audio_ready.store(false, Ordering::Relaxed); // true again once the ring is full
+                }
                 Cmd::Canvas => {}
                 Cmd::Backend(b) => pool.set_backend(b),
                 Cmd::Gpu(_) | Cmd::Proxies(_) | Cmd::CacheBudget(_) => {} // render-thread only
@@ -2032,6 +2519,24 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
             }
         }
         let playing = is_playing();
+        if pre && !playing {
+            // ---- ws:play-gate ---- buffer before playing: the first LEAD_SECS of audio from the paused
+            // playhead goes into the ring, a block per pass, device stopped; then wait for a command
+            let queued = lock(&ring).len() as f64 / (2 * SAMPLE_RATE) as f64;
+            if queued < LEAD_SECS {
+                if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
+                    lock(&ring).extend(block.iter().copied());
+                } else {
+                    shared.audio_ready.store(true, Ordering::Relaxed); // a failing mixer must not hold the start
+                }
+                mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
+            } else {
+                shared.audio_ready.store(true, Ordering::Relaxed);
+                let Ok(c) = rx.recv() else { return };
+                pending = Some(c);
+            }
+            continue;
+        }
         if playing && (stream.is_none() || dead.swap(false, Ordering::Relaxed)) {
             // lazy/late open: no device at startup, or it went away / the default changed mid-session.
             // If it fails we fall back to the idle recv above (retried on the next command).
@@ -2075,6 +2580,9 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 // unchanged fast path: byte-identical to the pre-rate-loop code at the default rate
                 if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
                     lock(&ring).extend(block.iter().copied()); // a panicked block: underrun instead
+                    if let Some(from) = lag_from.take() {
+                        shared.audio_lag_us.store(from.elapsed().as_micros() as u64, Ordering::Relaxed);
+                    }
                                                                // ---- ws:audio-dsp-automation ----
                                                                // hand the post-fader bus blocks to the UI thread's meters/LUFS (App::sync_buses)
                     mixer.graph().publish(&METER_FEED);
@@ -2234,7 +2742,21 @@ mod render_thread_tests {
             for c in tr.clips.iter().filter(|c| c.enabled && c.contains(t)) {
                 let text = &mut TextRef::Own(&mut text);
                 let spare = &mut Vec::new();
-                layer_for(&project, c, t, 1280, 720, &mut pool, spare, text, &mut shapes, &mut comp, &mut sequential, None);
+                layer_for(
+                    &project,
+                    c,
+                    t,
+                    1280,
+                    720,
+                    &mut pool,
+                    spare,
+                    text,
+                    &mut shapes,
+                    &mut comp,
+                    &mut sequential,
+                    &mut Nest::default(),
+                    None,
+                );
             }
         }
         assert_eq!(parallel.layers.iter().map(|l| l.0).collect::<Vec<_>>(), ids, "every clip, bottom to top");
@@ -2649,6 +3171,7 @@ mod tests {
                 range: None,
                 effects: Vec::new(),
                 html: None,
+                proxy: None,
             }
         }
 
@@ -2976,7 +3499,10 @@ mod tests {
         let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());
         let set = decode_layers(&project, 1.0, 320, 240, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
         assert!(set.get(shp).is_some(), "shape clip has no layer");
-        assert!(set.get(seq).is_some(), "nested sequence has no layer");
+        // ws:nested-gpu: a layer tree of its own, not a bitmap the CPU compositor made
+        assert!(set.get(seq).is_none(), "a nested sequence is no longer composited on the CPU");
+        let n = set.nested.iter().find(|n| n.id == seq).expect("nested sequence has no layer tree");
+        assert_eq!((n.w, n.h, n.set.layers.len()), (320, 240, 1), "its shape, at its own size");
         if text.families().is_empty() {
             eprintln!("no system fonts - skipping the text assertions");
             return;
@@ -3610,6 +4136,268 @@ mod tests {
             "source monitor 1080p60: {} published / {taken} taken / {due} due in {secs:.2} s, dropped {}, worst gap {worst_gap_ms:.1} ms",
             published - published0,
             p.dropped_frames() - dropped0,
+        );
+    }
+
+    // ---- ws:play-gate ----
+
+    /// Poll `ready` for up to 5 s.
+    fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+        for _ in 0..500 {
+            if ready() {
+                return;
+            }
+            sleep(Duration::from_millis(10));
+        }
+        panic!("{what} within 5 s");
+    }
+
+    fn flat_player(fps: f64, cost: Duration) -> Player {
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video("C:\\a.mp4", Box::new(Flat(RED, cost)));
+        tiny_player(fps, &[("Video", "C:\\a.mp4")], pool)
+    }
+
+    /// Buffer before playing, video side: a cold window is not ready, `preroll` fills it with the
+    /// clock still, the report climbs to ready, and anything that may have changed the cache makes the
+    /// answer "not yet" until the render thread has looked again.
+    #[test]
+    fn preroll_fills_the_window_and_the_clock_stays_put() {
+        let mut p = flat_player(10.0, Duration::from_millis(15));
+        let (ready, frac) = p.video_report(1.0);
+        assert!(!ready && frac == 0.0, "nothing is cached yet");
+        p.preroll(1.0);
+        let mut best = 0.0f32;
+        wait_until("the window fills", || {
+            let (ready, frac) = p.video_report(1.0);
+            assert!(frac >= 0.0 && frac <= 1.0);
+            best = best.max(frac);
+            ready
+        });
+        assert!(!p.is_playing() && p.time() == 0.0, "buffering does not move the clock");
+        assert_eq!(p.video_report(1.0), (true, 1.0));
+        // a bigger window than the cache looks ahead is capped by it, never unreachable
+        assert!(p.video_report(60.0).0 || p.video_report(60.0).1 > 0.5);
+        // an edit in flight: not ready until the render thread has drained it and looked again
+        let project = lock(&p.shared.project).clone();
+        p.set_project(&project);
+        assert!(!p.video_report(1.0).0, "a command is in flight");
+        wait_until("ready again after the edit", || p.video_report(1.0).0);
+        // a seek moves the window with it
+        p.seek(5.0);
+        assert!(!p.video_report(1.0).0, "the new window is not cached");
+        wait_until("the window at the seek fills", || p.video_report(1.0).0);
+        p.pause();
+    }
+
+    /// At the press: a playhead that has rested has its read-ahead cached (the paused prefetch), so the
+    /// check is a yes without ever asking for buffering. This is the "starts instantly" half.
+    #[test]
+    fn a_rested_playhead_is_ready_without_buffering() {
+        let mut p = flat_player(10.0, Duration::from_millis(2));
+        p.seek(1.0);
+        wait_until("the paused read-ahead covers the window", || p.video_report(1.0).0);
+        // and the answer costs no thread hop: it is a lock and a few comparisons
+        let t = Instant::now();
+        for _ in 0..1000 {
+            assert!(p.video_report(1.0).0);
+        }
+        assert!(t.elapsed() < Duration::from_millis(50), "{:?} for 1000 checks", t.elapsed());
+    }
+
+    /// The window never asks past the end of the timeline.
+    #[test]
+    fn the_window_stops_at_the_last_frame() {
+        let mut p = flat_player(10.0, Duration::from_millis(1));
+        p.seek(19.8); // 20 s timeline: two frames to go
+        p.preroll(1.5);
+        wait_until("the tail fills", || p.video_report(1.5).0);
+    }
+
+    /// Audio side: the ring is filled for the paused playhead with the device stopped, and a Play from
+    /// that same time keeps it (the lag counter says 0: the audio did not have to be mixed after the start).
+    #[test]
+    fn preroll_fills_the_audio_ring_and_play_keeps_it() {
+        let mut p = flat_player(10.0, Duration::from_millis(1));
+        p.preroll(1.0);
+        wait_until("the audio ring fills", || p.audio_ready());
+        p.play();
+        sleep(Duration::from_millis(100));
+        assert_eq!(p.audio_start_lag_ms(), 0.0, "the ring was full before the clock started");
+        p.pause();
+        assert!(p.pauses() >= 1);
+    }
+
+    /// A playhead that has rested has its audio ring filled too (no `preroll`, no request): the first
+    /// Play of a cold project then starts with the sound, not 150-500 ms behind the picture.
+    #[test]
+    fn a_rested_playhead_has_its_audio_ready() {
+        let mut p = flat_player(10.0, Duration::from_millis(1));
+        p.seek(1.0);
+        wait_until("the rested playhead's audio is filled", || p.audio_ready());
+        p.play();
+        sleep(Duration::from_millis(100));
+        assert_eq!(p.audio_start_lag_ms(), 0.0, "the ring was full before the clock started");
+        p.pause();
+        // a seek moves it: not ready until the playhead has rested there again
+        p.seek(2.0);
+        wait_until("filled again at the new place", || p.audio_ready());
+    }
+
+    /// A loop wrap onto frames that are not cached is a stall; onto cached ones it is not. The test is
+    /// the stall's own exit test.
+    #[test]
+    fn a_loop_lands_cold_only_when_the_cache_is_cold() {
+        let hot = |_: i64| true;
+        let cold = |i: i64| i > 100;
+        assert!(!lands_cold(10, 45, 600, 1.0, hot));
+        assert!(lands_cold(10, 45, 600, 1.0, cold));
+        // a third of the read-ahead is enough to call it warm
+        assert!(!lands_cold(10, 45, 600, 1.0, |i| i <= 25));
+        assert!(lands_cold(10, 45, 600, 1.0, |i| i <= 24));
+        // never past the end
+        assert!(!lands_cold(598, 45, 599, 1.0, |i| i >= 598));
+        // reverse looks behind
+        assert!(!lands_cold(100, 45, 600, -1.0, |i| (85..=100).contains(&i)));
+        assert!(lands_cold(100, 45, 600, -1.0, |i| (90..=100).contains(&i)));
+    }
+
+    // ---- perf:cut-preroll (#159) ----
+
+    /// A 120 s 1080p60 H.264 file with a keyframe every 10 s (GOP 600), made once per machine.
+    fn long_gop_mp4() -> Option<String> {
+        let dir = std::env::temp_dir().join("se-bench");
+        let _ = std::fs::create_dir_all(&dir);
+        let mp4 = dir.join("gop600-120s-1080p60.mp4");
+        if !mp4.exists() {
+            let part = dir.join(format!("gop600-{}.part.mp4", std::process::id()));
+            let ok = std::process::Command::new(media::ffpipe::ffmpeg_exe()?)
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=60", "-t", "120"])
+                .args(["-c:v", "libx264", "-preset", "ultrafast", "-g", "600", "-keyint_min", "600"])
+                .args(["-sc_threshold", "0", "-pix_fmt", "yuv420p"])
+                .arg(&part)
+                .status()
+                .is_ok_and(|s| s.success());
+            if !ok || std::fs::rename(&part, &mp4).is_err() && !mp4.exists() {
+                return None;
+            }
+        }
+        Some(mp4.to_string_lossy().into_owned())
+    }
+
+    /// Which clips the look-ahead pre-rolls: those starting in the window in the direction of play,
+    /// with the source time of their first frame - not a plain split (it reads on), not one past the
+    /// window, and inside a nested sequence at the time its sequence clip shows them.
+    #[test]
+    fn the_look_ahead_prerolls_the_clips_that_start_with_a_seek() {
+        let mut project = Project::new();
+        project.fps = 30.0;
+        let x = project.add_asset(fake_asset("Video", "C:\\x.mp4", 600.0));
+        let y = project.add_asset(fake_asset("Video", "C:\\y.mp4", 600.0));
+        let z = project.add_asset(fake_asset("Video", "C:\\z.mp4", 600.0));
+        let clip = |p: &mut Project, asset, start, src_in, dur| {
+            let mut c = Clip::new(p.new_id(), ClipKind::Video, "c", start, dur);
+            (c.asset, c.src_in) = (asset, src_in);
+            c
+        };
+        let a = clip(&mut project, x, 0.0, 1.0, 3.0);
+        let b = clip(&mut project, x, 3.0, 105.0, 3.0); // a jump deep into the same file
+        let split = clip(&mut project, x, 6.0, 108.0, 2.0); // carries on where b ends
+        let other = clip(&mut project, y, 8.0, 40.0, 2.0);
+        project.tracks[0].clips.extend([a, b, split, other]);
+        let got = |p: &Project, t, secs, rate| -> Vec<(String, f64)> {
+            upcoming(p, t, secs, rate).into_iter().map(|(s, at)| (s.to_string(), (at * 1e3).round() / 1e3)).collect()
+        };
+        assert_eq!(got(&project, 0.0, 4.0, 1.0), [("C:\\x.mp4".to_string(), 105.0)]);
+        assert!(got(&project, 0.0, 2.0, 1.0).is_empty(), "the cut is past the window");
+        assert!(got(&project, 3.0, 2.0, 1.0).is_empty(), "on screen already: nothing comes on");
+        assert!(got(&project, 4.0, 3.0, 1.0).is_empty(), "a plain split reads on");
+        assert_eq!(got(&project, 5.0, 4.0, 1.0), [("C:\\y.mp4".to_string(), 40.0)]);
+        // playing backwards, a clip comes on at its end: its last frame
+        assert_eq!(got(&project, 4.0, 2.0, -1.0), [("C:\\x.mp4".to_string(), 3.967)]);
+
+        // a nested sequence at 12 s: what it shows from its first frame, and a clip inside that starts later
+        let sid = project.new_sequence("seq", 1920, 1080, 30.0);
+        let first = clip(&mut project, z, 0.0, 7.0, 5.0);
+        let later = clip(&mut project, z, 2.0, 50.0, 3.0);
+        project.sequence_mut(sid).unwrap().tracks[0].clips.extend([first, later]);
+        project.insert_sequence_clip(sid, 12.0, None).expect("sequence clip");
+        let z = |at: f64| ("C:\\z.mp4".to_string(), at);
+        assert_eq!(got(&project, 10.0, 3.0, 1.0), [z(7.0)], "the sequence comes on: its first frame");
+        assert_eq!(got(&project, 10.0, 5.0, 1.0), [z(7.0), z(50.0)]);
+        assert_eq!(got(&project, 13.0, 2.0, 1.0), [z(50.0)], "inside it, at the sequence's own time");
+    }
+
+    /// #159: a cut from one clip of a long recording to another clip of it 105 s in - half a GOP
+    /// past a keyframe, 300 frames to decode before the first one shows - plays straight through:
+    /// the decoder for the second clip is opened and seeked ahead of the cut, off the clock.
+    /// Timing on real media, so not a regular test (a full parallel `cargo test` starves it):
+    /// `cargo test a_cut_deep_into -- --ignored --nocapture` (before #159: a 1.9 s+ freeze at the cut).
+    #[test]
+    #[ignore]
+    fn a_cut_deep_into_a_long_gop_file_plays_without_a_gap() {
+        let Some(path) = long_gop_mp4() else {
+            eprintln!("ffmpeg missing; skipped");
+            return;
+        };
+        let asset = media::probe(&path, Backend::Mf).expect("probe");
+        let mut project = Project::from_media(asset);
+        let cut = 3.0;
+        let a = &mut project.tracks[0].clips[0];
+        (a.src_in, a.duration) = (1.0, cut);
+        let mut b = a.clone();
+        (b.start, b.src_in) = (cut, 105.0);
+        b.id = project.new_id();
+        project.tracks[0].clips.push(b);
+        let fd = 1.0 / project.fps;
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Mf, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(480, 270, 1280);
+        p.seek(0.0);
+        let opened = Instant::now(); // (the first open can be slow on a busy machine: not what this times)
+        while p.take_whole_frame().is_none_or(|f| f.width != 480) {
+            assert!(opened.elapsed() < Duration::from_secs(20), "no first frame");
+            sleep(Duration::from_millis(10));
+        }
+        // Play as the app does: through the play gate (`ui::app::playgate`), a second buffered first
+        p.preroll(1.0);
+        while !p.video_report(1.0).0 {
+            assert!(opened.elapsed() < Duration::from_secs(30), "the play gate never filled");
+            sleep(Duration::from_millis(10));
+        }
+        p.play();
+        // when each new frame reached the UI, polled the way the UI does
+        let mut shown: Vec<(Instant, f64)> = Vec::new();
+        let (mut buffered, mut partial) = (false, 0);
+        let start = Instant::now();
+        while p.time() < cut + 0.25 && start.elapsed() < Duration::from_secs(15) {
+            if let Some(f) = p.take_frame() {
+                shown.push((Instant::now(), f.pts));
+                partial += p.is_partial() as usize; // shown without the clip: its decoder was not ready
+            }
+            // (a machine too busy to play at all buffers anywhere: only the cut is this test's business)
+            buffered |= p.is_buffering() && (cut - 0.25..cut + 0.25).contains(&p.time());
+            sleep(Duration::from_millis(1));
+        }
+        let end = Instant::now();
+        p.pause();
+        // the frames a seek at the cut would hold back, from just before it to a quarter second in (a
+        // freeze that outlasts the run counts up to its end: the frames that never came)
+        let span = cut - 2.0 * fd..cut + 0.25;
+        let near: Vec<(Instant, f64)> =
+            shown.into_iter().filter(|s| span.contains(&s.1)).chain([(end, span.end)]).collect();
+        let gap = near.windows(2).map(|w| (w[1].0 - w[0].0).as_secs_f64()).fold(0.0, f64::max);
+        let frames = near.len() - 1;
+        eprintln!(
+            "cut-preroll: {frames} frames across the cut, worst gap {:.1} ms, buffered {buffered}, partial {partial}",
+            gap * 1e3
+        );
+        assert!(frames as f64 >= 0.8 * (span.end - span.start) / fd, "only {frames} frames across the cut");
+        assert!(
+            !buffered && partial == 0 && gap <= 2.0 * fd,
+            "worst gap {:.1} ms at the cut (buffered: {buffered})",
+            gap * 1e3
         );
     }
 }

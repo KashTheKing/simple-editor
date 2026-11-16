@@ -1,6 +1,16 @@
 use crate::model::*;
 use std::path::Path;
 
+/// The `assistant_chats` array of a saved project, as JSON text (None = no such key / unreadable).
+pub fn chats_json_in(path: &Path) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct F {
+        assistant_chats: Option<serde_json::Value>,
+    }
+    let f: F = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    f.assistant_chats.map(|v| v.to_string())
+}
+
 impl Project {
     // ---------- persistence ----------
     pub fn to_json(&self) -> String {
@@ -137,9 +147,23 @@ impl Project {
     }
     /// Writes beside the target then renames, so a failed write can't destroy the previous save.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        self.save_with_chats(path, None)
+    }
+    /// `save` plus the Assistant's chats as a top-level `assistant_chats` key (JSON array text). They
+    /// live beside the project, not in `Project` (undo snapshots would carry - and revert - them).
+    /// `None` keeps whatever the file being replaced already holds, so a save that doesn't know the
+    /// chats (an MCP save, a recovery) never wipes them.
+    pub fn save_with_chats(&self, path: &Path, chats: Option<String>) -> std::io::Result<()> {
+        let mut json = self.to_json();
+        let chats = chats.or_else(|| chats_json_in(path));
+        if let (Some(c), Some(head)) = (chats, json.trim_end().strip_suffix('}')) {
+            json = format!("{head},
+  \"assistant_chats\": {c}
+}}");
+        }
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
-        std::fs::write(&tmp, self.to_json())?;
+        std::fs::write(&tmp, json)?;
         std::fs::rename(&tmp, path)
     }
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -213,5 +237,49 @@ mod tests {
         let loaded = Project::from_json(&json.to_string()).unwrap();
         assert!(loaded.newer_than_app(), "a version newer than this build must be flagged");
         assert_eq!(loaded.version, Project::VERSION + 1, "the newer version itself is preserved, not clamped");
+    }
+}
+
+#[cfg(test)]
+mod big_open_bench {
+    use super::*;
+    /// The open path of a big real project, step by step (never commit numbers from it - it reads
+    /// whatever file you point it at): `SE_BIG_PROJECT=<a COPY of a .sedit> cargo test
+    /// big_project_open_steps -- --ignored --nocapture`. The HTML part is what `html_ctl::reconcile`
+    /// does per layer per scan: the first scan prepares the pages, the next ones must be ~free.
+    #[test]
+    #[ignore]
+    fn big_project_open_steps() {
+        let Ok(path) = std::env::var("SE_BIG_PROJECT") else { return };
+        let t = std::time::Instant::now();
+        let p = Project::load(Path::new(&path)).unwrap();
+        eprintln!("load {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        let st = crate::engine::style::style_summary(&p);
+        eprintln!("style_summary {} chars {:?}", st.len(), t.elapsed());
+        use crate::engine::html;
+        let dir = Path::new(&path).parent().map(Path::to_path_buf);
+        let media = p.assets.iter().filter(|a| a.html.is_none()).map(|a| std::path::PathBuf::from(&a.path)).collect();
+        html::set_media(html::Media::new(dir, media));
+        for pass in ["cold", "warm"] {
+            let t = std::time::Instant::now();
+            for h in p.assets.iter().filter_map(|a| a.html.as_ref()) {
+                let spec = html::Spec {
+                    html: h.src.clone(),
+                    fields: h.field_list(),
+                    scale: html::scale_for(p.width, p.height),
+                    fps: p.fps,
+                    duration: h.duration,
+                    base: String::new(),
+                    params: html::params_of(&h.src, &h.params),
+                    width: h.width,
+                    mouse: h.mouse.clone(),
+                    focus: None,
+                    renderer: h.renderer,
+                };
+                let _ = html::lookup(&spec);
+            }
+            eprintln!("html scan ({pass}) {:?}", t.elapsed());
+        }
     }
 }

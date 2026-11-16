@@ -1289,6 +1289,7 @@ mod tests {
                 range: None,
                 effects: Vec::new(),
                 html: None,
+                proxy: None,
             });
             project.insert_asset_clips(aid, 0.0, None);
             let clip = project.tracks[0].clips[0].id;

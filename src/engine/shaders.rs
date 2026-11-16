@@ -424,6 +424,11 @@ fn push_knobs(s: &mut String, meta: &crate::engine::shaderlib::ShaderMeta) {
 ", i + 1, i));
     }
     for (i, p) in meta.params.iter().enumerate() {
+        // ws:audio-visualizer: controls past the prelude's p0..p7 get their own uniforms
+        if i >= 8 {
+            s.push_str(&format!("uniform float p{i};
+"));
+        }
         s.push_str(&format!("#define {} p{}
 ", p.id, i));
     }

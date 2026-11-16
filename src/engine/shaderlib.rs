@@ -44,7 +44,11 @@ fn valid_id(id: &str) -> bool {
 }
 
 /// Read the header: the `//` lines before the first line of code. Unknown keys and malformed
-/// `@param` lines are skipped (`lint` reports them); at most 8 params are kept.
+/// `@param` lines are skipped (`lint` reports them); at most `MAX_PARAMS` are kept.
+/// Named controls a shader may declare: the renderer uploads `p0`..`p13` (`engine::gpu`'s
+/// `PARAM_NAMES`). The prelude declares `p0..p7`; `shaders::user_shader` declares the rest on demand.
+pub const MAX_PARAMS: usize = 14;
+
 pub fn parse_meta(src: &str) -> ShaderMeta {
     let mut m = ShaderMeta::default();
     for line in src.lines() {
@@ -72,7 +76,7 @@ pub fn parse_meta(src: &str) -> ShaderMeta {
             "param" => {
                 let w: Vec<&str> = val.split_whitespace().collect();
                 let n: Vec<f64> = w.iter().skip(1).filter_map(|v| v.parse().ok()).collect();
-                if w.len() == 4 && n.len() == 3 && valid_id(w[0]) && n[1] < n[2] && m.params.len() < 8 {
+                if w.len() == 4 && n.len() == 3 && valid_id(w[0]) && n[1] < n[2] && m.params.len() < MAX_PARAMS {
                     let id = w[0].to_string();
                     if !m.params.iter().any(|p| p.id == id) {
                         m.params.push(ShaderParam { id, default: n[0].clamp(n[1], n[2]), min: n[1], max: n[2] });
@@ -115,7 +119,7 @@ pub fn lint(src: &str, transition: bool) -> Vec<String> {
     if declared != m.params.len() {
         out.push(format!(
             "{declared} `@param` lines but {} are valid (need `<id> <default> <min> <max>`, a lowercase id that is \
-             not a reserved name, min < max, no duplicates, at most 8)",
+             not a reserved name, min < max, no duplicates, at most 14)",
             m.params.len()
         ));
     }

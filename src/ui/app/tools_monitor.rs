@@ -184,9 +184,9 @@ fn save_still_named(app: &mut App, clip_id: Option<Id>, name: Option<String>) ->
         format!("Still {}", n + 1)
     });
     let preset = presets::capture_effects(&name, clip);
-    app.settings.effect_presets.push(preset);
-    app.settings.save();
-    Ok(name)
+    let data = serde_json::from_str(&preset.json).unwrap_or(Value::Null);
+    let saved = super::gallery_mine::put(app, crate::engine::gallery::Kind::Look, &name, &[], data, false)?;
+    Ok(saved.name)
 }
 
 /// ACT_HANDLERS entry for the 7 unbound actions. `SaveStill`/`CompareWipe`/`ToggleScopes`/
@@ -550,6 +550,7 @@ mod tests {
                     range: None,
                     effects: Vec::new(),
                     html: None,
+                    proxy: None,
                 });
                 let cid = p.new_id();
                 let mut c = Clip::new(cid, ClipKind::Video, "cam", 0.0, 10.0);
@@ -600,6 +601,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         });
         let cid = base.new_id();
         let mut c = Clip::new(cid, ClipKind::Video, "v", 0.0, 3.0);

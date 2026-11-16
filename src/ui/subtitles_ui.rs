@@ -1173,6 +1173,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         });
         p.insert_asset_clips(aid, 0.0, Some(0));
         let id = p.tracks[0].clips[0].id;

@@ -330,6 +330,9 @@ pub struct PreviewState {
     /// Outgoing/incoming trim-view textures, reused across frames the same way `texture` is.
     trim_out_tex: Option<egui::TextureHandle>,
     trim_in_tex: Option<egui::TextureHandle>,
+    // ---- ws:social-guides ----
+    /// Device preview: the open sheet and its slide, the profile picture texture.
+    pub(crate) social: crate::ui::social::paint::State,
 }
 
 impl Default for PreviewState {
@@ -355,6 +358,7 @@ impl Default for PreviewState {
             compare: CompareMode::Off,
             trim_out_tex: None,
             trim_in_tex: None,
+            social: Default::default(),
         }
     }
 }
@@ -387,15 +391,16 @@ pub struct PreviewCtx<'a> {
     pub prerender: Option<f32>,
     /// Playback is held while the player refills its read-ahead: draw a spinner over the video.
     pub buffering: bool,
+    /// ---- ws:play-gate ---- A pill under the spinner: "Buffering 40 %" while Play waits for the frames
+    /// ahead, "Still loading" for a moment after the cap started playback anyway (no spinner then).
+    pub buffer_note: Option<String>,
     /// Progress 0..1 of the proxy build in flight (None = no proxy being built).
     pub proxy: Option<f32>,
     /// Tracker box of the Tracking pane (centre + half sizes, project px relative to the canvas
     /// centre) while that pane is on screen - drawn here and dragged to place the template.
     pub tracker: Option<(f32, f32, f32, f32)>,
-    /// Social-guide overlay to draw over the video (settings.guide).
-    pub guide: Option<crate::ui::guides::Guide>,
-    /// Settings.guides_keep_aspect: draw the guide at its platform's aspect, not stretched.
-    pub guides_keep_aspect: bool,
+    /// The settings the social guide reads (platform, mode, device, profile) - `ui::social`.
+    pub settings: &'a crate::settings::Settings,
     // ---- ws:canvas-handles-monitor ----
     /// Settings.canvas_snap: snap a drag-to-move to the canvas centre / edges / thirds / other clips.
     pub canvas_snap: bool,
@@ -446,10 +451,8 @@ pub struct PreviewResponse {
     pub mask_edit: bool,
     /// The tracker box was dragged to this centre (project px relative to the canvas centre).
     pub set_tracker: Option<(f32, f32)>,
-    /// The user picked a social guide from the right-click (Some(None) = off).
-    pub set_guide: Option<Option<crate::ui::guides::Guide>>,
-    /// The context menu toggled "Maintain Aspect Ratio" (Settings.guides_keep_aspect).
-    pub set_guides_keep_aspect: Option<bool>,
+    /// The user changed the social guide from the right-click (platform, mode, device, profile, options).
+    pub set_guide: Option<crate::ui::social::Set>,
     // ---- ws:canvas-handles-monitor ----
     /// The context menu toggled canvas snapping - the app stores it in Settings.canvas_snap.
     pub set_canvas_snap: Option<bool>,
@@ -1203,16 +1206,7 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
                 r.set_movie_mode = Some(!c.movie_mode);
             }
             menu::sub(ui, Some(Glyph::Guides), "Social Guides", |ui| {
-                use crate::ui::guides::Guide;
-                for g in std::iter::once(None).chain(Guide::ALL.map(Some)) {
-                    if menu::check(ui, c.guide == g, g.map_or("Off", |g| g.name()), "").clicked() {
-                        r.set_guide = Some(g);
-                    }
-                }
-                ui.separator();
-                if menu::check(ui, c.guides_keep_aspect, "Maintain Aspect Ratio", "").clicked() {
-                    r.set_guides_keep_aspect = Some(!c.guides_keep_aspect);
-                }
+                r.set_guide = crate::ui::social::menu_rows(ui, c.settings);
             });
             menu::action_item(ui, Action::ToggleScopes);
             ui.separator();
@@ -1258,13 +1252,19 @@ fn background_rows(ui: &mut egui::Ui, c: &mut PreviewCtx<'_>, r: &mut PreviewRes
 fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
     video_body(ui, state, c, r);
     // social guide: last, in the preview's own layer, clipped to the video - over the frame, outline and
-    // tracker box, but under every menu, popup, window and other pane (a Foreground layer covered those)
-    if let Some(g) = c.guide {
+    // tracker box, but under every menu, popup, window and other pane (a Foreground layer covered those).
+    // Device preview draws inside `video_body` instead (it moves the video).
+    if let Some(g) = guide_view(c).filter(|g| g.mode != crate::ui::social::Mode::Device) {
         let rect = state.canvas_rect;
-        let aspect = c.project.width.max(1) as f32 / c.project.height.max(1) as f32;
-        let lb = apply_view(letterbox(rect, aspect, ui.pixels_per_point()), state.view);
-        crate::ui::guides::draw_guide(&ui.painter_at(lb.intersect(rect)), lb, g, c.guides_keep_aspect, c.palette);
+        let lb = apply_view(letterbox(rect, g.aspect, ui.pixels_per_point()), state.view);
+        crate::ui::social::paint::draw_overlay(ui, &mut state.social, &g, lb, lb.intersect(rect));
     }
+}
+
+/// ws:social-guides: what the guide shows this frame (None = off).
+fn guide_view<'a>(c: &PreviewCtx<'a>) -> Option<crate::ui::social::paint::GuideView<'a>> {
+    let aspect = c.project.width.max(1) as f32 / c.project.height.max(1) as f32;
+    crate::ui::social::paint::GuideView::new(c.settings, &c.project.name, aspect, c.playhead, c.project.duration())
 }
 
 fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
@@ -1280,6 +1280,30 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
     zoom_pan(ui, &resp, &mut state.view);
     let lb = apply_view(fit, state.view);
     state.canvas_rect = rect;
+    // ---- ws:social-guides ----
+    // Device preview: the video sits inside a drawn device (and moves when a sheet opens). The scene is
+    // built here so the picture is placed where the device puts it; nothing below edits the project.
+    let guide = guide_view(c).filter(|g| g.mode == crate::ui::social::Mode::Device && !c.fullscreen);
+    let device = guide.as_ref().map(|g| crate::ui::social::paint::device_scene(ui.ctx(), &mut state.social, g, rect));
+    let (fit, lb) = match &device {
+        Some(s) => {
+            // the preview renders the whole project frame; a platform that crops it (cover) shows only part
+            let cover = s.uv.width() < 0.999 || s.uv.height() < 0.999;
+            let canvas = if !cover {
+                s.base
+            } else if s.base.width() / s.base.height() > aspect {
+                Rect::from_center_size(s.base.center(), vec2(s.base.width(), s.base.width() / aspect))
+            } else {
+                Rect::from_center_size(s.base.center(), vec2(s.base.height() * aspect, s.base.height()))
+            };
+            (canvas, s.video)
+        }
+        None => (fit, lb),
+    };
+    if let (Some(s), Some(g)) = (&device, &guide) {
+        let av = state.social.avatar(ui.ctx(), &g.profile);
+        crate::ui::social::paint::replay(&painter, &s.under, av);
+    }
     let (cw, ch) = ((fit.width() * ppp).round().max(16.0) as u32, (fit.height() * ppp).round().max(16.0) as u32);
     r.canvas = (cw, ch);
     state.fit_px = fit.width() * ppp;
@@ -1319,7 +1343,7 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
     }
     // ws:canvas-handles-monitor: a pending hover preview (alt render) stands in for the live frame;
     // otherwise the GPU renderer's own texture wins: nothing is read back or re-uploaded
-    let uv = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
+    let uv = device.as_ref().map_or(Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), |s| s.uv);
     if let Some((id, _)) = c.alt_texture {
         painter.image(id, lb, uv, Color32::WHITE);
         painter.text(
@@ -1334,6 +1358,41 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
     } else if let Some(t) = &state.texture {
         painter.image(t.id(), lb, uv, Color32::WHITE);
     }
+    // ---- ws:social-guides ----
+    if let (Some(s), Some(g)) = (&device, &guide) {
+        // the platform UI and the sheets over the video, then the taps; the device preview is view-only
+        let av = state.social.avatar(ui.ctx(), &g.profile);
+        crate::ui::social::paint::replay(&painter, &s.over, av);
+        if resp.clicked() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                if let Some(set) = state.social.click(s, p, g.view) {
+                    r.set_guide = Some(set);
+                }
+            }
+        }
+        // T = theatre, F = fullscreen, Esc leaves fullscreen: only over the desktop long-form player
+        if g.platform().pg == "watch" && g.dev().k == "desktop" && ui.rect_contains_pointer(rect) && ui.ctx().memory(|m| m.focused().is_none()) {
+            use crate::ui::social::ViewMode;
+            let none = egui::Modifiers::NONE;
+            let want = if ui.input_mut(|i| i.consume_key(none, egui::Key::T)) {
+                Some(if g.view == ViewMode::Theatre { ViewMode::Default } else { ViewMode::Theatre })
+            } else if ui.input_mut(|i| i.consume_key(none, egui::Key::F)) {
+                Some(if g.view == ViewMode::Full { ViewMode::Default } else { ViewMode::Full })
+            } else if g.view == ViewMode::Full && ui.input_mut(|i| i.consume_key(none, egui::Key::Escape)) {
+                Some(ViewMode::Default)
+            } else {
+                None
+            };
+            if let Some(m) = want {
+                r.set_guide = Some(crate::ui::social::Set::View(m));
+            }
+        }
+        if ui.input(|i| i.pointer.hover_pos()).is_some_and(|p| rect.contains(p) && s.hits.iter().any(|(r, _)| r.contains(p))) {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        state.drag = None;
+        return;
+    }
     // ---- ws:pro-monitor ----
     // Trim view: outgoing/incoming frames side by side, painted OVER the live frame just uploaded above
     // (still uploaded/painted normally so it's there instantly once trim view closes again).
@@ -1346,6 +1405,14 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
     if c.buffering {
         ui.put(Rect::from_center_size(lb.center(), vec2(32.0, 32.0)), egui::Spinner::new().size(32.0));
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+    }
+    if let Some(note) = &c.buffer_note {
+        let g = painter.layout_no_wrap(note.clone(), egui::FontId::proportional(12.0), Color32::WHITE);
+        let y = if c.buffering { 28.0 } else { 0.0 };
+        let at = lb.center() + vec2(0.0, y + g.size().y * 0.5 + 6.0);
+        let pill = Rect::from_center_size(at, g.size() + vec2(16.0, 8.0));
+        painter.rect_filled(pill, 9.0, Color32::from_black_alpha(150));
+        painter.galley(pill.center() - g.size() * 0.5, g, Color32::WHITE);
     }
     if c.fullscreen {
         // double-click toggles fullscreen, like every player
@@ -1895,9 +1962,11 @@ mod tests {
         /// Draw the tool rail (off by default, so the older gesture tests keep the whole canvas).
         rail: bool,
         use_proxies: bool,
-        guide: Option<crate::ui::guides::Guide>,
+        settings: crate::settings::Settings,
         /// Clip rects of the guide-name chip ("YouTube" text) found in the preview's own layer last frame.
         guide_chip: Vec<Rect>,
+        /// ---- ws:play-gate ---- the Buffering pill (and its spinner) shown over the video.
+        buffer_note: Option<String>,
     }
 
     impl H {
@@ -1918,8 +1987,9 @@ mod tests {
                 stats: None,
                 rail: false,
                 use_proxies: false,
-                guide: None,
+                settings: crate::settings::Settings::default(),
                 guide_chip: Vec::new(),
+                buffer_note: None,
             }
         }
         fn frame(&mut self, events: Vec<Event>) -> PreviewResponse {
@@ -1947,8 +2017,9 @@ mod tests {
                 stats,
                 rail,
                 use_proxies,
-                guide,
+                settings,
                 guide_chip,
+                buffer_note,
                 ..
             } = self;
             let mut out = PreviewResponse::default();
@@ -1974,11 +2045,11 @@ mod tests {
                             quality: 100,
                             movie_mode: false,
                             prerender: Some(0.4),
-                            buffering: false,
+                            buffering: buffer_note.is_some(),
+                            buffer_note: buffer_note.clone(),
                             proxy: None,
                             tracker: None,
-                            guide: *guide,
-                            guides_keep_aspect: true,
+                            settings,
                             canvas_snap: false,
                             alt_texture: None,
                             use_proxies: *use_proxies,
@@ -1991,7 +2062,7 @@ mod tests {
                     let layer = ui.layer_id();
                     *guide_chip = ctx.graphics(|g| {
                         let chip = |s: &&egui::epaint::ClippedShape| {
-                            matches!(&s.shape, Shape::Text(t) if t.galley.text() == "YouTube")
+                            matches!(&s.shape, Shape::Text(t) if t.galley.text().starts_with("YouTube (long form)"))
                         };
                         g.get(layer).map_or(Vec::new(), |l| l.all_entries().filter(chip).map(|s| s.clip_rect).collect())
                     });
@@ -2025,6 +2096,7 @@ mod tests {
                 range: None,
                 effects: Vec::new(),
                 html: None,
+                proxy: None,
             });
             self.project.clip_mut(7).unwrap().asset = a;
             self.panel = Rect::from_min_size(Pos2::ZERO, vec2(700.0, 620.0));
@@ -2093,7 +2165,7 @@ mod tests {
     #[test]
     fn social_guide_paints_in_the_preview_layer_clipped_to_the_video() {
         let mut h = H::new();
-        h.guide = Some(crate::ui::guides::Guide::YouTube);
+        h.settings.guide = Some("yt_long".into());
         h.frame(vec![]);
         h.frame(vec![]);
         let lb = h.lb().intersect(h.state.canvas_rect);
@@ -2778,6 +2850,72 @@ mod tests {
         assert!(h.state.options.is_positive(), "the mask target picker");
     }
 
+    /// ws:social-guides: every guide mode, and a device sheet that has finished sliding open, stay idle-CPU-0 %.
+    #[test]
+    fn assert_no_idle_repaint_social_guide() {
+        use crate::ui::social::device::Sheet;
+        for mode in ["safe", "ui", "device"] {
+            for plat in ["tiktok", "yt_long"] {
+                let mut h = H::new();
+                h.settings.guide = Some(plat.into());
+                h.settings.guide_mode = mode.into();
+                for _ in 0..5 {
+                    h.frame(vec![]);
+                }
+                if mode == "device" {
+                    h.state.social.want = Some(Sheet::Comments);
+                    for _ in 0..40 {
+                        h.frame(vec![]);
+                    }
+                    assert_eq!(h.state.social.open, Some(Sheet::Comments));
+                }
+                assert!(!h.ctx.has_requested_repaint(), "idle frame with the {plat} guide in {mode} mode requested a repaint");
+            }
+        }
+    }
+
+    /// Over the desktop long-form player, T asks for theatre mode, F for fullscreen and Esc leaves it.
+    #[test]
+    fn keys_switch_the_desktop_player_view() {
+        use crate::ui::social::{Set, ViewMode};
+        let key = |k: egui::Key| Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE };
+        let mut h = H::new();
+        h.settings.guide = Some("yt_long".into());
+        h.settings.guide_mode = "device".into();
+        h.settings.guide_device = "desktop".into();
+        h.frame(vec![]);
+        let c = h.state.canvas_rect.center();
+        h.frame(vec![Event::PointerMoved(c)]);
+        assert_eq!(h.frame(vec![key(egui::Key::T)]).set_guide, Some(Set::View(ViewMode::Theatre)));
+        assert_eq!(h.frame(vec![key(egui::Key::F)]).set_guide, Some(Set::View(ViewMode::Full)));
+        assert_eq!(h.frame(vec![key(egui::Key::Escape)]).set_guide, None, "Esc does nothing outside fullscreen");
+        h.settings.guide_view = "fullscreen".into();
+        assert_eq!(h.frame(vec![key(egui::Key::Escape)]).set_guide, Some(Set::View(ViewMode::Default)));
+        // a phone has no player views
+        h.settings.guide_device = "iphone".into();
+        assert_eq!(h.frame(vec![key(egui::Key::T)]).set_guide, None);
+    }
+
+    /// The device preview never edits the project: opening, closing and clicking leave it untouched.
+    #[test]
+    fn device_preview_is_view_only() {
+        use crate::ui::social::device::Sheet;
+        let mut h = H::new();
+        h.settings.guide = Some("tiktok".into());
+        h.settings.guide_mode = "device".into();
+        let before = h.project.to_json();
+        h.frame(vec![]);
+        h.state.social.want = Some(Sheet::Share);
+        for _ in 0..10 {
+            h.frame(vec![]);
+        }
+        let at = h.state.canvas_rect.center();
+        let r = h.click(at);
+        h.drag(at, at + vec2(40.0, 30.0));
+        assert!(!r.edited && h.undos == 0, "clicks and drags in the device preview edit nothing");
+        assert_eq!(h.project.to_json(), before);
+    }
+
     /// The rail, its options strip and the one-row transport stay idle-CPU-0 %.
     #[test]
     fn assert_no_idle_repaint_tool_rail() {
@@ -2789,5 +2927,20 @@ mod tests {
             h.frame(vec![]);
         }
         assert!(!h.ctx.has_requested_repaint(), "idle frame with the rail and options requested a repaint");
+    }
+
+    /// ---- ws:play-gate ---- No buffering note, no repaint over any number of idle frames; with one the
+    /// spinner keeps the frame coming (only while it is up), and the pill text is on screen.
+    #[test]
+    fn assert_no_idle_repaint_buffering_note() {
+        let mut h = H::new();
+        h.with_asset();
+        for _ in 0..30 {
+            h.frame(vec![]);
+        }
+        assert!(!h.ctx.has_requested_repaint(), "idle frame without a buffering note requested a repaint");
+        h.buffer_note = Some("Buffering 40 %".into());
+        h.frame(vec![]);
+        assert!(h.ctx.has_requested_repaint(), "the spinner polls while Play is waiting");
     }
 }

@@ -12,12 +12,13 @@
 <meta name="se:field" content="title | text | The Long Road North">
 <meta name="se:field" content="subtitle | text | A film about leaving home">
 <meta name="se:field" content="accent | color | #d4b07a">
+<meta name="se:field" content="font | font | Segoe UI Light">
 <style>
   :root { --accent: {{accent}}; }
   html, body { margin: 0; overflow: hidden; }
   body { width: 100vw; height: 100vh; position: relative; color: #f4efe6;
     background: radial-gradient(ellipse 90% 80% at 50% 45%, #1d1e24 0%, #0d0e12 55%, #050507 100%);
-    font-family: "Segoe UI Light", "Segoe UI", Arial, sans-serif; }
+    font-family: {{font}}; }
 
   .light { position: absolute; left: 50%; top: 46%; width: 1300px; height: 520px; margin: -260px 0 0 -650px;
     border-radius: 50%; background: var(--accent); opacity: .14; filter: blur(160px);
@@ -25,7 +26,7 @@
   .leak { position: absolute; right: -300px; top: -300px; width: 900px; height: 900px; border-radius: 50%;
     background: radial-gradient(circle, rgba(255, 170, 90, .16), transparent 65%);
     animation: leak 6s ease-in-out both; }
-  .grain { position: absolute; inset: 0; opacity: .08; mix-blend-mode: overlay;
+  .grain { position: absolute; inset: 0; opacity: .05;
     background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='240' height='240' filter='url(%23n)'/%3E%3C/svg%3E");
     animation: grain .5s steps(4) infinite both; }
   .bars::before, .bars::after { content: ""; position: absolute; left: 0; right: 0; height: 120px; background: #000; }

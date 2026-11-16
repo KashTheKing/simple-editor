@@ -62,13 +62,14 @@ pub fn set_ready(sources: Vec<String>) {
 
 /// Per-asset proxy state. The eligibility gate mirrors `App::sync_proxies` verbatim so the badge
 /// and the builder can't drift.
-pub fn status(a: &crate::model::Asset, use_proxies: bool, proxy_height: u32) -> ProxyStatus {
-    let h = proxy_height.max(120);
-    if !use_proxies || a.kind != crate::model::ClipKind::Video || a.duration <= 0.0 {
+pub fn status(a: &crate::model::Asset, use_proxies: bool, _proxy_height: u32) -> ProxyStatus {
+    if !use_proxies || a.kind != crate::model::ClipKind::Video || a.duration <= 0.0 || a.proxy == Some(false) {
         return ProxyStatus::NotNeeded;
     }
-    // ws:html-layer: a source with alpha gets its proxy at any size (`eligible`)
-    if a.height <= h && has_alpha(&a.path) != Some(true) {
+    // an existing proxy stays in use whatever the classification says; otherwise only a source that
+    // is too expensive to decode (or has alpha, or was switched on by hand) gets one
+    let ready = lock(&READY).iter().any(|r| r == &a.path.to_ascii_lowercase());
+    if !ready && !wants(a) {
         return ProxyStatus::NotNeeded;
     }
     if let Some((p, f)) = lock(&BUILDING).as_ref() {
@@ -76,7 +77,7 @@ pub fn status(a: &crate::model::Asset, use_proxies: bool, proxy_height: u32) -> 
             return ProxyStatus::Building(*f);
         }
     }
-    if lock(&READY).iter().any(|r| r == &a.path.to_ascii_lowercase()) {
+    if ready {
         return ProxyStatus::Ready;
     }
     ProxyStatus::Queued
@@ -111,7 +112,30 @@ pub fn dir() -> PathBuf {
     crate::settings::Settings::cache_dir().join("proxies")
 }
 
+/// The source's modified time (seconds), remembered for 2 s per path: the proxy scan asks it three or
+/// four times per video asset per pass and the library once per row per frame - a stat each was most of
+/// the UI thread on a 200-asset project. A file rewritten in place is seen within 2 s; a missing one
+/// (0) is not remembered, so a file that has just been written (an HTML render) is seen at once.
 fn mtime_secs(src: &str) -> u64 {
+    static SEEN: Mutex<BTreeMap<String, (std::time::Instant, u64)>> = Mutex::new(BTreeMap::new());
+    if let Some(&(at, m)) = lock(&SEEN).get(src) {
+        if at.elapsed() < std::time::Duration::from_secs(2) {
+            return m;
+        }
+    }
+    let m = mtime_now(src);
+    if m == 0 {
+        return 0;
+    }
+    let mut seen = lock(&SEEN);
+    if seen.len() > 4096 {
+        seen.clear(); // ponytail: a project's worth of paths; an LRU if libraries ever get that big
+    }
+    seen.insert(src.to_string(), (std::time::Instant::now(), m));
+    m
+}
+
+fn mtime_now(src: &str) -> u64 {
     std::fs::metadata(src)
         .and_then(|m| m.modified())
         .ok()
@@ -171,18 +195,57 @@ pub fn has_alpha(src: &str) -> Option<bool> {
 /// decoding PNG frames through the ffmpeg pipe costs ~36 ms a 1080p frame and every backwards seek
 /// restarts the pipe, so a small overlay (an HTML layer) needs its stacked proxy just as much. Not
 /// yet a file still being probed for alpha (`None`): the next scan asks again.
-pub fn eligible(a: &crate::model::Asset, h: u32) -> bool {
-    a.kind == crate::model::ClipKind::Video
+pub fn eligible(a: &crate::model::Asset, _h: u32) -> bool {
+    usable(a) && wants(a)
+}
+
+/// Video that may play from a proxy: not a throw-away draft, not switched off, alpha probe answered.
+/// An existing proxy of such a source is used even when `wants` no longer asks for a new one.
+/// Never an HTML render's interim (draft / window) or a stacked render: those are already H.264, and a
+/// plain proxy of a stacked file would show its alpha half as picture.
+pub fn usable(a: &crate::model::Asset) -> bool {
+    !crate::engine::html::is_interim(std::path::Path::new(&a.path))
+        && !is_stacked(std::path::Path::new(&a.path))
+        && a.kind == crate::model::ClipKind::Video
         && a.duration > 0.0
-        && match has_alpha(&a.path) {
-            Some(alpha) => alpha || a.height > h,
-            None => false,
-        }
+        && a.proxy != Some(false)
+        && has_alpha(&a.path).is_some()
+}
+
+/// Should a proxy be BUILT for `a`: switched on by hand, alpha, or too expensive to decode in real time.
+fn wants(a: &crate::model::Asset) -> bool {
+    a.proxy == Some(true) || has_alpha(&a.path) == Some(true) || needs_proxy(a)
+}
+
+/// Codecs Media Foundation decodes (in hardware where the GPU can); anything else goes through an
+/// ffmpeg pipe, which cannot hold real time on big frames.
+const MF_CODECS: [&str; 9] = ["h264", "hevc", "mpeg2video", "mpeg4", "vc1", "wmv3", "wmv2", "wmv1", "msmpeg4v3"];
+/// Intra-only codecs: every frame is big, so decode cost tracks the file size, not the picture.
+const INTRA_CODECS: [&str; 9] = ["png", "qtrle", "rawvideo", "prores", "dnxhd", "cfhd", "ffv1", "huffyuv", "utvideo"];
+const MAX_PIXELS: u64 = 1920 * 1088;
+const MAX_BITS_PER_SEC: f64 = 50e6;
+
+/// Is decoding this too expensive for real time? Over 1080p, over ~50 Mbit/s, an intra-heavy codec, or a
+/// codec Media Foundation cannot decode. A 1080p 10 Mbit OBS recording is none of these: no proxy.
+pub fn decode_heavy(codec: &str, w: u32, h: u32, bits_per_sec: f64) -> bool {
+    let codec = codec.to_ascii_lowercase();
+    w as u64 * h as u64 > MAX_PIXELS
+        || bits_per_sec > MAX_BITS_PER_SEC
+        || INTRA_CODECS.contains(&codec.as_str())
+        || (!codec.is_empty() && codec != "gif" && !MF_CODECS.contains(&codec.as_str()))
+}
+
+/// `decode_heavy` for a library asset (bit rate from file size over duration).
+pub fn needs_proxy(a: &crate::model::Asset) -> bool {
+    let bytes = std::fs::metadata(&a.path).map_or(0, |m| m.len());
+    let bps = if a.duration > 0.0 { bytes as f64 * 8.0 / a.duration } else { 0.0 };
+    decode_heavy(&a.codec, a.width, a.height, bps)
 }
 
 /// The height `a`'s proxy is built at: the proxy height, or the source's own (even) height when that
 /// is lower - an alpha source is never scaled up.
 pub fn height_for(a: &crate::model::Asset, h: u32) -> u32 {
+    let h = h.min(1080); // never bigger than 1080p: the proxy exists to be cheap
     if a.height > 0 && a.height < h {
         a.height.max(2) & !1
     } else {
@@ -192,9 +255,12 @@ pub fn height_for(a: &crate::model::Asset, h: u32) -> u32 {
 
 /// Is `path` a stacked colour-over-alpha proxy (see the module docs)? By name and folder, so a
 /// user's own `take-a.mp4` is never mistaken for one.
+/// An HTML render with transparency (`engine::html`) is stacked too: `<name>.stacked.mp4`, wherever it is
+/// (Render in Place copies it beside the project under that suffix).
 pub fn is_stacked(path: &std::path::Path) -> bool {
-    path.file_name().is_some_and(|n| n.to_string_lossy().ends_with("-a.mp4"))
-        && path.parent().and_then(|d| d.file_name()).is_some_and(|d| d == "proxies")
+    let name = path.file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    name.ends_with(".stacked.mp4")
+        || (name.ends_with("-a.mp4") && path.parent().and_then(|d| d.file_name()).is_some_and(|d| d == "proxies"))
 }
 
 /// Where the proxy for `src` at `height` lives (whether or not it has been built yet). A source
@@ -204,7 +270,7 @@ pub fn proxy_path(src: &str, height: u32) -> PathBuf {
     stacked_or_plain(src, height, has_alpha(src) == Some(true))
 }
 
-fn stacked_or_plain(src: &str, height: u32, stacked: bool) -> PathBuf {
+pub fn stacked_or_plain(src: &str, height: u32, stacked: bool) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (src.to_ascii_lowercase(), mtime_secs(src), height).hash(&mut h);
@@ -282,6 +348,37 @@ impl VideoSource for StackedAlpha {
     }
 }
 
+/// Encoder args of every proxy: all-intra H.264 (`-g 1`: seeks and reverse scrubs are free), no audio.
+pub const ENCODE: [&str; 13] =
+    ["-c:v", "libx264", "-preset", "veryfast", "-g", "1", "-crf", "20", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart"];
+
+/// All-intra H.264 on the GPU encoder `enc` (`encoders::best_for`), same file shape as `ENCODE`.
+/// None for an encoder this does not know (software then).
+fn hw_encode(enc: &str) -> Option<Vec<&'static str>> {
+    let v: &[&str] = match enc {
+        "h264_nvenc" => &["-c:v", "h264_nvenc", "-preset", "p2", "-rc", "constqp", "-qp", "21", "-g", "1", "-bf", "0"],
+        "h264_qsv" => &["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "21", "-g", "1", "-bf", "0"],
+        "h264_amf" => &["-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", "21", "-qp_p", "21", "-g", "1", "-bf", "0"],
+        _ => return None,
+    };
+    Some(v.iter().copied().chain(["-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart"]).collect())
+}
+
+/// Straight-alpha frames to a stacked proxy `height` tall (colour over alpha). Premultiplied BEFORE
+/// the downscale: scaling straight alpha drags the colour hidden under transparent pixels (usually
+/// black) into every edge - dark fringes.
+pub fn stacked_filter(height: u32) -> String {
+    stacked_filter_to(&format!("-2:{}", height.max(2)))
+}
+
+/// `stacked_filter` scaled to `size` (an ffmpeg `scale` size, "w:h").
+pub fn stacked_filter_to(size: &str) -> String {
+    format!(
+        "format=gbrap,premultiply=inplace=1,scale={size},format=gbrap,split[c][a];\
+         [a]alphaextract,format=yuv420p[m];[c]format=yuv420p[k];[k][m]vstack"
+    )
+}
+
 /// Transcode `src` into its proxy file on a background thread (temp + rename; the destination never
 /// exists half-written). Video only - audio always plays from the original.
 pub fn generate(src: String, dst: PathBuf, height: u32) -> Arc<Progress> {
@@ -292,27 +389,35 @@ pub fn generate(src: String, dst: PathBuf, height: u32) -> Arc<Progress> {
 }
 
 fn run(src: &str, dst: &PathBuf, height: u32, prog: &Progress) -> Result<(), String> {
+    // a plain proxy goes through the GPU encoder when one works (alpha proxies stay on libx264: the
+    // stacked filter graph is software anyway); a failed hardware run falls back to software once
+    if !is_stacked(dst) {
+        if let Some(args) = crate::engine::encoders::best_for("mp4").and_then(|e| hw_encode(&e)) {
+            match run_with(src, dst, height, prog, &args) {
+                Err(e) if e != export::CANCELLED && !prog.is_cancelled() => eprintln!("hardware proxy failed ({e}), software"),
+                r => return r,
+            }
+        }
+    }
+    run_with(src, dst, height, prog, &ENCODE)
+}
+
+fn run_with(src: &str, dst: &PathBuf, height: u32, prog: &Progress, encode: &[&str]) -> Result<(), String> {
     let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     std::fs::create_dir_all(dir()).map_err(|e| format!("proxies dir: {e}"))?;
     let dur = crate::engine::convert::probe_seconds(std::path::Path::new(src)).unwrap_or(0.0);
     let tmp = export::temp_output(dst);
-    let mut cmd = ffpipe::command(&ffmpeg);
+    let mut cmd = super::bg::command(&ffmpeg);
     cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1"]);
     cmd.arg("-i").arg(src);
     // -2 keeps aspect at an even width; -g 1 = all-intra; no audio (the original supplies it)
     let mut vf = format!("scale=-2:{}", height.max(2)); // ws:html-layer: callers pick the height (`height_for`)
     if is_stacked(dst) {
-        // premultiplied BEFORE the downscale (scaling straight alpha drags the colour hidden under
-        // transparent pixels - usually black - into every edge: dark fringes), then colour over alpha
-        vf = format!(
-            "format=gbrap,premultiply=inplace=1,{vf},format=gbrap,split[c][a];\
-             [a]alphaextract,format=yuv420p[m];[c]format=yuv420p[k];[k][m]vstack"
-        );
+        vf = stacked_filter(height);
         // the proxy this source got before proxies kept alpha: same name without the `-a`
         let _ = std::fs::remove_file(stacked_or_plain(src, height, false));
     }
-    cmd.args(["-vf", &vf, "-c:v", "libx264", "-preset", "veryfast", "-g", "1", "-crf", "20"]);
-    cmd.args(["-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart"]);
+    cmd.args(["-vf", &vf]).args(encode);
     cmd.arg(&tmp.0);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg: {e}"))?;
@@ -340,6 +445,23 @@ fn run(src: &str, dst: &PathBuf, height: u32, prog: &Progress) -> Result<(), Str
 mod tests {
     use super::*;
 
+    /// Regression: the proxy scan and the library rows stat'ed every video source several times a
+    /// pass - most of the UI thread on a 200-asset project. The mtime is remembered, but a file that
+    /// did not exist yet (an HTML render about to be committed) is seen the moment it is written.
+    #[test]
+    fn proxy_scan_mtime_is_remembered_but_a_new_file_is_seen_at_once() {
+        let dir = std::env::temp_dir().join(format!("se-proxy-mtime-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("render.mov");
+        let src = f.to_string_lossy().into_owned();
+        assert_eq!(mtime_secs(&src), 0, "not written yet");
+        std::fs::write(&f, b"x").unwrap();
+        let m = mtime_secs(&src);
+        assert!(m > 0, "a missing file is not remembered as missing");
+        assert_eq!(mtime_secs(&src), m);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// One test for the whole ladder (BUILDING/READY are process-global statics - keeping every
     /// assertion in one test avoids parallel-test interference on them).
     #[test]
@@ -364,10 +486,11 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         };
         assert_eq!(status(&a, false, 720), ProxyStatus::NotNeeded, "proxies off");
-        let small = Asset { height: 720, ..a.clone() };
-        assert_eq!(status(&small, true, 720), ProxyStatus::NotNeeded, "at/below proxy height");
+        let small = Asset { width: 1280, height: 720, codec: "h264".into(), ..a.clone() };
+        assert_eq!(status(&small, true, 720), ProxyStatus::NotNeeded, "decodes fine in real time");
         let audio = Asset { kind: ClipKind::Audio, ..a.clone() };
         assert_eq!(status(&audio, true, 720), ProxyStatus::NotNeeded, "audio never proxies");
         assert_eq!(status(&a, true, 720), ProxyStatus::Queued, "eligible, not building, not ready");
@@ -536,10 +659,41 @@ mod tests {
         use crate::model::{Asset, ClipKind};
         let a = Asset { kind: ClipKind::Video, duration: 4.0, width: 640, height: 361, ..crate::engine::import::placeholder("C:\\x\\small.mp4") };
         assert!(!eligible(&a, 720), "plain footage below the proxy height gains nothing");
-        assert!(eligible(&Asset { height: 1080, ..a.clone() }, 720));
-        assert!(!eligible(&Asset { kind: ClipKind::Image, height: 1080, ..a.clone() }, 720));
+        let big = Asset { width: 3840, height: 2160, ..a.clone() };
+        assert!(eligible(&big, 720));
+        assert!(!eligible(&Asset { kind: ClipKind::Image, ..big.clone() }, 720));
+        assert!(!eligible(&Asset { proxy: Some(false), ..big.clone() }, 720), "per-source off");
+        assert!(eligible(&Asset { proxy: Some(true), ..a.clone() }, 720), "per-source on");
         assert_eq!(height_for(&a, 720), 360, "never taller than the source, always even");
-        assert_eq!(height_for(&Asset { height: 1080, ..a.clone() }, 720), 720);
+        assert_eq!(height_for(&big, 720), 720);
+        assert_eq!(height_for(&big, 2160), 1080, "1080p at most");
+    }
+
+    #[test]
+    fn classification_proxies_only_what_decodes_too_slowly() {
+        // the 1080p 10 Mbit OBS recording: no proxy
+        assert!(!decode_heavy("h264", 1920, 1080, 10e6));
+        assert!(!decode_heavy("hevc", 1920, 1080, 40e6));
+        assert!(!decode_heavy("h264", 1080, 1920, 20e6), "portrait 1080p");
+        assert!(!decode_heavy("", 1920, 1080, 0.0), "unknown codec: leave it");
+        assert!(decode_heavy("h264", 2560, 1440, 20e6), "over 1080p");
+        assert!(decode_heavy("h264", 1920, 1080, 120e6), "over 50 Mbit/s");
+        for c in ["png", "qtrle", "rawvideo", "prores", "dnxhd"] {
+            assert!(decode_heavy(c, 1280, 720, 5e6), "{c} is intra-heavy");
+        }
+        assert!(decode_heavy("av1", 1280, 720, 5e6), "MF cannot decode it");
+        assert!(decode_heavy("vp9", 1280, 720, 5e6));
+        assert!(!decode_heavy("gif", 640, 360, 1e6));
+    }
+
+    #[test]
+    fn hardware_encoders_are_all_intra_and_unknown_ones_fall_back() {
+        for e in ["h264_nvenc", "h264_qsv", "h264_amf"] {
+            let a = hw_encode(e).unwrap();
+            assert!(a.windows(2).any(|w| w == ["-g", "1"]), "{e} all-intra");
+            assert!(a.contains(&"-an"));
+        }
+        assert!(hw_encode("libx264").is_none());
     }
 
     /// The proxy name is stable for the same (path, mtime, height) and changes with any of them.

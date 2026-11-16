@@ -226,12 +226,6 @@ impl Source {
             Source::Dir(PathBuf::from(dir))
         }
     }
-    pub fn label(&self) -> String {
-        match self {
-            Source::Dir(d) => d.display().to_string(),
-            Source::Url(u) => u.clone(),
-        }
-    }
     /// Where `rel` is (or will be) on this PC: in the folder, or its cached copy.
     pub fn local(&self, rel: &str) -> PathBuf {
         self.local_in(&cache_root(), rel)
@@ -293,6 +287,12 @@ fn fetch(src: &Source, rel: &str, reuse: bool) -> Result<Vec<u8>, String> {
         }
     }
     std::fs::read(&p).map_err(|e| format!("{}: {e}", p.display()))
+}
+
+/// The library's `guides/guides.json` (the social platform guides, see `ui::social`). Fetched on a click in
+/// Settings ▸ Social, never at start-up. Blocking: background threads only.
+pub fn fetch_guides(src: &Source) -> Result<String, String> {
+    String::from_utf8(fetch(src, "guides/guides.json", false)?).map_err(|e| e.to_string())
 }
 
 /// Parse `index.json`, dropping items whose id / file is not one the app would read.

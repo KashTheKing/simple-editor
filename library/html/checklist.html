@@ -14,15 +14,19 @@
 <meta name="se:field" content="item3 | text | Add captions">
 <meta name="se:field" content="item4 | text | Design the thumbnail">
 <meta name="se:field" content="accent | color | #22c55e">
+<meta name="se:field" content="font | font | Segoe UI">
+<meta name="se:field" content="radius | radius | 30 | 0 | 120">
+<meta name="se:field" content="shadow | toggle | on | 0 20px 48px rgba(0, 0, 0, .42), 0 3px 8px rgba(0, 0, 0, .3) | none">
+<meta name="se:field" content="outline | outline | 0 #ffffff">
 <style>
   :root { --accent: {{accent}}; }
   html, body { margin: 0; background: transparent; overflow: hidden; }
   body { width: 100vw; height: 100vh; display: grid; place-items: center;
-    font-family: "Segoe UI", Arial, sans-serif; }
+    font-family: {{font}}; }
 
-  .card { box-sizing: border-box; width: 680px; padding: 34px 40px 22px; border-radius: 30px;
+  .card { box-sizing: border-box; width: 680px; padding: 34px 40px 22px; border-radius: {{radius}}; outline: {{outline}}; outline-offset: -1px;
     background: rgba(20, 22, 29, .95); color: #fff; border: 1px solid rgba(255, 255, 255, .12);
-    box-shadow: 0 20px 48px rgba(0, 0, 0, .42), 0 3px 8px rgba(0, 0, 0, .3);
+    box-shadow: {{shadow}};
     animation: in .6s cubic-bezier(.2, 1.25, .35, 1) both; }
   .title { padding-bottom: 18px; border-bottom: 3px solid var(--accent); font-size: 40px; font-weight: 800;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

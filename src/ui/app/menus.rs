@@ -30,11 +30,9 @@ fn acts_if(ui: &mut egui::Ui, on: bool, items: &[Option<Action>]) {
 }
 
 /// Window menu: the everyday panels first, then the niche ones under More ▸ (hidden, not deleted).
-const MAIN_PANES: [Pane; 16] = [
+const MAIN_PANES: [Pane; 14] = [
     Pane::Library,
     Pane::MediaBrowser,
-    Pane::Effects,
-    Pane::Transitions,
     Pane::Presets,
     Pane::Source,
     Pane::Preview,
@@ -67,8 +65,6 @@ pub(super) fn toggle_action(p: Pane) -> Option<Action> {
     Some(match p {
         Pane::Library => ToggleLibrary,
         Pane::Inspector => ToggleInspector,
-        Pane::Effects => ToggleEffects,
-        Pane::Transitions => ToggleTransitions,
         Pane::Curves => ToggleCurves,
         Pane::Subtitles => ToggleSubtitles,
         Pane::Planner => TogglePlanner,
@@ -149,7 +145,7 @@ impl App {
         self.recent_menu(ui);
         acts(ui, &[Some(Save), Some(SaveProjectAs), None]);
         menu::sub(ui, Some(tools::Glyph::ImportArrow), "Import", |ui| {
-            acts(ui, &[Some(ImportMedia), Some(ImportTimeline)]);
+            acts(ui, &[Some(ImportMedia), Some(ImportFolder), Some(ImportTimeline)]);
             let yt = self.ytdlp_available.load(Ordering::Relaxed);
             let url = ui.add_enabled_ui(yt, |ui| menu::row(ui, None, "From URL…", "")).inner;
             if url.on_disabled_hover_text("yt-dlp not found - set its folder in Settings ▸ General").clicked() {
@@ -252,7 +248,8 @@ impl App {
             acts(ui, &[Some(AddText), Some(AddShape), Some(AddAdjustment)]);
             acts_if(ui, has_sel, &[Some(AddMask)]);
             acts(ui, &[Some(AddSubtitle), Some(AddContainer)]);
-            acts(ui, &[None, Some(AddHtmlLayer), Some(AddHtmlScene), Some(ImportHtml), Some(SnapshotWeb)]); // ws:html-layer
+            acts(ui, &[None, Some(AddHtmlLayer), Some(AddHtmlScene), Some(AddChatThread), Some(AddForumThread), Some(AddVideoComments), Some(ImportHtml), Some(SnapshotWeb)]); // ws:html-layer
+            acts(ui, &[None, Some(AddBrowser), Some(ImportWebPage), Some(RecordMouse), Some(CursorWaypoints)]); // ws:browser-layer
         });
         menu::sub(ui, Some(tools::Glyph::Transition), "Transition", |ui| {
             acts_if(ui, has_sel, &[Some(AddTransition), Some(AddLastTransition), Some(AddTransitionEnd)]);
@@ -262,6 +259,7 @@ impl App {
         acts_if(ui, self.selection.len() >= 2, &[Some(MulticamCreate)]);
         acts_if(ui, tools_monitor::multicam_available(self), &[Some(MulticamAngles)]);
         acts(ui, &[None, Some(MatchFrame), Some(RevealInLibrary), None]);
+        acts_if(ui, has_sel || !self.sel_transitions.is_empty(), &[Some(SaveToGallery)]);
         acts_if(ui, has_sel, &[Some(SaveTemplate)]);
         acts_if(ui, self.selection.len() == 2, &[Some(ApplyFlow)]);
     }
@@ -363,22 +361,14 @@ impl App {
         });
         ui.separator();
         menu::sub(ui, Some(tools::Glyph::Guides), "Social Guides", |ui| {
-            use crate::ui::guides::Guide;
-            for g in std::iter::once(None).chain(Guide::ALL.map(Some)) {
-                let name = g.map_or("Off", |g| g.name());
-                if menu::check(ui, self.settings.guide == g, name, "").clicked() {
-                    self.settings.guide = g;
-                    self.settings.save();
-                }
-            }
-            ui.separator();
-            if menu::check(ui, self.settings.guides_keep_aspect, "Maintain Aspect Ratio", "").clicked() {
-                self.settings.guides_keep_aspect ^= true;
-                self.settings.save();
+            if let Some(set) = crate::ui::social::menu_rows(ui, &self.settings) {
+                set.apply(&mut self.settings);
             }
         });
         menu::sub(ui, None, "Layout", |ui| self.layout_menu(ui));
         acts(ui, &[Some(Action::MaximizePane)]);
+        // ws:perf-window
+        acts(ui, &[None, Some(Action::PerfWindow)]);
         // ---- ws:command-palette ---- (per-script icon/hotkey/desc from ScriptMeta)
         if !self.script_metas().is_empty() {
             menu::sub(ui, Some(tools::Glyph::Terminal), "Scripts", |ui| {

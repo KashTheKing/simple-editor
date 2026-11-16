@@ -24,6 +24,7 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Fast Lossless Cut… | <kbd>Ctrl+Alt+E</kbd> |
 | Export Premiere / Resolve XML… | <kbd>Ctrl+Shift+E</kbd> |
 | Import Media… | <kbd>Ctrl+I</kbd> |
+| Import Folder as Bin… | - |
 | Settings… | <kbd>Ctrl+Comma</kbd> |
 | Export Frame… | <kbd>Ctrl+Shift+F</kbd> |
 | Record Voiceover… | <kbd>Ctrl+Alt+R</kbd> |
@@ -54,7 +55,7 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Select Forward from Playhead | <kbd>A</kbd> |
 | Select Backward from Playhead | <kbd>Shift+A</kbd> |
 | Select Clips Under Playhead | <kbd>Ctrl+Shift+D</kbd> |
-| Find… | <kbd>Ctrl+F</kbd> |
+| Find… (over the Gallery: its search box) | <kbd>Ctrl+F</kbd> |
 
 ## Playback
 
@@ -169,6 +170,7 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Next Angle at Playhead | - |
 | Previous Angle at Playhead | - |
 | Multicam Angles… | - |
+| Save to Gallery… | - |
 
 ## Add
 
@@ -230,8 +232,8 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 |---|---|
 | Show / Hide Library | <kbd>Ctrl+1</kbd> |
 | Show / Hide Inspector | <kbd>Ctrl+2</kbd> |
-| Show / Hide Effects | <kbd>Ctrl+3</kbd> |
-| Show / Hide Transitions | <kbd>Ctrl+4</kbd> |
+| Gallery: Effects | <kbd>Ctrl+3</kbd> |
+| Gallery: Transitions | <kbd>Ctrl+4</kbd> |
 | Show / Hide Curve Editor | <kbd>Ctrl+5</kbd> |
 | Show / Hide Subtitles | <kbd>Ctrl+6</kbd> |
 | Show / Hide Planner | <kbd>Ctrl+7</kbd> |

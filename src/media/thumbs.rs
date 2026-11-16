@@ -205,6 +205,7 @@ enum Job {
 }
 
 fn worker(shared: Arc<(Mutex<Shared>, Condvar)>, ctx: egui::Context) {
+    super::bg::lower_thread();
     let mut pool: Option<DecoderPool> = None;
     loop {
         let job = {
@@ -230,6 +231,7 @@ fn worker(shared: Arc<(Mutex<Shared>, Condvar)>, ctx: egui::Context) {
             Job::Quit => return,
             Job::Clear => pool = None, // drop decoders → release file handles
             Job::Decode(key, path, t, h, backend, epoch) => {
+                super::bg::pause_point(|| false);
                 let p = pool.get_or_insert_with(|| DecoderPool::new(backend));
                 p.set_backend(backend); // no-op when unchanged
                                         // ponytail: a decoder panic must not kill the only thumb worker - memoise it as a failed

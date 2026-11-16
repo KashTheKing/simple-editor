@@ -1467,6 +1467,7 @@ mod tests {
             range: None,
             effects: fx,
             html: None,
+            proxy: None,
         }
     }
 

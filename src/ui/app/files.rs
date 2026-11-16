@@ -2,7 +2,9 @@ use super::*;
 
 impl App {
     pub(super) fn open_path(&mut self, path: &Path) {
-        if path.extension().map(|e| e.to_string_lossy().eq_ignore_ascii_case(PROJECT_EXT)).unwrap_or(false) {
+        if path.is_dir() {
+            self.start_folder_import(path, crate::engine::folder_import::Options::default(), true);
+        } else if path.extension().map(|e| e.to_string_lossy().eq_ignore_ascii_case(PROJECT_EXT)).unwrap_or(false) {
             self.open_project(path);
         } else {
             self.open_media(path);
@@ -35,8 +37,32 @@ impl App {
                 self.settings.save();
                 self.fire_hook("project_open", json!({"path": path.to_string_lossy()}));
             }
-            Err(e) => self.toast(format!("Can't open project: {e}")),
+            Err(e) => self.repair_and_open(path, &e),
         }
+    }
+
+    /// A normal load failed: salvage what the file still holds. The damaged original is copied to
+    /// `<name>.sedit.damaged` first (never overwritten), the repaired project opens unsaved (so nothing
+    /// on disk changes until the user saves), and a toast lists what was lost.
+    fn repair_and_open(&mut self, path: &Path, why: &str) {
+        let Ok(r) = Project::load_repaired(path) else {
+            return self.toast(format!("Can't open project: {why} (and it could not be repaired)"));
+        };
+        let mut bak = path.as_os_str().to_owned();
+        bak.push(".damaged");
+        let bak = PathBuf::from(bak);
+        if !bak.exists() {
+            let _ = std::fs::copy(path, &bak);
+        }
+        let mut project = r.project;
+        relocate_assets(&mut project, path.parent());
+        self.set_project(project, Some(path.to_path_buf()));
+        self.dirty = true;
+        self.toast(format!(
+            "Repaired a damaged project ({why}). {} Original kept as {}",
+            r.notes.join("; "),
+            bak.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        ));
     }
 
     /// `<path>.lock` sidecar: warn-only (never blocks open), always overwritten with the current pid -
@@ -75,8 +101,8 @@ impl App {
             let mut p = Project::new();
             if let Some(f) = preset.and_then(|i| crate::ui::guides::PRESETS.get(i)) {
                 (p.width, p.height, p.fps) = (f.w, f.h, f.fps);
-                if app.settings.guide != f.guide {
-                    app.settings.guide = f.guide;
+                if app.settings.guide.as_deref() != f.guide {
+                    app.settings.guide = f.guide.map(str::to_string);
                     app.settings.save();
                 }
             }
@@ -151,7 +177,7 @@ impl App {
     /// module - see confirm.rs's module doc.
     pub(crate) fn save_project(&mut self) -> bool {
         let Some(path) = self.project_path.clone() else { return self.save_project_as() };
-        match self.project.save(&path) {
+        match self.project.save_with_chats(&path, assistant_ctl::chats_json(self)) {
             Ok(()) => {
                 self.dirty = false;
                 // ---- ws:online-library ---- library LUTs the project uses go beside it

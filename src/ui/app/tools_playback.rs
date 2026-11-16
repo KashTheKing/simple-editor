@@ -50,8 +50,10 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 Ok(json!({"ok": true, "t": app.playhead}))
             }
             "playback.play" => {
-                app.player.play();
-                Ok(json!({"ok": true}))
+                app.play_gated(1.0); // ws:play-gate: returns at once; `playback.status` says when it has started
+                let mut out = app.transport_json();
+                out["ok"] = json!(true);
+                Ok(out)
             }
             "playback.pause" => {
                 app.player.pause();
@@ -111,11 +113,8 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     return Err("rate must not be 0 (use playback.pause)".into());
                 }
                 let rate = rate.clamp(-8.0, 8.0);
-                if !app.player.is_playing() {
-                    app.player.play();
-                }
-                app.player.set_rate(rate);
-                Ok(json!({"ok": true, "rate": app.player.rate()}))
+                app.play_gated(rate); // starts at `rate` (after buffering), or sets it if already going
+                Ok(json!({"ok": true, "rate": app.transport_rate()}))
             }
             "playback.step" => {
                 let frames = req(arg_f64(args, "frames"), "frames")?.round() as i64;
@@ -147,22 +146,37 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
             }
             "playback.scrub" => {
                 let t = req(arg_f64(args, "t"), "t")?;
-                if app.player.is_playing() {
+                if app.transport_playing() {
                     return Err("scrub only works while paused".into());
                 }
                 app.player.scrub(t);
                 Ok(json!({"ok": true}))
             }
+            "playback.trace" => {
+                let secs = arg_f64(args, "secs").unwrap_or(3.0).clamp(0.1, 60.0);
+                let path = std::env::temp_dir().join(format!("simple-editor-trace-{}.json", std::process::id()));
+                let _ = std::fs::remove_file(&path);
+                crate::perf::start();
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs_f64(secs));
+                    crate::perf::stop();
+                    let tmp = p.with_extension("tmp");
+                    if std::fs::write(&tmp, crate::perf::trace_json()).is_ok() {
+                        let _ = std::fs::rename(&tmp, &p);
+                    }
+                });
+                Ok(json!({"ok": true, "path": path, "ready_in_s": secs}))
+            }
             "playback.status" => {
                 let (published, worst_gap_ms) = app.player.publish_stats();
-                Ok(json!({
-                    "rate": app.player.rate(),
+                let mut out = json!({
+                    "rate": app.transport_rate(),
                     "playing": app.player.is_playing(),
                     "time": app.player.time(),
                     "published_frames": published,
                     "worst_gap_ms": worst_gap_ms,
                     "dropped_frames": app.player.dropped_frames(),
-                    "buffering": app.player.is_buffering(),
                     "loop_range": app.player.loop_range(),
                     // ---- ws:perf-baseline ---- (the HUD's numbers; ms, rolling over ~120 UI frames)
                     "ui_frame_ms": app.hud.frame.avg(),
@@ -172,7 +186,12 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     "decode_ms": app.hud.decode_avg_ms,
                     "decode_worst_ms": app.hud.decode_worst_ms,
                     "cache_hit_rate": app.hud.hit_rate,
-                }))
+                });
+                // ---- ws:play-gate ---- state / buffering / buffer_fraction / settled / ...
+                if let (Some(o), Value::Object(t)) = (out.as_object_mut(), app.transport_json()) {
+                    o.extend(t);
+                }
+                Ok(out)
             }
             // ---- ws:perf-baseline ----
             "playback.hud" => {
@@ -237,13 +256,13 @@ pub const TOOLS: &[ToolDef] = &[
     // ---- ws:mcp-context ---- an image result (MCP image content; Luau still gets {width,height,data_url})
     ToolDef {
         name: "render.frame",
-        desc: "Render the timeline at time t as a PNG image, max `width` px wide (default 640).",
-        args: &["t:number:true:", "width:integer:false:"],
+        desc: "Render the timeline at time t as a PNG image, max `width` px wide (default 640). `guide` draws the current social guide over it (default: the Settings 'draw in render' option; a device preview comes back as the device picture).",
+        args: &["t:number:true:", "width:integer:false:", "guide:boolean:false:draw the social guide (guides.set)"],
         kind: ToolKind::Read,
         run: super::tools_context::render_frame_image,
     },
     row!("playback.seek", ToolKind::Read, "Move the playhead.", &["t:number:true:"]),
-    row!("playback.play", ToolKind::Read, "Start playback.", &[]),
+    row!("playback.play", ToolKind::Read, "Start playback. With Settings > Performance > \"Buffer before playing\" on (default) it first waits, at most 3 s, until the next second of frames and audio is ready, so it returns at once with `state` \"buffering\" or \"playing\": poll `playback.status` until `settled` is true.", &[]),
     row!("playback.pause", ToolKind::Read, "Pause playback.", &[]),
     row!("templates.list", ToolKind::Read, "Saved clip templates and motion presets.", &[]),
     row!(
@@ -301,7 +320,8 @@ pub const TOOLS: &[ToolDef] = &[
         "Emit one BLOCK (~21ms) of audio at t without moving the clock (paused only).",
         &["t:number:true:timeline seconds"]
     ),
-    row!("playback.status", ToolKind::Read, "Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), buffering flag, loop range, and the performance HUD's numbers (UI frame avg/p95, GL composite, texture upload, decode avg/worst ms, cache hit rate).", &[]),
+    row!("playback.trace", ToolKind::Read, "Record timing spans (UI frame, timeline and inspector draw, render-thread frame, layer decode, GPU composite and upload) for `secs` (default 3) and write a Chrome-trace JSON (chrome://tracing, Perfetto). Returns the file `path` at once; it appears when the recording ends (`ready_in_s`).", &["secs:number:false:recording length, 0.1-60"]),
+    row!("playback.status", ToolKind::Read, "Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), state (playing / buffering / paused), `buffering` with `buffer_fraction` (0..1 or null) and `waiting_on` while Play waits for the frames ahead or the player refills after a stall, `settled` (true when nothing is buffering: poll for it), `start_wait_ms` / `start_capped` (how the last Play started), `audio_start_lag_ms`, loop range, and the performance HUD's numbers (UI frame avg/p95, GL composite, texture upload, decode avg/worst ms, cache hit rate).", &[]),
     // ---- ws:perf-baseline ---- (the ToolDef twin of Action::ToggleHud)
     row!(
         "playback.hud",

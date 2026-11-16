@@ -12,11 +12,12 @@
 <meta name="se:field" content="title | text | System Override">
 <meta name="se:field" content="subtitle | text | Season 2 begins now">
 <meta name="se:field" content="accent | color | #00e5ff">
+<meta name="se:field" content="font | font | Bahnschrift">
 <style>
   :root { --accent: {{accent}}; --hot: #ff2a6d; }
   html, body { margin: 0; overflow: hidden; }
   body { width: 100vw; height: 100vh; position: relative; background: #06070b;
-    font-family: Bahnschrift, "Segoe UI", Arial, sans-serif; color: #fff; }
+    font-family: {{font}}; color: #fff; }
 
   .grid { position: absolute; inset: 0; opacity: .5;
     background: linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px) 0 0 / 64px 64px,
@@ -34,7 +35,7 @@
     animation: flickerIn .8s steps(1) .3s both, jolt 3s steps(1) 1.1s infinite both; }
   .t span, .t::before, .t::after { display: block; overflow: hidden; text-overflow: ellipsis; padding: 0 16px; }
   .t span { text-shadow: 0 0 24px rgba(255, 255, 255, .25); }
-  .t::before, .t::after { content: attr(data-text); position: absolute; inset: 0; mix-blend-mode: screen; }
+  .t::before, .t::after { content: attr(data-text); position: absolute; inset: 0; }
   .t::before { color: var(--accent); animation: gA 3s steps(1) 1.1s infinite both; }
   .t::after { color: var(--hot); animation: gB 3s steps(1) 1.1s infinite both; }
 

@@ -41,6 +41,14 @@ pub(super) fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str, c
         });
         ui.end_row();
 
+        // ---- ws:play-gate ----
+        ui.label("Playback start");
+        ui.vertical(|ui| {
+            changed |= ui.checkbox(&mut s.buffer_before_play, "Buffer before playing").changed();
+            ui.weak("Play waits (3 s at most) until the next second is ready, so it does not stutter at the start.");
+        });
+        ui.end_row();
+
         // ---- ws:forgiveness ----
         ui.label("On-disk cache");
         ui.horizontal(|ui| {

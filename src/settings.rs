@@ -227,7 +227,11 @@ pub struct Settings {
     /// (global, reusable across projects - the Presets pane lists all of them).
     pub curve_presets: Vec<CurvePreset>,
     pub motion_presets: Vec<MotionPreset>,
+    /// The four Gallery kinds below live as files in the gallery folder (`engine::gallery_sync`): these
+    /// vectors are the in-memory view, still READ from an older settings.json (imported once) but never written.
+    #[serde(skip_serializing)]
     pub effect_presets: Vec<EffectPreset>,
+    #[serde(skip_serializing)]
     pub templates: Vec<Template>,
     /// Saved text-clip looks (font/size/bold/italic/colour/letter-spacing), appliable to a whole clip
     /// or a selected span. Also exportable to / importable from `.sedit-textstyle` files.
@@ -284,11 +288,18 @@ pub struct Settings {
     pub whisper_dir: String,
     /// Model the Subtitles pane offers first: a `engine::transcribe::MODELS` name or file name.
     pub transcribe_model: String,
-    /// Library asset preview: draw a "spiky ball" audio visualizer over audio-only files that have
+    /// Library asset preview: draw the Neon Orb audio visualizer over audio-only files that have
     /// no thumbnail. Off = plain black, on = the ball. Toggled from the preview's right-click menu.
     pub audio_visualizer: bool,
-    /// Social-guide overlay drawn over the preview (None = off). A view preference, not project data.
-    pub guide: Option<crate::ui::guides::Guide>,
+    // ---- ws:audio-visualizer ----
+    /// Which visualizer style the Source monitor draws (`engine::visualizer` name; empty = the default,
+    /// Neon Orb). Picked from the preview's right-click menu.
+    pub audio_visualizer_style: String,
+    /// Social-guide platform drawn over the preview (None = off): an id from `ui::social`'s guides.json.
+    /// A view preference, not project data. Settings from before the data-driven guides stored a
+    /// variant name ("TikTok", "YtShorts"...); `legacy_guide` maps those.
+    #[serde(deserialize_with = "legacy_guide")]
+    pub guide: Option<String>,
     /// "Maintain Aspect Ratio": draw each guide at its platform's own aspect (TikTok 9:16 even on a
     /// 16:9 project), dimming what the platform crops. Off = stretched over the whole video.
     pub guides_keep_aspect: bool,
@@ -353,6 +364,10 @@ pub struct Settings {
     pub audio_scrub: bool,
     /// Symmetric pre/post roll (seconds) for Play Around Playhead.
     pub preroll_secs: f32,
+    // ---- ws:play-gate ----
+    /// Play waits (at most a few seconds) for the frames just ahead of the playhead to be ready
+    /// before the clock starts, instead of starting at once and stuttering (`ui::app::playgate`).
+    pub buffer_before_play: bool,
     // ---- ws:snap-engine ----
     /// Markers (project + clip-local) count as timeline snap candidates. No per-field serde
     /// attribute: `Settings`' container-level `#[serde(default)]` already back-fills old files,
@@ -384,11 +399,15 @@ pub struct Settings {
     pub inspector_folds: BTreeMap<String, bool>,
     /// User-saved caption styles (Gallery ▸ Captions, "Save current style…"), alongside the built-in
     /// ones from `engine::presets::builtin_caption_styles()`.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub caption_presets: Vec<TextStyle>,
     /// Last open Gallery tab (`GalleryTab`'s name), remembered across restarts.
     #[serde(default)]
     pub gallery_tab: String,
+    /// "Apply to All" (Gallery ▸ Transitions) leaves a clip that already has a transition at that spot
+    /// alone instead of replacing it. Off by default: the new transition replaces the old one.
+    #[serde(default)]
+    pub transition_skip_existing: bool,
     // ---- ws:layout-modes-onboarding ----
     /// The pre-pages workspace name (Simple / Edit / Color / Audio / Text / Deliver). Read once by
     /// `layout_ctl::migrate_to_pages` to pick the starting page; never written back.
@@ -464,6 +483,7 @@ pub struct Settings {
     // ---- ws:keys-actions ----
     // ---- ws:keyframe-blocks ----
     /// Keyframe blocks the user saved from a clip's keys (Gallery ▸ Animate, after the builtins).
+    #[serde(skip_serializing)]
     pub key_blocks: Vec<crate::model::KeyBlock>,
     // ---- ws:perf-baseline ----
     // ---- ws:pro-schema ----
@@ -504,6 +524,10 @@ pub struct Settings {
     /// Hold an agent's MCP calls that leave the project (export, open/new project, settings, scripts,
     /// convert) until the user clicks Allow.
     pub assistant_guard: bool,
+    // ---- ws:browser-layer ----
+    /// Most megapixels one zoomed part of a web page is drawn with (browser layer ▸ sharp zoom).
+    /// Set in settings.json.
+    pub page_zoom_megapixels: f32,
     /// The environment variable the "custom" backend gets the stored API key in.
     pub assistant_key_env: String,
     /// Agent session id per project path (no longer written: each Assistant conversation keeps its own,
@@ -519,6 +543,10 @@ pub struct Settings {
     // ---- ws:html-layer ----
     /// The program "Open in code editor" starts for an HTML layer's file; empty = VS Code if installed, else Notepad.
     pub html_editor: String,
+    /// Seconds of an HTML layer rendered first, at the project's frame rate, around the playhead (or
+    /// from the start of the part of the layer the clip uses), so a long layer plays at full rate there
+    /// while the rest renders. Every frame is always rendered before an export. Set in settings.json.
+    pub html_render_window_secs: f64,
     // ---- ws:shader-library ----
     // ---- ws:skills ----
     /// `assistant_quick` was turned into user skills once (`engine::skills::migrate_in`).
@@ -536,6 +564,47 @@ pub struct Settings {
     pub library_url: String,
     /// A local folder read INSTEAD of `library_url` when not empty (testing before `library/` is on `main`).
     pub library_dir: String,
+    /// The user clicked "Browse online library" once: from then on the Gallery lists the online library
+    /// (the small index only; an item is downloaded when it is clicked). Off until then, so a fresh
+    /// install fetches nothing.
+    pub library_online: bool,
+    /// How often each Gallery card was applied ("Tab:name" -> count), for the "Most used" order.
+    pub gallery_used: std::collections::BTreeMap<String, u32>,
+    // ---- ws:social-guides ----
+    /// What the guide shows: "safe" (zones), "ui" (silhouettes with the profile) or "device" (phone frame).
+    pub guide_mode: String,
+    /// Device class of the guide / device preview: an id from guides.json `devices`.
+    pub guide_device: String,
+    /// Safe-zone mode: the worst case across every platform of the same shape.
+    pub guide_worst: bool,
+    /// Draw the guide in `render.frame` / `render.contact_sheet` (and `frame.export` never): opt-in.
+    pub guide_render: bool,
+    /// Desktop long-form player view: "default", "theatre" or "fullscreen".
+    pub guide_view: String,
+    /// The user's fake accounts (Settings ▸ Social). No credentials, ever.
+    pub social_profiles: Vec<crate::ui::social::profile::SocialProfile>,
+    /// The profile used per network (id), when more than one exists.
+    pub social_active: BTreeMap<String, String>,
+    // ---- ws:cache-budget ----
+    /// One disk budget (GB) for the html, prerender, proxy and peaks caches; least recently used files go
+    /// first. 0 = unlimited. Models and the library are not counted.
+    pub cache_disk_gb: u32,
+}
+
+/// `guide` as stored by builds before the guides became data: the old enum's variant name.
+fn legacy_guide<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let s: Option<String> = Option::deserialize(d)?;
+    Ok(s.map(|s| {
+        match s.as_str() {
+            "TikTok" => "tiktok",
+            "IgReels" => "ig_reels",
+            "YtShorts" => "yt_shorts",
+            "IgPost" => "ig_feed",
+            "YouTube" => "yt_long",
+            other => other,
+        }
+        .to_string()
+    }))
 }
 
 /// ws:assistant-pane: the built-in quick prompts (also what "Reset" restores).
@@ -611,6 +680,7 @@ impl Default for Settings {
             whisper_dir: String::new(),
             transcribe_model: String::new(),
             audio_visualizer: true,
+            audio_visualizer_style: String::new(),
             guide: None,
             project_templates: Vec::new(),
             ui_look: "cozy".into(),
@@ -643,6 +713,8 @@ impl Default for Settings {
             // ---- ws:player-rate-loop ----
             audio_scrub: true,
             preroll_secs: 2.0,
+            // ---- ws:play-gate ----
+            buffer_before_play: true,
             // ---- ws:snap-engine ----
             snap_markers: true,
             // ---- ws:trim-model ----
@@ -658,6 +730,7 @@ impl Default for Settings {
             inspector_folds: BTreeMap::new(),
             caption_presets: Vec::new(),
             gallery_tab: "Looks".into(),
+            transition_skip_existing: false,
             // ---- ws:layout-modes-onboarding ----
             workspace: "Edit".into(),
             home_screen: true,
@@ -736,6 +809,7 @@ impl Default for Settings {
             // ---- ws:assistant-pane ----
             assistant_quick: default_assistant_quick(),
             assistant_guard: true,
+            page_zoom_megapixels: 16.0,
             assistant_key_env: "OPENAI_API_KEY".into(),
             assistant_sessions: BTreeMap::new(),
             assistant_follow: true,
@@ -745,6 +819,7 @@ impl Default for Settings {
             // ---- ws:docs-release ----
             // ---- ws:html-layer ----
             html_editor: String::new(),
+            html_render_window_secs: 10.0,
             // ---- ws:shader-library ----
             // ---- ws:skills ----
             skills_migrated: false,
@@ -753,6 +828,18 @@ impl Default for Settings {
             // ---- ws:online-library ----
             library_url: "https://raw.githubusercontent.com/KashTheKing/simple-editor/main/library".into(),
             library_dir: String::new(),
+            library_online: false,
+            gallery_used: Default::default(),
+            // ---- ws:social-guides ----
+            guide_mode: "safe".into(),
+            guide_device: "iphone".into(),
+            guide_worst: false,
+            guide_render: false,
+            guide_view: "default".into(),
+            social_profiles: Vec::new(),
+            social_active: BTreeMap::new(),
+            // ---- ws:cache-budget ----
+            cache_disk_gb: 30,
         }
     }
 }
@@ -798,7 +885,12 @@ impl Settings {
     /// the corrupt file isn't silently overwritten by the next save) and returns
     /// `(Self::default(), Some(reason))`. A MISSING file (first run) is not an error: `(default, None)`.
     fn load_inner() -> (Self, Option<String>) {
-        Self::load_from(&Self::path())
+        #[allow(unused_mut)]
+        let (mut s, bad) = Self::load_from(&Self::path());
+        // (a test never touches the real gallery folder)
+        #[cfg(not(test))]
+        crate::engine::gallery_sync::load_into(&mut s, &crate::engine::gallery::root());
+        (s, bad)
     }
     /// The actual quarantine logic, over an explicit path - split out so a test can point it at a temp
     /// file instead of the real %APPDATA%\SimpleEditor\settings.json.
@@ -826,6 +918,8 @@ impl Settings {
     }
     /// Writes a temp file then renames, so a failed write can't destroy the previous settings.
     pub fn save(&self) {
+        #[cfg(not(test))]
+        crate::engine::gallery_sync::mirror(self, &crate::engine::gallery::root());
         let _ = std::fs::create_dir_all(Self::dir());
         if let Ok(s) = serde_json::to_string_pretty(self) {
             let tmp = Self::dir().join("settings.json.tmp");

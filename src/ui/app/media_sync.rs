@@ -100,10 +100,47 @@ pub(crate) fn status_of(offline: &HashSet<Id>, a: &Asset, use_proxies: bool, pro
 }
 
 /// Every asset whose file is not on disk right now.
-/// ponytail: one `exists()` per asset on the UI thread every 2 s - the proxy scan already pays the
-/// same per-asset stat; a worker + channel is the upgrade if a network drive ever makes it hitch.
 pub(crate) fn offline_set(project: &Project) -> HashSet<Id> {
     project.assets.iter().filter(|a| !a.path.is_empty() && !Path::new(&a.path).exists()).map(|a| a.id).collect()
+}
+
+/// The 2 s rescan's answer from its thread: (id, path) of every asset it found missing. A stat is
+/// ~65 us on an idle disk and 0.3 ms+ while proxies build: 70 ms of UI thread every 2 s on a 216-asset
+/// project when it ran here.
+static OFFLINE_FOUND: Mutex<Option<Vec<(Id, String)>>> = Mutex::new(None);
+static OFFLINE_SCANNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Start the rescan on a thread (one at a time); `take_offline_scan` applies what it found.
+fn start_offline_scan(project: &Project, ctx: &egui::Context) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if OFFLINE_SCANNING.swap(true, SeqCst) {
+        return;
+    }
+    let list: Vec<(Id, String)> =
+        project.assets.iter().filter(|a| !a.path.is_empty()).map(|a| (a.id, a.path.clone())).collect();
+    let ctx = ctx.clone();
+    let spawned = std::thread::Builder::new().name("offline-scan".into()).spawn(move || {
+        let missing: Vec<(Id, String)> = list.into_iter().filter(|(_, p)| !Path::new(p).exists()).collect();
+        *OFFLINE_FOUND.lock().unwrap_or_else(|e| e.into_inner()) = Some(missing);
+        OFFLINE_SCANNING.store(false, SeqCst);
+        ctx.request_repaint();
+    });
+    if spawned.is_err() {
+        OFFLINE_SCANNING.store(false, SeqCst);
+    }
+}
+
+/// The finished rescan as the offline set of `project`: an asset counts only if its path is still the one
+/// that was found missing (a relink or another project in between: not offline).
+fn take_offline_scan(project: &Project) -> Option<HashSet<Id>> {
+    let found = OFFLINE_FOUND.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+    Some(
+        found
+            .into_iter()
+            .filter(|(id, p)| project.asset(*id).is_some_and(|a| a.path == *p))
+            .map(|(id, _)| id)
+            .collect(),
+    )
 }
 
 fn refresh_offline(app: &mut App) {
@@ -116,21 +153,32 @@ fn refresh_offline(app: &mut App) {
 /// A background job this workstream polls in `tick`.
 pub(super) enum MediaJob {
     /// An image-sequence bake: `out` is imported when it lands, then `import` fires once.
-    Sequence { prog: Arc<Progress>, out: PathBuf, frames: usize },
+    /// `bin` = the library bin a folder import wants the baked video filed in ("" = the root).
+    Sequence { prog: Arc<Progress>, out: PathBuf, frames: usize, bin: String },
     /// Consolidate's copy phase (file I/O only); `tick` repoints + pushes one undo when it finishes.
     Consolidate { prog: Arc<Progress>, results: Arc<Mutex<Vec<(Id, PathBuf, Result<(), String>)>>> },
+    /// A folder import's scan (file I/O only); `folder_import::finish` applies it on the UI thread.
+    /// `done` is what an MCP caller waits on: it ends once the scan has been applied.
+    Folder {
+        prog: Arc<Progress>,
+        slot: Arc<Mutex<Option<crate::engine::folder_import::Scan>>>,
+        confirm: bool,
+        done: Arc<Progress>,
+        name: String,
+    },
 }
 
 impl MediaJob {
     pub(super) fn progress(&self) -> &Arc<Progress> {
         match self {
-            MediaJob::Sequence { prog, .. } | MediaJob::Consolidate { prog, .. } => prog,
+            MediaJob::Sequence { prog, .. } | MediaJob::Consolidate { prog, .. } | MediaJob::Folder { prog, .. } => prog,
         }
     }
     pub(super) fn label(&self) -> String {
         match self {
             MediaJob::Sequence { out, .. } => out.file_name().unwrap_or_default().to_string_lossy().into_owned(),
             MediaJob::Consolidate { .. } => "Consolidate media".into(),
+            MediaJob::Folder { name, .. } => format!("Import folder · {name}"),
         }
     }
 }
@@ -145,9 +193,14 @@ pub(super) fn take_done(jobs: &mut Vec<MediaJob>) -> Vec<MediaJob> {
 
 /// FRAME_HOOK.
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
+    if let Some(now) = take_offline_scan(&app.project) {
+        if now != app.library.offline {
+            app.library.offline = now;
+        }
+    }
     if app.offline_scan_at.is_none_or(|t| t <= Instant::now()) {
         app.offline_scan_at = Some(Instant::now() + Duration::from_secs(2));
-        refresh_offline(app);
+        start_offline_scan(&app.project, ctx);
     }
     // keyboard navigation over the hovered library - before Hotkeys::poll consumes the same keys
     if app.library.hovered && !ctx.wants_keyboard_input() {
@@ -175,7 +228,10 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     }
     for job in take_done(&mut app.media_jobs) {
         match job {
-            MediaJob::Sequence { prog, out, frames } => finish_sequence(app, &prog, out, frames),
+            MediaJob::Sequence { prog, out, frames, bin } => finish_sequence(app, &prog, out, frames, &bin),
+            MediaJob::Folder { prog, slot, confirm, done, name } => {
+                super::folder_import::finish(app, &prog, &slot, confirm, done, &name)
+            }
             MediaJob::Consolidate { prog, results } => {
                 let results = std::mem::take(&mut *results.lock().unwrap_or_else(|e| e.into_inner()));
                 finish_consolidate(app, &prog, &results);
@@ -187,13 +243,20 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     }
 }
 
-fn finish_sequence(app: &mut App, prog: &Progress, out: PathBuf, frames: usize) {
+fn finish_sequence(app: &mut App, prog: &Progress, out: PathBuf, frames: usize, bin: &str) {
     if let Some(e) = prog.error() {
         app.toast(format!("Sequence import failed: {e}"));
         return;
     }
     let ids = app.import_files(std::slice::from_ref(&out));
     let Some(&id) = ids.last() else { return };
+    if !bin.is_empty() {
+        // a folder import's run: it belongs in that bin, not the library root
+        app.project.add_folder(bin);
+        if let Some(a) = app.project.asset_mut(id) {
+            a.folder = bin.to_string();
+        }
+    }
     app.library.tab = 0;
     app.library.selected = Some(id);
     app.toast_with_folder(format!("Imported {frames}-frame sequence"), out.clone());
@@ -413,6 +476,16 @@ pub(super) fn start_import_sequence(
     first_frame: &Path,
     fps: Option<f64>,
 ) -> Result<(Arc<Progress>, PathBuf), String> {
+    start_import_sequence_in(app, first_frame, fps, "")
+}
+
+/// `start_import_sequence`, filing the baked video under library bin `bin` ("" = the root).
+pub(super) fn start_import_sequence_in(
+    app: &mut App,
+    first_frame: &Path,
+    fps: Option<f64>,
+    bin: &str,
+) -> Result<(Arc<Progress>, PathBuf), String> {
     let seq = detect_sequence(first_frame)
         .ok_or_else(|| format!("{} is not part of a numbered still sequence (3+ frames)", first_frame.display()))?;
     if media::ffpipe::ffmpeg_exe().is_none() {
@@ -423,7 +496,7 @@ pub(super) fn start_import_sequence(
     let frames = seq.frames.len();
     let bake_out = out.clone();
     let prog = export::spawn_job("sequence", move |p| media::ffpipe::bake_sequence(&seq, fps, &bake_out, p));
-    app.media_jobs.push(MediaJob::Sequence { prog: prog.clone(), out: out.clone(), frames });
+    app.media_jobs.push(MediaJob::Sequence { prog: prog.clone(), out: out.clone(), frames, bin: bin.to_string() });
     app.toast(format!("Baking {frames}-frame sequence…"));
     Ok((prog, out))
 }
@@ -499,7 +572,7 @@ mod tests {
         let prog = Progress::new();
         prog.finish(None);
         let mut jobs = vec![
-            MediaJob::Sequence { prog: prog.clone(), out: PathBuf::from("C:/seq.mp4"), frames: 3 },
+            MediaJob::Sequence { prog: prog.clone(), out: PathBuf::from("C:/seq.mp4"), frames: 3, bin: String::new() },
             MediaJob::Consolidate { prog: Progress::new(), results: Arc::new(Mutex::new(Vec::new())) },
         ];
         let done = take_done(&mut jobs);
@@ -515,6 +588,34 @@ mod tests {
             body.find("import_files").unwrap() < body.find("fire_hook").unwrap(),
             "asset added before the hook sees its id"
         );
+    }
+
+    /// Regression: the 2 s offline rescan stat'ed every asset on the UI thread (70 ms per pass on a
+    /// 216-asset project while proxies built). It runs on a thread now; what it finds only counts for
+    /// assets still at the path it checked.
+    #[test]
+    fn offline_rescan_runs_off_the_ui_thread_and_ignores_relinked_assets() {
+        let mut p = Project::new();
+        let gone = p.add_asset(asset(0, "Z:/gone/a.mp4"));
+        let moved = p.add_asset(asset(0, "Z:/gone/b.mp4"));
+        let ctx = egui::Context::default();
+        start_offline_scan(&p, &ctx);
+        let t0 = Instant::now();
+        let found = loop {
+            if let Some(f) = take_offline_scan(&p) {
+                break f;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(10), "the scan thread never answered");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(found, HashSet::from([gone, moved]));
+        // the same answer after `moved` was relinked: only `gone` is still offline
+        *OFFLINE_FOUND.lock().unwrap() = Some(vec![(gone, "Z:/gone/a.mp4".into()), (moved, "Z:/gone/b.mp4".into())]);
+        p.asset_mut(moved).unwrap().path = "C:/found/b.mp4".into();
+        assert_eq!(take_offline_scan(&p), Some(HashSet::from([gone])));
+        let src = include_str!("media_sync.rs");
+        let tick = &src[src.find("pub(super) fn tick").unwrap()..src.find("fn finish_sequence").unwrap()];
+        assert!(!tick.contains("refresh_offline("), "the periodic rescan must not stat on the UI thread");
     }
 
     #[test]

@@ -18,6 +18,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
     if resp.import {
         app.act_import();
     }
+    if resp.import_folder {
+        app.act_import_folder();
+    }
     if resp.show_browser {
         app.layout.reveal(Pane::MediaBrowser);
     }
@@ -75,6 +78,12 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
     }
     for (id, ext) in resp.convert {
         app.start_asset_convert(id, &ext);
+    }
+    for (id, mode) in resp.proxy_mode {
+        if let Some(a) = app.project.asset_mut(id) {
+            a.proxy = mode;
+        }
+        app.proxy_scan_at = None;
     }
     if !resp.regen_proxy.is_empty() {
         // decoders hold the proxy files open on Windows: release them before deleting

@@ -103,6 +103,7 @@ impl Mixer {
     /// value at the block start to the block end), add into the clip's bus. Buses are then flushed in
     /// evaluation order and the result clamped to [-1, 1].
     pub fn mix(&mut self, project: &Project, t: f64, pool: &mut DecoderPool, out: &mut [f32]) {
+        let _s = crate::perf::span("audio_mix"); // ws:perf-window
         out.fill(0.0);
         if out.len() < 2 {
             return;
@@ -432,6 +433,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         }
     }
 

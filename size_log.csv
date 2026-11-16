@@ -43,3 +43,16 @@ f44595e,12326400,"feat/pro before the creator kit (the Pro plan and everything o
 a17154b,13067264,"creator kit (HTML layers, shader library, skills, online library): +740,864 B vs f44595e, above the plan's 200-400 KB estimate"
 da35401+wip,13457920,"HTML editing, web snapshots, params, fake mouse: +390,656 B vs a17154b (+1,131,520 B vs f44595e)"
 0990cfc,13458944,release 1.2.0 (Pro plan, Creator Kit, web snapshots, Report a Bug): +1,024 B vs the row above; +2,119,168 B vs the 1.1.0 release exe (11,339,776 B)
+b05471e+html-load+blitz,13834752,"feat/blitz-helper main exe: +134,144 B vs origin/main + the html-load patch (13,700,608 B): the se-html client, install, lint and the renderer setting (about 1.2k lines); Blitz itself is NOT linked (it is the separate se-html.exe row above, 11.0 MB)"
+b05471e,11007488,"se-html: the fast HTML renderer helper 0.1.0 (separate exe, not linked into simple-editor.exe). final: layout at scale 1 below 1.0 (averaged down), base_url fix, mem in ping"
+b05471e+wip,13536768,"folder import (bins from folders, media.import_folder): +77,312 B vs the 1.2.0 release exe built from b05471e (13,459,456 B)"
+b05471e+wip,14470656,"thread viewers (chat / forum / video comments, typing animation, list rows): +770,048 B vs the same tree without it (13,700,608 B = origin/main + the html-load working tree); no offset found: needs a decision"
+b05471e+wip,13762048,"browser layer + fake mouse (feat/browser-layer): +303,104 B vs 1.2.0"
+b05471e+wip,13963264,"browser layer phase 2 (web page import, element map, sharp zoom, click and go): +504,320 B vs 1.2.0, +201,216 B vs the row above"
+b05471e+wip,13988352,"browser layer phase 3 (pages as HTML layers, Page only, make editable): +529,408 B vs 1.2.0, +25,088 B vs the row above"
+b05471e+wip,13977600,"browser layer phase 4 (Window zoom, zoom levels, hand-written JSON): +518,656 B vs 1.2.0, -10,752 B vs the row above"
+b05471e+wip,13905408,"browser layer phase 5 (7 tools with an action argument, table-driven JSON and Inspector, out-of-line Animated clone, tab rows on ui::list_rows (about 13 KB of it is that shared helper), insertion sorts): +446,464 B vs 1.2.0, -72,192 B vs the row above; the -200 KB target is NOT met"
+b05471e+wip,14074880,"social guides remade as data (guides.json 20 KB, device preview, profiles, fetch, bitmap renderer, 6 tools): +615,424 B vs origin/main b05471e rebuilt the same way (13,459,456 B)"
+cad091b,11007488,"se-html: the fast HTML renderer helper 0.1.0 (separate exe, not linked into simple-editor.exe). integration/nov13 build (same source as feat/blitz-helper)"
+cad091b,16349184,"integration/nov13: 1.2.0 + html-load, blitz-helper client, play-preroll, folder-import, gallery-scroll, thread-viewers, browser-layer, social-guides merged: +2,890,240 B vs the 1.2.0 release exe (13,458,944 B); over the size gate, accepted for now (trim later)"
+ffcfad1,16457216,ai-enhancer: AI upscale add-on client (Real-ESRGAN itself is a separate download); base 667c42e = 16,361,472 B (target-integration release exe)

@@ -57,10 +57,13 @@ mod drops;
 mod edit_ops;
 mod feedback;
 mod files;
+mod folder_import;
 // ---- ws:layout-modes-onboarding ----
 mod frame;
 // ---- ws:inspector-gallery ----
 mod gallery_ctl;
+mod gallery_drop_ctl;
+pub(crate) mod gallery_mine;
 mod gpu;
 mod jobs;
 // ---- ws:jobs-panel ----
@@ -81,6 +84,7 @@ mod monitor;
 mod palette_ctl;
 mod panes;
 mod playback_ctl;
+mod playgate;
 mod preview_pane;
 // ---- ws:forgiveness ----
 // pub(crate): main.rs calls recovery::install_panic_hook() before eframe::run_native.
@@ -143,9 +147,13 @@ mod transcript_ctl;
 mod trim_actions;
 // ---- ws:voice-input ----
 mod voice_ctl;
+// ---- ws:browser-layer ----
+mod browser_ctl;
 // ---- ws:html-layer ----
 mod html_ctl;
 mod tools_html;
+// ---- ws:thread-viewers ----
+mod tools_thread;
 // ---- ws:shader-library ----
 mod tools_shader;
 // ---- ws:skills ----
@@ -153,7 +161,12 @@ mod tools_skills;
 // ---- ws:online-library ----
 mod library_ctl;
 mod tools_library;
+// ---- ws:social-guides ----
+mod tools_social;
+// ---- ws:ai-enhancer ----
+mod enhance_ctl;
 mod whatsnew;
+mod perf_ctl; // ws:perf-window
 #[path = "windows.rs"]
 mod windows_dlg;
 
@@ -335,6 +348,8 @@ pub struct App {
     movie_stall: bool,
     /// True while playback is held because the player reported buffering (spinner shown).
     buffer_stall: bool,
+    /// ---- ws:play-gate ---- Buffer before playing: Play waits here until the frames ahead are ready.
+    play_gate: playgate::Gate,
     /// A script picked from the Scripts menu, run on the next update (outside menu layout).
     run_script_path: Option<std::path::PathBuf>,
     /// Proxy build in flight: (source path, proxy file, job). One transcode at a time.
@@ -433,6 +448,10 @@ pub struct App {
     gallery_textures: Vec<egui::TextureHandle>,
     /// Gallery pane state (open tab, save-from-selection scratch).
     gallery: crate::ui::gallery::GalleryState,
+    /// "Save to Gallery…" / rename / tags prompt (`gallery_mine`).
+    save_dialog: gallery_mine::SaveDialog,
+    /// The sound the Gallery is previewing (`gallery_mine::frame`).
+    sound_playing: Option<PathBuf>,
     // ---- ws:media-library ----
     /// Image-sequence bakes and consolidate copies in flight, polled by `media_sync::tick`.
     media_jobs: Vec<media_sync::MediaJob>,
@@ -475,6 +494,9 @@ pub struct App {
     // ---- ws:perf-baseline ----
     /// Frame-time HUD numbers (`ui::hud`), fed at the end of every `update`, drawn when `settings.hud`.
     hud: crate::ui::hud::Hud,
+    // ---- ws:perf-window ----
+    /// The Performance window (`ui::perf_ui`, `perf_ctl`).
+    perf: crate::ui::perf_ui::PerfWin,
     // ---- ws:pro-schema ----
     /// The Assistant pane's prompt / pending requests / log (`ui::assistant_ui`).
     pub(crate) assistant: crate::ui::assistant_ui::AssistantState,
@@ -498,6 +520,9 @@ pub struct App {
     // ---- ws:voice-input ----
     /// Dictation into the Assistant prompt (recorder + whisper job).
     voice: voice_ctl::VoiceState,
+    // ---- ws:browser-layer ----
+    /// Browser layers: the mouse recorder and waypoint mode.
+    browser: browser_ctl::BrowserCtl,
     // ---- ws:docs-release ----
     // ---- ws:html-layer ----
     /// HTML layers: the Edge renderer's jobs and the HTML editor window.
@@ -873,6 +898,7 @@ impl App {
             prerender: PreRender::new(),
             movie_stall: false,
             buffer_stall: false,
+            play_gate: playgate::Gate::default(),
             run_script_path: None,
             proxy_job: None,
             proxy_map: std::collections::HashMap::new(),
@@ -911,6 +937,8 @@ impl App {
             // ---- ws:inspector-gallery ----
             gallery_textures: Vec::new(),
             gallery: crate::ui::gallery::GalleryState::default(),
+            save_dialog: Default::default(),
+            sound_playing: None,
             // ---- ws:media-library ----
             media_jobs: Vec::new(),
             offline_scan_at: None,
@@ -937,6 +965,7 @@ impl App {
             // ---- ws:keys-actions ----
             // ---- ws:perf-baseline ----
             hud: Default::default(),
+            perf: Default::default(), // ws:perf-window
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -954,6 +983,8 @@ impl App {
             // ---- ws:transcribe-islands ----
             // ---- ws:voice-input ----
             voice: Default::default(),
+            // ---- ws:browser-layer ----
+            browser: Default::default(),
             // ---- ws:docs-release ----
             // ---- ws:html-layer ----
             html: Default::default(),
@@ -974,7 +1005,7 @@ impl App {
             // launched from Explorer ("Open with"): behave like a player - full screen, rolling
             if app.screenshot.is_none() && !app.project.tracks.iter().all(|t| t.clips.is_empty()) {
                 app.fullscreen = true;
-                app.player.play();
+                app.play_gated(1.0);
             }
         }
         app
@@ -994,8 +1025,17 @@ impl App {
     /// ponytail: that single file is still probed on this thread - it settles the project format, size
     /// and zoom before anything is drawn; give it a placeholder too if opening ever feels slow.
     fn open_or_import(&mut self, paths: &[PathBuf]) -> Vec<Id> {
+        // a folder imports as a bin on its own; only the plain files can open as the project
+        let paths = self.take_folders(paths);
+        // a project file is opened, never imported as media (the probe would only say "invalid data")
+        let (projects, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| {
+            p.extension().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(PROJECT_EXT))
+        });
+        if let Some(p) = projects.into_iter().next() {
+            self.confirm_discard_then(move |app| app.open_project(&p));
+        }
         // ---- ws:media-library ----: a frame of a numbered still run bakes as one clip instead
-        let paths = media_sync::intercept_sequences(self, paths);
+        let paths = media_sync::intercept_sequences(self, &paths);
         if self.project.is_empty() && self.project.assets.is_empty() && paths.len() == 1 {
             self.open_media(&paths[0]);
             return Vec::new();
@@ -1025,6 +1065,7 @@ impl App {
         self.probes.clear(); // import probes belong to the project that started them
         self.project = project;
         self.project_path = path;
+        assistant_ctl::project_changed(self, self.project_path.clone().as_deref());
         self.dirty = false;
         self.undo.clear();
         self.redo.clear();
@@ -1039,6 +1080,8 @@ impl App {
         lib.sel_ids.clear();
         self.playhead = 0.0;
         self.player.pause();
+        // ws:browser-layer: zoom details are per project (and old builds' picture clips go)
+        browser_ctl::project_loaded(self);
         self.player.set_project(&self.project);
         self.player.seek(0.0);
         self.timeline.zoom_to_fit(self.project.duration(), self.timeline.lanes_rect.width().max(800.0));
@@ -1056,6 +1099,7 @@ impl App {
     fn seek(&mut self, t: f64) {
         self.playhead = t.clamp(0.0, self.project.duration().max(0.0));
         self.player.seek(self.playhead);
+        self.play_gate.on_seek();
         // an explicit seek always brings the playhead back into view (a user pan only suspends the
         // follow while playing)
         self.timeline.follow_playhead(self.playhead);
@@ -1086,9 +1130,18 @@ impl App {
     /// ponytail: an MCP `media.import` reply therefore quotes duration 0 until the probe lands;
     /// blocking the tool call on it is the fix if an agent ever needs the number in the same reply.
     fn import_files(&mut self, paths: &[PathBuf]) -> Vec<Id> {
+        // a folder is a bin import of its own (async, so its assets are not in the returned ids)
+        let paths = self.take_folders(paths);
+        // a project file is opened, never imported as media (the probe would only say "invalid data")
+        let (projects, paths): (Vec<PathBuf>, Vec<PathBuf>) = paths.into_iter().partition(|p| {
+            p.extension().is_some_and(|e| e.to_string_lossy().eq_ignore_ascii_case(PROJECT_EXT))
+        });
+        if let Some(p) = projects.into_iter().next() {
+            self.confirm_discard_then(move |app| app.open_project(&p));
+        }
         // ---- ws:media-library ----: every import path (Ctrl+I, drops, MCP media.import) funnels
         // through here, so this one gate covers them all - see media_sync::intercept_sequences
-        let paths = media_sync::intercept_sequences(self, paths);
+        let paths = media_sync::intercept_sequences(self, &paths);
         let mut ids = Vec::new();
         let mut fresh: Vec<(Id, String)> = Vec::new();
         for path in &paths {
@@ -1116,6 +1169,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let _s = crate::perf::span("ui_frame");
         let perf_t0 = Instant::now(); // ws:perf-baseline: the HUD's UI frame time
         if !self.window_shown {
             // viewport commands apply after this frame is painted, so no white flash
@@ -1200,7 +1254,6 @@ impl eframe::App for App {
         // the window really closes this frame: answer held / parked MCP calls instead of letting them time out
         if self.close_confirmed && ctx.input(|i| i.viewport().close_requested()) {
             assistant_ctl::deny_held(self, "the app closed");
-            assistant_ctl::save_now(self); // ws:assistant-pane: the conversations, synchronously
             tools_context::end_waits(self, "the app closed");
         }
 
@@ -1607,12 +1660,22 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:docs-release ----
     // ---- ws:html-layer ----
     tools_html::TOOLS,
+    // ---- ws:thread-viewers ----
+    tools_thread::TOOLS,
     // ---- ws:shader-library ----
     tools_shader::TOOLS,
     // ---- ws:skills ----
     tools_skills::TOOLS,
     // ---- ws:online-library ----
     tools_library::TOOLS,
+    // ---- ws:browser-layer ----
+    browser_ctl::TOOLS,
+    // ---- ws:social-guides ----
+    tools_social::TOOLS,
+    // ---- ws:ai-enhancer ----
+    enhance_ctl::TOOLS,
+    // ---- ws:perf-window ----
+    perf_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1683,11 +1746,19 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:docs-release ----
     // ---- ws:html-layer ----
     html_ctl::act,
+    // ---- ws:thread-viewers ----
+    tools_thread::act,
     // ---- ws:shader-library ----
     tools_shader::act,
     // ---- ws:skills ----
     // ---- ws:online-library ----
     library_ctl::act,
+    // ---- ws:browser-layer ----
+    browser_ctl::act,
+    // ---- ws:ai-enhancer ----
+    enhance_ctl::act,
+    // ---- ws:perf-window ----
+    perf_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1760,6 +1831,16 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:skills ----
     // ---- ws:online-library ----
     library_ctl::tick,
+    // ---- ws:my-gallery ----
+    gallery_mine::frame,
+    // ---- ws:browser-layer ----
+    browser_ctl::tick,
+    // ---- ws:cache-budget ----
+    caches::tick,
+    // ---- ws:ai-enhancer ----
+    enhance_ctl::tick,
+    // ---- ws:perf-window ----
+    perf_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -1826,6 +1907,12 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     assistant_ctl::skill_windows,
     // ---- ws:online-library ----
     library_ctl::windows,
+    // ---- ws:my-gallery ----
+    gallery_mine::windows,
+    // ---- ws:browser-layer ----
+    browser_ctl::windows,
+    // ---- ws:perf-window ----
+    perf_ctl::window,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -1926,6 +2013,7 @@ impl App {
                 ClipKind::Shape => SelectionKind::Shape,
                 ClipKind::Sequence => SelectionKind::Sequence,
                 ClipKind::Adjustment => SelectionKind::Adjustment,
+                ClipKind::Browser => SelectionKind::Shape, // ws:browser-layer: Inspector, like a shape
             },
             _ => SelectionKind::Mixed,
         }

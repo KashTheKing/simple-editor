@@ -169,6 +169,18 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
   working. The pieces it can stand on already exist: the renderer, `html_code` (a tokenizer that knows
   every tag, rule and field), and the file link. Needs a design pass first (a small element tree
   round-tripped through the source, snapping, selection, undo).
+- [ ] **Browser layer + fake mouse** (asked and built 2026-11-13 on `feat/browser-layer`, not merged): a drawn
+  browser window over the tracks below it (Light / Dark / Minimal / Mobile, tabs, address typing, load bar,
+  scroll, zoom), a fake mouse (Record mouse, waypoints, keyframes; clicks, drags, wheel, keystroke overlay),
+  page changes and button presses as one-undo helpers, `browser.*` / `cursor.*` tools. Guide page
+  `website/docs/browser-layer.mdx`. Phase 2 the same day: Import Web Page (address / .mhtml / .html, element map,
+  optional sign-in profile), zoom on the pages themselves + Sharpen zooms, cursor.move_to by element text, Click
+  and go to page. Phase 3: imported pages are HTML layer clips (Make editable, automatic
+  zoom details), Display: Browser window / Page only. Phase 4: Window zoom (the whole browser and the mouse), zoom levels so no frame of
+  a zoom is enlarged. **Size: +446,464 B (+436 KB) of release exe after phase 5 (21 tools folded into 7, table-driven JSON and
+  Inspector; was +506 KB): over the +300 KB gate, the -200 KB trimming target NOT met - a size decision for the maintainer
+  (notes.md has the breakdown and what each piece costs).** Open: try Record mouse by hand; a real page behind it still comes from
+  screenshots / HTML layers / web snapshots (the item below is the live-page version).
 - [ ] **Record mode: a fake browser for pure animation** (asked 2026-11-12, not started; builds on the
   fake mouse and web-page snapshots that land first). Press Record on a snapshot clip and use the page
   in a live view inside the editor: your real mouse drives a fake cursor, `:hover` / `:active` / CSS
@@ -182,6 +194,20 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
   for the final picture. Open design points: pages to jump to (a list in the Record window, or the
   link's own address matched to snapshots), whether a click scrolls the viewport, keyboard typing into
   fields (a text-typing track).
+- [ ] **AI upscale in place** (asked 2026-11-15, not started): right-click a clip on the timeline ▸ "AI upscale"
+  runs Real-ESRGAN (`realesrgan-ncnn-vulkan`, on the GPU; ×2 / ×4; `realesr-animevideov3` for game and
+  animation footage, `realesrgan-x4plus` for real-world video) on just the clip's used source range plus small
+  handles (enough for its transitions), then swaps the clip's media in place keeping its effects, transform,
+  keyframes, transitions and timing, and adds the upscaled file to the media library (an "AI enhanced" bin)
+  next to the original, which stays untouched on disk. Runs as a background job with progress and cancel.
+  Ships as an **optional add-on**, not in the base binary: the upscaler and its models are a separate download
+  (like the whisper models), so the exe size gate is unaffected. Learned doing it by hand on the GTA 6 game-swap
+  video: ~1.3 frames/s at ×2 from 1080p on an RTX 2060 Super, so upscale only what is on screen, never the
+  whole source; the swap must keep the clip's source times (write the upscaled range at its original
+  timestamps, or offset `src_in`), because today `timeline.replace` / `container.replace` with a
+  different-length asset drop the clip and place the whole new file on a new track; and a clip whose kind is
+  `Image` while its asset is a video has to swap as a video. Worth offering automatically on clips that are
+  scaled past ~1.2× (the zoom is where the upscale shows).
 - [ ] (add more as they're identified — via `/se-goal` or `/goal`)
 
 ### Performance budgets
@@ -240,6 +266,9 @@ and "powerful."
   the selection is a plain setting (Settings ▸ General ▸ "Switch panel tabs to follow the
   selection", on by default), no longer a named mode in the UI. Don't regress toward one fixed
   layout.
+
+**Lists and forms**
+- UI list/row layout: any vertical list of rows is laid out as a table with fixed, aligned columns [drag handle][arrow][label, fills and truncates][fixed value columns][fixed right-aligned controls]; controls never float after variable-length text; form fields use two aligned columns (labels at one x, inputs at one x); reorder = drag handle + up/down + Alt+Up/Down, one undo step; use the shared helper (`ui::list_rows`).
 
 **Direct manipulation**
 - Prefer dragging on the preview canvas (move/scale/crop/rotate with visible bounding boxes)

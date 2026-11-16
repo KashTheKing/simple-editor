@@ -58,6 +58,7 @@ actions! {
     ExportLossless => "export_lossless", "Fast Lossless Cut…", sc(CTRL_ALT, Key::E);
     ExportXml => "export_xml", "Export Premiere / Resolve XML…", sc(CTRL_SHIFT, Key::E);
     ImportMedia => "import", "Import Media…", sc(CTRL, Key::I);
+    ImportFolder => "import_folder", "Import Folder as Bin…", None;
     Settings => "settings", "Settings…", sc(CTRL, Key::Comma);
     Undo => "undo", "Undo", sc(CTRL, Key::Z);
     Redo => "redo", "Redo", sc(CTRL_SHIFT, Key::Z);
@@ -96,8 +97,8 @@ actions! {
     AddAudioTrack => "add_audio_track", "Add Audio Track", None;
     ToggleLibrary => "toggle_library", "Show / Hide Library", sc(CTRL, Key::Num1);
     ToggleInspector => "toggle_inspector", "Show / Hide Inspector", sc(CTRL, Key::Num2);
-    ToggleEffects => "toggle_effects", "Show / Hide Effects", sc(CTRL, Key::Num3);
-    ToggleTransitions => "toggle_transitions", "Show / Hide Transitions", sc(CTRL, Key::Num4);
+    ToggleEffects => "toggle_effects", "Gallery: Effects", sc(CTRL, Key::Num3);
+    ToggleTransitions => "toggle_transitions", "Gallery: Transitions", sc(CTRL, Key::Num4);
     ToggleCurves => "toggle_curves", "Show / Hide Curve Editor", sc(CTRL, Key::Num5);
     ToggleSubtitles => "toggle_subtitles", "Show / Hide Subtitles", sc(CTRL, Key::Num6);
     Retime => "retime", "Speed / Retime…", sc(CTRL, Key::R);
@@ -161,6 +162,8 @@ actions! {
     AutoDuck => "auto_duck", "Duck Music under Dialogue", None;
     Normalize => "normalize", "Normalize Selection", None;
     MatchLoudness => "match_loudness", "Match Loudness across Selection", None;
+    // ---- ws:audio-visualizer ----
+    AddAudioVisualizer => "add_audio_visualizer", "Add Audio Visualizer", None;
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     // Unbound by design: no free chord in the skeleton keymap (per the plan's Actions/hotkeys table).
@@ -243,6 +246,7 @@ actions! {
     QuickExport => "quick_export", "Quick Export", sc(CTRL, Key::M);
     RenderSelection => "render_selection", "Render Selection (pre-render)", None;
     BakeSelection => "bake_selection", "Render in Place (bake to new asset)", None;
+    ShapesToHtml => "shapes_to_html", "Convert to HTML Layer", None;
     ExportMarkers => "export_markers", "Export Markers…", None;
     // ---- ws:inspector-gallery ----
     // ---- ws:layout-modes-onboarding ----
@@ -293,6 +297,8 @@ actions! {
     ToggleTrimView => "toggle_trim_view", "Trim View in Preview", None;
     CompareWipe => "compare_wipe", "Wipe Compare", None;
     SaveStill => "save_still", "Save Still", None;
+    // ---- ws:my-gallery ----
+    SaveToGallery => "save_to_gallery", "Save to Gallery…", None;
     ToggleScopes => "toggle_scopes", "Show / Hide Scopes", None;
     MulticamCreate => "multicam_create", "Create Multicam from Selection", None;
     NextAngle => "next_angle", "Next Angle at Playhead", None;
@@ -350,6 +356,10 @@ actions! {
     // HTML + CSS layers (Add menu / palette; the clip menu and a double-click edit them). Unbound by design.
     AddHtmlLayer => "add_html_layer", "Add HTML Layer", None;
     AddHtmlScene => "add_html_scene", "Add HTML Scene", None;
+    // ---- ws:thread-viewers ----
+    AddChatThread => "add_chat_thread", "Add Chat Thread", None;
+    AddForumThread => "add_forum_thread", "Add Forum Thread", None;
+    AddVideoComments => "add_video_comments", "Add Video Comments", None;
     ImportHtml => "import_html", "Import HTML File…", None;
     SnapshotWeb => "snapshot_web", "Web Page Snapshot…", None;
     EditHtml => "edit_html", "Edit HTML…", None;
@@ -357,6 +367,26 @@ actions! {
     // ---- ws:shader-library ----
     // ---- ws:skills ----
     // ---- ws:online-library ----
+    // ---- ws:browser-layer ----
+    // A drawn browser window over what is below it, and its fake mouse. Unbound by design.
+    AddBrowser => "add_browser", "Add Browser Window", None;
+    BrowserFitPages => "browser_fit_pages", "Browser: Fit Pages to the Window", None;
+    BrowserNextPage => "browser_next_page", "Browser: Next Page Here", None;
+    RecordMouse => "record_mouse", "Record Mouse (Browser Cursor)", None;
+    CursorWaypoints => "cursor_waypoints", "Place Cursor Waypoints", None;
+    CursorPress => "cursor_press", "Press What Is under the Cursor", None;
+    ImportWebPage => "import_web_page", "Import Web Page…", None;
+    // ---- ws:ai-enhancer ----
+    // clip menu ▸ AI Upscale (the optional Real-ESRGAN add-on); ui::app::enhance_ctl::act. Unbound.
+    AiUpscale2Game => "ai_upscale_2_game", "AI Upscale ×2 (Game / Animation)", None;
+    AiUpscale2Real => "ai_upscale_2_real", "AI Upscale ×2 (Real-World)", None;
+    AiUpscale4Game => "ai_upscale_4_game", "AI Upscale ×4 (Game / Animation)", None;
+    AiUpscale4Real => "ai_upscale_4_real", "AI Upscale ×4 (Real-World)", None;
+    SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
+    PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
+    // ---- ws:perf-window ----
+    // The Performance window (Window menu / palette / `perf.window`). Unbound by design.
+    PerfWindow => "performance", "Performance…", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -593,9 +623,9 @@ pub const GROUPS: &[&str] = &[
 pub fn group(a: Action) -> &'static str {
     use Action::*;
     match a {
-        NewProject | OpenFile | OpenProject | Save | SaveProjectAs | ImportMedia | ImportTimeline | ExportVideo
-        | QuickExport | ExportLossless | ExportXml | ExportFrame | ExportMarkers | ScreenCapture | Voiceover
-        | RestoreBackup | Settings => "File",
+        NewProject | OpenFile | OpenProject | Save | SaveProjectAs | ImportMedia | ImportFolder | ImportTimeline
+        | ExportVideo | QuickExport | ExportLossless | ExportXml | ExportFrame | ExportMarkers | ScreenCapture
+        | Voiceover | RestoreBackup | Settings => "File",
         Undo | Redo | CutClips | CopyClips | PasteClips | PasteInsert | PasteAtTop | PasteInPlace | CopyAttributes
         | PasteAttributes | Delete | RippleDelete | SelectAll | Deselect | SelectForward | SelectBackward
         | SelectAtPlayhead | Find => "Edit",
@@ -608,7 +638,7 @@ pub fn group(a: Action) -> &'static str {
         LiftInOut | ExtractInOut | TrimToInOut | RippleDeleteInOut | CloseGapAtPlayhead | JoinThroughEdit
         | SpliceInsert | OverwriteAtPlayhead | ZoomIn | ZoomOut | ZoomFit | ToggleSnap | ToggleOverview
         | AddVideoTrack | AddAudioTrack | RenameTrack | ToggleTrackLock | ToggleTrackRipple | ToggleTrackMagnetic
-        | OpenParentSequence | RenderSelection | BakeSelection => "Timeline",
+        | OpenParentSequence | RenderSelection | BakeSelection | ShapesToHtml => "Timeline",
         ToggleAutoCloseGaps | ToggleShowVideoTracks | ToggleShowAudioTracks => "Timeline",
         Split | DuplicateClips | ToggleEnabled | LinkToggle | NudgeLeft | NudgeRight | Retime | FreezeFrame
         | AddTransition | AddLastTransition | AddTransitionEnd | ApplyFlow | AutoReframe | SaveTemplate => "Clip",
@@ -616,7 +646,7 @@ pub fn group(a: Action) -> &'static str {
         MulticamCreate | MulticamAngles | NextAngle | PrevAngle | MatchFrame | RevealInLibrary => "Clip",
         ReplaceWithLibrarySelection => "Clip",
         AddText | AddShape | AddAdjustment | AddMask | AddSubtitle | AddContainer => "Add",
-        AutoCut | DetectBeats | SplitAtBeats | AutoDuck | Normalize | MatchLoudness => "Audio",
+        AutoCut | DetectBeats | SplitAtBeats | AutoDuck | Normalize | MatchLoudness | AddAudioVisualizer => "Audio",
         AutoColor | ColorMatch | BypassGrade | CompareWipe | SaveStill => "Color",
         GetCaptions | TranscribeClip | ViewTranscript => "Captions",
         ToggleTranscript | RemoveFillers | ExportTranscript => "Captions",
@@ -659,10 +689,19 @@ pub fn group(a: Action) -> &'static str {
         PushToTalk => "Panels & Pages",
         // ---- ws:docs-release ----
         // ---- ws:html-layer ----
-        AddHtmlLayer | AddHtmlScene | ImportHtml | SnapshotWeb | EditHtml | SaveHtmlToLibrary => "Add",
+        AddHtmlLayer | AddHtmlScene | AddChatThread | AddForumThread | AddVideoComments | ImportHtml | SnapshotWeb | EditHtml | SaveHtmlToLibrary => "Add",
+        // ---- ws:my-gallery ----
+        SaveToGallery => "Clip",
         // ---- ws:shader-library ----
         // ---- ws:skills ----
         // ---- ws:online-library ----
+        // ---- ws:browser-layer ----
+        AddBrowser | ImportWebPage => "Add",
+        BrowserFitPages | BrowserNextPage | RecordMouse | CursorWaypoints | CursorPress | SharpenZooms | PageMakeEditable => "Clip",
+        // ---- ws:ai-enhancer ----
+        AiUpscale2Game | AiUpscale2Real | AiUpscale4Game | AiUpscale4Real => "Clip",
+        // ---- ws:perf-window ----
+        PerfWindow => "Playback",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

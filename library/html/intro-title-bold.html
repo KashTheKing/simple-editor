@@ -13,11 +13,12 @@
 <meta name="se:field" content="subtitle | text | Episode 12 · The cardboard arcade">
 <meta name="se:field" content="accent | color | #ffcc00">
 <meta name="se:field" content="background | color | #121318">
+<meta name="se:field" content="font | font | Segoe UI">
 <style>
   :root { --accent: {{accent}}; --bg: {{background}}; }
   html, body { margin: 0; overflow: hidden; }
   body { width: 100vw; height: 100vh; position: relative; background: var(--bg);
-    font-family: "Segoe UI", Arial, sans-serif; color: #fff; }
+    font-family: {{font}}; color: #fff; }
 
   .stripes { position: absolute; inset: -200px; opacity: .06;
     background: repeating-linear-gradient(-45deg, #fff 0 2px, transparent 2px 48px);
@@ -34,9 +35,10 @@
   .t > div { grid-area: 1 / 1; text-align: center; text-transform: uppercase; font-size: 192px;
     font-weight: 900; line-height: .95; letter-spacing: -3px; text-wrap: balance; overflow-wrap: anywhere;
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; padding: 0 12px 12px; }
-  .main { text-shadow: 10px 10px 0 var(--accent), 0 20px 40px rgba(0, 0, 0, .35);
-    animation: slam .3s cubic-bezier(.5, 0, .9, .5) .37s both; }
-  .echo { color: transparent; -webkit-text-stroke: 3px var(--accent); animation: echo .7s ease-out .67s both; }
+  .main { animation: slam .3s cubic-bezier(.5, 0, .9, .5) .37s both; }
+  /* the hard shadow: a copy of the title behind it (text-shadow is not drawn by the fast renderer) */
+  .hard { color: var(--accent); translate: 10px 10px; animation: slam .3s cubic-bezier(.5, 0, .9, .5) .37s both; }
+  .echo { color: color-mix(in srgb, var(--accent) 30%, transparent); animation: echo .7s ease-out .67s both; }
   .echo.e2 { animation-delay: .77s; }
   .flash { position: absolute; inset: 0; background: #fff; animation: flash .35s ease-out .67s both; }
 
@@ -67,6 +69,7 @@
   <div class="t">
     <div class="echo e2">{{title}}</div>
     <div class="echo">{{title}}</div>
+    <div class="hard">{{title}}</div>
     <div class="main">{{title}}</div>
   </div>
   <div class="bar"></div>

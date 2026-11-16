@@ -122,7 +122,8 @@ pub(super) fn panes_for(kind: SelectionKind) -> &'static [Pane] {
         | SelectionKind::Sequence
         | SelectionKind::Adjustment => &[Pane::Inspector],
         SelectionKind::Audio => &[Pane::Mixer, Pane::Inspector],
-        SelectionKind::Transition => &[Pane::Transitions, Pane::Inspector],
+        // (the Inspector edits it; the Gallery's Transitions tab is a catalogue, not worth stealing the tab for)
+        SelectionKind::Transition => &[Pane::Inspector],
         SelectionKind::Cue => &[Pane::Subtitles],
         SelectionKind::None | SelectionKind::Mixed | SelectionKind::EditPoint => &[],
     }
@@ -679,8 +680,8 @@ fn apply_format(app: &mut App, i: usize) {
     app.project.fps = p.fps;
     app.push_undo_labeled(before, "Project format");
     app.after_edit();
-    if app.settings.guide != p.guide {
-        app.settings.guide = p.guide;
+    if app.settings.guide.as_deref() != p.guide {
+        app.settings.guide = p.guide.map(str::to_string);
         app.settings.save();
     }
     app.toast(format!("Project format: {} ({}×{} at {:.0} fps)", p.name, p.w, p.h, p.fps));
@@ -720,7 +721,7 @@ mod tests {
             (SelectionKind::Sequence, Some(Pane::Inspector)),
             (SelectionKind::Adjustment, Some(Pane::Inspector)),
             (SelectionKind::Audio, Some(Pane::Mixer)),
-            (SelectionKind::Transition, Some(Pane::Transitions)),
+            (SelectionKind::Transition, Some(Pane::Inspector)),
             (SelectionKind::Cue, Some(Pane::Subtitles)),
             (SelectionKind::None, None),
             (SelectionKind::Mixed, None),

@@ -11,15 +11,19 @@
 <meta name="se:field" content="chapter | text | Chapter 2">
 <meta name="se:field" content="title | text | Setting Up the Project">
 <meta name="se:field" content="accent | color | #fbbf24">
+<meta name="se:field" content="font | font | Segoe UI">
+<meta name="se:field" content="radius | radius | 28 | 0 | 120">
+<meta name="se:field" content="shadow | toggle | on | 0 24px 70px rgba(0, 0, 0, .5) | none">
+<meta name="se:field" content="outline | outline | 0 #ffffff">
 <style>
   :root { --accent: {{accent}}; }
   html, body { margin: 0; width: 100vw; height: 100vh; overflow: hidden; background: transparent;
-    font-family: "Segoe UI", Arial, sans-serif; }
+    font-family: {{font}}; }
   .stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
     animation: out .6s ease-in 5.3s both; }
   .dim { position: absolute; inset: 0; background: rgba(6, 8, 14, .6); animation: fade .6s ease-out both; }
   .card { position: relative; box-sizing: border-box; width: 1280px; max-width: 1280px; padding: 64px 80px 72px; text-align: center;
-    border-radius: 28px; background: rgba(12, 14, 22, .86); box-shadow: 0 24px 70px rgba(0, 0, 0, .5);
+    border-radius: {{radius}}; outline: {{outline}}; outline-offset: -1px; background: rgba(12, 14, 22, .86); box-shadow: {{shadow}};
     animation: rise .8s cubic-bezier(.2, .85, .2, 1) .15s both; }
   .line { height: 4px; border-radius: 2px; background: var(--accent); transform-origin: 50% 50%; margin: 0 auto; width: 160px;
     animation: draw .8s cubic-bezier(.7, 0, .2, 1) .5s both; }

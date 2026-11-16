@@ -102,6 +102,7 @@ impl Palette {
             Sequence => self.clip_sequence,
             Shape => self.clip_shape,
             Adjustment => self.clip_adjust,
+            Browser => self.clip_shape, // ws:browser-layer: drawn art, like a shape
         }
     }
 }

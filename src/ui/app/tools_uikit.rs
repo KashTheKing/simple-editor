@@ -1,8 +1,9 @@
 //! ---- ws:ui-kit ----
 //! UI automation for verifying UI changes and scripting the docs site's screenshots:
 //! - `ui.screenshot {path, pane?}`: the window (or one docked pane, tab bar included) to a PNG;
-//! - `ui.input {events}`: synthetic clicks / keys / scrolls, played one step per frame through
-//!   `eframe::App::raw_input_hook` (a click = move, press, release on three frames).
+//! - `ui.input {events}`: synthetic clicks / drags / keys / scrolls, played one step per frame through
+//!   `eframe::App::raw_input_hook` (a click = move, press, release on three frames; a drag = `down`, a few
+//!   `move`s, `up`).
 //!
 //! Both reply through the `ToolOutcome::Job` path: the image arrives a frame after it is asked for, and
 //! the input only lands once its last step has been drawn. `frame` (called once per `App::update`) also
@@ -56,11 +57,8 @@ pub const TOOLS: &[ToolDef] = &[
             let crop = match arg_str(args, "pane") {
                 None => None,
                 Some(name) => {
-                    let pane = Pane::ALL
-                        .iter()
-                        .find(|p| p.title().eq_ignore_ascii_case(name))
-                        .ok_or_else(|| format!("unknown pane '{name}'"))?;
-                    let rect = app.layout.rects.iter().find(|(p, _)| p == pane).map(|(_, r)| *r);
+                    let pane = Pane::by_title(name).ok_or_else(|| format!("unknown pane '{name}'"))?;
+                    let rect = app.layout.rects.iter().find(|(p, _)| *p == pane).map(|(_, r)| *r);
                     Some(rect.ok_or_else(|| format!("pane '{name}' is not on screen"))?)
                 }
             };
@@ -90,7 +88,8 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "ui.input",
         desc: "Play synthetic input into the live UI, one step per frame; replies after the last step has been \
-               drawn. events: [{type: move|click|rclick|dclick|key|text|scroll, x, y (points, see ui.screenshot), \
+               drawn. events: [{type: move|click|rclick|dclick|down|up|drag (x2, y2)|key|text|scroll (down / up = \
+               the left button alone, with `move`s between them: a drag), x, y (points, see ui.screenshot), \
                key (egui name: A, Space, Enter, Escape, F1, ArrowLeft...), mods ('ctrl+shift+alt'), text, \
                delta (scroll [dx, dy] points or just dy; positive dy moves content down = scrolls up)}].",
         args: &["events:array:true:input events, played in order"],
@@ -132,6 +131,21 @@ fn expand(events: &[Value]) -> Result<Vec<Step>, String> {
                     steps.push(vec![button(b, true, p)]);
                     steps.push(vec![button(b, false, p)]);
                 }
+            }
+            "down" | "up" => {
+                let p = pos()?;
+                steps.push(vec![Event::PointerMoved(p)]);
+                steps.push(vec![button(PointerButton::Primary, kind == "down", p)]);
+            }
+            "drag" => {
+                // press at (x, y), glide to (x2, y2) in a few steps, release (a row dragged by its grip)
+                let (p, q) = (pos()?, egui::pos2(arg_f64(e, "x2").ok_or("drag: x2 and y2 required")? as f32, arg_f64(e, "y2").ok_or("drag: x2 and y2 required")? as f32));
+                steps.push(vec![Event::PointerMoved(p)]);
+                steps.push(vec![button(PointerButton::Primary, true, p)]);
+                for k in 1..=6 {
+                    steps.push(vec![Event::PointerMoved(p + (q - p) * (k as f32 / 6.0))]);
+                }
+                steps.push(vec![button(PointerButton::Primary, false, q)]);
             }
             "key" => {
                 let name = e.get("key").and_then(Value::as_str).ok_or("key: key required")?;
@@ -242,7 +256,7 @@ fn crop_frame(img: &egui::ColorImage, px: Option<egui::Rect>) -> Frame {
         None => (0, 0, w, h),
     };
     let rgba = (y0..y1).flat_map(|y| img.pixels[y * w + x0..y * w + x1].iter().flat_map(|c| c.to_array())).collect();
-    Frame { width: x1.saturating_sub(x0) as u32, height: y1.saturating_sub(y0) as u32, pts: 0.0, rgba, bgrx: false }
+    Frame { width: x1.saturating_sub(x0) as u32, height: y1.saturating_sub(y0) as u32, rgba, ..Frame::default() }
 }
 
 #[cfg(test)]

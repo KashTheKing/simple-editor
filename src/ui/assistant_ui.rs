@@ -115,6 +115,8 @@ pub struct AssistantState {
     pub comments: bool,
     /// Focus the chat prompt on the next draw (a pinned chip was just added).
     pub focus_prompt: bool,
+    /// History tab's search box.
+    pub history_q: String,
     /// The conversations changed: the app saves them (off the UI thread) and clears this.
     pub dirty: bool,
     /// The model picker's "Other…" text field is open.
@@ -178,6 +180,17 @@ impl AssistantState {
         self.conv_mut();
         self.dirty = true;
         Some(gone)
+    }
+    /// Add chats from an exported file as new conversations (fresh ids; their agent sessions are not ours).
+    pub fn import(&mut self, chats: Vec<Conversation>) -> usize {
+        let n = chats.len();
+        for mut c in chats.into_iter().filter(|c| !c.is_empty()) {
+            c.id = unique_id();
+            c.session = None;
+            self.convs.push(c);
+        }
+        self.dirty = true;
+        n
     }
     /// Show `convs` (a project's store): the most recently used one, or a fresh chat.
     pub fn load(&mut self, convs: Vec<Conversation>) {
@@ -386,7 +399,7 @@ fn history_tab(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) {
     let mut rows: Vec<(f64, u64, String, String)> = state
         .convs
         .iter()
-        .filter(|c| !c.is_empty())
+        .filter(|c| !c.is_empty() && matches(c, &state.history_q))
         .map(|c| {
             let asked = c.lines.iter().filter(|l| matches!(l, Line::User(_))).count();
             let mut sub = format!("{} · {asked} message{}", ago(c.updated, now), if asked == 1 { "" } else { "s" });
@@ -397,10 +410,35 @@ fn history_tab(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) {
         })
         .collect();
     rows.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let (mut export_all, mut import, mut save_one) = (false, false, None);
+    ui.horizontal(|ui| {
+        ui.add(egui::TextEdit::singleline(&mut state.history_q).hint_text("Search chats…").desired_width(150.0));
+        if ui.button("Import…").on_hover_text("Add chats from a file saved with Export").clicked() {
+            import = true;
+        }
+        if ui.button("Export…").on_hover_text("Save every chat of this project to a file").clicked() {
+            export_all = true;
+        }
+    });
+    if export_all {
+        let all: Vec<&Conversation> = state.convs.iter().filter(|c| !c.is_empty()).collect();
+        save_chats_dialog("chats", &all);
+    }
+    if import {
+        if let Some(p) = rfd::FileDialog::new().add_filter("Chats", &["json"]).pick_file() {
+            if let Ok(chats) = std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| parse_import(&s)) {
+                state.import(chats);
+            }
+        }
+    }
     egui::ScrollArea::vertical().id_salt("assistant_history").auto_shrink([false, false]).show(ui, |ui| {
         if rows.is_empty() {
             ui.add_space(8.0);
-            ui.weak("No past chats in this project yet. Chats and tasks are saved as you go.");
+            ui.weak(if state.history_q.is_empty() {
+                "No past chats in this project yet. Chats are saved with the project."
+            } else {
+                "No chat matches."
+            });
             return;
         }
         let (mut open, mut delete) = (None, None);
@@ -414,6 +452,9 @@ fn history_tab(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) {
                         if x_button(ui, ("del_hist", *id)).on_hover_text("Delete this chat").clicked() {
                             delete = Some(*id);
                         }
+                        if ui.small_button("Save…").on_hover_text("Save this chat to a file").clicked() {
+                            save_one = Some(*id);
+                        }
                     });
                 });
                 ui.label(egui::RichText::new(sub.as_str()).small().weak());
@@ -422,6 +463,9 @@ fn history_tab(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) {
         })
         .response
         .on_disabled_hover_text("Wait for the assistant to finish");
+        if let Some(c) = save_one.and_then(|id| state.convs.iter().find(|c| c.id == id)) {
+            save_chats_dialog(&c.title().replace(|ch: char| "/\\:*?\"<>|".contains(ch), "_"), &[c]);
+        }
         if let Some(id) = delete {
             state.delete(id);
         }
@@ -432,6 +476,13 @@ fn history_tab(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) {
             state.tab = if chatty { Tab::Chat } else { Tab::Tasks };
         }
     });
+}
+
+/// Ask where, then write `chats` there (the download).
+fn save_chats_dialog(name: &str, chats: &[&Conversation]) {
+    if let Some(p) = rfd::FileDialog::new().add_filter("Chats", &["json"]).set_file_name(format!("{name}.json")).save_file() {
+        let _ = std::fs::write(p, export_json(chats));
+    }
 }
 
 fn model_picker(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out) {

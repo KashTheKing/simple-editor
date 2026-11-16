@@ -505,24 +505,10 @@ fn audio_row(ui: &mut egui::Ui, state: &ExportUi, settings: &mut Settings) -> bo
     changed
 }
 
-fn init_from_settings(state: &mut ExportUi, settings: &Settings, project: &Project) {
+fn init_from_settings(state: &mut ExportUi, _settings: &Settings, project: &Project) {
+    // always open at the project's own size: a smaller size picked once used to stick for every export
     state.custom = (project.width, project.height);
-    let r = settings.export_resolution.as_str();
-    if r == "project" || r.is_empty() {
-        state.preset = "project".into();
-        return;
-    }
-    let parsed = r.split_once('x').and_then(|(w, h)| Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?)));
-    let Some((w, h)) = parsed else {
-        state.preset = "project".into();
-        return;
-    };
-    state.custom = (w, h);
-    // matches a height preset with the project aspect? use the preset, else custom
-    let named = ["720", "1080", "1440", "2160"]
-        .iter()
-        .find(|p| preset_size(project.width, project.height, p, (0, 0)) == Some((w, h)));
-    state.preset = named.map(|p| (*p).to_string()).unwrap_or_else(|| "custom".into());
+    state.preset = "project".into();
 }
 
 /// Save dialog (same filters as the app's Export) → ExportChoice.
@@ -579,6 +565,15 @@ pub fn slug(name: &str) -> String {
 mod tests {
     use super::*;
 
+    /// One frame of the Export pane body (the old window's `frame`).
+    fn frame(ctx: &egui::Context, state: &mut ExportUi, project: &Project, settings: &mut Settings) -> Option<(ExportChoice, bool)> {
+        let mut out = None;
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| out = body(ui, state, project, settings, &[], false));
+        });
+        out
+    }
+
     #[test]
     fn preset_sizes() {
         // 16:9 project: 720p derives 1280 wide
@@ -590,38 +585,6 @@ mod tests {
         // odd widths are rounded to even: 854.4 → 854
         assert_eq!(preset_size(1280, 720, "480", (0, 0)), Some((854, 480)));
         assert_eq!(preset_size(1920, 1080, "custom", (100, 50)), Some((100, 50)));
-    }
-
-    #[test]
-    fn init_matches_named_preset() {
-        let mut p = Project::new(); // 1920x1080
-        p.width = 1920;
-        p.height = 1080;
-        let mut s = Settings::default();
-        s.export_resolution = "1280x720".into();
-        let mut st = ExportUi::default();
-        init_from_settings(&mut st, &s, &p);
-        assert_eq!(st.preset, "720");
-        s.export_resolution = "640x360".into();
-        st.preset.clear();
-        init_from_settings(&mut st, &s, &p);
-        assert_eq!(st.preset, "custom");
-        assert_eq!(st.custom, (640, 360));
-    }
-
-    /// Draw the pane body in a bare panel for one frame.
-    fn frame(
-        ctx: &egui::Context,
-        st: &mut ExportUi,
-        project: &Project,
-        settings: &mut Settings,
-    ) -> Option<(ExportChoice, bool)> {
-        let mut out = None;
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default()
-                .show(ctx, |ui| out = body(ui, st, project, settings, &["libx264".into()], false));
-        });
-        out
     }
 
     /// Headless: the pane lays out without panicking and returns None with no interaction.

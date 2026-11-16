@@ -15,6 +15,18 @@ playback caches fill — the playback cache may then grow to its budget (`Settin
 Settings ▸ Performance) · **1439 unit/integration tests + a headless `--selftest`** (`cargo test` at 1.2.0:
 1439 passed, 9 ignored by design, 0 failed).
 
+## Browser layer (`ClipKind::Browser`)
+
+`model/browser.rs` (style, cursor, events, path reduction), `model/ops/browser.rs` (edit ops),
+`engine/browser.rs` (geometry + cached bitmaps), `ui/browser_ui.rs` (Inspector), `ui/app/browser_ctl.rs`
+(actions, recorder, tools). A browser clip takes the canvas composited so far as its page: both
+compositors clear to the background, draw the window bitmap at the clip's placement, then the page as
+a placed, polygon-masked layer, then the cursor sprite - all with primitives they already had
+(`composite` / `render_mask` on the GPU, `draw_layer_masked` / `mask_coverage` on the CPU). Its bitmaps
+travel in the `LayerSet` under `browser::key(clip.id, slot)`. Scroll is a per-track offset
+(`browser::scroll_shift`) applied to the layers below, so a tall page scrolls at its own resolution;
+`decode_layers` turns culling off while a browser clip is on screen for that reason.
+
 ## Stack
 
 | Concern | Choice | Why |
@@ -119,6 +131,11 @@ src/engine/voice.rs     push-to-talk: cpal input on its own thread -> 16 kHz mon
 src/engine/html.rs      HTML + CSS layers: template parsing (se: meta tags, {{fields}}), sanitising, lint,
                         and the renderer - one headless Edge driven over DevTools by a std-only WebSocket
                         client; frames as PNG-in-MOV (alpha) in cache_dir/html, content-addressed
+src/engine/blitz.rs     the fast HTML renderer's client: finds / installs / talks to the `se-html` helper
+                        (tools/se-html: Blitz on the CPU, separate crate, stdin/stdout protocol in
+                        tools/se-html/src/proto.rs shared by both), the per-layer renderer choice
+                        (Renderer setting + html_lint + failures), kill-on-timeout, element map / region
+src/engine/html_lint.rs what the fast renderer cannot draw (textual scan of the page's CSS)
 src/engine/webcap.rs    .mhtml (browser "single file" saves) unpacked to a folder of HTML + files
 src/ui/html_code.rs     HTML/CSS syntax colours and completion for the code box
 src/engine/shaderlib.rs shader file headers (@name/@desc/@tags/@param/@needs) for effects and transitions
@@ -128,7 +145,8 @@ src/engine/library.rs   the content library: installed items in %APPDATA%\Simple
 src/engine/gpu/library_tests.rs  every library shader compiled and drawn on the real driver
 src/ui/html_ui.rs       HTML editor window; Inspector "Fields" controls
 src/ui/app/html_ctl.rs  render jobs, asset re-pointing, Add HTML Layer / Scene, add_html_clip
-src/ui/app/library_ctl.rs  catalogue / download jobs, apply by kind, Gallery library tabs' App side
+src/ui/app/library_ctl.rs  catalogue (only once connected: no network before the user opts in) / download jobs,
+                        apply by kind, Gallery library tabs' App side
 src/ui/app/tools_{html,shader,skills,library}.rs  html.*, clip.set_shader / shader.check /
                         transition.set_shader, skills.*, library.*
 
@@ -165,9 +183,19 @@ src/ui/inspector_audio.rs clip audio properties (props grid, fades, blend, bus o
                         buttons dispatching Action::AutoDuck/Normalize)
 src/ui/inspector_text.rs text/typography editing + per-selection style overrides
 src/ui/color_ui.rs      Color inspector section: LUT/Primaries/Qualifier params, Gallery Looks tabs
-src/ui/effects_ui.rs    effect catalogue (thumbnail grid) + the clip's effect stack (drag-reorder, bulk edit)
-src/ui/gallery.rs       Gallery pane: re-purposed `Pane::Presets` drawer (effects/node-graphs/adjustment
-                        layers/templates/LUTs/Looks/Titles/Captions tabs) (inspector-gallery)
+src/ui/effects_ui.rs    the clip's effect stack (drag-reorder, bulk edit) + the catalogue helpers/thumbnails the
+                        Gallery's Effects tab uses (the old Effects pane is gone)
+src/ui/gallery.rs       Gallery pane: `Pane::Presets` drawer; tabs Animate/Looks/Luts/Captions/Speed/Effects/
+                        Transitions/Templates/Titles + the library's HTML/Icons/Skills. Every card is drawn by
+                        `card` (claims its grid slot first, so rows wrap; drag source with a `DragPayload`).
+                        Effects/Transitions list built-in, yours and library items in one grid (inspector-gallery);
+                        every tab is one `gallery_filter::grid` under one pinned header (search, source chips,
+                        category, sort, size)
+src/ui/gallery_filter.rs the Gallery's view state (`Filters`: search / chip / category / sort / size), the pure
+                        filter + sort + column rules, and the `grid` every card is drawn in
+src/ui/timeline/gallery_drop.rs  what a dragged Gallery card means under the pointer (`aim`: clips / edge /
+                        place), its hover paint, `pull_to_track`
+src/ui/app/gallery_drop_ctl.rs   executes a dropped card through the click paths (one undo)
 src/ui/nodes.rs         node-graph editor
 src/ui/curves.rs        keyframe graph editor (bezier velocity, presets, flow)
 src/ui/library.rs       library + recent: folders, tags, labels, search, filters, linked folders,
@@ -415,6 +443,23 @@ GL work happens **only on the UI thread** (it owns the context). Everything GPU 
   step or the next scrub seek finds its frame cached. While playing, `warm_clips` opens the clips of
   the next 3 s and decodes each one's first frame on the opening thread (`DecoderPool::warm`), and
   the timeline's hover time (`Player::hint`) opens what is under the pointer.
+* **Buffer before playing** (`src/ui/app/playgate.rs`, `Settings::buffer_before_play`, default on): Play asks
+  `ready?` first. The check reads what the render thread already published (`Shared::cov`: the run of whole
+  cached frames from the paused playhead, trusted only while no command is in flight - `Shared::sent` vs the
+  `seen` count it was made under), so a playhead that has rested starts the clock in the same call, as before.
+  Not ready: `Player::preroll(window)` makes the render thread fill the window ahead of the paused playhead
+  (nearest frame first, one decode per pass, a frame made without a still-opening source does not count) and
+  the audio thread fill the ring from the playhead with the device stopped; the clock stays frozen and the
+  Monitor shows "Buffering N %". The UI (`playgate::tick`, every frame while buffering) folds the player's
+  video and audio answers and every `playgate::SOURCES` entry (the shader programs of the clips in the window
+  are built a few ms a frame by `GpuRenderer::warm`) into one `Verdict` and starts the clock when it is ready,
+  or after `playgate::CAP` (3 s) regardless, then shows "Still loading" for 2 s. The window is 0.5-1.5 s of
+  frames, scaled by the measured cost of an uncached frame. Space, Stop, a step or any `pause()` cancels (the
+  gate watches `Player::pauses`); a seek keeps buffering at the new place; J/L/`playback.rate` change the
+  rate it starts at. A new slow thing (the HTML renderer's layer still rendering) adds one
+  `fn(&mut App, &Query) -> Report` to `SOURCES`. Not gated: the Source monitor, recording takes (`roll`), movie
+  mode, export and scripts. Mid-play the existing stall (pause + spinner + resume) is unchanged, and a loop wrap
+  onto a cold cache now enters it at once (`lands_cold`).
 * **Hidden layers**: `decode_layers` skips a clip that `compose::can_show` rules out (opacity 0,
   wholly off the canvas) and every track under the topmost layer that `compose::covers` the canvas
   (opaque codec, Normal blend, full opacity, no mask/effect/graph/rotation, frame really decoded);
@@ -636,7 +681,9 @@ is the second real pane and followed this exact list, reusing `Glyph::Queue` and
 pane-shaped in the original design became something cheaper: Color is an inspector section +
 Gallery tabs, Scopes/the multicam angle grid are `egui::Window`s, Transcript is a collapsible section
 inside Subtitles, Titles/Captions are Gallery tabs, the timeline overview is an inline minimap strip,
-trim view/wipe are Preview overlays, `Pane::Presets` kept its variant but now draws the Gallery. A new
+trim view/wipe are Preview overlays, `Pane::Presets` kept its variant but now draws the Gallery - and the
+Effects and Transitions panes are Gallery tabs (their old names still deserialise, as the Gallery, so a
+saved layout loads; `Layout::fold_gallery` keeps one tile). A new
 pane costs all of the following — do every step, in this order, before calling it done:
 
 1. Add the variant to `Pane` and to the `Pane::ALL` slice (own marker section) in `src/ui/layout.rs`.

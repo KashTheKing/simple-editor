@@ -9,7 +9,8 @@
 //! changed - an undo entry pushed or popped, the project's size / fps / file, a field edit (after
 //! a short settle, so typing renders once), a job ending - and every 2 s, never per frame. The
 //! re-point is not an undo step of its own: undo restores `html`, and the next reconcile finds the
-//! file that belongs to it (still in the cache, renders write new files, never over old ones).
+//! file that belongs to it, or renders it again: a re-point deletes the render it replaced once no
+//! asset shows it (`sweep`), so the cache holds one render per layer, not one per edit.
 //! While nothing is rendered yet the asset shows `pending.png` (transparent, real, so the library
 //! never reports a layer that is still rendering as missing media).
 
@@ -86,12 +87,15 @@ struct RenderJob {
     base: PathBuf,
     name: String,
     prog: Arc<Progress>,
+    started: Instant,
 }
 
 /// Render jobs in flight, the editor window's state.
 #[derive(Default)]
 pub struct HtmlState {
     jobs: Vec<RenderJob>,
+    /// Render files superseded by a newer render, to delete (`sweep`).
+    doomed: Vec<PathBuf>,
     /// Renders that failed or were cancelled by the user: not retried until the source changes
     /// (another hash) or `html.render` asks.
     failed: HashSet<PathBuf>,
@@ -104,6 +108,12 @@ pub struct HtmlState {
     /// The periodic scan.
     scan_at: Option<Instant>,
     was_exporting: bool,
+    /// `html::stills_written` when last looked at: a new interim still re-points its asset at once.
+    stills: u64,
+    /// The project file last seen (a project with HTML layers just opened: start Edge in the background).
+    opened: Option<Option<PathBuf>>,
+    /// `Settings.user_fonts` as last handed to the renderer (font fields can name these).
+    app_fonts: Option<Vec<String>>,
     pub(crate) editor: html_ui::HtmlUi,
     /// Linked `.html` files: per asset, the hash of the source as last synced and the file's mtime then.
     link: std::collections::HashMap<Id, (Option<u64>, Option<std::time::SystemTime>)>,
@@ -155,23 +165,126 @@ pub(super) fn base_of(h: &HtmlSource) -> String {
     Path::new(&h.file).parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-fn spec_of(p: &Project, h: &HtmlSource) -> html::Spec {
+fn spec_of(p: &Project, aid: Id, h: &HtmlSource) -> html::Spec {
     html::Spec {
         html: h.src.clone(),
         fields: h.field_list(),
-        scale: html::scale_for(p.width, p.height),
+        scale: render_scale(p, aid, h),
         fps: if p.fps > 0.0 { p.fps } else { 30.0 },
         duration: h.duration,
         base: base_of(h),
         params: html::params_of(&h.src, &h.params),
         width: h.width,
         mouse: h.mouse.clone(),
+        focus: None,
+        renderer: h.renderer,
     }
+}
+
+/// The render scale of asset `aid`: the project's (`html::scale_for`), lowered to the size the layer is
+/// shown at, so a render never has more pixels than the project unless a clip zooms it past the frame
+/// (a 2560x1440 page fitted into a 1080p project renders at 1920x1080). A clip's scale 1 fits the
+/// picture to the frame; the largest scale of any clip of it (keys included), rounded up to a quarter
+/// so a small resize does not render again, sets the size. No clip: fitted to the frame.
+/// ponytail: clip scale only - a zoom by an effect, a container or a browser layer is not seen; add it
+/// here if a layer ever looks soft.
+fn render_scale(p: &Project, aid: Id, h: &HtmlSource) -> f64 {
+    let s = html::scale_for(p.width, p.height);
+    let (w, hh) = html::pixel_size(html::viewport(&h.src, h.width), s);
+    let fit = (p.width.max(1) as f64 / w as f64).min(p.height.max(1) as f64 / hh as f64);
+    let top =
+        |a: &crate::model::Animated| a.keys.iter().chain(&a.baked).map(|k| k.v.abs()).fold(a.value.abs(), f64::max);
+    let shown = p
+        .tracks
+        .iter()
+        .chain(p.sequences.iter().flat_map(|q| q.tracks.iter()))
+        .flat_map(|t| t.clips.iter())
+        .filter(|c| c.asset == aid)
+        .map(|c| top(&c.scale) * top(&c.scale_x).max(top(&c.scale_y)))
+        .fold(None, |m: Option<f64>, v| Some(m.map_or(v, |m| m.max(v))))
+        .map_or(1.0, |v| ((v * 4.0).ceil() / 4.0).max(0.25));
+    s * (fit * shown).min(1.0)
+}
+
+/// The files `old` (an HTML asset's path before it was re-pointed at render `base`) leaves behind: every
+/// file of another render, and, once `done`, the interims of this one.
+fn superseded(old: &str, base: &Path, done: bool) -> Vec<PathBuf> {
+    let old = Path::new(old);
+    let mut v = Vec::new();
+    if old.parent() == base.parent()
+        && crate::engine::cache_lru::stem_of(old) != crate::engine::cache_lru::stem_of(base)
+    {
+        v = html::render_files(&crate::engine::cache_lru::stem_of(old));
+    }
+    if done {
+        v.extend(html::interim_files(base));
+    }
+    v
+}
+
+/// Delete the superseded render files no asset shows (`used`: every asset's path). One still open in a
+/// decoder stays listed and goes on a later pass; one an asset points at again is kept.
+/// ponytail: an undo that brings an older source back renders it again (seconds to a minute) instead
+/// of every edit's render being kept (the cache grew 9 GB in a day); renders other projects use are
+/// rendered again by them.
+fn sweep(doomed: &mut Vec<PathBuf>, used: &HashSet<&str>) {
+    doomed.retain(|f| {
+        let in_use = used.iter().any(|u| Path::new(u) == f);
+        !in_use && f.exists() && std::fs::remove_file(f).is_err()
+    });
+}
+
+/// The part of asset `aid`'s own time (seconds) to render first: `secs` around the playhead when it is
+/// over a clip of the asset, else `secs` from the start of the part the first such clip uses.
+fn focus_of(p: &Project, aid: Id, playhead: f64, secs: f64) -> Option<(f64, f64)> {
+    if secs <= 0.0 {
+        return None;
+    }
+    let clips: Vec<&crate::model::Clip> = p.tracks.iter().flat_map(|t| t.clips.iter()).filter(|c| c.asset == aid).collect();
+    let used = |c: &crate::model::Clip| {
+        let (a, b) = (c.src_time(c.start), c.src_time(c.start + c.duration - 1e-6));
+        (a.min(b).max(0.0), a.max(b))
+    };
+    let (c, at) = match clips.iter().find(|c| playhead >= c.start && playhead < c.start + c.duration) {
+        Some(c) => (*c, Some(c.src_time(playhead))),
+        None => (*clips.first()?, None),
+    };
+    let (lo, hi) = used(c);
+    let (a, b) = match at {
+        Some(t) => (t - secs / 2.0, t + secs / 2.0),
+        None => (lo, lo + secs),
+    };
+    // slide the window inside the used part, keeping its length where it fits
+    let (a, b) = if a < lo { (lo, (lo + secs).min(hi)) } else if b > hi { ((hi - secs).max(lo), hi) } else { (a, b) };
+    Some((a, b))
 }
 
 /// Compare every HTML asset with the cache: re-point hits, start renders for misses, cancel renders
 /// nothing wants any more. Cheap (a parse + hash and a stat or two per HTML asset).
+/// The app's own fonts (Settings ▸ fonts imported for text): their family names, for font fields.
+fn sync_app_fonts(app: &mut App) {
+    if app.html.app_fonts.as_ref() == Some(&app.settings.user_fonts) {
+        return;
+    }
+    let mut out = Vec::new();
+    for p in &app.settings.user_fonts {
+        let mut db = fontdb::Database::new();
+        if db.load_font_file(p).is_ok() {
+            if let Some(fam) = db.faces().next().and_then(|f| f.families.first().map(|(n, _)| n.clone())) {
+                out.push((fam, PathBuf::from(p)));
+            }
+        }
+    }
+    html::set_app_fonts(out);
+    app.html.app_fonts = Some(app.settings.user_fonts.clone());
+}
+
 fn reconcile(app: &mut App) {
+    sync_app_fonts(app);
+    // the files a page may name ("image.png"): the project's folder and its media (not HTML renders)
+    let dir = app.project_path.as_ref().and_then(|p| p.parent()).map(Path::to_path_buf);
+    let assets = app.project.assets.iter().filter(|a| a.html.is_none()).map(|a| PathBuf::from(&a.path)).collect();
+    html::set_media(html::Media::new(dir, assets));
     let mut changed = false;
     let mut stale = HashSet::new();
     let mut wanted = HashSet::new();
@@ -181,34 +294,52 @@ fn reconcile(app: &mut App) {
     let mut resized: Vec<(Id, (u32, u32), (u32, u32))> = Vec::new();
     let mut pending: Option<String> = None;
     let fps = if app.project.fps > 0.0 { app.project.fps } else { 30.0 };
+    let mut doomed: Vec<PathBuf> = Vec::new();
     for i in 0..app.project.assets.len() {
         let Some(h) = app.project.assets[i].html.clone() else { continue };
-        let spec = spec_of(&app.project, &h);
+        let mut spec = spec_of(&app.project, app.project.assets[i].id, &h);
+        spec.focus = focus_of(&app.project, app.project.assets[i].id, app.playhead, app.settings.html_render_window_secs);
         let a = &mut app.project.assets[i];
-        if let Some(r) = html::cached(&spec) {
+        // ponytail: ONE cache key per layer per scan (it was three: cached, interim, out_base - each a
+        // full prepare of the page, seconds of UI thread per scan with a few saved web pages)
+        let (base, _, done, interim) = html::lookup(&spec);
+        if let Some(r) = done {
             let path = r.path.to_string_lossy().into_owned();
             if a.path != path {
                 if (a.width, a.height) != (r.width, r.height) && a.width > 0 && a.height > 0 {
                     resized.push((a.id, (a.width, a.height), (r.width, r.height)));
                 }
+                doomed.extend(superseded(&a.path, &base, true));
                 a.path = path;
                 a.kind = if r.animated { ClipKind::Video } else { ClipKind::Image };
                 (a.width, a.height, a.fps, a.duration) = (r.width, r.height, fps, h.duration);
-                a.codec = "png".into();
+                a.codec = if r.animated { "h264" } else { "png" }.into();
                 kinds.push((a.id, a.kind));
                 changed = true;
             }
             continue;
         }
         stale.insert(a.id);
-        if !Path::new(&a.path).is_file() {
+        if let Some(r) = interim {
+            // the still of the new source at once, then (a long layer) a draft that plays, while it renders
+            let path = r.path.to_string_lossy().into_owned();
+            if a.path != path {
+                doomed.extend(superseded(&a.path, &base, false));
+                a.path = path;
+                a.kind = if r.animated { ClipKind::Video } else { ClipKind::Image };
+                (a.width, a.height, a.fps, a.duration) = (r.width, r.height, fps, h.duration);
+                a.codec = if r.animated { "h264" } else { "png" }.into();
+                kinds.push((a.id, a.kind));
+                changed = true;
+            }
+        } else if !Path::new(&a.path).is_file() {
+            doomed.extend(superseded(&a.path, &base, false));
             // nothing to show yet (a new clip, a project from another PC): transparent, not "missing"
             a.path = pending.get_or_insert_with(placeholder).clone();
             a.kind = ClipKind::Image;
             kinds.push((a.id, a.kind));
             changed = true;
         }
-        let (base, _) = html::out_base(&spec);
         wanted.insert(base.clone());
         if !app.html.failed.contains(&base)
             && !app.html.jobs.iter().any(|j| j.base == base)
@@ -245,11 +376,16 @@ fn reconcile(app: &mut App) {
     });
     for (base, name, spec) in start {
         let prog = export::spawn_job("html-render", move |prog| html::render_to_file(&spec, prog).map(|_| ()));
-        app.html.jobs.push(RenderJob { base, name, prog });
+        app.html.jobs.push(RenderJob { base, name, prog, started: Instant::now() });
     }
     app.html.stale = stale;
     if changed {
         app.player.set_project(&app.project);
+    }
+    app.html.doomed.extend(doomed);
+    if !app.html.doomed.is_empty() {
+        let used: HashSet<&str> = app.project.assets.iter().map(|a| a.path.as_str()).collect();
+        sweep(&mut app.html.doomed, &used);
     }
 }
 
@@ -343,6 +479,8 @@ fn open_editor(app: &mut App, clip: Id) {
         app.html.editor.params = html::params_of(&h.src, &h.params);
         app.html.editor.width = h.width;
         app.html.editor.mouse = h.mouse.clone();
+        app.html.editor.renderer = h.renderer;
+        app.html.editor.fps = if app.project.fps > 0.0 { app.project.fps } else { 30.0 };
         app.html.editor.edit(clip, &h.src, h.field_list(), h.duration);
     }
 }
@@ -377,6 +515,17 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             }
         }
     }
+    if app.html.opened.as_ref() != Some(&app.project_path) {
+        app.html.opened = Some(app.project_path.clone());
+        if app.project.assets.iter().any(|a| a.html.is_some()) {
+            html::prewarm(); // its layers may need rendering, a field edit soon will
+        }
+    }
+    let stills = html::stills_written();
+    if stills != app.html.stills {
+        app.html.stills = stills;
+        app.html.due = Some(now);
+    }
     let scan = app.html.scan_at.is_none_or(|t| t <= now);
     if !done.is_empty() || scan || app.html.due.is_some_and(|d| d <= now) {
         app.html.due = None;
@@ -400,7 +549,9 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     app.html.was_exporting = exporting;
     // wake only for what can change without a frame of its own
     if !app.html.jobs.is_empty() {
-        app.animate_until(ctx, now + Duration::from_millis(250));
+        // a job's interim still lands within a second or so of its start: look often until then
+        let young = app.html.jobs.iter().any(|j| j.started.elapsed() < Duration::from_secs(3));
+        app.animate_until(ctx, now + Duration::from_millis(if young { 30 } else { 250 }));
     } else if let Some(d) = app.html.due {
         app.animate_until(ctx, d);
     }
@@ -963,6 +1114,7 @@ impl App {
             range: None,
             effects: Vec::new(),
             html: Some(HtmlSource { name: name.clone(), src: html.to_string(), fields, duration: dur, ..Default::default() }),
+            proxy: None,
         });
         // on top, like a text clip: a layer sits over the footage
         let prefer = p.video_tracks().last().copied();
@@ -1004,8 +1156,8 @@ pub(super) fn known_fields(
 
 /// `html.render`: forget a failure for this clip's asset and render it again if it is not cached.
 pub(super) fn rerender(app: &mut App, clip: Id) -> Result<(), String> {
-    let (_, h) = html_of(app, clip).ok_or_else(|| format!("clip {clip} is not an HTML layer"))?;
-    let (base, _) = html::out_base(&spec_of(&app.project, &h));
+    let (aid, h) = html_of(app, clip).ok_or_else(|| format!("clip {clip} is not an HTML layer"))?;
+    let (base, _) = html::out_base(&spec_of(&app.project, aid, &h));
     app.html.failed.remove(&base);
     reconcile(app);
     Ok(())
@@ -1018,7 +1170,7 @@ pub(super) fn rendered(app: &App, clip: Id) -> bool {
 
 /// The render scale and the spec of a clip, for `html.check`.
 pub(super) fn spec_of_clip(app: &App, clip: Id) -> Option<html::Spec> {
-    html_of(app, clip).map(|(_, h)| spec_of(&app.project, &h))
+    html_of(app, clip).map(|(aid, h)| spec_of(&app.project, aid, &h))
 }
 
 #[cfg(test)]
@@ -1031,6 +1183,65 @@ mod tests {
             assert!(html::lint(s).is_empty(), "{:?}", html::lint(s));
         }
         assert!(!html::parse(LAYER_STARTER).scene && html::parse(SCENE_STARTER).scene);
+    }
+
+    /// A re-point deletes the render it replaced (and, once done, the interims), but never a file an
+    /// asset still shows, and never a file that is not a render.
+    #[test]
+    fn superseded_renders_go_and_referenced_ones_stay() {
+        let d = html::dir();
+        std::fs::create_dir_all(&d).unwrap();
+        let (old, new, shared) = ("00000000000000a1", "00000000000000b2", "00000000000000c3");
+        let f = |n: &str| d.join(n);
+        for n in [format!("{old}.mp4"), format!("{old}.still.png"), format!("{old}.mov"), format!("{new}.stacked.mp4")]
+        {
+            std::fs::write(f(&n), b"x").unwrap();
+        }
+        std::fs::write(f(&format!("{new}.draft.stacked.mp4")), b"x").unwrap();
+        std::fs::write(f(&format!("{shared}.mp4")), b"x").unwrap();
+        std::fs::write(f("pending.png"), b"x").unwrap();
+        let new_path = f(&format!("{new}.stacked.mp4")).to_string_lossy().into_owned();
+        let shared_path = f(&format!("{shared}.mp4")).to_string_lossy().into_owned();
+        let mut doomed = superseded(&f(&format!("{old}.mp4")).to_string_lossy(), &d.join(new), true);
+        // another asset (a duplicate layer) still shows the shared render: kept
+        doomed.extend(superseded(&shared_path, &d.join(new), false));
+        doomed.extend(superseded(&f("pending.png").to_string_lossy(), &d.join(new), false));
+        let used: HashSet<&str> = [new_path.as_str(), shared_path.as_str()].into_iter().collect();
+        sweep(&mut doomed, &used);
+        assert!(doomed.is_empty(), "everything deletable went: {doomed:?}");
+        for n in
+            [format!("{old}.mp4"), format!("{old}.still.png"), format!("{old}.mov"), format!("{new}.draft.stacked.mp4")]
+        {
+            assert!(!f(&n).exists(), "{n} superseded");
+        }
+        assert!(Path::new(&new_path).exists() && Path::new(&shared_path).exists(), "referenced renders stay");
+        assert!(f("pending.png").exists(), "not a render: never touched");
+        for n in [new_path, shared_path] {
+            let _ = std::fs::remove_file(n);
+        }
+    }
+
+    /// A layer fitted to a 1080p frame never renders above 1080p, a small one at the size it is shown
+    /// (in quarters), and one zoomed past the frame keeps the project's full render size.
+    #[test]
+    fn renders_are_never_bigger_than_shown() {
+        let big = r#"<html><head><meta name="se:size" content="2560x1440"></head><body></body></html>"#;
+        let mut p = Project::default();
+        (p.width, p.height) = (1920, 1080);
+        let h = HtmlSource { src: big.into(), ..Default::default() };
+        let px = |p: &Project| html::pixel_size(html::viewport(big, 0), render_scale(p, 7, &h));
+        assert_eq!(px(&p), (1920, 1080), "no clip: fitted to the frame");
+        let mut c = crate::model::Clip::new(1, ClipKind::Video, "page", 0.0, 1.0);
+        c.asset = 7;
+        p.tracks.push(crate::model::Track::new(1, TrackKind::Video, "V1"));
+        p.tracks[0].clips.push(c);
+        assert_eq!(px(&p), (1920, 1080), "scale 1 = fitted");
+        p.tracks[0].clips[0].scale.value = 0.3;
+        assert_eq!(px(&p), (960, 540), "shown at 0.3: rendered at 0.5 (quarters, rounded up)");
+        p.tracks[0].clips[0].scale.value = 4.0 / 3.0;
+        assert_eq!(px(&p), (2560, 1440), "zoomed to 1:1: the page's full size");
+        p.tracks[0].clips[0].scale.value = 3.0;
+        assert_eq!(px(&p), (2560, 1440), "never above what scale_for gives");
     }
 
     fn at(secs: u64) -> Option<std::time::SystemTime> {
@@ -1064,6 +1275,23 @@ mod tests {
         // the file is gone: nothing happens (the clip keeps its source)
         let mut st: Link = (Some(hash_of("a")), at(1));
         assert_eq!(sync_step(&mut st, "a", None, &mut || None), Step::Nothing);
+    }
+
+    /// The part of a long layer rendered first: around the playhead when it is over the clip, else the
+    /// start of what the clip uses; always inside the used part.
+    #[test]
+    fn the_first_seconds_rendered_follow_the_playhead_and_the_trim() {
+        let mut p = Project::new();
+        let mut c = crate::model::Clip::new(1, ClipKind::Video, "h", 100.0, 40.0);
+        c.asset = 7;
+        c.src_in = 5.0; // the clip uses the layer's 5..45 s
+        p.tracks[0].clips.push(c);
+        assert_eq!(focus_of(&p, 7, 120.0, 10.0), Some((20.0, 30.0)), "playhead at layer time 25");
+        assert_eq!(focus_of(&p, 7, 101.0, 10.0), Some((5.0, 15.0)), "slid inside the used part");
+        assert_eq!(focus_of(&p, 7, 139.9, 10.0).map(|w| (w.1 - 45.0).abs() < 1e-3), Some(true), "near the end");
+        assert_eq!(focus_of(&p, 7, 10.0, 10.0), Some((5.0, 15.0)), "playhead elsewhere: from the start of the trim");
+        assert_eq!(focus_of(&p, 7, 120.0, 0.0), None, "0 = no window");
+        assert_eq!(focus_of(&p, 8, 120.0, 10.0), None, "an asset no clip uses");
     }
 
     #[test]

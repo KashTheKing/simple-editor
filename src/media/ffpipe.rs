@@ -133,6 +133,7 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         range: None,
         effects: Vec::new(),
         html: None,
+        proxy: None,
     };
     let mut video: Option<&Value> = None;
     let mut stream_dur: f64 = 0.0;
@@ -448,7 +449,7 @@ impl ImageSource {
     fn open(path: &str, size: (u32, u32), top: Option<(u32, u32)>) -> Result<Self, String> {
         let (width, height) = top.unwrap_or(size);
         let rgba = decode_still(path, width, height).ok_or("ffmpeg could not decode the image")?;
-        let top_level = Arc::new(Frame { width, height, pts: 0.0, rgba, bgrx: false });
+        let top_level = Arc::new(Frame { width, height, pts: 0.0, rgba, bgrx: false, gpu: None });
         let mut s = Self { path: path.to_string(), mips: vec![top_level], cache: HashMap::new() };
         while top.is_some() && s.halve() {}
         Ok(s)

@@ -8,13 +8,13 @@ module.exports = {
       type: 'category',
       label: 'Editing',
       collapsed: false,
-      items: ['library', 'viewer', 'timeline', 'inspector', 'effects', 'html-layers', 'online-library'],
+      items: ['library', 'viewer', 'social-guides', 'timeline', 'inspector', 'effects', 'html-layers', 'chat-forum-threads', 'browser-layer', 'online-library', 'my-gallery'],
     },
     {
       type: 'category',
       label: 'Finishing',
       collapsed: false,
-      items: ['captions', 'color', 'audio', 'export', 'export-audio-tracks', 'faster-exports', 'handoff'],
+      items: ['captions', 'color', 'audio', 'audio-visualizers', 'export', 'export-audio-tracks', 'faster-exports', 'handoff'],
     },
     {
       type: 'category',

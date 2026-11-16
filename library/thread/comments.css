@@ -1,0 +1,33 @@
+.comments{flex-direction:column}
+.chd{flex:none;height:2.6em;display:flex;align-items:center;gap:1.4em;padding:0 1em;font-weight:600}
+.chd .so2{font-size:.8em;font-weight:500}
+.cmx{flex:none}
+.crow{height:3.8em;display:flex;align-items:center;gap:.9em;padding:0 1em}
+.cfield{position:relative;flex:1;height:2.4em;display:flex;align-items:center;border-bottom:1px solid var(--line)}
+.cfield .tbox{background:var(--bg);border-bottom:2px solid var(--fg);padding:0}
+.cai{height:3em;display:flex;justify-content:flex-end;align-items:center;gap:.5em;padding:0 1em}
+.cx{padding:.5em 1em;font-size:.8em;font-weight:600}
+.cbtn{display:flex;align-items:center;justify-content:center;width:8.75em;height:2.625em;border-radius:1.4em;background:var(--bg3);color:var(--mut);font-size:.8em;font-weight:600;animation:cbon .2s ease both,press .3s ease both}
+.cbtn.sm{width:7.5em;height:2.4em}
+@keyframes cbon{from{background:var(--bg3);color:var(--mut)}to{background:var(--accent);color:#fff}}
+@keyframes press{0%{transform:none;filter:none}40%{transform:scale(.92);filter:brightness(1.3)}100%{transform:none;filter:none}}
+.comments .col{padding-bottom:1em}
+.c2 .bx{display:flex;gap:.9em;padding:.55em 1em .45em calc(1em + var(--dp) * 3em)}
+.c2 .av{margin-top:.1em}
+.cb2{min-width:0;flex:1}
+.hh{display:flex;align-items:baseline;gap:.5em;font-size:.85em}
+.hh .un{font-weight:600}
+.mt{color:var(--mut);font-size:.9em}
+.pnb{font-size:.7em;color:var(--mut);margin-bottom:.15em}
+.c2 .tx{font-size:.92em;margin-top:.1em}
+.ca2{display:flex;align-items:center;gap:1.2em;color:var(--mut);font-size:.8em;margin:.35em 0 .1em}
+.ca2 .rp2{font-weight:600;color:var(--fg)}
+.hr{position:relative;display:inline-flex}
+.hr .av{width:1.5em;height:1.5em;font-size:.6em}
+.hr i{position:absolute;right:-.3em;bottom:-.35em;font-style:normal;color:#ff3b5c;font-size:.9em}
+.rt{color:var(--lnk);font-size:.8em;font-weight:600;margin:.2em 0}
+.rbx{display:flex;gap:.7em;padding:.4em 1em .4em calc(1em + var(--dp) * 3em)}
+.rcol{flex:1}
+.rbx .cfield{height:2.2em}
+.rbtns{display:flex;justify-content:flex-end;align-items:center;gap:.5em;margin-top:.3em}
+.c-compact .c2 .bx{padding-top:.2em;padding-bottom:.15em}

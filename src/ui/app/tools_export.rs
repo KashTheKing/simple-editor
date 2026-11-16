@@ -429,6 +429,146 @@ fn advance_bake(app: &mut App, mut job: BakeJob) {
     }
 }
 
+/// "Convert to HTML Layer": the selected shape clips become ONE HTML layer holding an inline SVG
+/// (logos, badges), cropped to their bounds, placed where they were, spanning their times. The
+/// shapes' look at their own start is kept (keyframes are not carried over). One undo step.
+fn shapes_to_html(app: &mut App, ids: &[Id]) -> Result<usize, String> {
+    use crate::engine::shapes;
+    let p = &app.project;
+    // bottom track first, so later (higher) tracks paint on top as in the timeline
+    let mut found: Vec<(usize, &crate::model::Clip)> = Vec::new();
+    for (ti, tr) in p.tracks.iter().enumerate() {
+        for c in &tr.clips {
+            if ids.contains(&c.id) && c.shape.is_some() {
+                found.push((ti, c));
+            }
+        }
+    }
+    if found.is_empty() {
+        return Err("Select one or more shape clips".into());
+    }
+    let vids = p.video_tracks();
+    found.sort_by_key(|(ti, _)| std::cmp::Reverse(vids.iter().position(|v| v == ti).unwrap_or(0)));
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    let (mut t0, mut t1) = (f64::MAX, f64::MIN);
+    let mut body = String::new();
+    for (_, c) in &found {
+        let st = c.shape.as_ref().unwrap();
+        let (cx, cy) = (c.x.value as f32, c.y.value as f32);
+        let k = c.scale.value as f32;
+        let (sx, sy) = (k * c.scale_x.value as f32, k * c.scale_y.value as f32);
+        let rot = c.rotation.value as f32;
+        let (lw, lh) = shapes::ShapeRasterizer::size(st, 0.0);
+        let (hw, hh) = (lw * sx.abs() * 0.5, lh * sy.abs() * 0.5);
+        let (sn, cs) = rot.to_radians().sin_cos();
+        let (ex, ey) = (hw * cs.abs() + hh * sn.abs(), hw * sn.abs() + hh * cs.abs());
+        x0 = x0.min(cx - ex);
+        x1 = x1.max(cx + ex);
+        y0 = y0.min(cy - ey);
+        y1 = y1.max(cy + ey);
+        t0 = t0.min(c.start);
+        t1 = t1.max(c.start + c.duration);
+        body += &format!(
+            "  <g transform=\"translate({cx:.2} {cy:.2}) rotate({rot:.2}) scale({sx:.4} {sy:.4})\" opacity=\"{:.3}\">{}</g>
+",
+            c.opacity.value,
+            shapes::svg(st, 0.0)
+        );
+    }
+    let pad = 4.0;
+    let (x0, y0, x1, y1) = (x0 - pad, y0 - pad, x1 + pad, y1 + pad);
+    let (bw, bh) = (x1 - x0, y1 - y0);
+    let k = crate::engine::html::scale_for(p.width, p.height) as f32;
+    let even = |v: f32| (((v / k).ceil() as u32 + 1) & !1).clamp(2, 3840);
+    let (cw, ch) = (even(bw), even(bh));
+    let html_src = format!(
+        "<!doctype html>
+<html><head><title>Shapes</title>
+<meta name=\"se:size\" content=\"{cw}x{ch}\">
+         <meta name=\"se:duration\" content=\"{:.2}\">
+<style>html,body{{margin:0;overflow:hidden;background:transparent}}         svg{{display:block;width:100vw;height:100vh}}</style></head>
+<body>
+         <svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"{x0:.2} {y0:.2} {bw:.2} {bh:.2}\" preserveAspectRatio=\"xMidYMid meet\">
+{body}</svg>
+</body></html>
+",
+        (t1 - t0).clamp(0.5, 60.0)
+    );
+    let n = found.len();
+    let gone: Vec<Id> = found.iter().map(|(_, c)| c.id).collect();
+    let before = app.project.to_json();
+    let id = app.add_html_clip(&html_src, Some("Shapes"), Some(t0), Some(t1 - t0), &[])?;
+    for tr in app.project.tracks.iter_mut() {
+        tr.clips.retain(|c| !gone.contains(&c.id));
+    }
+    if let Some(c) = app.project.clip_mut(id) {
+        c.x.value = ((x0 + x1) * 0.5) as f64;
+        c.y.value = ((y0 + y1) * 0.5) as f64;
+    }
+    app.selection = vec![id];
+    app.push_undo_labeled(before, "Convert to HTML Layer");
+    app.after_edit();
+    Ok(n)
+}
+
+/// Render in Place for HTML layers: their render is already a video file (transparency kept), so no
+/// export runs - the file (H.264, stacked when it has transparency) is copied beside the project and each selected
+/// clip's asset becomes a plain video asset of it, effects and keyframes untouched. One undo step.
+/// None = the selection is not all rendered HTML layers (the normal bake handles it).
+fn html_to_video(app: &mut App, ids: &[Id]) -> Option<Result<usize, String>> {
+    let ids = app.project.expand_links(ids);
+    let mut assets: Vec<Id> = Vec::new();
+    for &id in &ids {
+        let a = app.project.clip(id).and_then(|c| app.project.asset(c.asset))?;
+        a.html.as_ref()?;
+        if !assets.contains(&a.id) {
+            assets.push(a.id);
+        }
+    }
+    if assets.is_empty() {
+        return None;
+    }
+    let dir = default_out_dir(app);
+    let mut fresh: Vec<(Id, crate::model::Asset)> = Vec::new();
+    for aid in assets {
+        let a = app.project.asset(aid)?;
+        let src = Path::new(&a.path);
+        let name = src.file_name().unwrap_or_default().to_string_lossy();
+        if name == "pending.png" || crate::engine::html::is_interim(src) || !src.exists() {
+            return Some(Err(format!("'{}' is still rendering - try again when it is done", a.name())));
+        }
+        let stem: String = a.name().chars().map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' }).collect();
+        // a render with transparency keeps its stacked suffix, so the copy still decodes with alpha
+        let ext = if media::proxy::is_stacked(src) {
+            "stacked.mp4".into()
+        } else {
+            src.extension().unwrap_or_default().to_string_lossy().into_owned()
+        };
+        let out = unique_path(&dir, &format!("{stem}_html"), &ext);
+        if let Err(e) = std::fs::copy(src, &out) {
+            return Some(Err(format!("copy to {}: {e}", out.display())));
+        }
+        let mut v = a.clone();
+        v.html = None;
+        v.path = out.to_string_lossy().into_owned();
+        fresh.push((aid, v));
+    }
+    let before = app.project.to_json();
+    let mut n = 0;
+    for (old, asset) in fresh {
+        let new = app.project.add_asset(asset);
+        for &id in &ids {
+            if let Some(c) = app.project.clip_mut(id).filter(|c| c.asset == old) {
+                c.asset = new;
+                n += 1;
+            }
+        }
+    }
+    app.push_undo_labeled(before, "Render HTML in place");
+    app.after_edit();
+    Some(Ok(n))
+}
+
 /// The pure "add the probed asset, point clips at it, roll back if none survived" half of
 /// `finish_bake` - no live `App` needed, so a test can exercise the exact rollback path taken when
 /// every target clip vanished while the (async, minutes-long) bake was rendering. `add_asset` mutates
@@ -559,10 +699,29 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
         }
         Action::BakeSelection => {
             let ids = app.selection.clone();
+            match html_to_video(app, &ids) {
+                Some(Ok(n)) => {
+                    app.toast(format!("{n} HTML layer{} now a plain video", if n == 1 { " is" } else { "s are" }));
+                    return true;
+                }
+                Some(Err(e)) => {
+                    app.toast(e);
+                    return true;
+                }
+                None => {}
+            }
             match start_bake(app, &ids, BakeKind::Render) {
                 Ok((_, out)) => {
                     app.toast(format!("Rendering in place → {}", out.file_name().unwrap_or_default().to_string_lossy()))
                 }
+                Err(e) => app.toast(e),
+            }
+            true
+        }
+        Action::ShapesToHtml => {
+            let ids = app.selection.clone();
+            match shapes_to_html(app, &ids) {
+                Ok(n) => app.toast(format!("{n} shape{} now one HTML layer", if n == 1 { " is" } else { "s are" })),
                 Err(e) => app.toast(e),
             }
             true
@@ -772,6 +931,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         }
     }
 
@@ -993,5 +1153,17 @@ mod tests {
         assert_eq!(BakeKind::SlowMo(0.5).filter(25.0), Some(BakeFilter::SlowMo { factor: 0.5, fps: 25.0 }));
         assert_eq!(BakeKind::SlowMo(0.25).factor(), 0.25);
         assert_eq!(BakeKind::Denoise.factor(), 1.0);
+    }
+}
+
+impl App {
+    /// Removes whole tracks (clips and all) as one undo step - the timeline's Delete on selected headers.
+    pub(crate) fn delete_tracks(&mut self, ids: &[Id]) {
+        let before = self.project.to_json();
+        crate::ui::timeline::remove_tracks(&mut self.project, ids);
+        let p = &self.project;
+        self.selection.retain(|id| p.clip(*id).is_some());
+        self.push_undo_labeled(before, "Delete tracks");
+        self.after_edit();
     }
 }

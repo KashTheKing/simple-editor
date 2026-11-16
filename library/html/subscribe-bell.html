@@ -11,16 +11,20 @@
 <meta name="se:thumb" content="3.4">
 <meta name="se:field" content="label | text | Subscribe">
 <meta name="se:field" content="accent | color | #e62117">
+<meta name="se:field" content="font | font | Segoe UI">
+<meta name="se:field" content="radius | radius | 40 | 0 | 120">
+<meta name="se:field" content="shadow | toggle | on | 0 8px 24px rgba(0, 0, 0, .35), 0 2px 6px rgba(0, 0, 0, .25) | none">
+<meta name="se:field" content="outline | outline | 0 #ffffff">
 <style>
   :root { --accent: {{accent}}; }
   html, body { margin: 0; background: transparent; overflow: hidden; }
   body { width: 100vw; height: 100vh; display: grid; place-items: center;
-    font-family: "Segoe UI", Arial, sans-serif; }
+    font-family: {{font}}; }
 
   .stage { position: relative; display: flex; gap: 16px; align-items: center; }
   .btn { position: relative; display: grid; align-items: center; height: 80px; padding: 0 40px;
-    border-radius: 40px; overflow: hidden; background: var(--accent); color: #fff;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, .35), 0 2px 6px rgba(0, 0, 0, .25);
+    border-radius: {{radius}}; outline: {{outline}}; outline-offset: -1px; overflow: hidden; background: var(--accent); color: #fff;
+    box-shadow: {{shadow}};
     animation: pop .6s cubic-bezier(.2, 1.5, .4, 1) both, press .32s ease-in-out 1.5s both,
       toGrey .25s ease-out 1.62s both; }
   .lbl { grid-area: 1 / 1; display: flex; align-items: center; justify-content: center; gap: 12px;

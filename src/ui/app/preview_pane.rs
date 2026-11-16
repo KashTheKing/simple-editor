@@ -38,6 +38,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 redo,
                 preview: pv,
                 player,
+                play_gate,
                 palette,
                 fullscreen,
                 tools,
@@ -60,7 +61,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                     project,
                     selection,
                     playhead: *playhead,
-                    playing: player.is_playing(),
+                    playing: player.is_playing() || play_gate.buffering(),
                     fullscreen: *fullscreen,
                     palette,
                     undo: &mut push,
@@ -71,11 +72,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                     quality: settings.preview_quality,
                     movie_mode: settings.movie_mode,
                     prerender: done,
-                    buffering: player.is_buffering(),
+                    buffering: player.is_buffering() || play_gate.buffering(),
+                    buffer_note: play_gate.note(), // ws:play-gate
                     proxy: proxy_busy,
                     tracker,
-                    guide: settings.guide,
-                    guides_keep_aspect: settings.guides_keep_aspect,
+                    settings: &*settings,
                     // ---- ws:canvas-handles-monitor ----
                     canvas_snap: settings.canvas_snap,
                     // an export is served on this thread: the monitor keeps the live frame meanwhile
@@ -90,6 +91,22 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 },
             )
         };
+        // ---- ws:audio-visualizer ---- a stretch with only sound: the "now playing" card over the frame
+        if let Some(aid) = crate::ui::audio_card::audio_only_at(&app.project, app.playhead) {
+            let path = app.project.clip(aid).and_then(|c| app.project.asset(c.asset)).map(|a| a.path.clone());
+            if let Some(path) = path {
+                let aspect = app.project.width.max(1) as f32 / app.project.height.max(1) as f32;
+                let lb = preview::letterbox(app.preview.canvas_rect, aspect, ui.pixels_per_point());
+                if lb.is_positive() {
+                    let cover = app
+                        .thumbs
+                        .texture(ui.ctx(), &path, 0.0, (lb.height() * ui.pixels_per_point()) as u32)
+                        .or_else(|| crate::ui::audio_card::cover(ui.ctx(), &path));
+                    let title = crate::ui::audio_card::title(ui.ctx(), &path);
+                    crate::ui::audio_card::paint(ui, lb, cover, &title);
+                }
+            }
+        }
         // ---- ws:pro-monitor ----
         // `pick_armed` is only consumed on an actual click (`resp.picked` is `Some`) - armed once by the
         // Color panel's Eyedropper button, it must survive every frame the user hasn't clicked yet
@@ -127,12 +144,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             (app.tracking.cx, app.tracking.cy) = (x, y);
         }
         if let Some(g) = resp.set_guide {
-            app.settings.guide = g;
-            app.settings.save();
-        }
-        if let Some(on) = resp.set_guides_keep_aspect {
-            app.settings.guides_keep_aspect = on;
-            app.settings.save();
+            g.apply(&mut app.settings);
         }
         // ---- ws:canvas-handles-monitor ----
         if let Some(on) = resp.set_canvas_snap {

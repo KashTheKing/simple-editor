@@ -30,6 +30,11 @@ impl TransitionKind {
             TransitionKind::Shader => "Shader",
         }
     }
+    /// A built-in kind by its display name, ignoring case and spaces ("cross fade", "CrossFade").
+    pub fn from_name(s: &str) -> Option<TransitionKind> {
+        let flat = |t: &str| t.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase();
+        Self::ALL.into_iter().find(|k| flat(k.name()) == flat(s))
+    }
     pub fn has_direction(self) -> bool {
         matches!(self, TransitionKind::Push | TransitionKind::Wipe)
     }

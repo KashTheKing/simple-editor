@@ -1,4 +1,4 @@
-//! The General tab: theme/decoder/ffmpeg-and-yt-dlp folders/downloads/preview width/snapping/confirm
+//! The General tab: decoder/ffmpeg-and-yt-dlp folders/downloads/preview width/snapping/confirm
 //! overwrite/context-menu, imported fonts, and the MCP server section. Extracted verbatim from
 //! settings_ui.rs (see mod.rs's module doc for the whole settings window).
 
@@ -7,17 +7,12 @@ use crate::settings::Settings;
 use crate::ui::combo;
 use eframe::egui;
 
-const THEMES: [(&str, &str); 3] = [("system", "System"), ("dark", "Dark"), ("light", "Light")];
 const DECODERS: [(&str, &str); 3] =
     [("auto", "Auto (Media Foundation, ffmpeg fallback)"), ("mf", "Media Foundation"), ("ffmpeg", "ffmpeg")];
 
 pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings, mcp_status: &str) -> bool {
     let mut changed = false;
     egui::Grid::new("general").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label("Theme");
-        changed |= combo(ui, "theme", &mut s.theme, &THEMES, Some(260.0));
-        ui.end_row();
-
         ui.label("Decoder");
         changed |= combo(ui, "decoder", &mut s.decoder, &DECODERS, Some(260.0));
         ui.end_row();
@@ -60,6 +55,11 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         }
         ui.end_row();
 
+        // ---- ws:ai-enhancer ----
+        ui.label("AI enhancer");
+        ui.horizontal(enhancer_row);
+        ui.end_row();
+
         ui.label("Downloads folder");
         ui.horizontal(|ui| {
             changed |= ui
@@ -86,6 +86,14 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         ui.horizontal(|ui| {
             changed |= ui.add(egui::DragValue::new(&mut s.autosave_secs).range(0..=3600).speed(1)).changed();
             ui.weak(if s.autosave_secs == 0 { "off" } else { "s" });
+        });
+        ui.end_row();
+
+        // ---- ws:cache-budget ----
+        ui.label("Cache disk budget");
+        ui.horizontal(|ui| {
+            changed |= ui.add(egui::DragValue::new(&mut s.cache_disk_gb).range(0..=2000).speed(1)).changed();
+            ui.weak(if s.cache_disk_gb == 0 { "unlimited" } else { "GB (HTML, pre-render, proxies, peaks; oldest first)" });
         });
         ui.end_row();
     });
@@ -189,4 +197,39 @@ pub(super) fn port_field(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Sett
         return true;
     }
     false
+}
+
+// ---- ws:ai-enhancer ----
+/// Install / uninstall the optional AI enhancer add-on (Real-ESRGAN, used by clip ▸ AI Upscale).
+fn enhancer_row(ui: &mut egui::Ui) {
+    use crate::engine::enhance;
+    if let Some(p) = enhance::installing() {
+        ui.add(egui::Spinner::new());
+        ui.weak(format!("{:.0}% · {}", p.fraction() * 100.0, p.status()));
+    } else if enhance::available() {
+        ui.weak(match enhance::version() {
+            Some(v) => format!("installed ({v})"),
+            None => "installed".into(),
+        });
+        let id = egui::Id::new("enhancer_uninstall_error");
+        if ui.button("Uninstall").on_hover_text("Removes the add-on; files it already upscaled stay").clicked() {
+            let r = enhance::uninstall().err();
+            ui.data_mut(|d| d.insert_temp(id, r));
+        }
+        if let Some(e) = ui.data(|d| d.get_temp::<Option<String>>(id)).flatten() {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+    } else {
+        if ui
+            .button("Install")
+            .on_hover_text("Real-ESRGAN AI upscaling on the graphics card: right-click a clip ▸ AI Upscale. About 45 MB, downloaded once.")
+            .clicked()
+        {
+            enhance::start_install();
+        }
+        match enhance::install_error() {
+            Some(e) => ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}")),
+            None => ui.weak("optional, about 45 MB"),
+        };
+    }
 }

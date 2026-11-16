@@ -23,6 +23,8 @@ mod general;
 mod hotkeys;
 mod import;
 mod performance;
+// ---- ws:social-guides ----
+mod social;
 
 use crate::hotkeys::{Action, Hotkeys};
 use crate::settings::Settings;
@@ -58,6 +60,8 @@ pub struct SettingsUi {
     /// Hotkeys ▸ Import from…: the plan being previewed, and what the last Apply overwrote.
     pub(super) import_plan: Option<crate::keymaps::import::Plan>,
     pub(super) import_undo: Option<crate::keymaps::import::Snapshot>,
+    // ---- ws:social-guides ----
+    pub(super) social: social::SocialUi,
 }
 
 pub(super) struct Status {
@@ -139,6 +143,7 @@ pub fn show(
             ui.selectable_value(&mut state.tab, 4, "Hotkeys");
             ui.selectable_value(&mut state.tab, 5, "Appearance");
             ui.selectable_value(&mut state.tab, 6, "Assistant"); // ws:assistant-pane
+            ui.selectable_value(&mut state.tab, 7, "Social"); // ws:social-guides
         });
         ui.separator();
         // the tab row stays put; a tab taller than the window scrolls
@@ -151,6 +156,7 @@ pub fn show(
                 3 => capture::export(ui, settings, encoders),
                 4 => hotkeys::hotkeys_tab(ui, state, hotkeys, settings),
                 6 => assistant::assistant_tab(ui, settings), // ws:assistant-pane
+                7 => social::social_tab(ui, &mut state.social, settings), // ws:social-guides
                 _ => appearance::appearance(ui, settings),
             })
             .inner;
@@ -181,7 +187,7 @@ mod tests {
         let palette = Palette::new(false, egui::Color32::BLACK);
         let mut st = SettingsUi { open: true, ..Default::default() };
         let inputs = vec![("Microphone (USB)".to_string(), false), ("Stereo Mix".to_string(), true)];
-        for tab in [0, 1, 2, 3, 4, 5, 6] {
+        for tab in [0, 1, 2, 3, 4, 5, 6, 7] {
             st.tab = tab;
             for _ in 0..2 {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
@@ -204,6 +210,30 @@ mod tests {
         assert_eq!(settings.preview_quality, Settings::default().preview_quality);
         assert_eq!(settings.capture_fps, Settings::default().capture_fps);
         assert_eq!(settings.palette, crate::settings::default_palette());
+    }
+
+    /// ws:social-guides: the Social tab (a profile with a picture, the fetch box, the guide-data row) is idle.
+    #[test]
+    fn assert_no_idle_repaint_social_settings() {
+        let ctx = egui::Context::default();
+        let mut settings = Settings::default();
+        let mut p = crate::ui::social::profile::SocialProfile::sample("youtube");
+        p.id = "p1".into();
+        settings.social_profiles.push(p);
+        let mut hk = Hotkeys::defaults();
+        let palette = Palette::new(false, egui::Color32::BLACK);
+        let mut st = SettingsUi { open: true, tab: 7, ..Default::default() };
+        let mut t = 0.0;
+        for _ in 0..30 {
+            t += 0.05;
+            let input = egui::RawInput { time: Some(t), ..Default::default() };
+            let _ = ctx.run(input, |ctx| {
+                show(ctx, &mut st, &mut settings, &mut hk, &[], &palette, "stopped", "Test GL", &[]);
+            });
+        }
+        assert!(!ctx.has_requested_repaint(), "idle frame on the Social tab requested a repaint");
+        assert_eq!(settings.social_profiles.len(), 1, "drawing the tab changes nothing");
+        assert_eq!(crate::ui::social::profile::NET_CALLS.load(std::sync::atomic::Ordering::SeqCst), 0, "and starts no request");
     }
 
     #[test]

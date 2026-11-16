@@ -3,16 +3,24 @@ title: Online library
 description: Download shader effects, transitions, LUTs, HTML layers, icons and assistant skills from inside the Gallery.
 ---
 
-The **Gallery** has extra tabs that fill from an online library: **Transitions**, **Effects**, **LUTs**,
-**HTML**, **Icons** and **Skills**. Nothing is bundled in the exe; the first time you open one of these tabs
-the catalogue is fetched (Simple Editor makes no network call before that).
+The **Gallery** can also list an online library, as part of its own tabs: **Effects**, **Transitions** and
+**Luts** show the built-in cards, yours, what is already installed and the online items in one grid, and
+**HTML**, **Icons** and **Skills** are tabs of their own. Nothing is bundled in the exe, and **nothing is
+fetched until you ask**: a fresh install makes no network call at all.
 
-- Cards with a **cloud mark** download the first time you click them; after that they are on your PC.
+- Each tab shows a small **Browse online library** button under the search box. Click it once: the list of
+  free items (a small index, no pictures or files) is fetched, **Online** becomes a chip next to **All**,
+  **Built-in**, **Mine** and **Installed**, and from then on the library is listed every time you open the
+  Gallery. Until then the Gallery lists only the built-in cards, yours and what is installed.
+- **Click an online card** (cloud mark) and just that one item downloads, with a progress bar on the card,
+  then it is applied. After that it is on your PC and behaves like any other card. Nothing else is ever
+  downloaded in bulk.
+- The **⋯** menu of a tab has **Refresh the online catalogue**, **Turn the online library off** (what is
+  installed stays) and **Use a folder as the library…**, which reads a local folder with an `index.json`
+  instead: use it to try your own items or to work offline.
 - What a project uses is stored **in the project**: send the project to a friend and it still looks the
   same. LUTs are copied into a folder beside the project file.
-- **Refresh** fetches the catalogue again.
-- **Use a folder…** reads the library from a local folder (one with an `index.json`) instead. Use it to try
-  your own items or to work offline; **Use the online library** switches back.
+- Search covers the library's names, tags and descriptions once it is connected.
 
 ## What is in it
 

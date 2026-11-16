@@ -429,6 +429,8 @@ const MIX_BLOCK: usize = 1024;
 /// cancel kills ffmpeg and removes the partial file.
 /// Audio-only extensions (mp3, wav, m4a, flac, ogg, aac, opus) skip video (`-vn`); gif skips audio.
 pub fn start_export(project: Project, opts: ExportOptions, text: Arc<Mutex<TextRasterizer>>) -> Arc<Progress> {
+    // browser zooms: the page parts drawn at the scale they are shown at (not project clips)
+    let project = crate::engine::browser::render_view(&project).into_owned();
     spawn_job("export", move |prog| run_export(&project, &opts, &text, prog))
 }
 
@@ -439,7 +441,12 @@ pub(crate) fn spawn_job(
 ) -> Arc<Progress> {
     let prog = Progress::new();
     let p = prog.clone();
+    let background = matches!(name, "proxy" | "transcribe" | "whisper-model" | "html-render" | "html-helper");
     let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+        if background {
+            crate::media::bg::lower_thread();
+            crate::media::bg::pause_point(|| p.is_cancelled());
+        }
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&p)));
         p.finish(match r {
             Ok(Ok(())) => None,
@@ -552,7 +559,7 @@ fn run_export_with(
     if !enc_note.is_empty() {
         prog.set(0.0, enc_note.trim_start_matches(" · "));
     }
-    let args = codec_args(&ext, &encoder, opts.crf, &opts.preset, &detect_encoders());
+    let args = codec_args(&ext, &encoder, opts.crf.max(CRF_BEST as u32), &opts.preset, &detect_encoders());
     let gpu_tx = match &opts.frames {
         FrameSource::Gpu(tx) => Some(tx.clone()),
         FrameSource::Cpu => None,
@@ -570,6 +577,12 @@ fn run_export_with(
     cmd.args(input_args(video, (w, h), fps, &ports, main_audio));
     let (vf, af) = output_filters(opts, (w, h), !inputs.is_empty(), &args);
     let (vf, colour_tags) = rgba_bt709(vf, video == Some(VideoIn::Rgba), &args);
+    let vf = if is_gif {
+        let pre = if vf.is_empty() { String::new() } else { format!("{vf},") };
+        format!("{pre}fps=15,scale='min(iw,720)':-2:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle")
+    } else {
+        vf
+    };
     if !audio_only && !vf.is_empty() {
         cmd.args(["-vf", &vf]);
     }
@@ -1446,15 +1459,19 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
 
 /// User-facing quality percent (100 = best) -> the CRF `codec_args` actually uses (0 = best, 51 = worst).
 /// `pct` is expected pre-clamped to 0..=100 (the slider's own range); clamps again here as a safety net.
+/// 100% is CRF 16 (visually lossless), not CRF 0 (mathematically lossless, ~10x the size for no
+/// visible gain); 0% is CRF 36 (tiny, blocky). Everything below 36 is unwatchable, so it is off the scale.
+pub const CRF_BEST: f64 = 16.0;
+pub const CRF_WORST: f64 = 36.0;
 pub fn crf_from_quality_percent(pct: u32) -> u32 {
     let pct = pct.min(100) as f64;
-    (((100.0 - pct) / 100.0) * 51.0).round().clamp(0.0, 51.0) as u32
+    (CRF_BEST + (100.0 - pct) / 100.0 * (CRF_WORST - CRF_BEST)).round() as u32
 }
 
 /// Inverse of `crf_from_quality_percent`, for displaying the slider from a stored `Settings.crf`.
 pub fn quality_percent_from_crf(crf: u32) -> u32 {
-    let crf = crf.min(51) as f64;
-    (100.0 - (crf / 51.0) * 100.0).round().clamp(0.0, 100.0) as u32
+    let crf = (crf as f64).clamp(CRF_BEST, CRF_WORST);
+    (100.0 - (crf - CRF_BEST) / (CRF_WORST - CRF_BEST) * 100.0).round() as u32
 }
 
 /// Rough estimated output size in bytes for the export progress/quality UI - NOT a guarantee, since CRF
@@ -1500,6 +1517,7 @@ pub(crate) mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         }
     }
 
@@ -1709,9 +1727,9 @@ pub(crate) mod tests {
 
     #[test]
     fn quality_percent_crf_conversion() {
-        assert_eq!(crf_from_quality_percent(100), 0);
+        assert_eq!(crf_from_quality_percent(100), 16);
         assert_eq!(crf_from_quality_percent(50), 26);
-        assert_eq!(crf_from_quality_percent(0), 51);
+        assert_eq!(crf_from_quality_percent(0), 36);
         assert_eq!(quality_percent_from_crf(0), 100);
         assert_eq!(quality_percent_from_crf(51), 0);
     }

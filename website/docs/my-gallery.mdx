@@ -1,0 +1,90 @@
+---
+title: My Gallery
+description: Keep your own looks, effects, transitions, titles, animations and sound effects in the Gallery, and share them as plain files.
+---
+
+Anything you make can be kept in the **Gallery** on your own PC, so the next video starts faster. Saved
+items sit beside the built-in cards, marked with a small **M**, and the **Mine** chip under a tab's search box
+shows only yours.
+
+## Find things
+
+Every tab has the same header: a **search box** (names, tags and descriptions; <kbd>Ctrl+F</kbd> over the
+Gallery jumps into it, <kbd>Esc</kbd> clears it), the number of cards shown, **All / Built-in / Mine /
+Installed / Online** chips (only the ones the tab has), a **category** menu (effect categories, transition
+kinds, sound tags), a **sort** menu (Default, Name, Recent, Most used) and **S / M / L** for the card size.
+The cards are one wrapping grid that fills the panel and scrolls down; the tab strip and this header stay put.
+
+## Save to Gallery…
+
+Right-click and pick **Save to Gallery…**:
+
+- a **clip** on the timeline (or **Clip ▸ Save to Gallery…**),
+- an **effect row** in the Inspector,
+- a **transition** on the timeline,
+- an **empty spot** in the Gallery.
+
+A small window asks what to save (it only offers what the selection can be), a **name** and optional
+**tags**. If the name is taken the new one is numbered (`Warm film (2)`); tick *Replace* to overwrite instead.
+
+| You save | It shows in | A click then… |
+|---|---|---|
+| The clip's whole effect stack (**Look**) | Looks | replaces the clip's effects |
+| One effect, or the whole stack as **Effects** | Effects (under **Mine**) | adds them to the selected clips |
+| A transition (length, colour, direction, shader controls) | Transitions | applies it at the start of the selection |
+| The project's caption style | Captions | styles every caption |
+| A clip's speed curve | Speed | gives a clip that ramp |
+| A clip's keyframes | Animate | applies the animation |
+| The selected clips, a title included | Templates / Titles | places them at the playhead |
+| An audio clip, or its trimmed range | Sounds | adds it on an audio track |
+| An HTML layer, a shader effect or transition, a LUT | HTML / Effects / Transitions / Luts | as the library item does (these go to your local library) |
+
+Right-click a card of yours for **Rename…**, **Edit tags…**, **Duplicate**, **Replace with current** (the
+selection's version), **Open file location** and **Delete**. Delete moves the file to a `.trash` folder
+inside the gallery folder, so nothing is lost.
+
+You can also drag any of your cards onto the timeline, like the built-in ones.
+
+## Sounds
+
+The **Sounds** tab is a folder of audio files. **Import…** (or **Import a folder…**) in the tab's **⋯** menu, or **drop files or
+folders onto the Gallery**, and they appear as cards with a waveform and length. Resting the pointer on one
+plays a preview (switch it off in the **⋯** menu: *Preview on hover*), a click adds it at the playhead on an audio
+track, and a drag drops it on a track or below the last one for a new track. Search matches names and tags.
+Nothing is decoded until you look at a card, and only the waveform is kept.
+
+## Sharing
+
+Everything is a plain file in `%APPDATA%\SimpleEditor\gallery\`; **Open the gallery folder** (in the tab's **⋯** menu) and **Open file
+location** open it in Explorer.
+
+```text
+gallery\
+  index.json            a list of every item - rebuilt from the files if it is missing
+  looks\warm-film.json  one file per item
+  effects\  transitions\  captions\  speed\  animate\  templates\
+  sounds\door-slam.wav  the audio file itself, with door-slam.json beside it (name, tags)
+  .trash\               what you deleted
+```
+
+An item file is JSON:
+
+```json
+{"format": "simple-editor-gallery", "version": 1, "kind": "look", "name": "Warm film",
+ "tags": ["grade"], "created": 1731500000, "data": { }}
+```
+
+`kind` is `look`, `effect`, `transition`, `caption`, `speed`, `animate`, `template` or `sound`; `data` is
+that kind's payload (what the app writes: a look is the list of its effects, a transition has `kind`,
+`duration`, `color`, `direction`, `shader`, `params`, ...). To share, zip a folder (or send a few files).
+The other person drops the files or the zip onto their Gallery, or uses **⋯ ▸ Import to Gallery…**, which takes files,
+folders and `.zip`s. A name they already have is numbered, never overwritten. HTML layers, shader effects /
+transitions and LUTs live in the [online library](online-library.mdx) folder instead (`%APPDATA%\SimpleEditor\library`,
+format in `library/README.md`).
+
+## For scripts and the assistant
+
+`gallery.save {kind, name, tags}` saves, `gallery.import {paths}` imports, `gallery.manage` renames, retags,
+duplicates, replaces or deletes, `gallery.reveal` opens Explorer, `gallery.list {mine: true}` lists only
+yours, and `gallery.apply {tab: "Sounds", name, at, track}` places a sound. Saved items are addressed by
+name (`mine:Name` where a built-in has the same name).

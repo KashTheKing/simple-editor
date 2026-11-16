@@ -33,8 +33,9 @@
 //! (`LibraryState.view`) and the zoom (`LibraryState.zoom`, View ▾ Size and Ctrl+Scroll) that scales
 //! both gallery tiles and row thumbnails. A search or a filter flattens "Project" into its hits, the way
 //! an explorer shows search results.
-//! Under the tree, "Project" also lists what the project can reuse: the effects / node graphs /
-//! adjustment layers already in use or saved in settings.json (`reuse_ui`).
+//! Under the tree, "Project" also lists the node graphs the project can reuse (clips that render from one,
+//! saved graph presets: `reuse_ui`). Effects, looks and adjustment layers are Gallery cards now (the
+//! Gallery's Effects / Looks / Templates tabs), so they are not repeated here.
 
 use crate::hotkeys::Action;
 use crate::media::proxy::ProxyStatus;
@@ -44,7 +45,7 @@ use crate::settings::{RecentAsset, Settings};
 use crate::theme::Palette;
 use crate::ui::confirm::{self, ConfirmAction};
 use crate::ui::menu;
-use crate::ui::tools::{draw_glyph, glyph_text_button, Glyph};
+use crate::ui::tools::{draw_glyph, glyph_text_button, icon_button, Glyph};
 use crate::ui::{duration_text, label_color, DragPayload};
 use eframe::egui::{self, RichText};
 use std::collections::HashSet;
@@ -109,6 +110,8 @@ pub struct LibraryState {
     pub rename_seq: Option<(Id, String)>,
     /// (subclip being renamed, edit buffer) - a subclip's name is its `description`.
     pub rename_asset: Option<(Id, String)>,
+    /// (asset, time) of a click on an already-selected asset's name: a second of stillness starts a rename.
+    pub rename_arm: Option<(Id, f64)>,
     /// The item right-click ▸ Info… opened (None = the window is closed).
     info: Option<Pick>,
     /// Same, for a recent file in the Info window (its tags live on its `RecentAsset`).
@@ -135,6 +138,8 @@ pub struct LibraryState {
 #[derive(Default)]
 pub struct LibraryResponse {
     pub import: bool,
+    /// "Import folder as bin…" (header button, empty state, right-click menu): the app opens the picker.
+    pub import_folder: bool,
     /// A folder was just linked: bring the Media Browser pane (where linked folders live) forward.
     pub show_browser: bool,
     /// Assets to put on the timeline, back to back in THIS order (the selection's click order).
@@ -157,6 +162,8 @@ pub struct LibraryResponse {
     pub convert: Vec<(Id, String)>,
     /// Source paths whose proxy should be rebuilt (the app releases decoders, deletes, rescans).
     pub regen_proxy: Vec<String>,
+    /// Per-source proxy choice from the Proxies menu: (asset id, None = auto / Some(on)).
+    pub proxy_mode: Vec<(crate::model::Id, Option<bool>)>,
     /// Asset for which the app should open the Convert To… options dialog.
     pub convert_dialog: Option<Id>,
     /// Asset for which the app should open the Compress… dialog.
@@ -301,6 +308,11 @@ pub fn keyboard(state: &mut LibraryState, ctx: &egui::Context) -> LibraryNav {
         .map(|(_, n)| n)
         .collect()
     });
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F2)) {
+        if let Some(id) = nav_targets(state).first() {
+            state.rename_asset = Some((*id, String::new()));
+        }
+    }
     if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
         select_all(state);
     }
@@ -396,11 +408,11 @@ fn size_text(bytes: u64) -> String {
 
 /// What a row shows as its name: a subclip's own name (its `description`) when it has one, else the
 /// file name - subclips share the parent's path, so the file name alone would repeat it.
-fn display_name(a: &crate::model::Asset) -> String {
+fn display_name(p: &Project, a: &crate::model::Asset) -> String {
     if a.parent.is_some() && !a.description.is_empty() {
         a.description.clone()
     } else {
-        a.name()
+        p.asset_names.get(&a.id).cloned().unwrap_or_else(|| a.name())
     }
 }
 
@@ -426,6 +438,7 @@ enum LibOp {
     AssetLabel(Id, u8),
     AssetFolder(Id, String),
     AssetDesc(Id, String),
+    AssetName(Id, String),
     AssetTags(Id, Vec<String>),
     FolderNew(String),
     FolderRename(String, String),
@@ -638,6 +651,7 @@ fn kind_tag(k: ClipKind) -> &'static str {
         ClipKind::Sequence => "S",
         ClipKind::Shape => "Sh",
         ClipKind::Adjustment => "Adj",
+        ClipKind::Browser => "Web",
     }
 }
 
@@ -689,6 +703,7 @@ fn kind_rank(k: ClipKind) -> u8 {
         ClipKind::Sequence => 4,
         ClipKind::Shape => 5,
         ClipKind::Adjustment => 6,
+        ClipKind::Browser => 7,
     }
 }
 
@@ -1240,7 +1255,13 @@ fn browser(
             1 => order.sort_by(|&x, &y| project.assets[x].duration.total_cmp(&project.assets[y].duration)),
             2 => order.sort_by_key(|&i| kind_rank(project.assets[i].kind)),
             3 => order.sort_by_key(|&i| std::cmp::Reverse(project.assets[i].id)),
-            _ => order.sort_by_cached_key(|&i| project.assets[i].name().to_lowercase()),
+            // natural order ("take2" before "take10"), as a folder import files them
+            _ => {
+                // lower-case each name once, not twice per comparison
+                let keys: std::collections::HashMap<usize, String> =
+                    order.iter().map(|&i| (i, project.assets[i].name().to_lowercase())).collect();
+                order.sort_by(|x, y| crate::engine::folder_import::natural_cmp(&keys[x], &keys[y]));
+            }
         }
         {
             let mut tree = Tree {
@@ -1257,6 +1278,8 @@ fn browser(
                 rows: &mut rows,
                 click: &mut click,
                 rec: &mut rec,
+                subs: Default::default(),
+                files: Default::default(),
             };
             if imported {
                 tree.imported(ui, &order, flat);
@@ -1335,6 +1358,15 @@ fn browser(
                 LibOp::AssetFolder(id, f) => {
                     if let Some(a) = project.asset_mut(id) {
                         a.folder = f;
+                    }
+                }
+                LibOp::AssetName(id, n) => {
+                    // "" or the file's own name = back to the default
+                    let own = project.asset(id).map(|a| a.name()).unwrap_or_default();
+                    if n.is_empty() || n == own {
+                        project.asset_names.remove(&id);
+                    } else {
+                        project.asset_names.insert(id, n);
                     }
                 }
                 LibOp::AssetDesc(id, d) => {
@@ -1499,9 +1531,13 @@ fn empty_state(ui: &mut egui::Ui, palette: &Palette, resp: &mut LibraryResponse)
         egui::TextStyle::Body.resolve(ui.style()),
         palette.text_dim,
     );
-    let slot = egui::Rect::from_center_size(r.center() + egui::vec2(0.0, 14.0), egui::vec2(110.0, 22.0));
+    let slot = egui::Rect::from_center_size(r.center() + egui::vec2(-62.0, 14.0), egui::vec2(110.0, 22.0));
     if ui.put(slot, egui::Button::new("Import media…")).clicked() {
         resp.import = true;
+    }
+    let slot = slot.translate(egui::vec2(120.0, 0.0));
+    if ui.put(slot, egui::Button::new("Import folder…")).on_hover_text("A folder becomes a bin").clicked() {
+        resp.import_folder = true;
     }
 }
 
@@ -1545,6 +1581,10 @@ fn header(
                 };
                 if glyph_text_button(ui, Glyph::Letter('+'), "Import").on_hover_text(tip).clicked() {
                     resp.import = true;
+                }
+                let tip = "Import a folder as a bin: its sub-folders become nested bins";
+                if icon_button(ui, palette, egui::Id::new("lib-import-folder"), Glyph::Folder, tip, false).clicked() {
+                    resp.import_folder = true;
                 }
                 menu::button(ui, "View ▾", |ui| view_menu(ui, state, settings, columns_changed));
                 // every filter in one menu; the button says how many are on
@@ -1650,6 +1690,7 @@ fn empty_menu(
 ) {
     let project_view = state.tab == 0;
     menu::action_item(ui, Action::ImportMedia);
+    menu::action_item(ui, Action::ImportFolder);
     // only when yt-dlp is installed - the whole URL import is optional
     if m.ytdlp
         && menu::row(ui, Some(Glyph::ImportArrow), "Import from URL…", "")
@@ -1730,7 +1771,7 @@ fn info_window(
 ) {
     let Some(pick) = state.info.clone() else { return };
     let title = match &pick {
-        Pick::Asset(id) => project.asset(*id).map(display_name),
+        Pick::Asset(id) => project.asset(*id).map(|a| display_name(project, a)),
         Pick::Path(p) => Some(split_path(p).0.to_string()),
         Pick::Folder(_) => None,
     };
@@ -2026,6 +2067,10 @@ struct Tree<'a, 'b> {
     /// settings.json edit asked for by a recent file's menu; `settings` is only borrowed shared here,
     /// so the browser applies it after the tree.
     rec: &'a mut Option<RecOp>,
+    /// Folder -> its subfolders / the filtered assets directly in it, built once per frame (the tree
+    /// used to rescan every folder and asset for each folder it drew).
+    subs: std::collections::HashMap<String, Vec<String>>,
+    files: std::collections::HashMap<String, Vec<usize>>,
 }
 
 impl Tree<'_, '_> {
@@ -2104,6 +2149,12 @@ impl Tree<'_, '_> {
             return;
         }
         let names = folder_tree_names(self.project);
+        for n in &names {
+            self.subs.entry(parent_of(n).to_string()).or_default().push(n.clone());
+        }
+        for &i in order {
+            self.files.entry(self.project.assets[i].folder.clone()).or_default().push(i);
+        }
         self.folder(ui, "", 0, &names, order);
     }
 
@@ -2164,7 +2215,7 @@ impl Tree<'_, '_> {
     /// The subfolders of `path` (folders first, like an explorer), then the assets that live in it.
     /// In the gallery the subfolders are cards; an open one's contents follow the grid under its name.
     fn folder(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, names: &[String], order: &[usize]) {
-        let subs: Vec<String> = names.iter().filter(|n| parent_of(n) == path).cloned().collect();
+        let subs: Vec<String> = self.subs.get(path).cloned().unwrap_or_default();
         if self.state.view == 1 {
             let w = TILE * self.state.zoom;
             let mut open = Vec::new();
@@ -2205,7 +2256,7 @@ impl Tree<'_, '_> {
         if path.is_empty() {
             self.sequences(ui, depth, false); // sequences live at the root, after the folders
         }
-        let here: Vec<usize> = order.iter().copied().filter(|&i| self.project.assets[i].folder == *path).collect();
+        let here: Vec<usize> = self.files.get(path).cloned().unwrap_or_default();
         self.assets(ui, depth, &here);
     }
 
@@ -2220,8 +2271,7 @@ impl Tree<'_, '_> {
     ) -> bool {
         let key = format!("f:{child}");
         let last = child.rsplit('/').next().unwrap_or(child).to_string();
-        let kids = names.iter().any(|n| parent_of(n) == child.as_str())
-            || order.iter().any(|&i| self.project.assets[i].folder == *child);
+        let kids = self.subs.contains_key(child.as_str()) || self.files.contains_key(child.as_str());
         if self.state.rename_folder.as_ref().is_some_and(|(o, _)| o == child) {
             let mut renamed = None;
             ui.horizontal(|ui| {
@@ -2438,12 +2488,18 @@ impl Tree<'_, '_> {
             tile_grid(ui, indent(depth) + ARROW, list, w, |ui, &i| self.asset_tile(ui, i));
         } else {
             let ids: HashSet<Id> = list.iter().map(|&i| self.project.assets[i].id).collect();
+            let mut kids: std::collections::HashMap<Id, Vec<usize>> = Default::default();
+            for &i in list {
+                if let Some(p) = self.project.assets[i].parent {
+                    kids.entry(p).or_default().push(i);
+                }
+            }
             for &i in list {
                 let a = &self.project.assets[i];
                 if a.parent.is_some_and(|p| ids.contains(&p)) {
                     continue; // drawn under its parent below, at whatever depth that turns out to be
                 }
-                self.asset_and_kids(ui, depth, list, i);
+                self.asset_and_kids(ui, depth, &kids, i);
             }
         }
     }
@@ -2451,12 +2507,11 @@ impl Tree<'_, '_> {
     /// Draw asset row `i`, then every row in `list` that is its child, one level deeper - and so on
     /// for THEIR children, so nesting isn't capped at one level (a grandchild used to be skipped by
     /// `assets` above as "drawn under its parent" and then never actually drawn by anyone).
-    fn asset_and_kids(&mut self, ui: &mut egui::Ui, depth: usize, list: &[usize], i: usize) {
+    fn asset_and_kids(&mut self, ui: &mut egui::Ui, depth: usize, kids: &std::collections::HashMap<Id, Vec<usize>>, i: usize) {
         let id = self.project.assets[i].id;
         self.asset_row(ui, depth, i);
-        let kids: Vec<usize> = list.iter().copied().filter(|&j| self.project.assets[j].parent == Some(id)).collect();
-        for j in kids {
-            self.asset_and_kids(ui, depth + 1, list, j);
+        for &j in kids.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
+            self.asset_and_kids(ui, depth + 1, kids, j);
         }
     }
 
@@ -2465,31 +2520,53 @@ impl Tree<'_, '_> {
         // ---- ws:library-surface ----
         // a subclip being renamed: an inline field in place of its row (its name is its description)
         if self.state.rename_asset.as_ref().is_some_and(|(x, _)| *x == a.id) {
-            let (id, old) = (a.id, a.description.clone());
+            let (id, sub, old) = (a.id, a.parent.is_some(), display_name(self.project, a));
             let mut done = None;
             ui.horizontal(|ui| {
                 ui.add_space(indent(depth) + ARROW);
                 self.folder_icon(ui, Glyph::Chain);
                 let (_, buf) = self.state.rename_asset.as_mut().unwrap();
+                if buf.is_empty() {
+                    *buf = old.clone(); // F2 / click-and-wait open it empty
+                }
                 done = inline_edit(ui, buf);
             });
             if let Some(new) = done {
                 if !new.is_empty() && new != old {
-                    self.ops.push(LibOp::AssetDesc(id, new));
+                    self.ops.push(if sub { LibOp::AssetDesc(id, new) } else { LibOp::AssetName(id, new) });
                     *self.op_start = true;
                 }
                 self.state.rename_asset = None;
             }
             return;
         }
+        // click an already-selected asset's name, then hold still for a second: rename in place
+        let now = ui.input(|i| i.time);
+        if let Some((aid, t)) = self.state.rename_arm {
+            if aid == a.id && now - t >= 1.0 {
+                self.state.rename_arm = None;
+                if self.state.sel_ids.len() <= 1 && self.state.selected == Some(a.id) {
+                    self.state.rename_asset = Some((a.id, String::new()));
+                    ui.ctx().request_repaint();
+                    return;
+                }
+            }
+        }
         let selected = self.state.sel_ids.contains(&a.id);
         let tint = (a.label != 0).then(|| lbl_color(self.labels, a.label, self.palette));
         let used = self.used.contains(&a.id);
         let offline = self.state.offline.contains(&a.id);
-        let pstatus = crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height);
+        // the proxy lookup stats the file for some containers: only rows on screen pay for it
+        let pstatus = if row_visible(ui, ROW_H * self.state.zoom) {
+            crate::media::proxy::status(a, self.settings.use_proxies, self.settings.proxy_height)
+        } else {
+            ProxyStatus::NotNeeded
+        };
         let (palette, thumbs, h) = (self.palette, &mut *self.thumbs, ROW_H * self.state.zoom);
         let (columns, labels) = (&self.settings.library_columns, self.labels);
         let payload = drag_payload(self.state, Pick::Asset(a.id));
+        let shown = display_name(self.project, a);
+        let mut name_rect = egui::Rect::NOTHING;
         let (r, add) = row(ui, egui::Id::new(("asset", a.id)), payload, selected, None, |ui| {
             ui.add_space(indent(depth) + ARROW);
             // label tint: a colour bar on the left and the name in the same colour
@@ -2504,11 +2581,11 @@ impl Tree<'_, '_> {
                 draw_glyph(ui.painter(), g, Glyph::Chain, palette.text_dim);
                 gr.on_hover_text(format!("Subclip of {}", a.name()));
             }
-            let mut name = RichText::new(display_name(a));
+            let mut name = RichText::new(shown);
             if let Some(c) = tint {
                 name = name.color(c);
             }
-            ui.label(if selected { name.strong() } else { name });
+            name_rect = ui.label(if selected { name.strong() } else { name }).rect;
             // the configured columns, in order; tags last (they truncate against the row's edge)
             for c in columns.iter().filter(|c| c.as_str() != "tags") {
                 match c.as_str() {
@@ -2561,6 +2638,17 @@ impl Tree<'_, '_> {
             }
         });
         let (id, path) = (a.id, a.path.clone());
+        if r.double_clicked() || r.dragged() {
+            self.state.rename_arm = None;
+        } else if r.clicked() {
+            let plain = ui.input(|i| !i.modifiers.any());
+            let on_name = r.interact_pointer_pos().is_some_and(|p| name_rect.contains(p));
+            let was_only = selected && self.state.sel_ids.len() <= 1;
+            self.state.rename_arm = (plain && on_name && was_only).then_some((id, now));
+            if self.state.rename_arm.is_some() {
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(1050));
+            }
+        }
         self.hit(ui, &r, Pick::Asset(id), &path);
         if add {
             self.resp.add_to_timeline.push(id);
@@ -2570,6 +2658,21 @@ impl Tree<'_, '_> {
 
     fn asset_tile(&mut self, ui: &mut egui::Ui, i: usize) {
         let a = &self.project.assets[i];
+        if self.state.rename_asset.as_ref().is_some_and(|(x, _)| *x == a.id) {
+            let (id, sub, old) = (a.id, a.parent.is_some(), display_name(self.project, a));
+            let (_, buf) = self.state.rename_asset.as_mut().unwrap();
+            if buf.is_empty() {
+                *buf = old.clone();
+            }
+            if let Some(new) = inline_edit(ui, buf) {
+                if !new.is_empty() && new != old {
+                    self.ops.push(if sub { LibOp::AssetDesc(id, new) } else { LibOp::AssetName(id, new) });
+                    *self.op_start = true;
+                }
+                self.state.rename_asset = None;
+            }
+            return;
+        }
         let selected = self.state.sel_ids.contains(&a.id);
         let tint = (a.label != 0).then(|| lbl_color(self.labels, a.label, self.palette)).unwrap_or(self.palette.text);
         let w = TILE * self.state.zoom;
@@ -2594,7 +2697,7 @@ impl Tree<'_, '_> {
         if self.state.offline.contains(&a.id) {
             tag.push_str(" · OFFLINE");
         }
-        let (r, add) = tile(ui, id, payload, selected, &tag, &display_name(a), tint, self.palette, art, w, button);
+        let (r, add) = tile(ui, id, payload, selected, &tag, &display_name(self.project, a), tint, self.palette, art, w, button);
         let (aid, path) = (a.id, a.path.clone());
         self.hit(ui, &r, Pick::Asset(aid), &path);
         if add {
@@ -2622,7 +2725,7 @@ impl Tree<'_, '_> {
         let ids = self.menu_targets(a.id);
         let offline = ids.iter().any(|id| self.state.offline.contains(id));
         let first = self.project.asset(ids[0]).unwrap_or(a);
-        let folders = folder_tree_names(self.project);
+        let project = self.project;
         menu::context(&r, |ui| {
             if ids.len() > 1 {
                 ui.weak(format!("{} selected", ids.len()));
@@ -2636,8 +2739,8 @@ impl Tree<'_, '_> {
             }
             ui.separator();
             // a subclip's name is its own (its description); a file's name is its file name
-            if a.parent.is_some() && menu::row(ui, None, "Rename", "").clicked() {
-                self.state.rename_asset = Some((a.id, display_name(a)));
+            if menu::row(ui, None, "Rename", "F2").clicked() {
+                self.state.rename_asset = Some((a.id, String::new()));
             }
             if menu::row(ui, Some(Glyph::Notepad), "Info…", "")
                 .on_hover_text("Description, tags, label, folder")
@@ -2656,6 +2759,9 @@ impl Tree<'_, '_> {
                 None => {}
             }
             menu::sub(ui, Some(Glyph::Folder), "Move to folder", |ui| {
+                // only while this submenu is open: every asset row is drawn each frame, and the list is
+                // O(assets) - per row it was O(assets^2) per frame, most of the UI frame at 200 assets
+                let folders = folder_tree_names(project);
                 for f in std::iter::once("").chain(folders.iter().map(String::as_str)) {
                     if menu::row(ui, None, if f.is_empty() { "(top level)" } else { f }, "").clicked() {
                         for id in &ids {
@@ -2685,6 +2791,11 @@ impl Tree<'_, '_> {
                 menu::sub(ui, Some(Glyph::Proxy), "Proxies", |ui| {
                     if menu::row(ui, None, "Regenerate proxy", "").clicked() {
                         self.resp.regen_proxy.extend(videos.iter().cloned());
+                    }
+                    for (label, mode) in [("Proxy: automatic", None), ("Proxy: always", Some(true)), ("Proxy: never", Some(false))] {
+                        if menu::row(ui, None, label, "").clicked() {
+                            self.resp.proxy_mode.extend(ids.iter().map(|id| (*id, mode)));
+                        }
                     }
                 });
             }
@@ -2805,6 +2916,15 @@ impl Tree<'_, '_> {
             }
             if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
                 let _ = std::process::Command::new("explorer").arg(path).spawn();
+            }
+            // the folder (every folder in the selection, when this one is part of it) becomes a bin
+            if menu::row(ui, Some(Glyph::ImportArrow), "Import folder as bin", "")
+                .on_hover_text("Every media file in it, sub-folders as nested bins")
+                .clicked()
+            {
+                let sel = &self.state.sel_paths;
+                let dirs = if sel.iter().any(|p| p == path) { sel.clone() } else { vec![path.to_string()] };
+                self.resp.open_paths.extend(dirs.iter().filter(|p| std::path::Path::new(p).is_dir()).map(PathBuf::from));
             }
             if root && menu::row(ui, Some(Glyph::Cross), "Unlink folder", "").clicked() {
                 self.ops.push(LibOp::UnlinkFolder(path.to_string()));
@@ -2950,6 +3070,9 @@ impl Tree<'_, '_> {
             ui.separator();
             if menu::row(ui, Some(Glyph::ImportArrow), "Add to the project", "").clicked() {
                 self.resp.open_paths.extend(paths.iter().map(PathBuf::from));
+                // a folder selected alongside comes in as a bin
+                let sel = self.state.sel_paths.iter().filter(|p| std::path::Path::new(p).is_dir());
+                self.resp.open_paths.extend(sel.map(PathBuf::from));
             }
             if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
                 let _ = std::process::Command::new("explorer").arg(format!("/select,{first}")).spawn();
@@ -2992,83 +3115,42 @@ fn glyph(ui: &mut egui::Ui, g: Glyph, palette: &Palette) {
     draw_glyph(ui.painter(), rect, g, palette.text_dim);
 }
 
-/// One reusable thing the project already holds.
+/// One reusable thing the project already holds: a node graph (the Gallery has no card for those).
 enum Reuse {
-    /// An effect kind already used somewhere in the project.
-    Effect(EffectKind),
-    /// Index into `Settings::effect_presets` - a saved chain or a saved node graph.
+    /// Index into `Settings::effect_presets` holding a saved node graph.
     Preset(usize),
     /// A clip that renders from a node graph.
     Graph(Id),
-    /// Index into `Settings::templates` holding a saved adjustment layer.
-    Adjustment(usize),
 }
 
-/// The reusable sections, read straight off the project and settings.json each frame.
-/// ponytail: linear scans + a JSON decode per template (`is_adjustment_template`), same as the Presets
-/// pane - the lists are short. A dedicated presets store plugs in here as extra `Reuse` items.
+/// The reusable section, read straight off the project and settings.json each frame.
+/// ponytail: linear scans, same as the old Presets pane - the lists are short.
 fn reuse_sections(project: &Project, settings: &Settings) -> Vec<(&'static str, Vec<Reuse>)> {
-    let mut kinds: Vec<EffectKind> = Vec::new();
-    let mut graphs: Vec<Reuse> = Vec::new();
-    for (_, c) in project.all_clips() {
-        for e in &c.effects {
-            if !kinds.contains(&e.kind) {
-                kinds.push(e.kind);
-            }
-        }
-        // uses_graph, not graph.is_some(): a bare Input->Output pass-through is not worth reusing, and
-        // since the node editor became opt-in it no longer means the clip renders from a graph
-        if c.uses_graph() {
-            graphs.push(Reuse::Graph(c.id));
-        }
-    }
-    let mut fx: Vec<Reuse> = kinds.into_iter().map(Reuse::Effect).collect();
-    for (i, p) in settings.effect_presets.iter().enumerate() {
-        if p.is_graph() {
-            graphs.push(Reuse::Preset(i));
-        } else {
-            fx.push(Reuse::Preset(i));
-        }
-    }
-    let adj = settings
-        .templates
-        .iter()
-        .enumerate()
-        .filter(|(_, t)| crate::engine::presets::is_adjustment_template(t))
-        .map(|(i, _)| Reuse::Adjustment(i))
-        .collect();
-    vec![("Effects", fx), ("Node graphs", graphs), ("Adjustment layers", adj)]
+    // uses_graph, not graph.is_some(): a bare Input->Output pass-through is not worth reusing, and
+    // since the node editor became opt-in it no longer means the clip renders from a graph
+    let mut graphs: Vec<Reuse> =
+        project.all_clips().filter(|(_, c)| c.uses_graph()).map(|(_, c)| Reuse::Graph(c.id)).collect();
+    graphs.extend(
+        settings.effect_presets.iter().enumerate().filter(|(_, p)| p.is_graph()).map(|(i, _)| Reuse::Preset(i)),
+    );
+    vec![("Node graphs", graphs)]
 }
 
 /// (name, kind tag, icon, drag payload) of one reusable item.
-/// ponytail: only adjustment layers have a drop target today - the others carry their name as a
-/// `Template` payload because `row()`/`tile()` are drag sources, and a stray drop just misses.
 fn reuse_face(item: &Reuse, project: &Project, settings: &Settings) -> (String, &'static str, Glyph, DragPayload) {
-    let by_name = |name: String, tag, icon| (name.clone(), tag, icon, DragPayload::Template(name));
-    match *item {
-        Reuse::Effect(k) => by_name(k.name().to_string(), "FX", Glyph::Star),
-        Reuse::Preset(i) => match settings.effect_presets.get(i) {
-            Some(p) if p.is_graph() => by_name(p.name.clone(), "Graph", Glyph::Nodes),
-            Some(p) => by_name(p.name.clone(), "FX", Glyph::Star),
-            None => by_name(String::new(), "FX", Glyph::Star),
-        },
-        Reuse::Graph(id) => {
-            let name = project.clip(id).map(|c| c.name.clone()).unwrap_or_default();
-            by_name(name, "Graph", Glyph::Nodes)
-        }
-        Reuse::Adjustment(i) => {
-            by_name(settings.templates.get(i).map(|t| t.name.clone()).unwrap_or_default(), "Adj", Glyph::Layers)
-        }
+    let name = match *item {
+        Reuse::Preset(i) => settings.effect_presets.get(i).map(|p| p.name.clone()),
+        Reuse::Graph(id) => project.clip(id).map(|c| c.name.clone()),
     }
+    .unwrap_or_default();
+    (name.clone(), "Graph", Glyph::Nodes, DragPayload::Template(name))
 }
 
 /// What a click on a reusable item asks the app to do.
-fn reuse_pick(item: &Reuse, name: &str, resp: &mut LibraryResponse) {
+fn reuse_pick(item: &Reuse, resp: &mut LibraryResponse) {
     match *item {
-        Reuse::Effect(k) => resp.add_effect = Some(k),
         Reuse::Preset(i) => resp.apply_preset = Some(i),
         Reuse::Graph(id) => resp.copy_graph = Some(id),
-        Reuse::Adjustment(_) => resp.place_template.push(name.to_string()),
     }
 }
 
@@ -3099,14 +3181,7 @@ pub(crate) fn reuse_ui(
             let (name, tag, icon, payload) = reuse_face(item, project, settings);
             let id = egui::Id::new((title, i));
             let r = if view == 1 {
-                let art = match *item {
-                    Reuse::Effect(k) => match crate::ui::effects_ui::thumbnail(k) {
-                        Some((tex, size)) => Art::Image(tex, size),
-                        None => Art::Icon(icon),
-                    },
-                    _ => Art::Icon(icon),
-                };
-                tile(ui, id, payload, false, tag, &name, palette.text, palette, art, TILE * zoom, None).0
+                tile(ui, id, payload, false, tag, &name, palette.text, palette, Art::Icon(icon), TILE * zoom, None).0
             } else {
                 row(ui, id, payload, false, None, |ui| {
                     glyph(ui, icon, palette);
@@ -3116,7 +3191,7 @@ pub(crate) fn reuse_ui(
                 .0
             };
             if r.clicked() {
-                reuse_pick(item, &name, resp);
+                reuse_pick(item, resp);
             }
         };
         if view == 1 {
@@ -3155,6 +3230,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         }
     }
 
@@ -3864,7 +3940,7 @@ mod tests {
 
         let counts: Vec<(&str, usize)> =
             reuse_sections(&project, &settings).iter().map(|(t, v)| (*t, v.len())).collect();
-        assert_eq!(counts, vec![("Effects", 2), ("Node graphs", 2), ("Adjustment layers", 1)]);
+        assert_eq!(counts, vec![("Node graphs", 2)], "only what the Gallery has no card for");
 
         let palette = Palette::new(true, egui::Color32::WHITE);
         let ctx = egui::Context::default();
@@ -3891,23 +3967,22 @@ mod tests {
                     .filter(|t| text_rect(&out.shapes, t).is_some())
                     .copied()
                     .collect();
-                assert!(text_rect(&out.shapes, "Blur").is_some(), "view {view} lists the effect as a file");
-                assert!(text_rect(&out.shapes, "Look").is_some(), "view {view} lists the preset as a file");
+                assert!(text_rect(&out.shapes, "Graph").is_some(), "view {view} lists the saved graph as a file");
+                assert!(
+                    text_rect(&out.shapes, "Look").is_none() && text_rect(&out.shapes, "Blur").is_none(),
+                    "view {view}: effects and looks are Gallery cards, not repeated here"
+                );
             }
             assert!(titles.is_empty(), "view {view} still draws section headings: {titles:?}");
         }
 
         // clicking each kind of item
         let mut resp = LibraryResponse::default();
-        reuse_pick(&Reuse::Effect(EffectKind::Blur), "Blur", &mut resp);
-        reuse_pick(&Reuse::Preset(1), "Graph", &mut resp);
-        reuse_pick(&Reuse::Graph(adj), "", &mut resp);
-        reuse_pick(&Reuse::Adjustment(0), "Grade", &mut resp);
-        assert_eq!(resp.add_effect, Some(EffectKind::Blur));
+        reuse_pick(&Reuse::Preset(1), &mut resp);
+        reuse_pick(&Reuse::Graph(adj), &mut resp);
         assert_eq!(resp.apply_preset, Some(1));
         assert_eq!(resp.copy_graph, Some(adj));
-        assert_eq!(resp.place_template, vec!["Grade".to_string()]);
-        assert_eq!(reuse_face(&Reuse::Effect(EffectKind::Blur), &project, &settings).0, "Blur");
+        assert_eq!(reuse_face(&Reuse::Preset(1), &project, &settings).0, "Graph");
     }
 
     // ---- ws:media-library ----
@@ -4140,6 +4215,35 @@ mod tests {
         assert!(text_rect(&shapes, "Reveal in Explorer").is_some() && text_rect(&shapes, "Unlink folder").is_none());
     }
 
+    /// A folder in the Media Browser imports as a bin: its menu hands the folder's path to the app, which
+    /// routes it through the import funnel (`take_folders`).
+    #[test]
+    fn browser_folder_menu_imports_it_as_a_bin() {
+        let dirs = known_folders();
+        let Some((first, dir)) = dirs.first() else { return }; // a profile with none of them (CI)
+        let (mut project, mut settings) = (Project::new(), Settings::default());
+        let mut state = LibraryState::media_browser();
+        let mut pane = Pane::new(420.0, 900.0);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = text_rect(&shapes, first).expect("known folder drawn").center();
+        let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Import folder as bin");
+        assert_eq!(r.open_paths, vec![PathBuf::from(dir)]);
+        assert!(project.assets.is_empty(), "the pane only asks; the app imports");
+    }
+
+    /// The header's folder button next to + Import asks the app for the folder picker.
+    #[test]
+    fn header_folder_button_asks_for_the_folder_picker() {
+        let (mut project, mut settings) = (Project::new(), Settings::default());
+        let mut state = LibraryState::default();
+        let mut pane = Pane::new(300.0, 600.0);
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = pane.ctx.read_response(egui::Id::new("lib-import-folder")).expect("folder button drawn").rect.center();
+        let (_, r) = pane.step(&mut state, &mut project, &mut settings, press(at, egui::PointerButton::Primary));
+        assert!(r.import_folder && !r.import);
+    }
+
     /// Same gate for the Media Browser pane (`tab` 1): recent files, a linked folder, both views.
     #[test]
     fn assert_no_idle_repaint_media_browser() {
@@ -4217,6 +4321,16 @@ mod tests {
         assert!(c.left() > m.left() + 8.0, "the child is indented under the master");
         assert!(g.left() > c.left() + 8.0, "the grandchild is indented one level deeper than its parent");
         assert!(g.top() > c.top() && c.top() > m.top());
+    }
+
+    /// Regression: every asset row built its "Move to folder" list each frame, closed menu or not -
+    /// O(assets) per row, O(assets^2) per frame: most of the UI frame on a 216-asset project.
+    #[test]
+    fn asset_rows_build_the_folder_list_only_when_the_menu_opens() {
+        let src = include_str!("library.rs");
+        let body = &src[src.find("fn asset_menu(").unwrap()..];
+        let open = body.find("menu::context(").unwrap();
+        assert!(!body[..open].contains("folder_tree_names("), "the list belongs inside the menu closure");
     }
 
     /// 1000 assets in the list stay cheap per frame (no per-row decode, no O(n²) walks) - same
@@ -4383,6 +4497,7 @@ mod tests {
         let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
         for item in [
             "Import Media…",
+            "Import Folder as Bin…",
             "Import from URL…",
             "New folder",
             "New sequence",
@@ -4409,6 +4524,8 @@ mod tests {
         let _ = menu::take_queued();
         menu_pick(&mut pane, &mut state, &mut project, &mut settings, bare, "Import Media…");
         assert_eq!(menu::take_queued(), vec![Action::ImportMedia]);
+        menu_pick(&mut pane, &mut state, &mut project, &mut settings, bare, "Import Folder as Bin…");
+        assert_eq!(menu::take_queued(), vec![Action::ImportFolder]);
         // no yt-dlp: no URL import; nothing unused: no Remove unused
         pane.ytdlp = false;
         pane.step(&mut state, &mut project, &mut settings, press(bare, egui::PointerButton::Secondary));
@@ -4601,6 +4718,26 @@ mod tests {
         let r = menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Delete");
         assert!(project.sequences.is_empty());
         assert_eq!(r.deleted_sequence.as_deref(), Some("Opening"));
+    }
+
+    /// Any asset (not just a subclip) renames from its right-click; the file keeps its name.
+    #[test]
+    fn plain_asset_renames_from_menu() {
+        let mut project = Project::new();
+        let id = project.add_asset(asset(0, ClipKind::Video, 5.0));
+        let mut settings = Settings::default();
+        let mut state = LibraryState::default();
+        let mut pane = Pane::new(420.0, 900.0);
+        let (shapes, _) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = text_rect(&shapes, "file0.mp4").expect("row").center();
+        menu_pick(&mut pane, &mut state, &mut project, &mut settings, at, "Rename");
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        state.rename_asset.as_mut().expect("renaming").1 = "Opening shot".into();
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        pane.step(&mut state, &mut project, &mut settings, vec![key(egui::Key::Enter)]);
+        pane.step(&mut state, &mut project, &mut settings, vec![]);
+        assert_eq!(project.asset_names.get(&id).map(String::as_str), Some("Opening shot"));
+        assert_eq!(project.asset(id).unwrap().name(), "file0.mp4");
     }
 
     /// The column header's right-click is its Columns menu.

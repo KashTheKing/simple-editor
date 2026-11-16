@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Video Comments</title>
+<meta name="se:kind" content="layer">
+<meta name="se:desc" content="A fake video comment section: a comment typed into the box and posted, likes, replies, hearts and pins.">
+<meta name="se:tags" content="comments, video, thread, typing, skit">
+<meta name="se:size" content="1160x980">
+<meta name="se:duration" content="7.3s">
+<meta name="se:thumb" content="5.6">
+<meta name="se:field" content="font | font | Segoe UI">
+<meta name="se:param" content="scroll | number | 0 | -4000 | 4000">
+<meta name="se:thread" content="{&quot;kind&quot;:&quot;comments&quot;,&quot;layout&quot;:&quot;default&quot;,&quot;theme&quot;:&quot;light&quot;,&quot;accent&quot;:&quot;#3ea6ff&quot;,&quot;font&quot;:&quot;Segoe UI&quot;,&quot;radius&quot;:10,&quot;density&quot;:&quot;normal&quot;,&quot;size&quot;:26,&quot;width&quot;:1160,&quot;height&quot;:980,&quot;title&quot;:&quot;My roommate keeps eating my lunch (I set a trap)&quot;,&quot;topic&quot;:&quot;&quot;,&quot;server&quot;:&quot;&quot;,&quot;icon&quot;:&quot;&quot;,&quot;time_format&quot;:&quot;today&quot;,&quot;now&quot;:&quot;&quot;,&quot;group&quot;:true,&quot;rail&quot;:false,&quot;sidebar&quot;:false,&quot;header&quot;:true,&quot;composer&quot;:true,&quot;mode&quot;:&quot;server&quot;,&quot;me&quot;:&quot;@You&quot;,&quot;channels&quot;:false,&quot;topbar&quot;:false,&quot;indicator&quot;:false,&quot;dividers&quot;:false,&quot;unread_line&quot;:false,&quot;scrollbar&quot;:false,&quot;transparent&quot;:false,&quot;cast&quot;:[{&quot;name&quot;:&quot;@MayaPlays&quot;,&quot;color&quot;:&quot;#e5534b&quot;,&quot;badge&quot;:&quot;creator&quot;},{&quot;name&quot;:&quot;@jordan.codes&quot;,&quot;color&quot;:&quot;#3fa34d&quot;},{&quot;name&quot;:&quot;@dave_watches&quot;,&quot;color&quot;:&quot;#4f6bed&quot;},{&quot;name&quot;:&quot;@You&quot;,&quot;color&quot;:&quot;#8b5cf6&quot;}],&quot;items&quot;:[{&quot;id&quot;:1,&quot;who&quot;:&quot;@jordan.codes&quot;,&quot;text&quot;:&quot;this part at 0:42 got me 😂😂 who else rewatched it?&quot;,&quot;age&quot;:&quot;3 days ago&quot;,&quot;pinned&quot;:true,&quot;score&quot;:12400,&quot;hearted&quot;:true},{&quot;id&quot;:2,&quot;who&quot;:&quot;@dave_watches&quot;,&quot;text&quot;:&quot;Rewatched it 5 times. no regrets.&quot;,&quot;age&quot;:&quot;2 days ago&quot;,&quot;score&quot;:321,&quot;depth&quot;:1},{&quot;id&quot;:3,&quot;who&quot;:&quot;@MayaPlays&quot;,&quot;text&quot;:&quot;thank you all!! :heart_eyes:&quot;,&quot;age&quot;:&quot;1 day ago&quot;,&quot;score&quot;:1800,&quot;depth&quot;:1},{&quot;id&quot;:4,&quot;who&quot;:&quot;@dave_watches&quot;,&quot;text&quot;:&quot;The editing is unreal. Subscribed.\nGreat video, **seriously**.&quot;,&quot;age&quot;:&quot;5 hours ago&quot;,&quot;edited&quot;:true,&quot;score&quot;:987}],&quot;post&quot;:{&quot;title&quot;:&quot;&quot;,&quot;who&quot;:&quot;@MayaPlays&quot;,&quot;flair&quot;:&quot;&quot;,&quot;flair_color&quot;:&quot;&quot;,&quot;score&quot;:0,&quot;comments&quot;:1284,&quot;awards&quot;:[],&quot;age&quot;:&quot;&quot;,&quot;body&quot;:&quot;&quot;,&quot;image&quot;:&quot;&quot;,&quot;link&quot;:&quot;&quot;,&quot;thumb&quot;:&quot;&quot;,&quot;sort&quot;:&quot;Sort by&quot;},&quot;anim&quot;:{&quot;on&quot;:true,&quot;start&quot;:0.6,&quot;gap&quot;:1.4,&quot;typing&quot;:0.0,&quot;effect&quot;:&quot;pop&quot;,&quot;autoscroll&quot;:true,&quot;tick&quot;:true,&quot;shown&quot;:0,&quot;hold&quot;:2.0,&quot;compose&quot;:false,&quot;cps&quot;:14.0,&quot;typos&quot;:false,&quot;pause&quot;:0.5}}">
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;background:transparent;overflow:hidden}
+body{width:100vw;height:100vh;font:400 var(--fs)/1.38 {{font}};color:var(--fg)}
+.win{width:100%;height:100%;display:flex;color:var(--fg);background:var(--bg);border-radius:var(--r);overflow:hidden}
+.dark{--bg:#2e3138;--bg2:#272a30;--bg3:#1f2227;--fg:#e1e4ea;--mut:#8d95a3;--line:#3c4048;--hl:rgba(110,125,255,.2);--lnk:#4aa3ff;--page:#15171b;--card:#1f2227}
+.light{--bg:#fff;--bg2:#f3f4f6;--bg3:#e5e7eb;--fg:#23272e;--mut:#666e7a;--line:#dfe2e7;--hl:rgba(79,107,237,.14);--lnk:#2563eb;--page:#e9ecef;--card:#fff}
+.d-compact{--g:.4}.d-normal{--g:1}.d-roomy{--g:1.7}
+.main{flex:1;min-width:0;display:flex;flex-direction:column}
+.vp{position:relative;flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+.vp.end{justify-content:flex-end}
+.col{flex:none;min-height:100%;transform:translateY(calc(var(--scroll,0) * 1px))}
+.it{display:grid;grid-template-rows:1fr}
+.it>.in{min-height:0;overflow:hidden;position:relative}
+.anim .a{animation:grow var(--gd,.3s) ease-out var(--d,0s) both}
+.anim .a>.in{animation:var(--fx,pop) var(--fd,.4s) cubic-bezier(.2,.9,.3,1) var(--d,0s) both}
+@keyframes grow{from{grid-template-rows:0fr}to{grid-template-rows:1fr}}
+@keyframes pop{from{opacity:0;top:.6em}to{opacity:1;top:0}}
+@keyframes slide{from{opacity:0;left:-2em}to{opacity:1;left:0}}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.pl{position:absolute;inset:0;background:var(--accent);opacity:0;pointer-events:none;animation:pulse 1.8s ease-out both}
+@keyframes pulse{0%{opacity:0}12%{opacity:.3}100%{opacity:0}}
+.av{flex:none;position:relative;width:2.4em;height:2.4em;border-radius:50%;display:grid;place-items:center;font-weight:700;color:#fff;overflow:hidden}
+.av img,.ci img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.bdg{display:inline-block;padding:0 .4em;border-radius:.3em;background:var(--accent);color:#fff;font-size:.62em;font-weight:700;line-height:1.5;vertical-align:middle}
+.tk{display:inline-block;height:1.25em;line-height:1.25em;overflow:hidden;vertical-align:bottom}
+.tkc{display:block;animation:tick var(--td,1.2s) steps(var(--n),end) var(--ts,0s) both}
+@keyframes tick{from{transform:none}to{transform:translateY(calc(var(--n) * -1.25em))}}
+.tx{overflow-wrap:anywhere}
+.tx b{font-weight:700}
+.tx code{font:.88em Consolas,monospace;background:var(--bg3);padding:.1em .3em;border-radius:.25em}
+.tx pre{margin:.3em 0;padding:.6em .8em;background:var(--bg3);border:1px solid var(--line);border-radius:.4em;font:.88em/1.4 Consolas,monospace;white-space:pre-wrap}
+.tx pre code{background:none;padding:0}
+.tx blockquote{margin:.2em 0;padding:0 0 0 .8em;border-left:.25em solid var(--line)}
+.tx .sp{background:var(--bg3);color:transparent;border-radius:.25em;padding:0 .2em}
+.anim .a .sp{animation:unsp .25s ease calc(var(--d,0s) + 1.6s) both}
+@keyframes unsp{from{color:transparent;background:var(--bg3)}to{color:var(--fg);background:var(--bg2)}}
+.tx .mn{color:var(--accent);background:var(--hl);border-radius:.25em;padding:0 .15em}
+.tx .lk{color:var(--lnk)}
+.tx .ed{color:var(--mut);font-size:.7em;margin-left:.4em}
+.att img{display:block;max-width:100%;max-height:15em;border-radius:.4em;margin-top:.35em}
+.r{display:inline-flex;gap:.35em;align-items:center;padding:.05em .5em;border-radius:.5em;background:var(--bg2);border:1px solid transparent;font-size:.85em}
+.r b{font-weight:600;color:var(--mut)}
+.r.me{background:var(--hl);border-color:var(--accent)}
+.r.me b{color:var(--accent)}
+.anim .a .r{animation:rpop .35s cubic-bezier(.3,1.7,.5,1) both}
+@keyframes rpop{from{transform:scale(0);opacity:0}to{transform:none;opacity:1}}
+.win.tr{background:transparent}
+.av.sm{width:1.9em;height:1.9em;font-size:.85em}
+.ph{color:var(--mut)}
+.tbox{position:absolute;inset:0;display:flex;justify-content:flex-end;align-items:center;overflow:hidden;opacity:0;background:var(--bg2);animation:tw 1s linear both}
+@keyframes tw{0%{opacity:0}0.01%{opacity:1}99.99%{opacity:1}100%{opacity:0}}
+.tin{min-width:100%;white-space:pre;padding:0 1em;line-height:1.5}
+.c{font-size:0;animation:chr .001s both}
+.c.w{animation-name:chw}
+@keyframes chr{from{font-size:0}to{font-size:1em}}
+@keyframes chw{0%{font-size:0}0.01%{font-size:1em}99.99%{font-size:1em}100%{font-size:0}}
+.cr{display:inline-block;width:2px;height:1.15em;margin-left:1px;vertical-align:text-bottom;background:var(--fg);animation:blink 1s steps(1) both}
+@keyframes blink{0%{opacity:1}50%{opacity:0}}
+.gx{display:grid;grid-template-rows:0fr;animation:grow .25s ease-out both}
+.gx>div{min-height:0;overflow:hidden}
+.gy{display:grid;grid-template-rows:1fr;animation:shut .25s ease-in both}
+.gy>div{min-height:0;overflow:hidden}
+@keyframes shut{from{grid-template-rows:1fr}to{grid-template-rows:0fr}}
+
+.comments{flex-direction:column}
+.chd{flex:none;height:2.6em;display:flex;align-items:center;gap:1.4em;padding:0 1em;font-weight:600}
+.chd .so2{font-size:.8em;font-weight:500}
+.cmx{flex:none}
+.crow{height:3.8em;display:flex;align-items:center;gap:.9em;padding:0 1em}
+.cfield{position:relative;flex:1;height:2.4em;display:flex;align-items:center;border-bottom:1px solid var(--line)}
+.cfield .tbox{background:var(--bg);border-bottom:2px solid var(--fg);padding:0}
+.cai{height:3em;display:flex;justify-content:flex-end;align-items:center;gap:.5em;padding:0 1em}
+.cx{padding:.5em 1em;font-size:.8em;font-weight:600}
+.cbtn{display:flex;align-items:center;justify-content:center;width:8.75em;height:2.625em;border-radius:1.4em;background:var(--bg3);color:var(--mut);font-size:.8em;font-weight:600;animation:cbon .2s ease both,press .3s ease both}
+.cbtn.sm{width:7.5em;height:2.4em}
+@keyframes cbon{from{background:var(--bg3);color:var(--mut)}to{background:var(--accent);color:#fff}}
+@keyframes press{0%{transform:none;filter:none}40%{transform:scale(.92);filter:brightness(1.3)}100%{transform:none;filter:none}}
+.comments .col{padding-bottom:1em}
+.c2 .bx{display:flex;gap:.9em;padding:.55em 1em .45em calc(1em + var(--dp) * 3em)}
+.c2 .av{margin-top:.1em}
+.cb2{min-width:0;flex:1}
+.hh{display:flex;align-items:baseline;gap:.5em;font-size:.85em}
+.hh .un{font-weight:600}
+.mt{color:var(--mut);font-size:.9em}
+.pnb{font-size:.7em;color:var(--mut);margin-bottom:.15em}
+.c2 .tx{font-size:.92em;margin-top:.1em}
+.ca2{display:flex;align-items:center;gap:1.2em;color:var(--mut);font-size:.8em;margin:.35em 0 .1em}
+.ca2 .rp2{font-weight:600;color:var(--fg)}
+.hr{position:relative;display:inline-flex}
+.hr .av{width:1.5em;height:1.5em;font-size:.6em}
+.hr i{position:absolute;right:-.3em;bottom:-.35em;font-style:normal;color:#ff3b5c;font-size:.9em}
+.rt{color:var(--lnk);font-size:.8em;font-weight:600;margin:.2em 0}
+.rbx{display:flex;gap:.7em;padding:.4em 1em .4em calc(1em + var(--dp) * 3em)}
+.rcol{flex:1}
+.rbx .cfield{height:2.2em}
+.rbtns{display:flex;justify-content:flex-end;align-items:center;gap:.5em;margin-top:.3em}
+.c-compact .c2 .bx{padding-top:.2em;padding-bottom:.15em}
+</style>
+</head>
+<body class="anim" style="--accent:#3ea6ff;--r:10px;--fs:26px;--fx:pop;--fd:.4s;--gd:.3s"><div class="win fwin comments light c-default d-normal"><div class="chd"><b>1,284 Comments</b><span class="so2">☰ Sort by</span></div><div class="cmx"><div class="crow"><div class="av" style="background:#8b5cf6"><span>@</span></div><div class="cfield"><span class="ph">Add a comment…</span></div></div></div><div class="main"><div class="vp"><div class="col"><div class="it c2 a" style="--dp:0;--d:0.6s;"><div class="in"><div class="bx"><div class="av" style="background:#3fa34d"><span>@</span></div><div class="cb2"><div class="pnb">📌 Pinned by @MayaPlays</div><div class="hh"><b class="un" style="color:#3fa34d">@jordan.codes</b><span class="mt">3 days ago</span></div><div class="tx">this part at <span class="lk">0:42</span> got me 😂😂 who else rewatched it?</div><div class="ca2"><span class="lk2">👍 <span class="tk"><span class="tkc" style="--n:12;--td:1.2s;--ts:0.85s">1<br>1.9k<br>3.7k<br>5.4k<br>6.8k<br>8.1k<br>9.3k<br>10.2k<br>11k<br>11.6k<br>12k<br>12.3k<br>12.4k</span></span></span><span>👎</span><span class="rp2">Reply</span><span class="hr"><div class="av sm" style="background:#e5534b"><span>@</span></div><i>♥</i></span></div><div class="rt">▾ 2 replies</div></div></div></div></div><div class="it c2 a" style="--dp:1;--d:2s;"><div class="in"><div class="bx"><div class="av sm" style="background:#4f6bed"><span>@</span></div><div class="cb2"><div class="hh"><b class="un" style="color:#4f6bed">@dave_watches</b><span class="mt">2 days ago</span></div><div class="tx">Rewatched it 5 times. no regrets.</div><div class="ca2"><span class="lk2">👍 <span class="tk"><span class="tkc" style="--n:12;--td:1.2s;--ts:2.25s">1<br>52<br>99<br>141<br>179<br>212<br>241<br>265<br>285<br>301<br>312<br>319<br>321</span></span></span><span>👎</span><span class="rp2">Reply</span></div></div></div></div></div><div class="it c2 a" style="--dp:1;--d:3.4s;"><div class="in"><div class="bx"><div class="av sm" style="background:#e5534b"><span>@</span></div><div class="cb2"><div class="hh"><b class="un" style="color:#e5534b">@MayaPlays</b><span class="bdg">creator</span><span class="mt">1 day ago</span></div><div class="tx">thank you all!! 😍</div><div class="ca2"><span class="lk2">👍 <span class="tk"><span class="tkc" style="--n:12;--td:1.2s;--ts:3.65s">1<br>288<br>551<br>788<br>1k<br>1.1k<br>1.3k<br>1.4k<br>1.6k<br>1.6k<br>1.7k<br>1.7k<br>1.8k</span></span></span><span>👎</span><span class="rp2">Reply</span></div></div></div></div></div><div class="it c2 a" style="--dp:0;--d:4.8s;"><div class="in"><div class="bx"><div class="av" style="background:#4f6bed"><span>@</span></div><div class="cb2"><div class="hh"><b class="un" style="color:#4f6bed">@dave_watches</b><span class="mt">5 hours ago</span><span class="mt">(edited)</span></div><div class="tx">The editing is unreal. Subscribed.<br>Great video, <b>seriously</b>.<span class="ed">(edited)</span></div><div class="ca2"><span class="lk2">👍 <span class="tk"><span class="tkc" style="--n:12;--td:1.2s;--ts:5.05s">1<br>158<br>302<br>432<br>549<br>651<br>741<br>816<br>877<br>925<br>960<br>980<br>987</span></span></span><span>👎</span><span class="rp2">Reply</span></div></div></div></div></div></div></div></div></div></body>
+</html>

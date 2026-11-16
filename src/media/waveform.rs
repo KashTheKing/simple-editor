@@ -94,6 +94,7 @@ impl WaveformCache {
         if st.pending.insert(key) {
             let (state, ctx, backend, path) = (self.state.clone(), self.ctx.clone(), self.backend, path.to_string());
             std::thread::spawn(move || {
+                super::bg::lower_thread();
                 // ponytail: a decoder panic must leave the key resolved (as empty peaks, same as a file
                 // that won't open) - otherwise it stays pending forever and callers wait for good.
                 let peaks =
@@ -201,6 +202,7 @@ fn load_or_compute(path: &str, stream: usize, backend: Backend) -> Peaks {
     let file = cache_file(path, stream);
     if let Some(bytes) = file.as_ref().and_then(|f| std::fs::read(f).ok()) {
         if !bytes.is_empty() && bytes.len() % 8 == 0 {
+            crate::engine::cache_lru::touch_if_stale(file.as_deref().unwrap_or(std::path::Path::new("")));
             let mut p = Peaks { min: Vec::with_capacity(bytes.len() / 8), max: Vec::with_capacity(bytes.len() / 8) };
             for c in bytes.chunks_exact(8) {
                 p.min.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]]));

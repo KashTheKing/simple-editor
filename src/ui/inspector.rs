@@ -49,6 +49,8 @@ thread_local! {
     /// (clip, effect index): draw that effect's mask in the viewport / edit that shader effect's GLSL.
     static EFFECT_MASK: RefCell<Option<(Id, usize)>> = const { RefCell::new(None) };
     static EDIT_SHADER: RefCell<Option<(Id, usize)>> = const { RefCell::new(None) };
+    /// An effect row's "Save to Gallery…" (clip, stack index).
+    static SAVE_EFFECT: RefCell<Option<(Id, usize)>> = const { RefCell::new(None) };
     /// Timeline time a keyframe menu's Previous / Next key asked for.
     static PENDING_SEEK: RefCell<Option<f64>> = const { RefCell::new(None) };
 }
@@ -75,6 +77,10 @@ pub fn take_effect_mask() -> Option<(Id, usize)> {
 }
 
 /// (clip, effect index) of the Shader effect whose GLSL the user wants to edit.
+pub fn take_save_effect() -> Option<(Id, usize)> {
+    SAVE_EFFECT.with(|p| p.borrow_mut().take())
+}
+
 pub fn take_edit_shader() -> Option<(Id, usize)> {
     EDIT_SHADER.with(|p| p.borrow_mut().take())
 }
@@ -219,6 +225,7 @@ pub(super) fn primary_section(page: &str, kind: ClipKind, audio: bool) -> &'stat
         (_, ClipKind::Text) => "text",
         (_, ClipKind::Shape) => "shape",
         (_, ClipKind::Adjustment) => "effects",
+        (_, ClipKind::Browser) => "browser", // ws:browser-layer
         _ => "transform",
     }
 }
@@ -235,6 +242,7 @@ pub fn show(
     settings: &mut Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
+    let _s = crate::perf::span("inspector_draw");
     let first = selection.iter().copied().find(|&id| project.clip(id).is_some());
     let edited = match first {
         None if !sel_transitions.is_empty() => transition_section(ui, project, sel_transitions, undo),
@@ -376,13 +384,13 @@ fn project_section(
     settings: &mut Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
-    use crate::ui::guides::{scale_to_tier, Guide, FPS_PRESETS, PRESETS, RES_TIERS};
+    use crate::ui::guides::{scale_to_tier, FPS_PRESETS, PRESETS, RES_TIERS};
     let mut edited = false;
     // resolution before any of this frame's widgets can touch it - diffed at the bottom to offer the
     // rescale prompt once, regardless of which control changed it.
     let size_before = (project.width, project.height);
     // dropdown picks, applied after the form: (w, h), fps, and the platform guide overlay a preset shows
-    let (mut size, mut fps_pick, mut guide): (Option<(u32, u32)>, Option<f64>, Option<Option<Guide>>) =
+    let (mut size, mut fps_pick, mut guide): (Option<(u32, u32)>, Option<f64>, Option<Option<&'static str>>) =
         (None, None, None);
     let (mut delete, mut save_as): (Option<usize>, Option<String>) = (None, None);
     let naming_id = egui::Id::new("insp_format_naming");
@@ -432,7 +440,7 @@ fn project_section(
         // presets can share a size (YouTube = General Long Form): the one whose guide is on wins
         let preset = PRESETS
             .iter()
-            .find(|p| same(p.w, p.h, p.fps) && p.guide == settings.guide)
+            .find(|p| same(p.w, p.h, p.fps) && p.guide == settings.guide.as_deref())
             .or_else(|| PRESETS.iter().find(|p| same(p.w, p.h, p.fps)));
         let saved = settings.project_templates.iter().find(|t| same(t.width, t.height, t.fps));
         let current = preset.map(|p| p.name).or(saved.map(|t| t.name.as_str())).unwrap_or("Custom");
@@ -624,8 +632,8 @@ fn project_section(
         }
         edited = true;
     }
-    if let Some(g) = guide.filter(|g| *g != settings.guide) {
-        settings.guide = g;
+    if let Some(g) = guide.filter(|g| *g != settings.guide.as_deref()) {
+        settings.guide = g.map(str::to_string);
         settings.save();
     }
     if let Some(i) = delete {
@@ -874,12 +882,29 @@ fn clip_section(
     // ---- ws:html-layer ---- an HTML layer is code, not footage: its source, file and fields lead
     let mut html_changed = false;
     if !multi && clip.uses_asset() && project.asset(clip.asset).is_some_and(|a| a.html.is_some()) {
-        section(ui, "html_source", "HTML", true, folds.map, None, |ui| {
+        {
+            // the page live (instant on every edit); the timeline keeps the frame-exact render
+            let within = playhead >= clip.start && playhead < clip.start + clip.duration;
+            let at = within.then(|| clip.src_time(playhead));
+            section(ui, "html_live", "Preview", true, folds.map, None, |ui| {
+                crate::ui::html_ui::live_section(ui, project, id, at);
+            });
+        }
+        // ---- ws:thread-viewers ---- a chat / forum thread is edited as data; its page is generated
+        let is_thread = crate::ui::thread_ui::is_thread(project, id);
+        if is_thread {
+            section(ui, "thread", "Thread", true, folds.map, None, |ui| {
+                html_changed |= crate::ui::thread_ui::section(ui, project, id, fonts, undo);
+            });
+        }
+        section(ui, "html_source", "HTML", !is_thread, folds.map, None, |ui| {
             html_changed |= crate::ui::html_ui::source_section(ui, project, id, undo);
         });
-        section(ui, "fields", "Fields", true, folds.map, None, |ui| {
-            html_changed |= crate::ui::html_ui::fields_section(ui, project, id, undo);
-        });
+        if !is_thread {
+            section(ui, "fields", "Fields", true, folds.map, None, |ui| {
+                html_changed |= crate::ui::html_ui::fields_section(ui, project, id, fonts, undo);
+            });
+        }
         {
             let at = clip.src_time(playhead);
             section(ui, "html_mouse", "Mouse", false, folds.map, None, |ui| {
@@ -892,6 +917,15 @@ fn clip_section(
                 html_changed |= crate::ui::html_ui::params_section(ui, project, id, at, palette, undo);
             });
         }
+    }
+
+    // ---- ws:audio-visualizer ---- style picker for a visualizer layer
+    let mut visualizer_changed = false;
+    if !multi && crate::ui::visualizer_ui::style(project, id).is_some() {
+        let backend = crate::media::Backend::parse(&settings.decoder);
+        section(ui, "visualizer", "Visualizer", true, folds.map, None, |ui| {
+            visualizer_changed = crate::ui::visualizer_ui::section(ui, project, id, backend, undo);
+        });
     }
 
     // ---- ws:text-titles: primary-first ordering ----
@@ -1001,6 +1035,9 @@ fn clip_section(
             if let Some(i) = r.mask_for {
                 EFFECT_MASK.with(|p| *p.borrow_mut() = Some((id, i)));
             }
+            if let Some(i) = r.save_effect {
+                SAVE_EFFECT.with(|p| *p.borrow_mut() = Some((id, i)));
+            }
             if let Some(i) = r.edit_shader {
                 EDIT_SHADER.with(|p| *p.borrow_mut() = Some((id, i)));
             }
@@ -1014,6 +1051,16 @@ fn clip_section(
     let zone2 = clip.shape.is_some() || clip.kind == ClipKind::Shape || !audio || !project.paths.is_empty();
     if zone2 {
         ui.add_enabled_ui(!multi, |ui| {
+            // ws:browser-layer
+            if let Some(b) = &mut clip.browser {
+                let pages: Vec<(Id, String)> = project
+                    .assets
+                    .iter()
+                    .filter(|a| a.kind == ClipKind::Image)
+                    .map(|a| (a.id, a.name()))
+                    .collect();
+                crate::ui::browser_ui::section(ui, b, lt, fonts, &pages, palette, &mut folds, &mut g);
+            }
             // shape style
             if let Some(sh) = &mut clip.shape {
                 fold(ui, &mut folds, "shape", "Shape", None, |ui| {
@@ -1246,6 +1293,7 @@ fn clip_section(
             c.label = clip.label;
             c.mask = clip.mask.clone();
             c.shape = clip.shape.clone();
+            c.browser = clip.browser.clone(); // ws:browser-layer: its section edits the clone too
             if cg.changed {
                 c.effects = clip.effects.clone();
             }
@@ -1306,6 +1354,7 @@ fn clip_section(
         || speed_changed
         || effects_changed
         || html_changed // ws:html-layer
+        || visualizer_changed // ws:audio-visualizer
 }
 
 /// Text style presets, at the end of the Text section: save the clip's (or the selected characters')
@@ -1565,6 +1614,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         };
         let mut p = Project::from_media(a);
         let aid = p.assets[0].id;
@@ -1832,7 +1882,7 @@ mod tests {
     fn format_names_the_preset_whose_guide_is_on() {
         let mut h = H::project();
         h.project.fps = 60.0;
-        h.settings.guide = Some(crate::ui::guides::Guide::YouTube);
+        h.settings.guide = Some("yt_long".into());
         h.frame(vec![]);
         assert!(h.text_at("YouTube").is_some() && h.text_at("General Long Form").is_none());
         h.settings.guide = None;
@@ -1866,6 +1916,7 @@ mod tests {
                 range: None,
                 effects: Vec::new(),
                 html: None,
+                proxy: None,
             });
             let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
             let mut c = Clip::new(500, ClipKind::Video, "v", 0.0, 5.0);
@@ -2441,6 +2492,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         };
         let mut p = Project::from_media(a);
         let vid = p.tracks[0].clips[0].id;

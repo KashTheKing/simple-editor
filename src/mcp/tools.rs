@@ -55,6 +55,8 @@ pub fn leaves_project(tool: &str, args: &Value) -> bool {
             "project.open"
                 | "project.new"
                 | "settings.set"
+                // ws:social-guides: reads a public web page - only after the user allows it
+                | "profile.fetch"
                 | "scripts.run"
                 | "tasks.run"
                 | "media.convert"

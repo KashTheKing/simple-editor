@@ -27,10 +27,15 @@ to work on it*, not what it does.
 2. `cargo run -- --selftest` — real media end-to-end smoke test, including an `idle_repaint` step.
 3. `cargo run -- <video> --screenshot x.ppm` then `ffmpeg -i x.ppm x.png` and actually view the
    PNG for UI/rendering changes. Type-checking is not feature verification — look at the output.
-4. For perf-sensitive changes: `cargo test --release bench_4k_preview -- --ignored --nocapture`.
-5. Check the release binary size against the goal in goals.md when a change adds code/deps — see
+4. For perf-sensitive changes: `cargo test bench_4k_preview -- --ignored --nocapture` (dev build: benchmarks never use `--release`).
+5. Perf gate (playback-affecting changes): `cargo build` then `scripts/perf-bench.ps1 -Synthetic` (runs the dev exe) (builds an ffmpeg testsrc stress
+   project, plays it in a scratch profile, appends a row to `perf_log.csv`). It FAILS if dropped frames > 0,
+   worst gap > 50 ms, or any metric is >10% worse than the previous `perf_log.csv` row with the same label.
+   `-Project <file.sedit> -Label x` benches a COPY of a real project (no gate). `playback.trace {secs}` (MCP)
+   dumps a Chrome-trace JSON of the instrumented spans (`src/perf.rs`).
+6. Check the release binary size against the goal in goals.md when a change adds code/deps — see
    "Size gate" below for the exact command and thresholds.
-6. Structural parity, enforced by the build itself but worth checking by eye before you push: every
+7. Structural parity, enforced by the build itself but worth checking by eye before you push: every
    new `Action`/`Gesture`/`Pane`/`pub fn ...(&mut self)` on `Project` has a matching `ToolDef` row;
    every new pane/overlay/window has its own `assert_no_idle_repaint_<context>` test; every new Luau
    `-- @on <event>` hook has exactly one real `fire_hook(...)` call site (not just a declared event
@@ -51,8 +56,10 @@ and plain `cargo build` never hit this: they use the dev profile (no LTO, many c
 are fast/incremental. Consequences for how you verify:
 
 - Default to `cargo test` / `cargo build` (dev) for iteration and for step 1-3 of Verification
-  above. Only reach for `--release` when a step explicitly calls for it (perf benches, the size
-  gate) — never as a generic "does it build" check.
+  above. Only reach for `--release` for the shipped exe and the size gate. **Never benchmark a release
+  build**: benches and the perf gate run the dev exe (its deps are opt-level 3, playback work is MF/GPU;
+  a release build costs minutes per try and changes nothing a bench is looking for). Never use
+  `--release` as a generic "does it build" check either.
 - Make worktrees with `scripts/worktree.sh <name> <branch>`: each worktree gets its OWN `target/`,
   pre-seeded with hard links to the main tree's compiled dependencies. A change then rebuilds only
   the `simple-editor` crate, incrementally (~20 s + ~20 s for the whole test suite), with no lock
@@ -226,6 +233,14 @@ changes live.
 | `/se-notes` | Append a note to notes.md |
 | `/se-verify` | Run the verification paths above and report status against goals.md budgets |
 | `/se-review` | Review the current diff against this project's goals and conventions |
+
+## UI conventions
+
+- **UI list/row layout: any vertical list of rows is laid out as a table with fixed, aligned columns [drag handle][arrow][label, fills and truncates][fixed value columns][fixed right-aligned controls]; controls never float after variable-length text; form fields use two aligned columns (labels at one x, inputs at one x); reorder = drag handle + up/down + Alt+Up/Down, one undo step; use the shared helper (`ui::list_rows`).** A list is `Rows::new(...)`, one `rows.row(...)` per row (the row's body, if open, is drawn by the
+  caller right after it), then `rows.finish(ui)` returns the move (`Moved::Slot` from a drag, `Step` / `Indent` from
+  Alt+arrows) for the caller to apply as ONE undo step. `ui::thread_ui` is the reference user; its test checks the
+  control x positions are identical across rows of different text lengths. Retrofit a list when you touch it; do not
+  hunt through the app for others.
 
 ## Things to never do
 

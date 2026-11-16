@@ -15,6 +15,7 @@
 
 use super::{AudioSource, Frame, VideoSource, CHANNELS, SAMPLE_RATE};
 use crate::model::{Asset, AudioStreamInfo, ClipKind};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use windows::core::{Interface, BOOL, GUID, HSTRING};
 use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
@@ -66,15 +67,17 @@ pub fn init_thread() {
 }
 
 /// `IMFDXGIDeviceManager` is documented as safe to share and call from multiple threads (that's its
-/// purpose: every decoder MFT on every thread opens a handle to the same device through it).
-struct SharedDeviceManager(IMFDXGIDeviceManager);
+/// purpose: every decoder MFT on every thread opens a handle to the same device through it). The
+/// device is multithread protected (below), which is what lets zero-copy frames (`d3d::GpuFrame`)
+/// be converted, read back and shared with GL from any thread.
+struct SharedDeviceManager(IMFDXGIDeviceManager, ID3D11Device);
 unsafe impl Send for SharedDeviceManager {}
 unsafe impl Sync for SharedDeviceManager {}
 
 /// D3D11 device + DXGI device manager for hardware-accelerated decode (DXVA). Built once per process;
 /// every source reader attaches to the same manager. `None` when the adapter/driver can't do it - callers
 /// fall back to the source reader's normal software decode, so this is purely a speed opt-in.
-fn dxgi_device_manager() -> Option<IMFDXGIDeviceManager> {
+fn dxgi() -> Option<&'static SharedDeviceManager> {
     static MANAGER: OnceLock<Option<SharedDeviceManager>> = OnceLock::new();
     MANAGER
         .get_or_init(|| unsafe {
@@ -100,10 +103,28 @@ fn dxgi_device_manager() -> Option<IMFDXGIDeviceManager> {
             MFCreateDXGIDeviceManager(&mut token, &mut manager).ok()?;
             let manager = manager?;
             manager.ResetDevice(&device, token).ok()?;
-            Some(SharedDeviceManager(manager))
+            Some(SharedDeviceManager(manager, device))
         })
         .as_ref()
-        .map(|m| m.0.clone())
+}
+
+fn dxgi_device_manager() -> Option<IMFDXGIDeviceManager> {
+    dxgi().map(|m| m.0.clone())
+}
+
+/// The decode device: what `engine::gpu::interop` opens for GL sharing (`WGL_NV_DX_interop2`).
+pub fn d3d_device() -> Option<ID3D11Device> {
+    dxgi().map(|m| m.1.clone())
+}
+
+/// Set by `engine::gpu::interop` once GL can take `d3d::GpuFrame`s: only then does a preview pool open
+/// sources zero-copy (`open_video_gpu`).
+static ZERO_COPY: AtomicBool = AtomicBool::new(false);
+pub fn set_zero_copy(on: bool) {
+    ZERO_COPY.store(on, Ordering::Relaxed);
+}
+pub fn zero_copy() -> bool {
+    ZERO_COPY.load(Ordering::Relaxed)
 }
 
 /// DXVA pays for itself only on big frames: a hardware decode is a GPU round-trip per frame
@@ -112,9 +133,12 @@ fn dxgi_device_manager() -> Option<IMFDXGIDeviceManager> {
 /// 9.4, but 1080p 42 vs 7 and a 720p proxy 43 vs 2.4. So: only above 1080p. (This used to start at
 /// 720p - exactly the default proxy height, so every proxy and every 1080p source paid for it;
 /// `bench_4k_preview` and `playback`'s `bench_multilayer_preview` watch either side of the line.)
+/// None of this holds for zero-copy sources (`open_video_gpu`): no copy back, every size goes to DXVA.
 const DXVA_MIN_PIXELS: u64 = 2560 * 1440;
 
-fn open_reader(path: &str, dxva: bool) -> Result<IMFSourceReader, String> {
+/// `advanced`: the reader's own video processor (RGB32 out, scaling, rotation) - off for zero-copy,
+/// which takes the decoder's D3D11 samples as they are.
+fn open_reader(path: &str, dxva: bool, advanced: bool) -> Result<IMFSourceReader, String> {
     if super::is_image_path(path) {
         return Err("MF: images are decoded by ffmpeg".into());
     }
@@ -128,7 +152,7 @@ fn open_reader(path: &str, dxva: bool) -> Result<IMFSourceReader, String> {
         let mut attrs = None;
         MFCreateAttributes(&mut attrs, 2).map_err(err)?;
         let attrs = attrs.ok_or("MF: MFCreateAttributes returned null")?;
-        attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, 1).map_err(err)?;
+        attrs.SetUINT32(&MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, advanced as u32).map_err(err)?;
         // The Matroska source reports half the real frame rate; without this the video processor
         // frame-rate-converts to it and drops every second MKV/WebM frame.
         attrs.SetUINT32(&MF_XVP_DISABLE_FRC, 1).map_err(err)?;
@@ -251,7 +275,7 @@ fn codec_name(sub: GUID) -> &'static str {
 }
 
 pub fn probe(path: &str) -> Result<Asset, String> {
-    let reader = open_reader(path, false)?; // probe never decodes a frame
+    let reader = open_reader(path, false, true)?; // probe never decodes a frame
     let mut asset = Asset {
         id: 0,
         path: path.to_string(),
@@ -271,6 +295,7 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         range: None,
         effects: Vec::new(),
         html: None,
+        proxy: None,
     };
     let mut has_video = false;
     for s in streams(&reader) {
@@ -372,6 +397,19 @@ struct MfVideo {
     ys: Vec<u32>,
     acc: Vec<u32>,
     tab_key: (u32, u32, u32, u32),
+    /// Zero-copy decode (`open_video_gpu`), None for the usual RGB32 reader.
+    zc: Option<Box<Zc>>,
+}
+
+/// A zero-copy source's state: the reader hands out the decoder's own D3D11 samples.
+struct Zc {
+    vp: super::d3d::Vp,
+    /// The cached frame, still in the decoder's texture (one decoder surface held).
+    sample: Option<IMFSample>,
+    /// The last frame handed out: (real sample time, size, frame) - asked again, the same `Arc`.
+    last: Option<(i64, (u32, u32), Arc<Frame>)>,
+    /// The size `frame_gpu` converts to; follows a request once it settles (`MfVideo::settle`).
+    size: (u32, u32),
 }
 
 // SAFETY: the source reader is created on and then owned by exactly one thread at a time (DecoderPool
@@ -379,21 +417,20 @@ struct MfVideo {
 unsafe impl Send for MfVideo {}
 
 pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
-    let mut reader = open_reader(path, false)?;
+    let mut reader = open_reader(path, false, true)?;
     // Big sources reopen with the D3D manager attached (see DXVA_MIN_PIXELS); a second open is a
     // container parse, pennies against the per-frame decode it buys.
     {
         let vs = streams(&reader).into_iter().find(|s| s.major == MFMediaType_Video).ok_or("MF: no video stream")?;
         let size = unsafe { vs.ty.GetUINT64(&MF_MT_FRAME_SIZE) }.unwrap_or(0);
         if ((size >> 32) & 0xffff_ffff) * (size & 0xffff_ffff) >= DXVA_MIN_PIXELS {
-            if let Ok(r) = open_reader(path, true) {
+            if let Ok(r) = open_reader(path, true, true) {
                 reader = r;
             }
         }
     }
     let vs = streams(&reader).into_iter().find(|s| s.major == MFMediaType_Video).ok_or("MF: no video stream")?;
     let (stream, nat) = (vs.index, vs.ty);
-    let mp4 = is_mp4(&reader);
     unsafe {
         reader.SetStreamSelection(stream, true).map_err(err)?;
         let mt = MFCreateMediaType().map_err(err)?;
@@ -401,54 +438,166 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
         mt.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32).map_err(err)?;
         reader.SetCurrentMediaType(stream, None, &mt).map_err(err)?;
     }
-    let fps = frame_rate(&nat);
-    let mut v = MfVideo {
-        reader,
-        stream,
-        native_w: 0,
-        native_h: 0,
-        scale_ok: true,
-        req_last: (0, 0),
-        req_streak: 0,
-        negotiated: false,
-        exact: false,
-        width: 0,
-        height: 0,
-        stride: 0,
-        frame_hns: if fps > 0.0 { (HNS / fps) as i64 } else { 333_333 },
-        native: Arc::default(),
-        have: false,
-        pts: 0,
-        end: 0,
-        rpts: 0,
-        last_end: None,
-        eof_at: None,
-        origin: 0,
-        mp4,
-        scaled: Vec::new(),
-        svalid: false,
-        sw: 0,
-        sh: 0,
-        xs: Vec::new(),
-        ys: Vec::new(),
-        acc: Vec::new(),
-        tab_key: (0, 0, 0, 0),
-    };
+    let mut v = MfVideo::new(reader, stream, &nat);
     if !v.refresh_type() {
         return Err("MF: cannot read video output type".into());
     }
     (v.native_w, v.native_h) = (v.width, v.height);
-    // Decode the first frame now: surfaces "codec not decodable" at open (so Auto falls back to ffmpeg),
-    // fixes the time origin and warms the cache for the usual first request at t=0.
-    if !v.read_until(0, &mut Vec::new()) {
-        return Err("MF: cannot decode first video frame".into());
-    }
-    v.origin = v.rpts.max(0);
-    v.pts = v.rpts;
-    if let Some(f) = Arc::get_mut(&mut v.native) {
-        f.pts = (v.rpts - v.origin) as f64 / HNS; // decoded before the origin was known
-    }
+    v.first_frame()?;
     Ok(Box::new(v))
+}
+
+/// `open_video` for the GPU preview (#158): hardware decode into D3D11 textures, converted and scaled
+/// by the D3D11 video processor and handed out as `Frame::gpu` by `VideoSource::frame_gpu` - no copy
+/// back, so every size decodes in hardware (no `DXVA_MIN_PIXELS`). The CPU calls (`frame_at`,
+/// `frame_shared`) read the processor's output back at the size asked for. Err - the caller opens the
+/// source the usual way - when there is no D3D11 video device, the decoder is software for this codec
+/// (its first sample is no D3D11 texture), or the source is rotated (only the RGB32 reader rotates).
+pub fn open_video_gpu(path: &str) -> Result<Box<dyn VideoSource>, String> {
+    let device = d3d_device().ok_or("MF: no D3D11 device")?;
+    let reader = open_reader(path, true, false)?;
+    let vs = streams(&reader).into_iter().find(|s| s.major == MFMediaType_Video).ok_or("MF: no video stream")?;
+    let (stream, nat) = (vs.index, vs.ty);
+    if unsafe { nat.GetUINT32(&MF_MT_VIDEO_ROTATION) }.unwrap_or(0) % 360 != 0 {
+        return Err("MF: rotated source, zero-copy does not rotate".into());
+    }
+    let cur = unsafe {
+        reader.SetStreamSelection(stream, true).map_err(err)?;
+        let set = |sub: &GUID| -> windows::core::Result<()> {
+            let mt = MFCreateMediaType()?;
+            mt.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
+            mt.SetGUID(&MF_MT_SUBTYPE, sub)?;
+            reader.SetCurrentMediaType(stream, None, &mt)
+        };
+        // 8-bit sources decode to NV12, 10-bit HEVC/AV1/VP9 only to P010
+        set(&MFVideoFormat_NV12).or_else(|_| set(&MFVideoFormat_P010)).map_err(err)?;
+        reader.GetCurrentMediaType(stream).map_err(err)?
+    };
+    let size = unsafe { nat.GetUINT64(&MF_MT_FRAME_SIZE) }.unwrap_or(0);
+    let (nw, nh) = ((size >> 32) as u32, size as u32);
+    // colorimetry as tagged; untagged follows the usual rule (HD is BT.709, SD BT.601), limited range
+    let matrix = unsafe { cur.GetUINT32(&MF_MT_YUV_MATRIX) }.unwrap_or(0) as i32;
+    let bt709 = match matrix {
+        m if m == MFVideoTransferMatrix_BT709.0 => true,
+        m if m == MFVideoTransferMatrix_BT601.0 => false,
+        _ => nh >= 720,
+    };
+    let full = unsafe { cur.GetUINT32(&MF_MT_VIDEO_NOMINAL_RANGE) }.is_ok_and(|r| r as i32 == MFNominalRange_0_255.0);
+    let mut v = MfVideo::new(reader, stream, &nat);
+    if !v.refresh_type() {
+        return Err("MF: cannot read video output type".into());
+    }
+    (v.native_w, v.native_h) = if nw > 0 && nh > 0 { (nw, nh) } else { (v.width, v.height) };
+    v.scale_ok = false; // the video processor scales; the output type stays the decoder's own
+    let vp = super::d3d::Vp::new(device, (v.native_w, v.native_h), super::d3d::colour_space(bt709, full))?;
+    v.zc = Some(Box::new(Zc { vp, sample: None, last: None, size: (0, 0) }));
+    v.first_frame()?;
+    // a software decoder's sample is in system memory: no zero-copy for this codec
+    let z = v.zc.as_mut().ok_or("MF: zero-copy state")?;
+    z.vp.frame(z.sample.as_ref().ok_or("MF: no first sample")?, 2, 2)?;
+    Ok(Box::new(v))
+}
+
+impl MfVideo {
+    fn new(reader: IMFSourceReader, stream: u32, nat: &IMFMediaType) -> MfVideo {
+        let mp4 = is_mp4(&reader);
+        let fps = frame_rate(nat);
+        MfVideo {
+            reader,
+            stream,
+            native_w: 0,
+            native_h: 0,
+            scale_ok: true,
+            req_last: (0, 0),
+            req_streak: 0,
+            negotiated: false,
+            exact: false,
+            width: 0,
+            height: 0,
+            stride: 0,
+            frame_hns: if fps > 0.0 { (HNS / fps) as i64 } else { 333_333 },
+            native: Arc::default(),
+            have: false,
+            pts: 0,
+            end: 0,
+            rpts: 0,
+            last_end: None,
+            eof_at: None,
+            origin: 0,
+            mp4,
+            scaled: Vec::new(),
+            svalid: false,
+            sw: 0,
+            sh: 0,
+            xs: Vec::new(),
+            ys: Vec::new(),
+            acc: Vec::new(),
+            tab_key: (0, 0, 0, 0),
+            zc: None,
+        }
+    }
+
+    /// Decode the first frame now: surfaces "codec not decodable" at open (so Auto falls back to ffmpeg),
+    /// fixes the time origin and warms the cache for the usual first request at t=0.
+    fn first_frame(&mut self) -> Result<(), String> {
+        if !self.read_until(0, &mut Vec::new()) {
+            return Err("MF: cannot decode first video frame".into());
+        }
+        self.origin = self.rpts.max(0);
+        self.pts = self.rpts;
+        if let Some(f) = Arc::get_mut(&mut self.native) {
+            f.pts = (self.rpts - self.origin) as f64 / HNS; // decoded before the origin was known
+        }
+        Ok(())
+    }
+
+    /// Zero-copy: the size `frame_gpu` converts to. A new request is followed once it is asked for
+    /// `STABLE_REQS` times running (a clip animating its scale would otherwise get a new texture -
+    /// and a new GL registration - every frame); the GPU places footage by its native size, so a
+    /// frame at the previous size draws right meanwhile.
+    fn settle(&mut self, w: u32, h: u32) -> (u32, u32) {
+        let exact = self.exact;
+        let Some(z) = self.zc.as_mut() else { return (w, h) };
+        if (w, h) == self.req_last {
+            self.req_streak = self.req_streak.saturating_add(1);
+        } else {
+            (self.req_last, self.req_streak) = ((w, h), 1);
+        }
+        if z.size == (0, 0) || exact || self.req_streak >= STABLE_REQS {
+            z.size = (w, h);
+        }
+        z.size
+    }
+
+    /// Zero-copy: the cached frame converted to `w` x `h`, on the GPU.
+    fn gpu_frame(&mut self, w: u32, h: u32) -> Option<Arc<Frame>> {
+        let pts = self.native.pts;
+        let z = self.zc.as_mut()?;
+        if let Some((rpts, size, f)) = &z.last {
+            if *rpts == self.rpts && *size == (w, h) {
+                return Some(f.clone());
+            }
+        }
+        let g = match z.vp.frame(z.sample.as_ref()?, w, h) {
+            Ok(g) => g,
+            Err(e) => {
+                static ONCE: std::sync::Once = std::sync::Once::new();
+                ONCE.call_once(|| eprintln!("zero-copy decode: {e}"));
+                return None;
+            }
+        };
+        let f = Arc::new(Frame { width: w, height: h, pts, gpu: Some(Arc::new(g)), ..Frame::default() });
+        z.last = Some((self.rpts, (w, h), f.clone()));
+        Some(f)
+    }
+
+    /// Zero-copy, CPU side: the cached frame at `w` x `h` read back into `out` (BGRX).
+    fn gpu_read(&mut self, w: u32, h: u32, out: &mut Frame) -> bool {
+        let Some(f) = self.gpu_frame(w, h) else { return false };
+        let ok = f.gpu.as_ref().is_some_and(|g| g.read(out));
+        out.pts = f.pts;
+        ok
+    }
 }
 
 impl MfVideo {
@@ -572,6 +721,12 @@ impl MfVideo {
     /// BGRX sample -> top-down BGRX `native` (row copies, no swizzle). The buffer is the old
     /// `native` when nothing else holds it any more, else one from `spare`, else a fresh one.
     fn copy_sample(&mut self, sample: &IMFSample, ts: i64, spare: &mut Vec<Frame>) -> bool {
+        if let Some(z) = &mut self.zc {
+            // zero-copy: keep the decoder's sample; it is converted when (and at the size) asked for
+            z.sample = Some(sample.clone());
+            Arc::make_mut(&mut self.native).pts = (ts - self.origin) as f64 / HNS;
+            return true;
+        }
         let (w, h) = (self.width as usize, self.height as usize);
         let mut f = Arc::try_unwrap(std::mem::take(&mut self.native))
             .unwrap_or_else(|_| spare.pop().unwrap_or_default());
@@ -756,16 +911,42 @@ impl VideoSource for MfVideo {
         if !self.ready(t, w, h, &mut Vec::new()) {
             return false;
         }
+        if self.zc.is_some() {
+            let ok = self.gpu_read(w, h, out);
+            out.make_rgba();
+            return ok;
+        }
         self.emit(w, h, out, false);
         true
     }
     fn set_exact(&mut self, on: bool) {
         self.exact = on;
     }
+    /// Zero-copy sources only, and not once GL gave up on them (`d3d::GpuFrame::fail`), in exact
+    /// mode, or with `d3d::MAX_LIVE` frames out: None sends the caller to `frame_shared`.
+    fn frame_gpu(&mut self, t: f64, w: u32, h: u32) -> Option<Arc<Frame>> {
+        let z = self.zc.as_ref()?;
+        if self.exact || z.vp.failed() || z.vp.live() >= super::d3d::MAX_LIVE {
+            return None;
+        }
+        if !self.ready(t, w, h, &mut Vec::new()) {
+            return None;
+        }
+        let (w, h) = self.settle(w, h);
+        self.gpu_frame(w, h)
+    }
     /// At the decode size, the cached frame itself (BGRX, no copy); otherwise one scaled copy.
     fn frame_shared(&mut self, t: f64, w: u32, h: u32, spare: &mut Vec<Frame>) -> Option<Arc<Frame>> {
         if !self.ready(t, w, h, spare) {
             return None;
+        }
+        if self.zc.is_some() {
+            let mut f = spare.pop().unwrap_or_default();
+            if !self.gpu_read(w, h, &mut f) {
+                spare.push(f);
+                return None;
+            }
+            return Some(Arc::new(f));
         }
         if (w, h) == (self.width, self.height) {
             return Some(self.native.clone());
@@ -881,7 +1062,7 @@ struct MfAudio {
 unsafe impl Send for MfAudio {}
 
 pub fn open_audio(path: &str, stream: usize) -> Result<Box<dyn AudioSource>, String> {
-    let reader = open_reader(path, false)?; // audio decode has nothing for DXVA to do
+    let reader = open_reader(path, false, true)?; // audio decode has nothing for DXVA to do
     let s = streams(&reader)
         .into_iter()
         .filter(|s| s.major == MFMediaType_Audio)
@@ -1215,6 +1396,121 @@ mod tests {
             assert!(v.frame_at(1.5, 160, 120, &mut f));
         }
         eprintln!("100 repeated frame_at(1.5) @160x120: {:?}", t0.elapsed());
+    }
+
+    /// #158: a zero-copy source hands out GPU frames (the same `Arc` for the same frame) whose pixels
+    /// match the RGB32 reader's, and still serves CPU callers.
+    #[test]
+    fn zero_copy_decode_matches_the_rgb32_reader() {
+        let Some(p) = media() else {
+            eprintln!("ffmpeg missing; skipped");
+            return;
+        };
+        let mut v = match open_video_gpu(&p) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("SKIPPED: no zero-copy decode here: {e}");
+                return;
+            }
+        };
+        assert_eq!(v.size(), (320, 240));
+        let g = v.frame_gpu(0.5, 160, 120).expect("GPU frame");
+        assert!(g.gpu.is_some() && g.rgba.is_empty() && (g.width, g.height) == (160, 120));
+        assert!(Arc::ptr_eq(&g, &v.frame_gpu(0.5, 160, 120).unwrap()), "same frame again: the same Arc");
+        let back = g.to_rgba();
+        let (top, bottom) = (px(&back, 80, 20), px(&back, 80, 100));
+        assert!(is_red(top) && is_blue(bottom), "{top:?} / {bottom:?}");
+        let mut f = Frame::default();
+        assert!(v.frame_at(3.0, 160, 120, &mut f) && !f.bgrx && f.gpu.is_none());
+        assert!(is_green(px(&f, 80, 60)), "{:?}", px(&f, 80, 60));
+        let mut c = open_video(&p).unwrap();
+        let mut cf = Frame::default();
+        assert!(c.frame_at(3.0, 160, 120, &mut cf));
+        assert!((cf.pts - f.pts).abs() < 1e-3, "same timing as the RGB32 reader: {} vs {}", cf.pts, f.pts);
+        let shared = v.frame_shared(1.0, 160, 120, &mut Vec::new()).unwrap();
+        assert!(shared.bgrx && shared.gpu.is_none() && is_red(px(&shared.to_rgba(), 80, 20)));
+    }
+
+    /// #158: only a pool that asked for GPU frames gets them, from `frames_arc` alone; its CPU calls
+    /// stay RGBA and nothing GPU lands in the source cache.
+    #[test]
+    fn only_a_gpu_pool_hands_out_gpu_frames() {
+        let Some(p) = media() else {
+            eprintln!("ffmpeg missing; skipped");
+            return;
+        };
+        if open_video_gpu(&p).is_err() {
+            eprintln!("SKIPPED: no zero-copy decode here");
+            return;
+        }
+        set_zero_copy(true);
+        let mut plain = super::super::DecoderPool::new(super::super::Backend::Mf);
+        let f = plain.frames_arc(&[(p.as_str(), 0.5, 160, 120)], &mut Vec::new());
+        assert!(f[0].as_ref().is_some_and(|f| f.gpu.is_none()), "an ordinary pool decodes as before");
+        let mut pool = super::super::DecoderPool::new(super::super::Backend::Mf);
+        pool.set_source_cache_bytes(64 << 20);
+        pool.set_gpu_frames(true);
+        let f = pool.frames_arc(&[(p.as_str(), 0.5, 160, 120)], &mut Vec::new());
+        assert!(f[0].as_ref().is_some_and(|f| f.gpu.is_some()), "the GPU pool's layers stay on the GPU");
+        assert!(pool.cached(&p, 0.5, 160, 120).is_none(), "GPU frames stay out of the source cache");
+        let mut out = Frame::default();
+        assert!(pool.frame_at(&p, 3.0, 160, 120, &mut out) && !out.bgrx && out.gpu.is_none());
+        assert!(is_green(px(&out, 80, 60)));
+    }
+
+    /// Zero-copy (#158) against the RGB32 reader on heavy sources, both to a 1280x720 preview:
+    /// `cargo test --release bench_zero_copy -- --ignored --nocapture`. Timing-only.
+    #[test]
+    #[ignore]
+    fn bench_zero_copy() {
+        let dir = std::env::temp_dir().join("se-bench");
+        let _ = std::fs::create_dir_all(&dir);
+        for (name, size, rate) in [("1080p60", "1920x1080", "40M"), ("1440p60", "2560x1440", "120M")] {
+            let p = dir.join(format!("{name}-{rate}.mp4"));
+            if !p.exists() {
+                let ok = Command::new("ffmpeg")
+                    .args(["-v", "error", "-y", "-f", "lavfi"])
+                    .args(["-i", &format!("testsrc2=size={size}:rate=60,noise=alls=30:allf=t"), "-t", "4"])
+                    .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"])
+                    .args(["-b:v", rate, "-maxrate", rate, "-bufsize", rate])
+                    .arg(&p)
+                    .status()
+                    .is_ok_and(|s| s.success());
+                if !ok {
+                    eprintln!("ffmpeg missing; skipped");
+                    return;
+                }
+            }
+            let path = p.to_string_lossy().to_string();
+            let n = 180;
+            let mut cpu = open_video(&path).expect("open");
+            let mut f = Frame::default();
+            cpu.frame_at(0.0, 1280, 720, &mut f);
+            let t0 = Instant::now();
+            let ok = (1..=n).filter(|i| cpu.frame_at(*i as f64 / 60.0, 1280, 720, &mut f)).count();
+            let dt = t0.elapsed().as_secs_f64() * 1000.0 / ok.max(1) as f64;
+            eprintln!("{name} {rate} -> 720p, RGB32 reader (CPU frame): {ok} frames, {dt:.2} ms/frame");
+            let Ok(mut gpu) = open_video_gpu(&path) else {
+                eprintln!("no zero-copy decode here; skipped");
+                return;
+            };
+            gpu.frame_gpu(0.0, 1280, 720);
+            let t0 = Instant::now();
+            let mut last = None;
+            let mut ok = 0;
+            for i in 1..=n {
+                last = gpu.frame_gpu(i as f64 / 60.0, 1280, 720).or(last);
+                ok += last.is_some() as usize;
+            }
+            // one readback at the end waits for every queued conversion: the GPU's time is counted
+            assert!(last.is_some_and(|l| l.to_rgba().rgba.len() == 1280 * 720 * 4));
+            let dt = t0.elapsed().as_secs_f64() * 1000.0 / ok.max(1) as f64;
+            eprintln!("{name} {rate} -> 720p, zero-copy (GPU frame):     {ok} frames, {dt:.2} ms/frame");
+            let t0 = Instant::now();
+            let ok = (1..=n).filter(|i| gpu.frame_at(*i as f64 / 60.0, 1280, 720, &mut f)).count();
+            let dt = t0.elapsed().as_secs_f64() * 1000.0 / ok.max(1) as f64;
+            eprintln!("{name} {rate} -> 720p, zero-copy read back (CPU):  {ok} frames, {dt:.2} ms/frame");
+        }
     }
 
     /// Where the milliseconds go on a 4K source: `cargo test --release bench_4k_preview -- --ignored --nocapture`.

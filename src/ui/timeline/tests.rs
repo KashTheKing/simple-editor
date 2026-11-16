@@ -186,6 +186,7 @@ impl Harness {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         });
         project.insert_asset_clips(aid, 0.0, None);
         let waves = WaveformCache::new(ctx.clone(), Backend::Ffmpeg);
@@ -674,6 +675,49 @@ fn headless_dnd_effect_targets_the_clip_under_the_pointer() {
     let r = h.release(empty);
     let (_, t, _) = &r.dropped_other[0];
     assert!(!h.project.tracks[0].clips[0].contains(*t));
+}
+
+/// A Gallery card dragged over the lanes is reported with where it resolved to - the clip(s), the cut, the
+/// track or the new-track lane - by the same `aim` that lit the hover, and nothing is edited by the timeline.
+#[test]
+fn headless_dnd_gallery_card_reports_where_it_landed() {
+    use crate::ui::gallery::GalleryTab;
+    use crate::ui::timeline::gallery_drop::Aim;
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let clip = h.project.tracks[0].clips[0].id;
+    let drop = |h: &mut Harness, payload: DragPayload, at: Pos2| {
+        h.press(pos2(10.0, 10.0));
+        egui::DragAndDrop::set_payload(&h.ctx, payload);
+        h.frame(vec![Event::PointerMoved(at)]);
+        let r = h.release(at);
+        assert!(!r.edited, "the app applies it, the timeline changes nothing");
+        assert_eq!((r.dropped_other.len(), r.dropped_aims.len()), (1, 1));
+        r.dropped_aims[0].clone()
+    };
+    // a look on the clip body (t = 5 s of the 0..10 s clip)
+    let on_clip = pos2(lanes.left() + 200.0, lanes.top() + 30.0);
+    let got = drop(&mut h, DragPayload::GalleryCard(GalleryTab::Looks, "Warm".into()), on_clip);
+    assert!(matches!(&got, Some(Aim::Clips { clips, hit, .. }) if clips == &[clip] && *hit == clip), "{got:?}");
+    // a transition near the clip's end snaps to that edge
+    let near_end = pos2(lanes.left() + 395.0, lanes.top() + 30.0); // t = 9.875 s
+    let got = drop(&mut h, DragPayload::Transition(crate::model::TransitionKind::Wipe), near_end);
+    assert_eq!(got, Some(Aim::Edge { clip, out: true }));
+    // a template on the empty part of the video track: placed there
+    let empty = pos2(lanes.left() + 480.0, lanes.top() + 30.0); // t = 12 s
+    let got = drop(&mut h, DragPayload::Template("T".into()), empty);
+    assert!(matches!(got, Some(Aim::Place { track: Some(0), .. })), "{got:?}");
+    // the same template below the last track: a new track
+    let below = pos2(lanes.left() + 480.0, paint::row_top(&h.state, &h.project, 1).unwrap() + 1000.0);
+    if below.y < lanes.bottom() {
+        let got = drop(&mut h, DragPayload::Template("T".into()), below);
+        assert!(matches!(got, Some(Aim::Place { track: None, .. })), "{got:?}");
+    }
+    // a skill is no timeline thing; a card dropped on nothing valid reports no aim
+    let got = drop(&mut h, DragPayload::LibItem("skills/tidy".into()), on_clip);
+    assert_eq!(got, None);
+    let got = drop(&mut h, DragPayload::GalleryCard(GalleryTab::Looks, "Warm".into()), empty);
+    assert_eq!(got, None, "a look over empty lane lands nowhere");
 }
 
 #[test]
@@ -1529,6 +1573,8 @@ fn test_clip_menu<'a>(labels: &'a [Label], buses: &'a [crate::model::Bus], share
         buses,
         shared_effects: shared,
         html: false,
+        shape: false,
+        zoom: 1.0,
     }
 }
 
@@ -1597,6 +1643,7 @@ fn transform_menu_bulk_stretches_selection_with_one_undo() {
         range: None,
         effects: Vec::new(),
         html: None,
+        proxy: None,
     });
     let id2 = h.project.insert_asset_clips(aid2, 11.0, Some(0))[0];
     let id1 = h.video_clip().id;
@@ -2298,6 +2345,7 @@ fn audio_drop_infers_pointer_audio_row() {
         range: None,
         effects: Vec::new(),
         html: None,
+        proxy: None,
     });
     let a1_y = lanes.top() + h.project.tracks[0].height + 20.0; // inside the A1 row
     let drop = pos2(lanes.left() + 480.0, a1_y);
@@ -2337,6 +2385,7 @@ fn ctrl_splice_and_alt_overwrite_drop_onto_pointer_audio_row() {
         range: None,
         effects: Vec::new(),
         html: None,
+        proxy: None,
     });
     let a2_top = row_top(&h.state, &h.project, a2).unwrap();
     let drop = pos2(lanes.left() + 480.0, a2_top + 20.0); // inside the A2 row
@@ -3188,4 +3237,25 @@ fn headless_key_block_bar_moves_and_stretches() {
     assert!((c.blocks[0].dur - 1.8).abs() < 1.0 / 30.0 + 1e-6, "stretched to {}", c.blocks[0].dur);
     assert!((c.rotation.at(c.blocks[0].end()) - 360.0).abs() < 1e-6);
     assert_eq!(h.undos, 2);
+}
+
+// ---- ws:ai-enhancer ----
+/// AI Upscale sits under Transform, and comes up to the top level, naming the zoom, on a clip zoomed
+/// past `enhance::OFFER_ZOOM` (the zoom is where an upscale shows).
+#[test]
+fn ai_upscale_is_offered_at_the_top_on_zoomed_clips() {
+    let p = Project::new();
+    for (zoom, top) in [(1.0, false), (1.6, true)] {
+        let m = ClipMenu { zoom, ..test_clip_menu(&p.labels, &p.buses, &[]) };
+        let (mut act, mut tg, mut el) = (None, false, false);
+        let mut draw = |ui: &mut egui::Ui| clip_menu(ui, &m, &mut act, &mut tg, &mut el);
+        let mut probe = MenuProbe::new();
+        probe.run(vec![], &mut draw);
+        assert_eq!(probe.has("AI Upscale — zoomed 1.6×"), top, "{:?}", probe.texts());
+        assert!(!probe.has("AI Upscale"), "plain entry is not at the top level");
+        if !top {
+            probe.click("Transform", &mut draw);
+            assert!(probe.has("AI Upscale"), "{:?}", probe.texts());
+        }
+    }
 }

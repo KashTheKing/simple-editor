@@ -65,6 +65,7 @@ fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, snap: (bool, bool, bo
 }
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
+    let _s = crate::perf::span("timeline_draw");
     // ---- ws:timeline-surface: one toolbar row ----
     let mut zoom = app.timeline.zoom;
     // tools-panel: the tool groups lead the row, Premiere-style (right-click / long-press a group)
@@ -86,6 +87,14 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         app.timeline.zoom_by(zoom / app.timeline.zoom, anchor);
     }
     app.timeline.show_kinds = app.settings.track_kinds();
+    // a Gallery card on its way over the lanes: measure the clip it would place, once per card (the hover ghost)
+    if let Some(p) = egui::DragAndDrop::payload::<DragPayload>(ui.ctx()) {
+        let key = format!("{p:?}");
+        if key != app.timeline.drag_key {
+            app.timeline.drag_len = gallery_drop_ctl::drop_len(app, &p);
+            app.timeline.drag_key = key;
+        }
+    }
     let autocut_shown = app.pane_drawn(Pane::AutoCut);
     let resp = {
         let App {
@@ -101,6 +110,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             timeline: tl,
             settings,
             player,
+            play_gate,
             palette,
             tools,
             prerender,
@@ -158,7 +168,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 palette,
                 snap: settings.snap,
                 snap_markers: settings.snap_markers,
-                playing: player.is_playing(),
+                playing: player.is_playing() || play_gate.buffering(),
                 thumbs: Some(thumbs),
                 // only while the Auto-cut pane is on screen: a stale overlay would keep
                 // shading the timeline after the pane is hidden or a new project is opened
@@ -201,18 +211,16 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         }
         app.after_edit();
     }
+    let mut aims = resp.dropped_aims.into_iter();
     for (payload, t, track) in resp.dropped_other {
+        let aim = aims.next().flatten();
         let vt = track.filter(|&i| app.project.tracks[i].kind == TrackKind::Video);
-        // ws:shader-library: a library transition card picks its source, then goes the built-ins' way
-        let payload = match payload {
-            DragPayload::ShaderTransition(src) => {
-                let st = &mut app.transitions_ui;
-                let id = if st.shader == src { st.shader_id.clone() } else { String::new() };
-                st.pick_shader(&id, &src);
-                DragPayload::Transition(crate::model::TransitionKind::Shader)
-            }
-            p => p,
-        };
+        // a Gallery card (effects, looks, transitions, templates, titles, library items, keyframe blocks):
+        // wherever the timeline resolved it to - see `gallery_drop_ctl`
+        if crate::ui::timeline::gallery_drop::drop_kind(&payload).is_some() {
+            gallery_drop_ctl::execute(app, payload, aim);
+            continue;
+        }
         match payload {
             DragPayload::Sequence(id) => {
                 let snap = app.project.to_json();
@@ -223,73 +231,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                     app.after_edit();
                 }
             }
-            DragPayload::Template(name) => app.place_template(&name, t),
-            // ws:keyframe-blocks: onto the clip under the pointer, starting where it was dropped
-            DragPayload::KeyBlock(name) => {
-                let hit = track
-                    .and_then(|ti| app.project.tracks.get(ti))
-                    .and_then(|tr| tr.clips.iter().find(|c| c.contains(t)))
-                    .map(|c| c.id);
-                match hit {
-                    Some(id) => {
-                        let args = json!({"name": name, "clip_ids": [id], "at": t});
-                        match app.run_tool_undoable("keyblocks.apply", &args) {
-                            Ok(_) => app.toast(format!("{name} applied")),
-                            Err(e) => app.toast(e),
-                        }
-                    }
-                    None => app.toast(format!("Drop {name} on a clip")),
-                }
-            }
             // a library multi-selection: back to back in selection order (files are imported first)
             DragPayload::Assets(ids) => app.add_in_order(ids, &[], t, library::PlaceAt::Playhead, false),
             DragPayload::Paths(ps) => {
                 let paths: Vec<PathBuf> = ps.iter().map(PathBuf::from).collect();
                 app.add_in_order(Vec::new(), &paths, t, library::PlaceAt::Playhead, false)
-            }
-            // dropped onto a clip that can actually take this kind (see effects_ui's own
-            // click-to-add gate); a miss says so rather than swallowing the gesture
-            DragPayload::Effect(kind) => {
-                let hit = track
-                    .and_then(|ti| app.project.tracks.get(ti))
-                    .and_then(|tr| tr.clips.iter().find(|c| c.contains(t)))
-                    .filter(|c| (c.kind == ClipKind::Audio) == kind.applies_to_audio());
-                match hit.map(|c| (c.id, c.uses_graph())) {
-                    Some((id, false)) => {
-                        let snap = app.project.to_json();
-                        if let Some(c) = app.project.clip_mut(id) {
-                            c.effects.push(Effect::new(kind));
-                        }
-                        push_undo_json(&mut app.undo, &mut app.redo, snap);
-                        app.after_edit();
-                        app.toast(format!("{} added", kind.name()));
-                    }
-                    Some((_, true)) => app.toast("That clip renders from its node graph"),
-                    None => app.toast(format!("Drop {} on a clip it applies to", kind.name())),
-                }
-            }
-            // a transition belongs to a cut, so the half of the clip it lands on picks which
-            // one: left half = the cut at its start, right half = the cut at its end
-            DragPayload::Transition(kind) => {
-                let hit = track
-                    .and_then(|ti| app.project.tracks.get(ti))
-                    .and_then(|tr| tr.clips.iter().find(|c| c.contains(t)))
-                    .map(|c| (c.id, transitions_ui::drop_at_end(c, t)));
-                match hit {
-                    Some((id, at_end)) => {
-                        let snap = app.project.to_json();
-                        let dur = app.transitions_ui.duration;
-                        let st = &mut app.transitions_ui;
-                        if transitions_ui::add_transitions(&mut app.project, &[id], st, kind, dur, at_end) > 0 {
-                            push_undo_json(&mut app.undo, &mut app.redo, snap);
-                            app.after_edit();
-                            app.toast(format!("{} ({dur:.2} s)", kind.name()));
-                        } else {
-                            app.toast("Could not add a transition here");
-                        }
-                    }
-                    None => app.toast("Drop a transition on the clip beside the cut"),
-                }
             }
             _ => {}
         }

@@ -12,15 +12,19 @@
 <meta name="se:field" content="username | text | builder_kid42">
 <meta name="se:field" content="message | text | wait... did anyone else see that?!">
 <meta name="se:field" content="bubble | color | #ffffff">
+<meta name="se:field" content="font | font | Segoe UI">
+<meta name="se:field" content="radius | radius | 8 | 0 | 120">
+<meta name="se:field" content="shadow | toggle | on | 0 6px 0 rgba(0, 0, 0, .18), 0 12px 28px rgba(0, 0, 0, .35) | none">
+<meta name="se:field" content="outline | outline | 0 #ffffff">
 <style>
   :root { --bubble: {{bubble}}; }
   html, body { margin: 0; background: transparent; overflow: hidden; }
   body { width: 100vw; height: 100vh; display: flex; flex-direction: column; align-items: center;
-    justify-content: center; font-family: "Segoe UI", Arial, sans-serif; }
+    justify-content: center; font-family: {{font}}; }
 
   .float { display: flex; flex-direction: column; align-items: center;
     animation: bob 2.4s ease-in-out 1.2s infinite alternate both; }
-  .user { margin-bottom: 8px; max-width: 400px; padding: 4px 16px; border-radius: 8px;
+  .user { margin-bottom: 8px; max-width: 400px; padding: 4px 16px; border-radius: {{radius}}; outline: {{outline}}; outline-offset: -1px;
     background: rgba(0, 0, 0, .55); color: #fff; font-size: 22px; font-weight: 700;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     text-shadow: 0 1px 2px rgba(0, 0, 0, .6);
@@ -28,7 +32,7 @@
   .user:empty { display: none; }
   .bubble { position: relative; max-width: 520px; min-width: 120px; box-sizing: border-box;
     padding: 16px 24px; border-radius: 20px; background: var(--bubble);
-    box-shadow: 0 6px 0 rgba(0, 0, 0, .18), 0 12px 28px rgba(0, 0, 0, .35);
+    box-shadow: {{shadow}};
     transform-origin: 50% 100%;
     animation: pop .6s ease-out both; }
   .bubble::after { content: ""; position: absolute; left: 50%; bottom: -21px; margin-left: -22px;

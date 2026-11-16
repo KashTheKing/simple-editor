@@ -41,6 +41,7 @@ impl App {
             ExportLossless => self.act_export_lossless(),
             ExportXml => self.act_export_xml(),
             ImportMedia => self.act_import(),
+            ImportFolder => self.act_import_folder(),
             Settings => self.settings_ui.open = !self.settings_ui.open,
             Undo => {
                 if let Some(entry) = self.undo.pop() {
@@ -89,11 +90,16 @@ impl App {
                 // source_ctl::act first and never gets here)
                 if self.buffer_stall {
                     self.buffer_stall = false; // buffering held the clock: space means "stop waiting"
+                } else if self.play_gate.buffering() {
+                    self.play_gate.cancel(); // ws:play-gate: Play was waiting for the frames: Space cancels it
+                    self.player.pause();
+                } else if self.player.is_playing() {
+                    self.player.pause();
                 } else {
-                    if !self.player.is_playing() && self.playhead >= self.project.duration() - 1e-6 {
+                    if self.playhead >= self.project.duration() - 1e-6 {
                         self.seek(0.0);
                     }
-                    self.player.toggle();
+                    self.play_gated(1.0);
                 }
             }
             Stop => {
@@ -424,8 +430,10 @@ impl App {
                 self.toast(if self.settings.movie_mode { "Movie mode on" } else { "Movie mode off" });
             }
             ToggleInspector => self.toggle_pane(Pane::Inspector),
-            ToggleEffects => self.toggle_pane(Pane::Effects),
-            ToggleTransitions => self.toggle_pane(Pane::Transitions),
+            // the Effects / Transitions panes became Gallery tabs: the old shortcuts open (or, a second time,
+            // hide) the Gallery on that tab
+            ToggleEffects => self.toggle_gallery_tab(crate::ui::gallery::GalleryTab::Effects),
+            ToggleTransitions => self.toggle_gallery_tab(crate::ui::gallery::GalleryTab::Transitions),
             ToggleCurves => self.toggle_pane(Pane::Curves),
             ToggleSubtitles => self.toggle_pane(Pane::Subtitles),
             TogglePlanner => self.toggle_pane(Pane::Planner),
@@ -505,6 +513,7 @@ impl App {
                     self.sequence_view_changed(self.playhead); // clamps into the parent timeline
                 }
             }
+            SaveToGallery => gallery_mine::open_dialog(self, None),
             SaveTemplate => {
                 if self.selection.is_empty() {
                     self.toast("Select the clips to save as a template");
@@ -583,6 +592,15 @@ impl App {
     pub(super) fn toggle_pane(&mut self, p: Pane) {
         self.layout.toggle(p);
         self.layout_dirty = true;
+    }
+
+    /// Gallery tab shortcut: show the Gallery on `tab`; pressed again while it is showing that tab, hide it.
+    fn toggle_gallery_tab(&mut self, tab: crate::ui::gallery::GalleryTab) {
+        if self.pane_drawn(Pane::Presets) && self.gallery.tab == tab && self.gallery.lib.is_none() {
+            self.toggle_pane(Pane::Presets);
+        } else {
+            tools_gallery::open_tab(self, tab);
+        }
     }
 
     pub(super) fn add_shape(&mut self, kind: ShapeKind, place: Option<(f32, f32, f32, f32)>) -> Id {
@@ -915,18 +933,21 @@ impl App {
                 .map(|c| crate::engine::presets::capture_effects(name, c)),
             _ => None,
         };
-        if let Some(p) = fx {
-            self.settings.effect_presets.retain(|x| x.name != name);
-            self.settings.effect_presets.push(p);
+        // (every Gallery save goes through `gallery_mine::put`: one file per item in the gallery folder)
+        let saved = if let Some(p) = fx {
+            let data = serde_json::from_str(&p.json).unwrap_or(Value::Null);
+            gallery_mine::put(self, crate::engine::gallery::Kind::Look, name, &[], data, true)
         } else if ids.is_empty() {
             return self.toast("Select a clip first");
         } else {
             let t = crate::engine::presets::capture_template(name, &self.project, ids);
-            self.settings.templates.retain(|x| x.name != name);
-            self.settings.templates.push(t);
+            let data = serde_json::from_str(&t.json).unwrap_or(Value::Null);
+            gallery_mine::put(self, crate::engine::gallery::Kind::Template, name, &[], data, true)
+        };
+        match saved {
+            Ok(_) => self.toast(format!("Saved \"{name}\"")),
+            Err(e) => self.toast(e),
         }
-        self.settings.save();
-        self.toast(format!("Saved \"{name}\""));
     }
 
     /// Apply a saved effect chain / node graph to every selected clip (one undo entry).

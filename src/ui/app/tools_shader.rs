@@ -22,7 +22,11 @@ pub(super) fn act(_app: &mut App, _a: Action) -> bool {
 /// source compiles once (the program cache keys it); one that fails gets the plain stock picture, so
 /// nothing is retried.
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
-    if app.gpu.is_none() || app.export.is_some() || !app.pane_drawn(Pane::Effects) {
+    // (the Gallery's Effects tab lists them)
+    let listed = app.pane_drawn(Pane::Presets)
+        && app.gallery.lib.is_none()
+        && app.gallery.tab == crate::ui::gallery::GalleryTab::Effects;
+    if app.gpu.is_none() || app.export.is_some() || !listed {
         return;
     }
     let items = crate::ui::transitions_ui::library_items(crate::engine::library::Kind::Effect, ctx.input(|i| i.time));
@@ -70,7 +74,9 @@ impl App {
             }
         }
         if n == 0 {
-            return Err(if clip.is_some() { "that clip cannot take a shader effect" } else { "select a clip first" }.into());
+            return Err(
+                if clip.is_some() { "that clip cannot take a shader effect" } else { "select a clip first" }.into()
+            );
         }
         Ok(n)
     }
@@ -85,10 +91,11 @@ impl App {
         let tid = match (clip, selected) {
             (None, Some(t)) => t,
             _ => {
-                let right = match clip.or_else(|| self.selection.iter().copied().find(|&c| self.project.clip(c).is_some())) {
-                    Some(c) => c,
-                    None => self.cut_near_playhead().ok_or("no cut to put a transition on: select a clip")?,
-                };
+                let right =
+                    match clip.or_else(|| self.selection.iter().copied().find(|&c| self.project.clip(c).is_some())) {
+                        Some(c) => c,
+                        None => self.cut_near_playhead().ok_or("no cut to put a transition on: select a clip")?,
+                    };
                 let kind = TransitionKind::CrossFade;
                 self.project
                     .add_transition(right, kind, dur)
@@ -103,6 +110,39 @@ impl App {
         self.transitions_ui.pick_shader("", src);
         self.transitions_ui.remember(TransitionKind::Shader, dur);
         Ok(tid)
+    }
+
+    /// `apply_transition_shader`'s menu form (Gallery ▸ Transitions ▸ right-click, `where` over MCP): the
+    /// shader transition goes on the edge(s) `where_` names (`transitions_ui::Where`) of `clip` / the
+    /// selection - one `apply_where`, so duration clamping and the skip-existing setting apply. Returns how
+    /// many were added. Does NOT push undo itself.
+    pub(crate) fn apply_transition_shader_at(
+        &mut self,
+        src: &str,
+        clips: &[Id],
+        where_: &str,
+    ) -> Result<usize, String> {
+        let w = transitions_ui::Where::from_name(where_)
+            .ok_or_else(|| format!("where must be start|end|connection|all, not '{where_}'"))?;
+        let ids = if clips.is_empty() { self.selection.clone() } else { clips.to_vec() };
+        if ids.iter().all(|&c| self.project.clip(c).is_none()) {
+            return Err("Select a clip first".into());
+        }
+        self.transitions_ui.pick_shader("", src);
+        let (dur, skip) = (self.transitions_ui.duration, self.settings.transition_skip_existing);
+        let n = transitions_ui::apply_where(
+            &mut self.project,
+            &mut self.transitions_ui,
+            &ids,
+            TransitionKind::Shader,
+            dur,
+            w,
+            skip,
+        );
+        if n == 0 {
+            return Err("no transition could go there (no clip edge of that kind, or the clip is too short)".into());
+        }
+        Ok(n)
     }
 
     /// The right-hand clip of the cut nearest the playhead, on any video track.

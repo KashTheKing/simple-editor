@@ -114,6 +114,10 @@ pub struct Clip {
     /// Keyframe blocks applied to this clip (timeline bars over the keys they wrote).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<AppliedBlock>,
+    // ---- ws:browser-layer ----
+    /// Present for Browser clips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser: Option<BrowserStyle>,
 }
 
 /// Essential-Sound role tag for an audio (or audio-bearing) clip. Sole definition - other
@@ -171,6 +175,7 @@ impl Clip {
             audio_role: AudioRole::Unset,
             exposed: Vec::new(),
             blocks: Vec::new(),
+            browser: (kind == ClipKind::Browser).then(BrowserStyle::default),
         }
     }
     /// True when this container has no media (asset == 0 for video/image/audio).
@@ -332,6 +337,9 @@ impl Clip {
             v.push(&mut t.reveal);
             v.push(&mut t.wave);
         }
+        if let Some(b) = &mut self.browser {
+            v.extend(b.animated_mut());
+        }
         v
     }
     pub fn all_animated(&self) -> Vec<&Animated> {
@@ -358,6 +366,9 @@ impl Clip {
             v.push(&t.outline_width);
             v.push(&t.reveal);
             v.push(&t.wave);
+        }
+        if let Some(b) = &self.browser {
+            v.extend(b.animated());
         }
         v
     }
@@ -388,6 +399,10 @@ impl Clip {
     pub fn shift_keys(&mut self, dt: f64) {
         for a in self.all_animated_mut() {
             a.shift(dt);
+        }
+        for b in self.browser.iter_mut() {
+            b.nav.iter_mut().for_each(|n| n.t += dt);
+            b.cursor.iter_mut().flat_map(|c| c.events.iter_mut()).for_each(|e| e.t += dt);
         }
     }
     /// Move every keyframe sitting at clip-local `t_old` to `t_new` (clamped inside the clip).

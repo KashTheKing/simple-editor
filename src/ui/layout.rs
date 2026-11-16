@@ -99,8 +99,6 @@ pub enum Pane {
     Timeline,
     Library,
     Inspector,
-    Effects,
-    Transitions,
     Curves,
     Subtitles,
     Planner,
@@ -110,7 +108,10 @@ pub enum Pane {
     Nodes,
     Mixer,
     Markers,
-    /// Machine-local reusable things (effect chains, node graphs, adjustment layers, templates).
+    /// The Gallery: looks, LUTs, captions, effects, transitions, templates, titles and the online library.
+    /// Stored layouts from before the Effects and Transitions panes were merged into it name those panes:
+    /// `alias` reads both as this one (`Layout::drop_retired` then folds the duplicate tiles into one).
+    #[serde(alias = "Effects", alias = "Transitions")]
     Presets,
     /// Point / area tracking of a clip into a reusable project path.
     Tracking,
@@ -157,8 +158,6 @@ impl Pane {
         Pane::Timeline,
         Pane::Library,
         Pane::Inspector,
-        Pane::Effects,
-        Pane::Transitions,
         Pane::Curves,
         Pane::Subtitles,
         Pane::Planner,
@@ -231,8 +230,6 @@ impl Pane {
             Pane::Timeline => Glyph::FilmStrip,
             Pane::Library => Glyph::Folder,
             Pane::Inspector => Glyph::Sliders,
-            Pane::Effects => Glyph::Bolt,
-            Pane::Transitions => Glyph::Transition,
             Pane::Curves => Glyph::CurveIcon,
             Pane::Subtitles => Glyph::Subtitles,
             Pane::Planner => Glyph::Notepad,
@@ -257,14 +254,21 @@ impl Pane {
             Pane::Assistant => Glyph::Assistant,
         }
     }
+    /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
+    /// they became tabs of, so a script or tool call written for them keeps working.
+    pub fn by_title(name: &str) -> Option<Pane> {
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("Effects") || name.eq_ignore_ascii_case("Transitions") {
+            return Some(Pane::Presets);
+        }
+        Pane::ALL.iter().copied().find(|p| p.title().eq_ignore_ascii_case(name))
+    }
     pub fn title(self) -> &'static str {
         match self {
             Pane::Preview => "Preview",
             Pane::Timeline => "Timeline",
             Pane::Library => "Library",
             Pane::Inspector => "Inspector",
-            Pane::Effects => "Effects",
-            Pane::Transitions => "Transitions",
             Pane::Curves => "Curves",
             Pane::Subtitles => "Subtitles",
             Pane::Planner => "Planner",
@@ -383,10 +387,10 @@ impl Layout {
         Self::viewer_over_timeline(&[Pane::Library], &plan, [0.25, 0.5, 0.25])
     }
 
-    /// The Edit page: [Library | Effects | Transitions | Gallery] · [Source | Preview] · [Inspector] over
+    /// The Edit page: [Library | Gallery] · [Source | Preview] · [Inspector] over
     /// a full-width Timeline; every other pane rides hidden behind Library.
     pub fn default_layout() -> Self {
-        let library = [Pane::Library, Pane::Effects, Pane::Transitions, Pane::Presets];
+        let library = [Pane::Library, Pane::Presets];
         Self::viewer_over_timeline(&library, &[], [0.22, 0.5, 0.28])
     }
 
@@ -621,6 +625,32 @@ impl Layout {
         }
         self.popped.retain(|&p| p != Pane::Tools);
         self.pinned.retain(|&p| p != Pane::Tools);
+        self.fold_gallery();
+    }
+    /// The Effects and Transitions panes became tabs of the Gallery (`Pane::Presets`), and their stored names
+    /// now deserialise as it: a layout that had all three holds the Gallery up to three times. Keep one tile -
+    /// the first shown, else the first - and drop the others (with their popout / pin), so no group is left
+    /// holding a dead tab and the pane is never drawn twice.
+    fn fold_gallery(&mut self) {
+        let mut tiles: Vec<egui_tiles::TileId> = self
+            .tree
+            .tiles
+            .iter()
+            .filter_map(|(&id, t)| matches!(t, egui_tiles::Tile::Pane(Pane::Presets)).then_some(id))
+            .collect();
+        tiles.sort_by_key(|id| format!("{id:?}")); // (a HashMap's order is arbitrary: keep it deterministic)
+        if tiles.len() > 1 {
+            let keep = tiles.iter().copied().find(|&id| self.tree.tiles.is_visible(id)).unwrap_or(tiles[0]);
+            for id in tiles.into_iter().filter(|&id| id != keep) {
+                self.tree.remove_recursively(id);
+            }
+        }
+        for list in [&mut self.popped, &mut self.pinned] {
+            let mut seen = false;
+            list.retain(|&p| p != Pane::Presets || !std::mem::replace(&mut seen, true));
+        }
+        let mut seen = false;
+        self.popped_rects.retain(|(p, _)| *p != Pane::Presets || !std::mem::replace(&mut seen, true));
     }
     /// A group (tabs, row, column) is visible iff any child is: closing a group's last tab hides the
     /// group so its row / column siblings reflow into the space; showing a pane brings its groups back.
@@ -1044,9 +1074,6 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         if pane.is_some() && pane == self.scroll_to {
             ui.scroll_to_rect(tab_rect, None);
         }
-        if tab_response.double_clicked() {
-            self.maximize.extend(pane);
-        }
         let main_end = tab_rect.left() + x_margin + icon_w + gap + galley.size().x + pin_w;
         let main_rect = egui::Rect::from_min_max(tab_rect.min, egui::pos2(main_end + seq_gap / 2.0, tab_rect.bottom()));
         let close_rect = egui::Rect::from_min_max(
@@ -1154,7 +1181,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         let Some(&pane) = tiles.get_pane(&tile_id) else { return button_response };
         menu::context(&button_response, |ui| {
             // ---- ws:pages ----
-            let max = if self.maximized == Some(pane) { "Restore panel" } else { "Maximise panel" };
+            let max = if self.maximized == Some(pane) { "Restore panel" } else { "Fullscreen Panel" };
             if menu::row(ui, Some(Glyph::Maximize), max, &menu::shortcut(Action::MaximizePane)).clicked() {
                 self.maximize.push(pane);
             }
@@ -1496,7 +1523,7 @@ mod tests {
         let shown: [(&str, &[Pane]); 6] = [
             ("Media", &[Library, MediaBrowser, Source]),
             ("Cut", &[Library, Planner, Moodboard, Markers, Subtitles, Source, Preview, Inspector, Timeline]),
-            ("Edit", &[Library, Effects, Transitions, Presets, Source, Preview, Inspector, Timeline]),
+            ("Edit", &[Library, Presets, Source, Preview, Inspector, Timeline]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
             ("Audio", &[Preview, Mixer, Subtitles, Inspector, Timeline]),
             ("Export", &[Export, Preview, Inspector, Jobs, Timeline]),
@@ -1588,6 +1615,70 @@ mod tests {
         }
     }
 
+    // ---- the Effects and Transitions panes became Gallery tabs ----
+    /// The old pane names still deserialise: both read as the Gallery.
+    #[test]
+    fn the_retired_pane_names_read_as_the_gallery() {
+        for name in ["Effects", "Transitions", "Presets"] {
+            let p: Pane = serde_json::from_str(&format!("\"{name}\"")).unwrap();
+            assert_eq!(p, Pane::Presets, "{name}");
+        }
+        assert_eq!(Pane::by_title("Effects"), Some(Pane::Presets), "tool calls and scripts written for them");
+        assert_eq!(Pane::by_title("transitions"), Some(Pane::Presets));
+        assert_eq!(Pane::by_title("Gallery"), Some(Pane::Presets));
+        assert!(!Pane::ALL.iter().any(|p| matches!(p.title(), "Effects" | "Transitions")), "no pane of those names");
+    }
+
+    /// A layout saved while Effects, Transitions and the Gallery were three tabs: it loads - as the
+    /// auto-restored layout and as a profile - with ONE Gallery tab where they were, the rest of the group
+    /// intact, and no popout / pin / window rect twice.
+    #[test]
+    fn an_old_layout_with_the_effects_and_transitions_tabs_folds_into_one_gallery() {
+        let mut old = Layout::default_layout();
+        let gallery = old.tree.tiles.find_pane(&Pane::Presets).unwrap();
+        let group = old.tree.tiles.parent_of(gallery).unwrap();
+        for _ in 0..2 {
+            let id = old.tree.tiles.insert_pane(Pane::Presets); // what Effects / Transitions were
+            old.tree.move_tile_to_container(id, group, usize::MAX, false);
+        }
+        old.popped = vec![Pane::Presets, Pane::Presets, Pane::Presets];
+        old.pinned = vec![Pane::Presets, Pane::Presets];
+        old.popped_rects = vec![(Pane::Presets, [1.0; 4]), (Pane::Presets, [2.0; 4])];
+        // spell the extra tabs the way the old build wrote them
+        let mut names = ["Effects", "Transitions", "Presets"].into_iter().cycle();
+        let mut json = String::new();
+        for (i, part) in old.to_json().split("\"Presets\"").enumerate() {
+            if i > 0 {
+                json.push_str(&format!("\"{}\"", names.next().unwrap()));
+            }
+            json.push_str(part);
+        }
+        assert!(json.contains("\"Effects\"") && json.contains("\"Transitions\""), "an old-looking file");
+        for l in [Layout::from_json(&json).unwrap(), Layout::from_json_migrating(&json).unwrap()] {
+            let gallery_tiles =
+                l.tree.tiles.iter().filter(|(_, t)| matches!(t, egui_tiles::Tile::Pane(Pane::Presets))).count();
+            assert_eq!(gallery_tiles, 1, "one Gallery tile, not three");
+            assert_eq!(l.popped, vec![Pane::Presets]);
+            assert_eq!(l.pinned, vec![Pane::Presets]);
+            assert_eq!(l.popped_rects.len(), 1);
+            let id = l.tree.tiles.find_pane(&Pane::Presets).unwrap();
+            let lib = l.tree.tiles.find_pane(&Pane::Library).unwrap();
+            assert_eq!(l.tree.tiles.parent_of(id), l.tree.tiles.parent_of(lib), "still beside the Library");
+            assert!(l.is_visible(Pane::Presets) && l.is_visible(Pane::Library) && l.is_visible(Pane::Timeline));
+            assert!(Layout::from_json(&l.to_json()).is_some(), "and it round-trips from here on");
+        }
+    }
+
+    /// A stored layout that only ever had the Effects tab (no Gallery tab at all) gets its Gallery from it:
+    /// no empty dock.
+    #[test]
+    fn a_layout_with_only_the_old_effects_tab_keeps_a_gallery() {
+        let mut l = Layout::default_layout();
+        let json = l.to_json().replacen("\"Presets\"", "\"Effects\"", 1);
+        l = Layout::from_json(&json).unwrap();
+        assert!(l.tree.tiles.find_pane(&Pane::Presets).is_some() && l.is_visible(Pane::Presets));
+    }
+
     // ---- ws:viewer-surface ----
     /// A layout saved while the Tools pane existed loads without it - as the auto-restored layout, as a
     /// profile, docked (even as the front tab) or popped out - and the rest survives.
@@ -1632,7 +1723,7 @@ mod tests {
         let got: Vec<(Vec<Pane>, f32)> =
             cols.children.iter().map(|&c| (panes(c), share_fraction(&l.tree, c).unwrap())).collect();
         let want = [
-            (vec![Pane::Library, Pane::Effects, Pane::Transitions, Pane::Presets], 0.22),
+            (vec![Pane::Library, Pane::Presets], 0.22),
             (vec![Pane::Source, Pane::Preview], 0.5),
             (vec![Pane::Inspector], 0.28),
         ];
@@ -1708,10 +1799,10 @@ mod tests {
         // toggling a popped pane closes the popout
         l.toggle(Pane::Inspector);
         assert!(!l.is_visible(Pane::Inspector) && l.popped.is_empty());
-        l.popout(Pane::Effects);
-        l.dock(Pane::Effects);
+        l.popout(Pane::Presets);
+        l.dock(Pane::Presets);
         assert!(l.popped.is_empty());
-        assert!(l.is_visible(Pane::Effects));
+        assert!(l.is_visible(Pane::Presets));
     }
 
     #[test]
@@ -1919,11 +2010,11 @@ mod tests {
         let mut l = Layout::default_layout();
         l.toggle_pin(Pane::Inspector);
         let before: serde_json::Value = layout_value(&l);
-        l.maximize(Pane::Effects);
-        assert_eq!(l.maximized.as_ref().map(|(p, _)| *p), Some(Pane::Effects));
-        assert!(l.is_visible(Pane::Effects) && in_front(&l, Pane::Effects));
+        l.maximize(Pane::Presets);
+        assert_eq!(l.maximized.as_ref().map(|(p, _)| *p), Some(Pane::Presets));
+        assert!(l.is_visible(Pane::Presets) && in_front(&l, Pane::Presets));
         for p in [Pane::Timeline, Pane::Preview, Pane::Library] {
-            assert!(!l.is_visible(p), "{p:?} still visible while Effects is maximised");
+            assert!(!l.is_visible(p), "{p:?} still visible while the Gallery is maximised");
             assert!(l.tree.tiles.find_pane(&p).is_some(), "{p:?} dropped from the maximised tree");
         }
         assert!(Layout::from_json(&l.to_json()).is_some(), "a maximised layout must still load after a restart");
@@ -2097,9 +2188,9 @@ mod tests {
             frame(&ctx, &mut l, &chrome, vec![], 0.1);
             let before = layout_value(&l);
             let library_group = |l: &Layout| l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Pane::Library).unwrap());
-            let effects = l.tree.tiles.find_pane(&Pane::Effects).unwrap();
+            let effects = l.tree.tiles.find_pane(&Pane::Presets).unwrap();
             assert_eq!(l.tree.tiles.parent_of(effects), library_group(&l));
-            let at = ctx.read_response(effects.egui_id(l.tree.id())).expect("the Effects tab").rect.center();
+            let at = ctx.read_response(effects.egui_id(l.tree.id())).expect("the Gallery tab").rect.center();
             // down into the middle of the Timeline (the bottom 40 % of the 800 px window)
             let to = |i: i32| at + egui::vec2(0.0, 120.0 * i as f32);
             let mut t = 0.2;
@@ -2119,8 +2210,8 @@ mod tests {
                 assert!(!moved);
                 assert_eq!(layout_value(&l), before, "a locked layout never re-docks");
             } else {
-                let effects = l.tree.tiles.find_pane(&Pane::Effects).unwrap();
-                assert_ne!(l.tree.tiles.parent_of(effects), library_group(&l), "Effects left Library's group");
+                let effects = l.tree.tiles.find_pane(&Pane::Presets).unwrap();
+                assert_ne!(l.tree.tiles.parent_of(effects), library_group(&l), "the Gallery left Library's group");
                 assert!(moved && l.undo(), "the re-dock is one undoable move");
                 assert_eq!(layout_value(&l), before, "and undoing it puts the tab back");
             }

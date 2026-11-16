@@ -67,6 +67,9 @@ pub struct Project {
     /// Saved library search filters ("Smart Bins"); consumed by ws:media-library (wave 2).
     #[serde(default)]
     pub smart_bins: Vec<SmartBin>,
+    /// Library display names a user gave plain (non-subclip) assets; the file on disk keeps its name.
+    #[serde(default)]
+    pub asset_names: std::collections::HashMap<Id, String>,
     // ---- ws:size-diet ----
     // ---- ws:split-god-files ----
     // ---- ws:audio-analysis ----

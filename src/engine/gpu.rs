@@ -18,7 +18,7 @@
 //!
 //! What the caller owes us (`LayerSet`): one decoded frame per visual clip that is on screen at `t`,
 //! keyed by clip id - including both clips of a transition (they are rendered virtually extended past
-//! their own bounds), the rendered bitmap of a `Text`/`Shape` clip, the rendered canvas of a nested
+//! their own bounds), the rendered bitmap of a `Text`/`Shape` clip, a `LayerSet::nested` tree per nested
 //! `Sequence` clip, and, under `LayerSet::SUBTITLES`, the subtitle bitmap. Anything missing is skipped.
 //! Footage is placed from its asset's native size, so any decode size works; text/shape/subtitle
 //! bitmaps are placed 1:1 and must be rasterised for `render_size(w, h, quality)`, not for `w`×`h`.
@@ -336,8 +336,12 @@ pub struct GpuRenderer {
     /// ORed into every `upload` key: `SOURCE_KEY` while `render_source_texture` runs, else 0, so the
     /// Source's synthetic project (which reuses low clip ids) never shares a texture with the timeline.
     key_tag: u64,
+    /// ws:browser-layer: what a browser clip above does to the layers of the track being drawn.
+    view: crate::engine::browser::LayerView,
     // ---- ws:export-pipeline ----
     readback: Readback,
+    /// #158: D3D11 textures shared into GL for zero-copy decoded layers (`interop`); None = no sharing.
+    interop: Option<interop::Interop>,
 }
 
 /// High bit of the layer-texture key space reserved for the Source monitor's canvas.
@@ -382,8 +386,14 @@ impl GpuRenderer {
                 perf_upload_us: 0,
                 source_canvas: None,
                 key_tag: 0,
+                view: crate::engine::browser::LayerView::NONE,
                 readback: Readback::default(), // ws:export-pipeline
+                interop: None,
             };
+            r.interop = interop::Interop::open(&r.gl);
+            if r.interop.is_some() {
+                crate::media::mf::set_zero_copy(true);
+            }
             // The composite program is the one nothing works without: fail loudly here instead of
             // silently rendering black later.
             r.ensure(K_COMPOSITE)?;
@@ -394,8 +404,12 @@ impl GpuRenderer {
     /// Upload/refresh a decoded layer as a texture keyed by (clip id, source time bucket). Returns the
     /// texture to use; re-uploads only when the frame actually changed (`Frame` pointer/pts).
     pub fn upload(&mut self, key: u64, frame: &Frame) -> glow::Texture {
+        let _s = crate::perf::span("gpu_upload");
         if frame.is_empty() {
             return self.blank;
+        }
+        if let Some(g) = &frame.gpu {
+            return self.upload_gpu(key, frame, g); // #158: zero-copy decode, see `interop`
         }
         let key = key | self.key_tag;
         let gl = self.gl.clone();
@@ -922,6 +936,77 @@ impl GpuRenderer {
         self.link(key, &shaders::transition_shader(src))
     }
 
+    /// Buffer before playing: build the programs the video clips overlapping `[t0, t1]` will need that
+    /// are not built yet (effects, node-graph effects, shader transitions, the mask program), stopping
+    /// once `budget` is spent (`None`: build nothing, only count). Returns how many are still to build.
+    /// The first one is always built, so a call per frame makes progress on a slow driver, and the UI
+    /// thread is never held longer than that one build plus `budget`. A program that failed to link
+    /// counts as done (the renderer skips it).
+    pub fn warm(&mut self, project: &Project, t0: f64, t1: f64, budget: Option<std::time::Duration>) -> usize {
+        let began = std::time::Instant::now();
+        let (mut built, mut left) = (0, 0);
+        // `build` runs only while the budget lasts; a finished or failed key is not work
+        macro_rules! need {
+            ($key:expr, $build:expr) => {{
+                let key: u64 = $key;
+                if !self.programs.map.contains_key(&key) && !self.programs.failed.contains_key(&key) {
+                    if budget.is_none_or(|b| built > 0 && began.elapsed() >= b) {
+                        left += 1;
+                    } else {
+                        built += 1;
+                        let _ = $build;
+                    }
+                }
+            }};
+        }
+        let mut effects: Vec<&Effect> = Vec::new();
+        let (mut masks, mut graphs) = (false, false);
+        for track in project.tracks.iter().filter(|t| t.kind == TrackKind::Video) {
+            for c in track.clips.iter().filter(|c| c.enabled && c.start < t1 && c.end() > t0) {
+                effects.extend(c.effects.iter());
+                effects.extend(project.asset(c.asset).into_iter().flat_map(|a| a.effects.iter()));
+                if let Some(g) = &c.graph {
+                    graphs = true;
+                    effects.extend(g.nodes.iter().filter_map(|n| match &n.kind {
+                        NodeKind::Effect(e) => Some(e),
+                        _ => None,
+                    }));
+                }
+                masks |= c.mask.is_some();
+                // ws:nested-gpu: a nested sequence's clips run their effects here too (one level deep)
+                for n in
+                    project.sequence_tracks(c.sequence).filter(|_| c.kind == ClipKind::Sequence).into_iter().flatten()
+                {
+                    effects.extend(n.clips.iter().flat_map(|c| c.effects.iter()));
+                    masks |= n.clips.iter().any(|c| c.mask.is_some());
+                }
+            }
+            for tr in track.transitions.iter().filter(|t| t.kind == crate::model::TransitionKind::Shader) {
+                if let Some(right) = track.clips.iter().find(|c| c.id == tr.right) {
+                    if right.start - tr.duration < t1 && right.start + tr.duration > t0 {
+                        need!(transition_key(&tr.shader), self.check_transition(&tr.shader));
+                    }
+                }
+            }
+        }
+        // (the composite program is built with the renderer; the copy program only by node graphs)
+        if graphs {
+            need!(K_COPY, self.ensure(K_COPY));
+        }
+        if masks {
+            need!(K_MASK, self.ensure(K_MASK));
+        }
+        for e in effects.into_iter().filter(|e| e.enabled) {
+            let has_body =
+                if e.kind == EffectKind::Shader { !e.shader.is_empty() } else { shaders::body(e.kind).is_some() };
+            if has_body {
+                let key = if e.kind == EffectKind::Shader { user_key(&e.shader) } else { EFFECT_BASE + e.kind as u64 };
+                need!(key, self.effect_program(e));
+            }
+        }
+        left
+    }
+
     /// The log a shader transition source was rejected with, if it ever was.
     pub fn transition_error(&self, src: &str) -> Option<&str> {
         self.programs.failed.get(&transition_key(src)).map(|s| s.as_str())
@@ -1327,9 +1412,11 @@ impl GpuRenderer {
         let dst = self.acquire(size.0, size.1)?;
         let gl = self.gl.clone();
         let mut pts = Vec::with_capacity(mask.points.len().min(MAX_MASK_POINTS) * 2);
+        // relative to the layer centre, like the shader's `q` (and like `compose::mask_coverage`):
+        // sent absolute, a polygon mask landed a whole layer-centre away from where the CPU drew it
         for (x, y) in mask.points.iter().take(MAX_MASK_POINTS) {
-            pts.push(centre.0 + x * scale);
-            pts.push(centre.1 + y * scale);
+            pts.push(x * scale);
+            pts.push(y * scale);
         }
         let n = (pts.len() / 2) as i32;
         let shape = match mask.shape {
@@ -1339,7 +1426,12 @@ impl GpuRenderer {
             // curves, so a real bezier SDF only matters for very sparse paths.
             MaskShape::Polygon | MaskShape::Path => 2,
         };
-        let (cx, cy) = (centre.0 + mask.cx.at(t) as f32 * scale, centre.1 + mask.cy.at(t) as f32 * scale);
+        // (a polygon's points already say where it is: its centre is the layer's, as on the CPU)
+        let (cx, cy) = if shape == 2 {
+            centre
+        } else {
+            (centre.0 + mask.cx.at(t) as f32 * scale, centre.1 + mask.cy.at(t) as f32 * scale)
+        };
         let (rx, ry) = (mask.rx.at(t) as f32 * scale, mask.ry.at(t) as f32 * scale);
         self.draw(K_MASK, &dst, self.blank, None, |p| unsafe {
             gl.uniform_2_f32(p.uni.get("u_res"), size.0 as f32, size.1 as f32);
@@ -1373,6 +1465,7 @@ impl GpuRenderer {
         scaler: Scaler,
         mask: Option<glow::Texture>,
     ) -> Target {
+        let _s = crate::perf::span("gpu_composite");
         if self.ensure(K_COMPOSITE).is_err() {
             return canvas;
         }
@@ -1410,6 +1503,7 @@ impl GpuRenderer {
             if track.kind != TrackKind::Video || !project.active(ti) || ti < layers.base {
                 continue;
             }
+            self.view = crate::engine::browser::layer_view(&project.tracks, ti, t, project.width, w, h);
             if let Some((tr, left, right)) = track.transition_at(t) {
                 let p = crate::engine::compose::trans_progress(tr, left, right, t) as f32;
                 canvas = self.draw_transition(project, tr, left, right, p, t, canvas, layers);
@@ -1422,6 +1516,7 @@ impl GpuRenderer {
                 canvas = self.draw_clip(project, clip, t, canvas, layers, Extra::NONE);
             }
         }
+        self.view = crate::engine::browser::LayerView::NONE;
         if project.show_subtitles {
             if let Some(sub) = layers.get(LayerSet::SUBTITLES) {
                 canvas = self.draw_subtitles(project, sub, canvas);
@@ -1650,16 +1745,29 @@ impl GpuRenderer {
             self.pool.put(canvas);
             return out;
         }
-
-        let Some(frame) = layers.get(clip.id) else { return canvas };
-        if frame.is_empty() {
-            return canvas;
+        if clip.kind == ClipKind::Browser {
+            return self.draw_browser(project, clip, t, canvas, layers, opacity, extra);
         }
+
+        // ws:nested-gpu: a nested sequence comes as a layer tree of its own, drawn below into a canvas
+        let nested = layers.nested.iter().find(|n| n.id == clip.id);
+        let frame = layers.get(clip.id).filter(|f| !f.is_empty());
+        let lsize = match (nested, frame) {
+            (Some(n), _) => (n.w, n.h),
+            (None, Some(f)) => (f.width, f.height),
+            (None, None) => return canvas,
+        };
         let contain = !matches!(clip.kind, ClipKind::Text | ClipKind::Shape);
-        let native = self.native_size(project, clip, frame);
+        let native = self.native_size(project, clip, lsize);
         let mut p = crate::engine::compose::placement(project, clip, t, native, cw, ch, contain);
         if !(p.w.is_finite() && p.h.is_finite() && p.w > 0.0 && p.h > 0.0) {
             return canvas;
+        }
+        if !contain {
+            // ws:browser-layer: text and shapes under a zoomed browser arrive drawn that much bigger
+            // (`playback::layer_for`), so they are sharp once the view enlarges them
+            let q = crate::engine::browser::draw_boost(&project.tracks, t, project.width, project.height);
+            (p.w, p.h) = (p.w / q, p.h / q);
         }
         // geometric effects move the layer instead of touching pixels
         let (mut focal, mut z0) = (cw as f32, 0.0f32);
@@ -1687,16 +1795,31 @@ impl GpuRenderer {
         }
         p.cx += extra.dx;
         p.cy += extra.dy;
+        self.view.apply(&mut p);
         let Some(inv) = inverse_placement(&p, focal, z0) else { return canvas };
 
+        // ws:nested-gpu: the same render_canvas as the top level, at the size it was decoded for
+        let view = self.view;
+        let sub = nested.and_then(|n| {
+            let _s = crate::perf::span("nested_render"); // ws:perf-window
+            self.render_canvas(&n.view, n.t, n.w, n.h, &n.set)
+        });
+        self.view = view;
         let perf_t0 = std::time::Instant::now(); // ws:perf-baseline
-        let tex = self.upload(clip.id, frame);
+        let tex = match (&sub, frame) {
+            (Some(c), _) => c.tex,
+            (None, Some(f)) => self.upload(clip.id, f),
+            (None, None) => return canvas,
+        };
         self.perf_upload_us += perf_t0.elapsed().as_micros() as u64; // ws:perf-baseline
-        let lsize = (frame.width, frame.height);
+
         // effect scale: layer px per project px (matches compose::apply_effects' img_scale - footage
         // is decoded at roughly the placed size, text/shape bitmaps arrive at canvas scale already)
         let img_scale = if contain { s * (lsize.0 as f32 / p.w.max(1e-3)) } else { s };
-        let processed = self.run_chain(project, clip, t, project.fps, layers, tex, lsize, img_scale);
+        let processed = {
+            let _s = crate::perf::span("effects"); // ws:perf-window
+            self.run_chain(project, clip, t, project.fps, layers, tex, lsize, img_scale)
+        };
         let (src, size, own) = match &processed {
             Some(target) => (target.tex, (target.w, target.h), true),
             None => (tex, lsize, false),
@@ -1716,7 +1839,69 @@ impl GpuRenderer {
                 self.pool.put(t);
             }
         }
+        if let Some(c) = sub {
+            self.pool.put(c);
+        }
         out
+    }
+
+    // ---- ws:browser-layer ----
+    /// A browser clip: what is on the canvas becomes the page inside the window (the steps are listed
+    /// in engine/browser.rs; mirrors `compose::render_clip`). Its bitmaps come in `layers` under
+    /// `browser::key(clip.id, slot)`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_browser(
+        &mut self,
+        project: &Project,
+        clip: &Clip,
+        t: f64,
+        page: Target,
+        layers: &LayerSet,
+        opacity: f32,
+        extra: Extra,
+    ) -> Target {
+        use crate::engine::browser as br;
+        use crate::engine::compose::Placement;
+        let (cw, ch) = (page.w, page.h);
+        let Some(b) = &clip.browser else { return page };
+        let Some(mut plan) = br::plan(project.width, clip, t, cw, ch) else { return page };
+        plan.shift(extra.dx, extra.dy);
+        let (lt, s) = (clip.local(t), cw as f32 / project.width.max(1) as f32);
+        let (wf, hf) = (cw as f32, ch as f32);
+        let full = Placement { cx: wf / 2.0, cy: hf / 2.0, w: wf, h: hf, rot: 0.0, yaw: 0.0, pitch: 0.0 };
+        let bitmap = |me: &mut Self, out: Target, slot: u64, p: Option<Placement>, a: f32, scaler: Scaler| {
+            let k = br::key(clip.id, slot);
+            let (Some(f), Some(p)) = (layers.get(k), p) else { return out };
+            let Some(inv) = inverse_placement(&p, wf, 0.0) else { return out };
+            let tex = me.upload(k, f);
+            me.composite(out, tex, (f.width, f.height), inv, BlendMode::Normal, a, scaler, None)
+        };
+        let sc = project.scaler;
+        // Page only: the canvas is the page as it is; only the mouse and overlays go on top
+        let mut out = if plan.page_only {
+            bitmap(self, page, br::BG, plan.load_bar(b, lt, s), opacity, Scaler::Nearest)
+        } else {
+            let Some(mut out) = self.acquire(cw, ch) else { return page };
+            self.clear(&out, [b.bg[0] as f32 / 255.0, b.bg[1] as f32 / 255.0, b.bg[2] as f32 / 255.0, 1.0]);
+            out = bitmap(self, out, br::BG, Some(full), 1.0, Scaler::Bilinear);
+            out = bitmap(self, out, br::WINDOW, Some(plan.window), opacity, sc);
+            if let Some(inv) = inverse_placement(&plan.page, wf, 0.0) {
+                let mask = self.render_mask(&plan.mask, (cw, ch), 0.0, 1.0, br::MASK_ORIGIN);
+                let m = mask.as_ref().map(|m| m.tex);
+                out = self.composite(out, page.tex, (cw, ch), inv, BlendMode::Normal, opacity, sc, m);
+                if let Some(m) = mask {
+                    self.pool.put(m);
+                }
+            }
+            self.pool.put(page);
+            out
+        };
+        out = bitmap(self, out, br::CURSOR, plan.cursor(b, lt, s), opacity, sc);
+        // the overlay's opacity rides with its bitmap as a 1x1 companion frame (playback::layer_for)
+        let keys = layers.get(br::key(clip.id, br::KEYS));
+        let a = layers.get(br::key(clip.id, br::KEYS_ALPHA)).map_or(1.0, |f| f.rgba[3] as f32 / 255.0);
+        let p = keys.map(|f| plan.keys(b, (f.width, f.height)));
+        bitmap(self, out, br::KEYS, p, a * opacity, sc)
     }
 
     /// The clip's effect chain (node graph when it has one, else the linear stack, master (Asset)
@@ -1987,7 +2172,7 @@ impl GpuRenderer {
 
     /// The layer's "native" size for placement: the asset/sequence size for footage, the bitmap size
     /// for anything the caller rendered for us.
-    fn native_size(&self, project: &Project, clip: &Clip, frame: &Frame) -> (u32, u32) {
+    fn native_size(&self, project: &Project, clip: &Clip, frame: (u32, u32)) -> (u32, u32) {
         let wh = match clip.kind {
             ClipKind::Video | ClipKind::Image => project.asset(clip.asset).map(|a| (a.width, a.height)),
             ClipKind::Sequence => project.sequence(clip.sequence).map(|s| (s.width, s.height)),
@@ -1995,7 +2180,7 @@ impl GpuRenderer {
         };
         match wh {
             Some((w, h)) if w > 0 && h > 0 => (w, h),
-            _ => (frame.width.max(1), frame.height.max(1)),
+            _ => (frame.0.max(1), frame.1.max(1)),
         }
     }
 }
@@ -2080,6 +2265,21 @@ pub struct LayerSet {
     /// (`compose::covers`, its frame in `layers`), so the tracks below were not decoded and are
     /// not drawn. 0 = draw everything.
     pub base: usize,
+    /// ws:nested-gpu: nested sequence clips, each a layer tree drawn into a canvas of its own.
+    pub nested: Vec<NestedSet>,
+}
+
+/// ws:nested-gpu: one nested sequence clip's layers (`playback::layer_for`), drawn by the same
+/// `render_canvas` as the top level at `w`x`h`, then placed, faded, masked and blended as that clip.
+pub struct NestedSet {
+    pub id: crate::model::Id,
+    /// The sequence as a project of its own (its tracks and size, no subtitles), built once per edit.
+    pub view: Arc<Project>,
+    /// Sequence time the layers were made at.
+    pub t: f64,
+    pub w: u32,
+    pub h: u32,
+    pub set: LayerSet,
 }
 
 impl LayerSet {
@@ -2656,8 +2856,13 @@ mod tests {
 
 /// Real-driver checks: a legacy WGL context on a hidden window (compatibility profiles accept
 /// `#version 330 core`). Skips, loudly, on a machine with no OpenGL driver.
+mod interop; // #158: zero-copy decode, D3D11 textures shared into GL
+#[cfg(test)]
+mod browser_tests; // ws:browser-layer: the browser clip and polygon masks on the real driver
 #[cfg(test)]
 mod library_tests; // ws:shader-library: every library shader on the real driver
+#[cfg(test)]
+mod nested_tests; // ws:nested-gpu: nested sequences as layer trees vs the CPU compositor
 
 #[cfg(test)]
 mod driver_tests {
@@ -2700,12 +2905,12 @@ mod driver_tests {
     /// Compile + link `user_shader(src)` with the real driver, draw it into a 4x4 target at t = 0 and
     /// return the top-left pixel.
     unsafe fn run(gl: &glow::Context, src: &str) -> Result<[u8; 4], String> {
-        let px = run_sized(gl, src, 4, 4, 0.0)?;
+        let px = run_sized(gl, src, 4, 4, 0.0, &[])?;
         Ok([px[0], px[1], px[2], px[3]])
     }
 
     /// The whole `w`x`h` RGBA8 output at clip time `t` (row 0 = uv.y 0 = top of the image).
-    unsafe fn run_sized(gl: &glow::Context, src: &str, w: i32, h: i32, t: f32) -> Result<Vec<u8>, String> {
+    unsafe fn run_sized(gl: &glow::Context, src: &str, w: i32, h: i32, t: f32, params: &[f32]) -> Result<Vec<u8>, String> {
         let vert = compile(gl, glow::VERTEX_SHADER, shaders::VERT)?;
         let prog = build(gl, vert, &shaders::user_shader(src))?;
         let tex = gl.create_texture()?;
@@ -2746,6 +2951,9 @@ mod driver_tests {
         gl.uniform_1_i32(prog.uni.get("tex"), 0);
         gl.uniform_2_f32(prog.uni.get("u_res"), w as f32, h as f32);
         gl.uniform_1_f32(prog.uni.get("u_time"), t);
+        for (i, v) in params.iter().enumerate() {
+            gl.uniform_1_f32(prog.uni.get(PARAM_NAMES[i]), *v);
+        }
         let vao = gl.create_vertex_array()?;
         gl.bind_vertex_array(Some(vao));
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
@@ -2780,6 +2988,74 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         assert!(log.contains("(2)") || log.contains(":2:"), "error must point at user line 2: {log}");
     }
 
+    /// Every visualizer style (the built-ins and the custom sample) on the real driver: something lit on
+    /// a dark void, and loud audio (every audio param at its max) draws more light than quiet audio
+    /// (0.1). Writes target/visualizer-<style>-{quiet,loud}.ppm to look at.
+    #[test]
+    fn visualizer_styles_react_to_audio_on_the_real_driver() {
+        let Some(gl) = gl() else {
+            eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+            return;
+        };
+        let mut styles: Vec<(&str, &str)> = crate::engine::visualizer::BUILTIN.to_vec();
+        styles.push(("Pulse Rings", include_str!("../../tools/visualizer-sample/pulse-rings.glsl")));
+        let (w, h) = (480, 270);
+        for (style, src) in styles {
+            let meta = crate::engine::shaderlib::parse_meta(src);
+            let mut light = Vec::new();
+            for (name, level) in [("quiet", 0.1f64), ("loud", 1.0)] {
+                let params: Vec<f32> = meta
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let audio = crate::engine::visualizer::AUDIO_PARAMS.contains(&p.id.as_str());
+                        // a black backdrop for styles that offer one, so "void" is comparable
+                        let v = if audio { p.min + (p.max - p.min) * level } else if p.id == "background" { 2.0 } else { p.default };
+                        v as f32
+                    })
+                    .collect();
+                let px = unsafe { run_sized(&gl, src, w, h, 2.0, &params) }.unwrap();
+                let at = |x: i32, y: i32| &px[((y * w + x) * 4) as usize..][..4];
+                assert!(at(2, 2)[..3].iter().all(|&c| c < 8), "{style} {name}: corner stays void: {:?}", at(2, 2));
+                let mut ppm = format!("P6 {w} {h} 255
+").into_bytes();
+                for y in (0..h).rev() {
+                    for x in 0..w {
+                        ppm.extend_from_slice(&at(x, y)[..3]);
+                    }
+                }
+                let file = crate::engine::library::slug(style);
+                let _ = std::fs::write(format!("target/visualizer-{file}-{name}.ppm"), ppm);
+                light.push(px.chunks_exact(4).map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64).sum::<u64>());
+            }
+            assert!(light[0] > 20_000, "{style}: visible even when quiet: {light:?}");
+            assert!(light[1] > light[0] * 11 / 10, "{style}: louder = more light: {light:?}");
+        }
+    }
+
+    /// GPU cost of each visualizer style at 1080p (fastest of 8 runs, minus the same at 16x16 for compile + setup):
+    /// `cargo test bench_visualizer_styles -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_visualizer_styles_1080p() {
+        let Some(gl) = gl() else { return };
+        for (style, src) in crate::engine::visualizer::BUILTIN {
+            let params: Vec<f32> = crate::engine::shaderlib::parse_meta(src).params.iter().map(|p| p.default as f32).collect();
+            // the fastest of 8 runs: the driver caches the compiled program, so the minimum is the draw
+            let time = |w, h| {
+                (0..8)
+                    .map(|_| {
+                        let t0 = std::time::Instant::now();
+                        unsafe { run_sized(&gl, src, w, h, 2.0, &params) }.unwrap();
+                        t0.elapsed().as_secs_f64() * 1000.0
+                    })
+                    .fold(f64::MAX, f64::min)
+            };
+            let (small, big) = (time(16, 16), time(1920, 1080));
+            eprintln!("{style}: {:.1} ms per 1080p frame ({big:.1} ms with compile + readback)", big - small);
+        }
+    }
+
     /// Shadertoy's default plasma at a 320x240 layer and at 1920x1080: red falls smoothly and
     /// monotonically left to right (no bands or steps), and the two sizes agree.
     #[test]
@@ -2791,7 +3067,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         let plasma = crate::ui::shader_ui::EXAMPLES[1].1;
         let mut reds = Vec::new();
         for (w, h) in [(320, 240), (1920, 1080)] {
-            let px = unsafe { run_sized(&gl, plasma, w, h, 1.0) }.unwrap();
+            let px = unsafe { run_sized(&gl, plasma, w, h, 1.0, &[]) }.unwrap();
             let row = (h / 2 * w * 4) as usize;
             let r: Vec<i32> = (0..w as usize).map(|x| px[row + x * 4] as i32).collect();
             assert!(r.windows(2).all(|p| p[1] <= p[0]), "{w}x{h}: red not monotonic: {r:?}");

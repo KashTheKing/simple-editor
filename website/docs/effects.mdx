@@ -3,19 +3,39 @@ title: Effects, transitions & titles
 description: Add effects and transitions, apply looks and presets from the Gallery, and make titles.
 ---
 
-![The Effects panel](/img/tutorial/effects.png)
+![The Gallery's Effects tab](/img/tutorial/effects.png)
 
-The **Effects**, **Transitions** and **Gallery** panels sit next to the Library on the Edit page. Each is
-a catalogue of cards: pick one and apply it to the selected clips. What a clip already has is edited in
-the [Inspector](inspector.mdx).
+The **Gallery** sits next to the Library on the Edit page. Its **Effects** and **Transitions** tabs (and
+every other tab) are catalogues of cards: click one to apply it to the selected clips, or **drag it onto the
+timeline** and drop it where it should go. What a clip already has is edited in the
+[Inspector](inspector.mdx).
+
+## Dragging cards onto the timeline
+
+Every card except a skill can be dragged (press and move a few points; <kbd>Esc</kbd> cancels), and where you
+drop it decides what happens. The timeline lights up what it will land on while you drag:
+
+| Card | Drop it on |
+|---|---|
+| Effects, Looks, LUTs, Caption styles, Speed ramps, Animate blocks | a **clip**. With several clips selected and the one you drop on among them, all of them get it |
+| Transitions | a **cut** or a clip's **edge**: it snaps to the nearest edge within a few points, else the half of the clip you are over picks start or end |
+| Templates, Titles, HTML layers, icons | an **empty part of a video track** (or the empty lane below the last track, for a new track) |
+
+A library item that is not installed yet (cloud mark) downloads first, then does what a drop would have done.
+Your own saved items drag the same way: see [My Gallery](my-gallery.mdx).
+Dropping anywhere else does nothing.
 
 ## Effects
 
 1. Select one or more clips on the timeline.
-2. Open **Effects** (<kbd>Ctrl+3</kbd>) and **click a card**. It's added to every selected clip.
+2. Open the Gallery's **Effects** tab (<kbd>Ctrl+3</kbd>) and **click a card**. It's added to every
+   selected clip.
 
 You can also **drag a card onto a clip** on the timeline, or right-click a card ▸ **Add to selected
-clip(s)** / **Add to all clips on this track**. Type in the search box to find one.
+clip(s)** / **Add to all clips on this track**. Type in the search box to find one: it searches the built-in
+effects, yours and the [online library](online-library.mdx) (once you have clicked **Browse online library**)
+together, in one grid; the chips and the category menu narrow it (a cloud mark means it downloads when you
+click it).
 
 The catalogue has blur, motion blur, pixelate, VHS, glow, vignette, sharpen, chroma key (green screen),
 colour replace, crop, levels, curves, hue and saturation, black & white, flip, 3D plane, camera shake,
@@ -41,17 +61,24 @@ effects apply to everything below them on the timeline, for as long as the layer
 
 ## Transitions
 
-![The Transitions panel](/img/tutorial/transitions.png)
+![The Gallery's Transitions tab](/img/tutorial/transitions.png)
 
-A transition blends one clip into the next at a cut. There are four: **Cross Fade**, **Fade to Color**,
-**Push** and **Wipe**. The row above the cards sets the **Duration** of the next one you add (1 second to
-start with), plus its colour (Fade to Color) or the direction it comes **From** (Push, Wipe).
+A transition blends one clip into the next at a cut. The built-in ones are **Cross Fade**, **Fade to
+Color**, **Push** and **Wipe**; the online library adds more (they share the grid, with a cloud mark until
+installed). The row above the cards sets the **Duration** of the next one you add (1 second to start with;
+it is never longer than half of the shorter clip it touches), plus its colour (Fade to Color) or the
+direction it comes **From** (Push, Wipe).
 
-- **Drag a card onto a cut** on the timeline. Drop on the right half of a clip for its end, the left half
-  for its start.
-- Or select clips and **right-click a card** ▸ **Add at start of selected clip(s)**, **Add at end of selected
-  clip(s)** or **Add at every cut on this track**. At the start or end of the timeline, you get a fade from
-  or to black.
+- **Drag a card onto a cut** on the timeline. It snaps to the nearest cut or clip edge; away from any edge,
+  drop on the right half of a clip for its end, the left half for its start.
+- Or **click a card** to put it at the start of the selected clips (a cut where a clip comes before, else a
+  fade in from black).
+- Or select clips and **right-click a card**: **Apply to Start** and **Apply to End** put a one-sided fade
+  on that edge of each selected clip; **Apply to Connection** (shown when the clip touches the next or
+  previous one; **(start)** and **(end)** when both do) makes the two-sided transition on that cut; with two or
+  more clips selected, **Apply to All** puts it at the beginning of each of them (the cut where a clip abuts
+  the start, otherwise a fade in), as one undo step. It replaces a transition already there unless
+  `transition_skip_existing` is on in your settings file.
 - Or click a cut and press <kbd>Ctrl+Shift+T</kbd> (**Add Transition at Selected Cut**) for a one-second
   Cross Fade. <kbd>Ctrl+T</kbd> adds the last one you used again. Both are in **Clip ▸ Transition** too.
 
@@ -72,10 +99,12 @@ Preview first:
 
 | Tab | What a click does |
 |---|---|
+| **Animate** | Applies a keyframe block (Fade In, Slide, Pop…) at the playhead |
 | **Looks** | A colour grade. It **replaces** the clip's effects. To keep your own, select a graded clip and right-click an empty spot ▸ **Save look from selection…** |
 | **Luts** | Adds a `.cube` LUT from your LUT folders |
 | **Captions** | Sets the style of all subtitles (Classic, Bold Outline, Boxed, Karaoke…) |
 | **Speed** | Gives the clip a speed ramp (Montage, Hero, Bullet, Jump, Flash) |
+| **Effects**, **Transitions** | Described above |
 | **Templates** | Places a clip template you saved at the playhead (**Clip ▸ Save Selection as Template…**) |
 | **Titles** | Places a title (below) |
 

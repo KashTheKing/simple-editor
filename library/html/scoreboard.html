@@ -15,15 +15,19 @@
 <meta name="se:field" content="clock | text | 78:12">
 <meta name="se:field" content="colour_a | color | #2563eb">
 <meta name="se:field" content="colour_b | color | #f59e0b">
+<meta name="se:field" content="font | font | Bahnschrift">
+<meta name="se:field" content="radius | radius | 20 | 0 | 120">
+<meta name="se:field" content="shadow | toggle | on | 0 16px 36px rgba(0, 0, 0, .42), 0 3px 8px rgba(0, 0, 0, .3), inset 0 0 0 1px rgba(255, 255, 255, .1) | none">
+<meta name="se:field" content="outline | outline | 0 #ffffff">
 <style>
   :root { --a: {{colour_a}}; --b: {{colour_b}}; }
   html, body { margin: 0; background: transparent; overflow: hidden; }
   body { width: 100vw; height: 100vh; display: grid; place-items: center;
-    font-family: "Bahnschrift", "Segoe UI", Arial, sans-serif; }
+    font-family: {{font}}; }
 
   .board { box-sizing: border-box; width: 820px; height: 100px; display: grid; grid-template-columns: 1fr 150px 1fr;
-    background: #12151c; color: #fff; border-radius: 20px; overflow: hidden;
-    box-shadow: 0 16px 36px rgba(0, 0, 0, .42), 0 3px 8px rgba(0, 0, 0, .3), inset 0 0 0 1px rgba(255, 255, 255, .1);
+    background: #12151c; color: #fff; border-radius: {{radius}}; outline: {{outline}}; outline-offset: -1px; overflow: hidden;
+    box-shadow: {{shadow}};
     animation: drop .6s cubic-bezier(.2, 1.3, .35, 1) both; }
   .team { display: flex; align-items: center; min-width: 0; }
   .team.b { flex-direction: row-reverse; }

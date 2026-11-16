@@ -299,6 +299,74 @@ fn shape_outline(style: &ShapeStyle, w: f32, h: f32, s: f32, out: &mut Vec<[f32;
     }
 }
 
+fn css_rgba(c: [u8; 4]) -> String {
+    format!("rgba({},{},{},{:.3})", c[0], c[1], c[2], c[3] as f32 / 255.0)
+}
+
+fn svg_pts(pts: &[[f32; 2]]) -> String {
+    pts.iter().map(|p| format!("{:.2},{:.2}", p[0], p[1])).collect::<Vec<_>>().join(" ")
+}
+
+/// The shape as SVG elements centred at the origin in project px (same geometry as `rasterize`), for
+/// "Convert to HTML Layer". Rect and Ellipse stay native SVG primitives so they stay editable.
+pub fn svg(style: &ShapeStyle, t: f64) -> String {
+    let (w, h) = half_size(style, t);
+    let sw = if style.stroke_width.is_finite() { style.stroke_width.max(0.0) } else { 0.0 };
+    let paint = |closed: bool| {
+        let fill = if closed && style.fill[3] > 0 { css_rgba(style.fill) } else { "none".into() };
+        let stroke = if style.stroke[3] > 0 && sw > 0.0 {
+            format!(r#" stroke="{}" stroke-width="{sw:.2}" stroke-linejoin="round" stroke-linecap="round""#, css_rgba(style.stroke))
+        } else {
+            String::new()
+        };
+        format!(r#"fill="{fill}"{stroke}"#)
+    };
+    match style.kind {
+        ShapeKind::Rect => {
+            let r = style.corner.max(0.0).min(w).min(h);
+            format!(r#"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" rx="{r:.2}" {}/>"#, -w, -h, w * 2.0, h * 2.0, paint(true))
+        }
+        ShapeKind::Ellipse => format!(r#"<ellipse rx="{w:.2}" ry="{h:.2}" {}/>"#, paint(true)),
+        ShapeKind::Line | ShapeKind::Arrow => {
+            let (x, y) = signed_half(style, t);
+            let c = css_rgba(style.stroke);
+            let mut o = format!(
+                r#"<line x1="{:.2}" y1="{:.2}" x2="{x:.2}" y2="{y:.2}" stroke="{c}" stroke-width="{:.2}" stroke-linecap="round"/>"#,
+                -x, -y, sw.max(0.7)
+            );
+            let len = (x * x + y * y).sqrt() * 2.0;
+            if style.kind == ShapeKind::Arrow && len > 1e-4 {
+                let hd = arrow_head(style);
+                let (ux, uy) = (2.0 * x / len, 2.0 * y / len);
+                let base = [x - ux * hd, y - uy * hd];
+                let (px, py) = (-uy * hd * 0.5, ux * hd * 0.5);
+                o += &format!(r#"<polygon points="{}" fill="{c}"/>"#, svg_pts(&[[x, y], [base[0] + px, base[1] + py], [base[0] - px, base[1] - py]]));
+            }
+            o
+        }
+        ShapeKind::Draw => {
+            let mut o = String::new();
+            if style.page[3] > 0 {
+                let (pw, ph) = (style.w.value as f32, style.h.value as f32);
+                o += &format!(r#"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" fill="{}"/>"#, -pw, -ph, pw * 2.0, ph * 2.0, css_rgba(style.page));
+            }
+            for st in &style.strokes {
+                let pts: Vec<[f32; 2]> = st.points.iter().map(|p| [p.0, p.1]).collect();
+                o += &format!(
+                    r#"<polyline points="{}" fill="none" stroke="{}" stroke-width="{:.2}" stroke-linecap="round" stroke-linejoin="round"/>"#,
+                    svg_pts(&pts), css_rgba(st.color), st.width.max(0.1)
+                );
+            }
+            o
+        }
+        _ => {
+            let mut pts = Vec::new();
+            shape_outline(style, w, h, 1.0, &mut pts);
+            format!(r#"<polygon points="{}" {}/>"#, svg_pts(&pts), paint(true))
+        }
+    }
+}
+
 /// Regular polygon (or star: 2x the vertices, alternating radii) inscribed in the w x h ellipse,
 /// first vertex pointing up.
 fn ngon(sides: u32, w: f32, h: f32, star: bool) -> Vec<[f32; 2]> {
@@ -750,6 +818,16 @@ mod tests {
         assert!(px(&g, w - 3, h - 3)[3] > 150, "bottom-right must be covered: {:?}", px(&g, w - 3, h - 3));
         assert_eq!(px(&g, w - 3, 3)[3], 0, "top-right must be empty: {:?}", px(&g, w - 3, 3));
         assert_eq!(px(&g, 3, h - 3)[3], 0, "bottom-left must be empty: {:?}", px(&g, 3, h - 3));
+    }
+
+    #[test]
+    fn svg_keeps_rects_and_ellipses_native() {
+        let mut r = style(ShapeKind::Rect, 50.0, 30.0);
+        r.corner = 6.0;
+        let out = super::svg(&r, 0.0);
+        assert!(out.starts_with("<rect") && out.contains(r#"width="100.00""#) && out.contains(r#"rx="6.00""#), "{out}");
+        assert!(super::svg(&style(ShapeKind::Ellipse, 50.0, 30.0), 0.0).starts_with("<ellipse"));
+        assert!(super::svg(&style(ShapeKind::Star, 50.0, 30.0), 0.0).starts_with("<polygon"));
     }
 
     #[test]

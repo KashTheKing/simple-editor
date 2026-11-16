@@ -13,10 +13,12 @@
 <meta name="se:field" content="right | text | Team Blue">
 <meta name="se:field" content="colour_left | color | #e5322d">
 <meta name="se:field" content="colour_right | color | #2f6bff">
+<meta name="se:field" content="font | font | Arial Black">
+<meta name="se:field" content="shadow | toggle | on | 0 0 40px rgba(255, 255, 255, .6) | none">
 <style>
   :root { --l: {{colour_left}}; --r: {{colour_right}}; }
   html, body { margin: 0; background: transparent; overflow: hidden; }
-  body { position: relative; width: 100vw; height: 100vh; font-family: "Arial Black", Impact, "Segoe UI", sans-serif; }
+  body { position: relative; width: 100vw; height: 100vh; font-family: {{font}}; }
 
   .panel { position: absolute; inset: 0; }
   .pl { clip-path: polygon(0 0, 54.4% 0, 45.6% 100%, 0 100%);
@@ -26,7 +28,7 @@
     background: linear-gradient(270deg, color-mix(in srgb, var(--r) 88%, transparent), color-mix(in srgb, var(--r) 45%, transparent));
     animation: fromR .55s cubic-bezier(.2, .9, .2, 1) both; }
   .gap { position: absolute; left: 50%; top: -10%; width: 14px; height: 120%; margin-left: -7px; background: #fff;
-    transform: skewX(-9deg); box-shadow: 0 0 40px rgba(255, 255, 255, .6); animation: line .5s ease-out .5s both; }
+    transform: skewX(-9deg); box-shadow: {{shadow}}; animation: line .5s ease-out .5s both; }
 
   .plate { position: absolute; top: 50%; height: 190px; margin-top: -95px; width: 760px; display: flex; align-items: center;
     background: #0d0f14; color: #fff; box-shadow: 0 20px 44px rgba(0, 0, 0, .5); }
@@ -40,9 +42,16 @@
 
   .vs { position: absolute; left: 50%; top: 50%; width: 400px; height: 400px; margin: -200px 0 0 -200px; display: grid; place-items: center;
     font: 400 260px/1 Impact, "Arial Black", sans-serif; color: #fff; font-style: italic; letter-spacing: 4px;
-    -webkit-text-stroke: 12px #0d0f14; paint-order: stroke fill;
-    text-shadow: 0 12px 0 rgba(0, 0, 0, .35), 0 0 50px rgba(255, 255, 255, .35);
+
     animation: punch .5s cubic-bezier(.2, 1.7, .4, 1) 1s both, idle 1.6s ease-in-out 1.6s infinite; }
+  .vs > * { grid-area: 1 / 1; font-style: inherit; font-weight: inherit; }
+  .vs > i { color: #0d0f14; }
+  .vs > b { position: relative; z-index: 1; }
+  .vs > i:nth-child(1) { transform: translate(6px, 0); } .vs > i:nth-child(2) { transform: translate(-6px, 0); }
+  .vs > i:nth-child(3) { transform: translate(0, 6px); } .vs > i:nth-child(4) { transform: translate(0, -6px); }
+  .vs > i:nth-child(5) { transform: translate(4px, 4px); } .vs > i:nth-child(6) { transform: translate(-4px, 4px); }
+  .vs > i:nth-child(7) { transform: translate(4px, -4px); } .vs > i:nth-child(8) { transform: translate(-4px, -4px); }
+  .vs > i:nth-child(9) { color: rgba(0, 0, 0, .35); transform: translate(0, 12px); }
   .flash { position: absolute; inset: 0; background: radial-gradient(circle at 50% 50%, #fff 0, rgba(255, 255, 255, .7) 14%, rgba(255, 255, 255, 0) 45%);
     animation: flash .6s ease-out 1s both; }
   .ring { position: absolute; left: 50%; top: 50%; width: 300px; height: 300px; margin: -150px 0 0 -150px; border-radius: 50%;
@@ -66,7 +75,7 @@
 <div class="plate pL"><span>{{left}}</span></div>
 <div class="plate pR"><span>{{right}}</span></div>
 <div class="ring"></div>
-<div class="vs">VS</div>
+<div class="vs"><i>VS</i><i>VS</i><i>VS</i><i>VS</i><i>VS</i><i>VS</i><i>VS</i><i>VS</i><i>VS</i><b>VS</b></div>
 <div class="flash"></div>
 </body>
 </html>

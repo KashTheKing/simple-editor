@@ -39,6 +39,7 @@ impl Project {
             transcripts: Vec::new(),
             subtitle_anim: SubtitleAnim::default(),
             smart_bins: Vec::new(),
+            asset_names: Default::default(),
             // ---- ws:size-diet ----
             // ---- ws:split-god-files ----
             // ---- ws:audio-analysis ----
@@ -165,6 +166,7 @@ impl Project {
             range: Some((in_t, out_t)),
             effects: Vec::new(),
             html: None,
+            proxy: None,
         });
         Some(id)
     }
@@ -405,6 +407,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         }
     }
 

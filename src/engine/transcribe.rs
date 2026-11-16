@@ -258,7 +258,7 @@ pub fn start(opts: Options) -> Job {
 fn extract_wav(path: &str, start: f64, dur: f64, prog: &Progress) -> Result<PathBuf, String> {
     let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     let wav = temp_wav();
-    let mut child = ffpipe::command(&ffmpeg)
+    let mut child = crate::media::bg::command(&ffmpeg)
         .args(["-v", "error", "-y", "-ss"])
         .arg(format!("{:.3}", start.max(0.0)))
         .arg("-t")
@@ -346,7 +346,7 @@ fn whisper_once(
     sink: &Mutex<Vec<Segment>>,
 ) -> Result<usize, String> {
     let lang = if opts.language.trim().is_empty() { "auto".to_string() } else { opts.language.trim().to_string() };
-    let mut cmd = ffpipe::command(exe);
+    let mut cmd = crate::media::bg::command(exe);
     cmd.arg("-m").arg(model).arg("-f").arg(wav).args(["-l", &lang]);
     if opts.words {
         cmd.args(["-ml", "1", "-sow"]);

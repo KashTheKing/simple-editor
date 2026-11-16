@@ -44,9 +44,8 @@ pub(super) fn save_block(app: &mut App, id: Id, name: &str, from: Option<f64>, t
     let b = c
         .capture_block(name, from.unwrap_or(0.0), to.unwrap_or(c.duration), w, h)
         .ok_or("need keys at two or more times on position / scale / rotation / opacity / volume")?;
-    app.settings.key_blocks.retain(|o| !o.name.eq_ignore_ascii_case(name));
-    app.settings.key_blocks.push(b);
-    app.settings.save();
+    let data = serde_json::to_value(&b).map_err(|e| e.to_string())?;
+    super::gallery_mine::put(app, crate::engine::gallery::Kind::Animate, name, &[], data, true)?;
     Ok(())
 }
 

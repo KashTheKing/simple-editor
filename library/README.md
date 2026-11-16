@@ -12,6 +12,7 @@ library/transitions/*.glsl    shader transitions
 library/luts/*.cube           3D LUTs
 library/html/*.html           HTML + CSS layers and scenes (one file each)
 library/icons/*.svg           icons
+library/thread/*.css          the look of Chat / Forum Thread layers (compiled into the exe: `engine::thread`)
 library/skills/*.md           assistant skills
 library/thumbs/*              generated previews
 ```
@@ -50,7 +51,7 @@ Header lines (all `// @key value`, at the top of the file, before any code):
 | `// @name <text>` | required; shown in the Effects list |
 | `// @desc <text>` | required; one sentence |
 | `// @tags a, b, c` | required; lowercase search words |
-| `// @param <id> <default> <min> <max>` | 0 to 8 controls. `<id>` is a lowercase identifier (`[a-z][a-z0-9_]*`); the Inspector shows it as "Glow Size" for `glow_size`; in the code it is a `float` of that name. Every control is keyframeable. Defaults must give a visible, good-looking result. |
+| `// @param <id> <default> <min> <max>` | 0 to 14 controls. `<id>` is a lowercase identifier (`[a-z][a-z0-9_]*`); the Inspector shows it as "Glow Size" for `glow_size`; in the code it is a `float` of that name. Every control is keyframeable. Defaults must give a visible, good-looking result. |
 | `// @needs previous [n]` | optional; the effect also gets earlier frames (below). `n` = how many frames back the earliest one is, 1 to 8 (default 1); the "ghost camera" / echo look wants 3 to 6 |
 | `// @credit <text>` | optional; required for adapted work |
 
@@ -73,7 +74,19 @@ Conventions: colours are **straight alpha**, 0..1, not premultiplied; keep `src.
 is about transparency. `uv` is 0..1 with **y = 0 at the top**. Sampling outside 0..1 clamps to the
 edge; use `sample_clamped` or handle it. Aspect-correct shapes with `u_res.x / u_res.y`. Keep it
 real-time at 1080p: at most ~64 texture samples per pixel, no loops with non-constant bounds. Names
-taken: `tex`, `u_*`, `p0`..`p7`, `u1`..`u8`, `v_uv`, `out_color`, `main`, `effect`, the helpers above.
+taken: `tex`, `u_*`, `p0`..`p13`, `u1`..`u8`, `v_uv`, `out_color`, `main`, `effect`, the helpers above.
+
+### Audio visualizers
+
+An effect whose header declares any of `level`, `band1` .. `band6` is an **audio visualizer style**:
+it appears in the Inspector's Visualizer ▸ Style list (and `audio.visualizer {style}` /
+`audio.visualizer_styles`) next to the built-ins, Neon Orb and Spectrum Bars. When a visualizer is
+made or restyled, the audio under the clip is analysed once and baked into keyframes on those params:
+`level` is the loudness, `band1` (about 60 Hz) to `band6` (about 8 kHz) a log-spaced spectrum, each
+0..1 mapped onto the param's own range. Give them defaults that look good on their own (the library
+thumbnail and the Source monitor without sound use them). A sample: `tools/visualizer-sample/
+pulse-rings.glsl`; install your own with `library.save` (kind `effect`) or by copying the file into
+`%APPDATA%\SimpleEditor\library\effects`.
 
 ## Shader transitions (`transitions/*.glsl`)
 
@@ -176,14 +189,29 @@ only: `@keyframes` + `animation`.
 | `se:size` | `WxH` in CSS pixels, measured against a **1080-pixel-high frame**. Default `1920x1080`. The app renders at project resolution (a 4K project renders at 2x). Use `1920x1080` when the position in the frame matters (lower thirds, tickers, end screens, every scene). Use a tight size for free-floating things the user drags around (buttons, badges, bubbles), with ~40 px of padding for shadows and overshoot. Even numbers, at most 3840x2160. |
 | `se:duration` | default clip length, e.g. `4s` (0.5 to 60). |
 | `se:thumb` | optional; the second the preview picture is taken at (default: 60 % of the duration). |
-| `se:field` | zero or more editable values: `name \| type \| default` (number: `name \| number \| default \| min \| max`). Types: `text`, `color` (`#rrggbb` or `#rrggbbaa`), `number`, `image` (a file the user picks; empty default). `name` is a lowercase identifier; the Inspector shows `first_line` as "First Line". At most 12. |
+| `se:field` | zero or more editable values: `name \| type \| default [\| more]`. Types: `text`; `color` (`#rrggbb` or `#rrggbbaa`); `number` (`\| min \| max \| unit`, e.g. `gap \| number \| 1.5 \| 0 \| 4 \| em` gives `1.5em`); `range`, `radius`, `size` (sliders: `\| min \| max \| step \| unit`; radius 0-200 px and size 0-400 px unless given); `font` (a font family, installed or one of the app's own fonts: `font-family: {{font}}` gets `'Family', 'Segoe UI', Arial, sans-serif`); `select` (`corner \| select \| rounded \| sharp=0px, rounded=12px, pill=999px`: the user picks a label, the page gets its value); `toggle` (`shadow \| toggle \| on \| 0 10px 30px #0006 \| none`: the value when on, then when off; default 1 / 0); `shadow` (`20 #00000080` gives `0 10px 20px #00000080`, `none` at 0); `outline` (`2 #ffffff` gives `2px solid #ffffff`, `none` at 0); `image` (a file the user picks; empty default). `name` is a lowercase identifier; the Inspector shows `first_line` as "First Line". At most 12. Give the look-changing ones (font, corner radius, shadow, outline) defaults that keep the template's own look. |
 
-| `se:param` | zero or more **animatable** numbers: `name \| number \| default \| min \| max` (min and max optional). The value reaches the page as the CSS variable `--name` (a plain number: `calc(var(--progress) * 1%)`, `transform: rotate(calc(var(--angle) * 1deg))`, `opacity: var(--amount)`), set for every rendered frame, so it can be keyframed in the Inspector (the diamond next to it) or with `html.set {params}`. A page with a keyframed param is rendered as a video even if it has no CSS animation. Declare it, then read it as `var(--name)` somewhere, or the editor warns. At most 12. |
+| `se:param` | zero or more **animatable** numbers: `name \| number \| default \| min \| max` (min and max optional; `range`, `radius` and `size` work too and show as sliders). The value reaches the page as the CSS variable `--name` (a plain number: `calc(var(--progress) * 1%)`, `transform: rotate(calc(var(--angle) * 1deg))`, `opacity: var(--amount)`), set for every rendered frame, so it can be keyframed in the Inspector (the diamond next to it) or with `html.set {params}`. A page with a keyframed param is rendered as a video even if it has no CSS animation. Declare it, then read it as `var(--name)` somewhere, or the editor warns. At most 12. |
 
 Fields: every `{{name}}` in the file is replaced before rendering (text is HTML-escaped; an image
 becomes a `file:///` URL, or a transparent pixel when empty). Use them in markup or CSS, e.g.
 `:root { --accent: {{accent}}; }`. An unknown `{{name}}` is left as it is, so do not use double
 braces for anything else.
+
+Project media by name: in a layer of the user's own project (not in library items, which must stay
+self-contained), a plain file name in `<img src>`, `<video src>`, `<audio>` / `<source src>`,
+`poster`, `<link href>` or CSS `url()` (backgrounds, `@font-face src`) is the project's file of that
+name: `<img src="logo.png">`, `background: url("bg.jpg")`. Looked up in this order: the path under the
+project's folder (`shots/a.png`), then the file name in any case among the project's media and the
+files in its folder, then a name without an extension (`logo`) if exactly one file has it. Two files
+with the same name: the one in the project folder, else the most recently imported, with a warning.
+A name nothing has stays as it is and the Inspector, the editor and `html.get` / `html.check` list it
+as `missing: logo.png`. Only those files can be reached this way (no `..`, no web addresses). Replacing
+the file on disk or re-linking the asset re-renders the layer (the render's cache key includes each
+file's size and modified time). A `<video>` is muted; on the timeline and in export it is moved to the
+frame's exact time for every frame (looping if it has `loop`); the live preview plays it as is.
+Animated GIF / WebP / APNG run on the browser's own clock: fine in the live preview, but not
+frame-exact on the timeline - use a video for motion that must line up.
 
 Rules:
 
@@ -193,7 +221,7 @@ Rules:
   (`infinite`) animations are fine. The app sets each animation's time per frame, so what you write is
   what renders, at any frame rate.
 - Nothing that needs a pointer, a clock or a script: no `:hover`, no `transition` triggered by state,
-  no `<video>`, `<audio>`, `<iframe>`, `<canvas>`, forms that need input, `prefers-*` media queries.
+  no `<video>` / `<audio>` in a library item (a project's own layer may use its media, above), no `<iframe>`, `<canvas>`, forms that need input, `prefers-*` media queries.
 - No network: no `http(s)://` URLs, no `@import`, no web fonts. Fonts: installed Windows fonts only,
   always with fallbacks, e.g. `"Segoe UI", Arial, sans-serif`; safe choices are Segoe UI (all
   weights incl. Semibold / Black), Arial, Arial Black, Impact, Bahnschrift, Trebuchet MS, Verdana,
@@ -205,7 +233,19 @@ Rules:
 - Readable on any footage: text on a layer needs its own backing, outline or shadow.
 - Counting numbers without script: animate a registered custom property
   (`@property --n { syntax: "<integer>"; inherits: false; initial-value: 0; }`) and print it with
-  `counter-reset: n var(--n); content: counter(n);`.
+  `counter-reset: n var(--n); content: counter(n);` - but Edge only: the fast renderer cannot do it. For a
+  template that should draw with both, roll digit wheels instead (`library/html/counter.html`: nine
+  strips `0..9`, each translated by `mod(round(down, var(--t) / var(--k), 1), 10)` lines) or step a strip of
+  numbers (`poll-bars.html`).
+- **Draw with both renderers.** The fast renderer (`se-html`, `engine::blitz`) is the default when it is
+  installed; `engine::html_lint` sends a layer that needs CSS it cannot draw to Edge. Library templates must
+  not need that (a test renders every one with both and compares them). Do not use: colour filters
+  (`hue-rotate`, `saturate`, `brightness`, `contrast`, `grayscale`, `sepia`, `invert`), `backdrop-filter`,
+  `mix-blend-mode`, `-webkit-text-stroke` / `paint-order` (outline with copies of the text instead, see
+  `meme-caption.html`), `position: sticky`, 3D transforms, `counter()`, `@property`, vertical writing, and an
+  inline `<svg>` styled by the page's CSS (put `fill` / `stroke` as attributes; animate the `<svg>` element
+  or a wrapper, never a part inside it). `text-shadow` is not drawn (put a copy of the text behind it, see
+  `intro-title-bold.html`); an ellipsis or line clamp only cuts. Inline margins need `display: inline-block`.
 
 ## Icons (`icons/*.svg`)
 
@@ -246,6 +286,26 @@ a last line. Write for an assistant that edits through the app's tools (`docs/cu
 them): say what to inspect first, which tools to call, what to check, and when to stop and ask. Name
 real tools only. Keep the user in control: one undo group, no export or file deletion without asking.
 
+## Add-on downloads (`bin/*.json`)
+
+Optional programs the app installs on a click, never bundled in the exe. Each manifest names one download:
+`{"version", "url", "sha256", "size"}` (`url` is relative to the library or a full address).
+
+- `bin/se-html.json`: the fast HTML renderer (`tools/se-html/README.md` ▸ "Ship (and update) the helper").
+- `bin/enhancer.json`: the AI enhancer, Real-ESRGAN `realesrgan-ncnn-vulkan` for Windows (a zip with the
+  exe, `vcomp140.dll` and `models/`; `engine::enhance::install` unpacks it with Windows' `tar.exe` into
+  `%APPDATA%\SimpleEditor\bin\enhancer`). It points straight at the upstream release
+  (xinntao/Real-ESRGAN v0.2.5.0, BSD-3-Clause), pinned by size and SHA-256. To publish or update it:
+  1. Pick the zip (upstream, or re-hosted: `gh release create enhancer-vYYYYMMDD <zip> --repo
+     KashTheKing/simple-editor --title "AI enhancer YYYYMMDD"`) and download it once.
+  2. `certutil -hashfile <zip> SHA256` and the byte size (`(Get-Item <zip>).Length`) go into the manifest,
+     with `url` set to that download address. The zip must hold `realesrgan-ncnn-vulkan.exe` at its root or
+     one folder down, with `models/` beside it.
+  3. Try it before publishing: Settings ▸ Library folder → a local copy of `library/`, then Settings ▸
+     General ▸ AI enhancer ▸ Install (or the `enhance.install` tool).
+  4. Commit `library/bin/enhancer.json` on `main` and push: the manifest on `main` is the switch (same rule
+     and throwaway-worktree trick as the se-html manifest). Existing installs update by Uninstall + Install.
+
 ## index.json (generated)
 
 ```json
@@ -257,3 +317,11 @@ real tools only. Keep the user in control: one undo group, no export or file del
 ```
 
 `kind` is one of `effect`, `transition`, `lut`, `html`, `icon`, `skill`. Skills have no thumbnail.
+
+## guides/guides.json (social guides data)
+
+Not a catalogue item: one file the app reads on a click (Settings > Social > Check the library for
+updated guides) and installs as `%APPDATA%\SimpleEditor\library\guides\guides.json`. It lists each social
+platform's zones, UI silhouettes and sheet behaviour with a `ver` date and a `src` note; the format is in
+`docs/customizing.md` ("Social guides (data and profiles)"). It must be a copy of `assets/guides.json` when
+the data in the app changes.

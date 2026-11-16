@@ -48,6 +48,14 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 if let Some(f) = arg_str(args, "folder") {
                     a.folder = f.to_string();
                 }
+                if let Some(m) = arg_str(args, "proxy") {
+                    a.proxy = match m {
+                        "on" => Some(true),
+                        "off" => Some(false),
+                        "auto" => None,
+                        _ => return Err("proxy: auto | on | off".into()),
+                    };
+                }
                 Ok(json!({"ok": true}))
             }
             _ => unreachable!(),
@@ -75,9 +83,23 @@ pub const TOOLS: &[ToolDef] = &[
     // media.import self-manages its own undo push (`App::import_files`) - wrapping it in the generic
     // Mutate snapshot/rollback would double-push, so it stays Read here just as it was absent from the
     // old hand-kept mutating-tool name list.
-    row!("media.import", ToolKind::Read, "Import media files into the library; returns asset ids.", &["paths:array:true:absolute paths"]),
+    row!("media.import", ToolKind::Read, "Import media files into the library; returns asset ids. A folder among the paths imports as a bin (its sub-folders nested bins) in the background and adds no ids - use media.import_folder to choose options or wait for it.", &["paths:array:true:absolute paths (files or folders)"]),
+    ToolDef {
+        name: "media.import_folder",
+        desc: "Import a folder as a library bin named after it (bin_name overrides): every supported media file in it, sorted naturally, sub-folders as nested bins up to 8 deep. Hidden/system entries and unsupported files are skipped and counted; a file already in the library is reused. One undo step. Replies once the files are in the library (durations and sizes fill in a moment later, like media.import); the reply's status line reads like \"Imported 84 files into 'SFX' (3 skipped)\". media.list shows each asset's bin in `folder`.",
+        args: &["path:string:true:absolute folder path", "recursive:boolean:false:sub-folders as nested bins, default true", "bin_name:string:false:name of the top bin, default the folder's name", "extensions:array:false:only these, e.g. [\"wav\", \"mp3\"]; default every supported type"],
+        kind: ToolKind::Job,
+        run: |app, args| {
+            let dir = PathBuf::from(req(arg_str(args, "path"), "path")?);
+            if !dir.is_dir() {
+                return Err(format!("{} is not a folder", dir.display()));
+            }
+            let done = app.start_folder_import(&dir, crate::engine::folder_import::Options::from_args(args), false);
+            Ok(ToolOutcome::Job(done, dir))
+        },
+    },
     row!("media.list", ToolKind::Read, "Library assets (id, path, kind, duration, size, tags, label, folder, description, used).", &[]),
-    row!("media.set", ToolKind::Mutate, "Edit asset metadata.", &["id:integer:true:", "description:string:false:", "tags:array:false:strings", "label:integer:false:0..8", "folder:string:false:"]),
+    row!("media.set", ToolKind::Mutate, "Edit asset metadata.", &["id:integer:true:", "description:string:false:", "tags:array:false:strings", "label:integer:false:0..8", "folder:string:false:", "proxy:string:false:auto | on | off (per-source proxy; auto builds one only when decoding is too slow for real time)"]),
     // Job-kind: never routed through `dispatch` (they don't mutate the project directly, they write a
     // file) - `App::handle_tool` starts the job via `start_tool_job` and replies when it finishes.
     ToolDef {
@@ -329,3 +351,25 @@ pub const TOOLS: &[ToolDef] = &[
         },
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use crate::mcp::tools::{find, input_schema, ToolKind};
+
+    /// `media.import_folder` is a Job (it replies once the folder is in), takes the documented arguments, and
+    /// its schema only requires `path`; `media.import` still takes `paths` and says folders are accepted.
+    /// (No headless `App` exists - see tools_registry_tests.rs - so the run path is the engine's `scan`/`apply`
+    /// plus the `Options::from_args` parse, both tested in engine/folder_import.)
+    #[test]
+    fn import_folder_tool_is_registered_with_its_arguments() {
+        let t = find("media.import_folder").expect("registered");
+        assert!(matches!(t.kind, ToolKind::Job));
+        let schema = input_schema(t.args);
+        for a in ["path", "recursive", "bin_name", "extensions"] {
+            assert!(schema["properties"].get(a).is_some(), "{a} missing from {schema}");
+        }
+        assert_eq!(schema["required"], serde_json::json!(["path"]));
+        assert!(find("media.import").unwrap().desc.contains("folder"));
+        assert!(find("media.import").unwrap().args[0].starts_with("paths:"));
+    }
+}
