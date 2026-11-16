@@ -1,6 +1,29 @@
 # Changelog
 
-## Unreleased
+## 1.3.0
+
+### Performance: peak playback
+- **Nested sequences play on the GPU**: a sequence clip is drawn by the graphics card with the same shaders as the
+  timeline, instead of a full copy of the project rendered on the processor every frame.
+- **Zero-copy hardware decode**: decoded video stays on the graphics card (D3D11 → OpenGL interop) at every size, so
+  1440p 120 Mbit footage decodes about 2.5x faster (6.2 → 2.5 ms a frame) and 1080p about 3x (4.7 → 1.6 ms).
+- **No stall at cuts**: the decoder for the next clip is opened and seeked ahead of the cut (a cut deep into a long
+  recording went from a 2 s freeze to a 27 ms worst gap), and the read-ahead grows when frames are expensive.
+- **Opening big projects no longer freezes the editor**: the HTML-layer scan re-processed every saved web page every
+  2 s on the interface thread (minutes of freeze on a big project); now cached. Paused interface frame p95 6.95 ms.
+- **Background work never competes with playback**: proxies, HTML renders, thumbnails and transcription run at low
+  priority and pause while you play; proxies are built nearest-the-playhead first and only for footage that needs
+  one (over 1080p, over 50 Mbit, intra codecs like PNG / ProRes), with the hardware encoder; per-clip Proxies
+  auto / on / off in the Library menu.
+- **One disk-cache budget** (Settings ▸ General, default 30 GB) with least-recently-used cleanup across HTML
+  renders, pre-renders, proxies and waveforms, a low-disk warning, and pre-renders that only redo the sequence you
+  edited. `caches.prune`.
+- **Performance window** (Window ▸ Performance…): live FPS in a donut chart of where each frame's time goes,
+  live tiles (dropped frames, worst gap, decode, cache, background jobs) coloured against the budgets, and a
+  Project tab ranking the heaviest sources and clips with Jump to and one-click fixes (Make proxy, Pre-render,
+  Free cache, Pause jobs). `perf.report`, `perf.window`, `playback.trace` (Chrome trace).
+- **Performance benchmark and gate**: `scripts/perf-bench.ps1` plays a copy of a project (or a synthetic stress
+  project) in a scratch profile and records `perf_log.csv`; `/se-verify` fails on dropped frames or regressions.
 
 ### AI enhancer (optional add-on)
 - **AI Upscale in place**: right-click a video or picture clip ▸ AI Upscale ▸ ×2 / ×4, Game / Animation
