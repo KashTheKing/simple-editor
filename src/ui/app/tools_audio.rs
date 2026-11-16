@@ -423,7 +423,8 @@ pub(super) fn bake_level(
 pub(super) fn add_visualizer(p: &mut Project, peaks: &Peaks, src: Id) -> Result<Id, String> {
     let (at, dur) = p.clip(src).map(|c| (c.start, c.duration)).ok_or("no such clip")?;
     let id = p.add_shape_clip(crate::model::ShapeKind::Rect, at, dur);
-    let (w, h) = (p.width as f64, p.height as f64);
+    // ShapeStyle w/h are half-sizes: the layer is exactly the frame
+    let (w, h) = (p.width as f64 / 2.0, p.height as f64 / 2.0);
     let c = p.clip_mut(id).ok_or("shape clip vanished")?;
     c.name = "Audio Visualizer".into();
     if let Some(s) = c.shape.as_mut() {
@@ -527,7 +528,9 @@ mod tests {
         assert_eq!((c.start, c.duration), (1.0, 2.0), "spans the music");
         assert!(p.tracks[p.track_of(id).unwrap()].kind == TrackKind::Video);
         let s = c.shape.as_ref().unwrap();
-        assert_eq!((s.w.at(0.0), s.h.at(0.0), s.fill[3]), (p.width as f64, p.height as f64, 255));
+        assert_eq!(s.fill[3], 255);
+        let (lw, lh) = crate::engine::shapes::ShapeRasterizer::size(s, 0.0);
+        assert_eq!((lw as u32, lh as u32), (p.width, p.height), "the layer is exactly the frame");
         assert_eq!(c.effects.len(), 1);
         assert_eq!(c.effects[0].name(), "Neon Orb");
         let keys = &c.effects[0].params[0].keys;
