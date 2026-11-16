@@ -444,8 +444,8 @@ mod tests {
             proxy: None,
         };
         assert_eq!(status(&a, false, 720), ProxyStatus::NotNeeded, "proxies off");
-        let small = Asset { height: 720, ..a.clone() };
-        assert_eq!(status(&small, true, 720), ProxyStatus::NotNeeded, "at/below proxy height");
+        let small = Asset { width: 1280, height: 720, codec: "h264".into(), ..a.clone() };
+        assert_eq!(status(&small, true, 720), ProxyStatus::NotNeeded, "decodes fine in real time");
         let audio = Asset { kind: ClipKind::Audio, ..a.clone() };
         assert_eq!(status(&audio, true, 720), ProxyStatus::NotNeeded, "audio never proxies");
         assert_eq!(status(&a, true, 720), ProxyStatus::Queued, "eligible, not building, not ready");
