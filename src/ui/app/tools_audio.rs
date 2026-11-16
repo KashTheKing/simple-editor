@@ -344,7 +344,71 @@ pub const TOOLS: &[ToolDef] = &[
             }
         },
     },
+    ToolDef {
+        name: "audio.bake_keys",
+        desc: "Bake an audio clip's loudness into keyframes on another clip's effect parameter (Blender's \
+               'Bake Sound to F-Curves'): one key per frame over the target clip, 0..1 loudness mapped onto \
+               the parameter's range. Drives audio visualizers such as the Neon Orb effect's `level`.",
+        args: &[
+            "clip_id:integer:true:the audio clip to listen to",
+            "target_id:integer:true:the clip whose effect gets the keys",
+            "effect:integer:false:effect index, default the last effect",
+            "param:string:false:parameter name, default level",
+            "fps:number:false:keys per second, default 30",
+        ],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let a = Args(args);
+            let (src, dst) = (req(a.id("clip_id"), "clip_id")?, req(a.id("target_id"), "target_id")?);
+            let fps = a.f64("fps").unwrap_or(30.0).clamp(1.0, 120.0);
+            let peaks = get_peaks(app, src).ok_or("waveform still computing - try again in a moment")?;
+            let audio = app.project.clip(src).ok_or("no such clip_id")?.clone();
+            let target = app.project.clip_mut(dst).ok_or("no such target_id")?;
+            let (start, len) = (target.start, target.duration);
+            let n = target.effects.len();
+            let ei = a.f64("effect").map(|v| v as usize).unwrap_or(n.wrapping_sub(1));
+            let fx = target.effects.get_mut(ei).ok_or("target has no such effect")?;
+            let name = a.str("param").unwrap_or("level");
+            let specs = fx.specs();
+            let pi = specs.iter().position(|p| p.name.replace(' ', "_").eq_ignore_ascii_case(name)).ok_or(format!("effect has no param '{name}'"))?;
+            let (lo, hi) = (specs[pi].min, specs[pi].max);
+            while fx.params.len() <= pi {
+                let d = specs[fx.params.len()].default;
+                fx.params.push(crate::model::Animated::new(d));
+            }
+            let level = loudness_keys(&peaks, |lt| audio.src_time(start + lt), len, fps);
+            fx.params[pi].keys = level
+                .iter()
+                .map(|&(t, v)| crate::model::Keyframe { t, v: lo + (hi - lo) * v, ease: Default::default() })
+                .collect();
+            Ok(ToolOutcome::Done(json!({"ok": true, "keys": level.len()})))
+        },
+    },
 ];
+
+/// (clip-local time, 0..1 loudness) every `1/fps` s over `len` s; `src(lt)` maps to source time. Peak
+/// level per frame, normalised to the loudest frame, with an instant attack and a ~0.15 s release so it
+/// pulses on hits instead of flickering.
+fn loudness_keys(peaks: &Peaks, src: impl Fn(f64) -> f64, len: f64, fps: f64) -> Vec<(f64, f64)> {
+    let step = 1.0 / fps;
+    let raw: Vec<f64> = (0..=(len * fps).floor() as usize)
+        .map(|i| {
+            let s = src(i as f64 * step);
+            let (lo, hi) = peaks.range(s, s + step);
+            lo.abs().max(hi.abs()) as f64
+        })
+        .collect();
+    let top = raw.iter().fold(1e-4f64, |m, &v| m.max(v));
+    let fall = (-step / 0.15).exp();
+    let mut env = 0.0f64;
+    raw.iter()
+        .enumerate()
+        .map(|(i, &v)| {
+            env = (v / top).max(env * fall);
+            (i as f64 * step, env.clamp(0.0, 1.0))
+        })
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
@@ -357,7 +421,7 @@ mod tests {
     /// App-construction deviation note in tools_registry_tests.rs) so this stays at the registry level.
     #[test]
     fn tools_audio_args_parse_and_round_trip() {
-        assert_eq!(TOOLS.len(), 9);
+        assert_eq!(TOOLS.len(), 10);
         let names = [
             "audio.analyze",
             "audio.beats",
@@ -368,6 +432,7 @@ mod tests {
             "autocut.detect",
             "autocut.mark",
             "media.scene_cuts",
+            "audio.bake_keys",
         ];
         for (t, want) in TOOLS.iter().zip(names) {
             assert_eq!(t.name, want);
@@ -378,5 +443,21 @@ mod tests {
         for name in names {
             assert!(crate::mcp::tools::find(name).is_some(), "{name} missing from mcp::tools::all()");
         }
+    }
+
+    /// Loud bursts give keys near 1 that fall off smoothly; silence stays at 0; deterministic.
+    #[test]
+    fn loudness_keys_pulse_on_hits() {
+        // 2 s: silent, except a hit at 0.5 s and a softer one at 1.5 s
+        let max: Vec<f32> = (0..200).map(|i| if i == 50 { 0.8 } else if i == 150 { 0.4 } else { 0.0 }).collect();
+        let p = Peaks { min: max.iter().map(|m| -m).collect(), max };
+        let k = loudness_keys(&p, |t| t, 2.0, 30.0);
+        assert_eq!(k.len(), 61);
+        assert_eq!(k, loudness_keys(&p, |t| t, 2.0, 30.0));
+        assert_eq!(k[0].1, 0.0, "silence is 0");
+        assert!(k[15].1 > 0.99, "loudest hit reaches 1: {}", k[15].1);
+        assert!(k[18].1 > 0.3 && k[18].1 < k[15].1, "then decays, no snap to 0");
+        assert!((k[45].1 - 0.5).abs() < 0.05, "half as loud, half as high: {}", k[45].1);
+        assert!(k.iter().all(|&(_, v)| (0.0..=1.0).contains(&v)));
     }
 }

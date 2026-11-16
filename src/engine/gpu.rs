@@ -2847,12 +2847,12 @@ mod driver_tests {
     /// Compile + link `user_shader(src)` with the real driver, draw it into a 4x4 target at t = 0 and
     /// return the top-left pixel.
     unsafe fn run(gl: &glow::Context, src: &str) -> Result<[u8; 4], String> {
-        let px = run_sized(gl, src, 4, 4, 0.0)?;
+        let px = run_sized(gl, src, 4, 4, 0.0, &[])?;
         Ok([px[0], px[1], px[2], px[3]])
     }
 
     /// The whole `w`x`h` RGBA8 output at clip time `t` (row 0 = uv.y 0 = top of the image).
-    unsafe fn run_sized(gl: &glow::Context, src: &str, w: i32, h: i32, t: f32) -> Result<Vec<u8>, String> {
+    unsafe fn run_sized(gl: &glow::Context, src: &str, w: i32, h: i32, t: f32, params: &[f32]) -> Result<Vec<u8>, String> {
         let vert = compile(gl, glow::VERTEX_SHADER, shaders::VERT)?;
         let prog = build(gl, vert, &shaders::user_shader(src))?;
         let tex = gl.create_texture()?;
@@ -2893,6 +2893,9 @@ mod driver_tests {
         gl.uniform_1_i32(prog.uni.get("tex"), 0);
         gl.uniform_2_f32(prog.uni.get("u_res"), w as f32, h as f32);
         gl.uniform_1_f32(prog.uni.get("u_time"), t);
+        for (i, v) in params.iter().enumerate() {
+            gl.uniform_1_f32(prog.uni.get(PARAM_NAMES[i]), *v);
+        }
         let vao = gl.create_vertex_array()?;
         gl.bind_vertex_array(Some(vao));
         gl.draw_arrays(glow::TRIANGLES, 0, 3);
@@ -2927,6 +2930,37 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         assert!(log.contains("(2)") || log.contains(":2:"), "error must point at user line 2: {log}");
     }
 
+    /// Library Neon Orb at its header defaults: a bright cyan orb in the centre of a black void, and a
+    /// louder `level` makes it bigger and brighter. Writes target/neon-orb-{quiet,loud}.ppm to look at.
+    #[test]
+    fn neon_orb_glows_in_a_dark_void() {
+        let Some(gl) = gl() else {
+            eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+            return;
+        };
+        let src = include_str!("../../library/effects/neon-orb.glsl");
+        let (w, h) = (480, 270);
+        let lit = |px: &[u8]| px.chunks_exact(4).filter(|p| p[1] as u32 + p[2] as u32 > 200).count();
+        let mut counts = Vec::new();
+        for (name, level) in [("quiet", 0.1f32), ("loud", 1.0)] {
+            let params = [level, 0.35, 0.48, 1.0, 1.0, 0.5, 1.0];
+            let px = unsafe { run_sized(&gl, src, w, h, 2.0, &params) }.unwrap();
+            let at = |x: i32, y: i32| &px[((y * w + x) * 4) as usize..][..4];
+            assert!(at(2, 2)[..3].iter().all(|&c| c < 8), "{name}: corner stays void: {:?}", at(2, 2));
+            let mut ppm = format!("P6 {w} {h} 255
+").into_bytes();
+            for y in (0..h).rev() {
+                for x in 0..w {
+                    ppm.extend_from_slice(&at(x, y)[..3]);
+                }
+            }
+            let _ = std::fs::write(format!("target/neon-orb-{name}.ppm"), ppm);
+            counts.push(lit(&px));
+        }
+        assert!(counts[0] > 500, "a visible orb even when quiet: {counts:?}");
+        assert!(counts[1] > counts[0], "louder = bigger/brighter: {counts:?}");
+    }
+
     /// Shadertoy's default plasma at a 320x240 layer and at 1920x1080: red falls smoothly and
     /// monotonically left to right (no bands or steps), and the two sizes agree.
     #[test]
@@ -2938,7 +2972,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         let plasma = crate::ui::shader_ui::EXAMPLES[1].1;
         let mut reds = Vec::new();
         for (w, h) in [(320, 240), (1920, 1080)] {
-            let px = unsafe { run_sized(&gl, plasma, w, h, 1.0) }.unwrap();
+            let px = unsafe { run_sized(&gl, plasma, w, h, 1.0, &[]) }.unwrap();
             let row = (h / 2 * w * 4) as usize;
             let r: Vec<i32> = (0..w as usize).map(|x| px[row + x * 4] as i32).collect();
             assert!(r.windows(2).all(|p| p[1] <= p[0]), "{w}x{h}: red not monotonic: {r:?}");
