@@ -360,6 +360,7 @@ fn default_asset() -> crate::model::Asset {
         range: None,
         effects: Vec::new(),
         html: None,
+        proxy: None,
     }
 }
 

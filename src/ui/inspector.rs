@@ -1603,6 +1603,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         };
         let mut p = Project::from_media(a);
         let aid = p.assets[0].id;
@@ -1904,6 +1905,7 @@ mod tests {
                 range: None,
                 effects: Vec::new(),
                 html: None,
+                proxy: None,
             });
             let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
             let mut c = Clip::new(500, ClipKind::Video, "v", 0.0, 5.0);
@@ -2479,6 +2481,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         };
         let mut p = Project::from_media(a);
         let vid = p.tracks[0].clips[0].id;

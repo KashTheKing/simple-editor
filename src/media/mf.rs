@@ -271,6 +271,7 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         range: None,
         effects: Vec::new(),
         html: None,
+        proxy: None,
     };
     let mut has_video = false;
     for s in streams(&reader) {

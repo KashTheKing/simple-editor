@@ -3,6 +3,7 @@
 //!  * `ffpipe` - ffmpeg.exe / ffprobe.exe child processes. Universal fallback, images, probing, export.
 //! Everything produces top-down RGBA8 frames and interleaved stereo f32 audio at SAMPLE_RATE.
 
+pub mod bg;
 pub mod ffpipe;
 pub mod mf;
 pub mod proxy;

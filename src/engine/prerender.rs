@@ -179,6 +179,7 @@ impl Worker {
         // bought nothing and four were 6x SLOWER than one (they each spawn a core's worth of internal
         // threads). Split by *source file* if a multi-track project ever needs the cores.
         std::thread::spawn(move || {
+            crate::media::bg::lower_thread();
             let mut work = Work::new();
             while let Ok(job) = rx.recv() {
                 let r = work.render_sec(&job, &generation);

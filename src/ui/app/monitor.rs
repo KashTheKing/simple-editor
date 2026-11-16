@@ -586,6 +586,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         });
         let mut c = Clip::new(7, ClipKind::Video, "v", 0.0, 4.0);
         c.asset = a;

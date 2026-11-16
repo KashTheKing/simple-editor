@@ -1047,6 +1047,7 @@ impl App {
             range: None,
             effects: Vec::new(),
             html: Some(HtmlSource { name: name.clone(), src: html.to_string(), fields, duration: dur, ..Default::default() }),
+            proxy: None,
         });
         // on top, like a text clip: a layer sits over the footage
         let prefer = p.video_tracks().last().copied();

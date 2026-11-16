@@ -257,6 +257,9 @@ impl App {
     /// the player. Rescans every 2 s (a handful of stat calls); one ffmpeg transcode at a time.
     /// ponytail: no per-asset badge yet - the preview shows one aggregate "Building proxy" line.
     pub(super) fn sync_proxies(&mut self) {
+        // background workers (proxy, HTML, thumbnails, transcribe) step aside while anything plays
+        let playing = self.player.is_playing() || self.source.as_ref().is_some_and(|s| s.player.is_playing());
+        crate::media::bg::set_playing(playing);
         if let Some((src, _, p)) = &self.proxy_job {
             if !p.is_done() {
                 return;
@@ -280,7 +283,8 @@ impl App {
         let all = self.settings.use_proxies;
         {
             for a in &self.project.assets {
-                if !(all || a.html.is_some()) || !proxy_eligible(a, h) {
+                // an existing proxy is used whatever the classification says (`proxy::usable`)
+                if !(all || a.html.is_some()) || !crate::media::proxy::usable(a) {
                     continue;
                 }
                 let dst = crate::media::proxy::proxy_path(&a.path, crate::media::proxy::height_for(a, h));
@@ -293,7 +297,10 @@ impl App {
             if !all {
                 cands.retain(|(src, _)| self.project.assets.iter().any(|a| a.path == *src && a.html.is_some()));
             }
-            want = pick_next_proxy(&cands, self.proxy_next.as_deref());
+            if !playing {
+                order_by_playhead(&mut cands, &self.project, self.playhead);
+                want = pick_next_proxy(&cands, self.proxy_next.as_deref());
+            }
             if want.is_some() {
                 self.proxy_next = None;
             }
@@ -339,6 +346,19 @@ pub(super) fn proxy_candidates(assets: &[crate::model::Asset], h: u32) -> Vec<(S
         .collect()
 }
 
+/// Nearest to the playhead first: the distance from `at` to the closest timeline clip using the asset
+/// (0 when the playhead is inside one). Sources no clip uses keep library order, after the rest.
+pub(super) fn order_by_playhead(cands: &mut [(String, std::path::PathBuf)], p: &crate::model::Project, at: f64) {
+    let dist = |path: &str| {
+        let Some(id) = p.asset_by_path(path).map(|a| a.id) else { return f64::MAX };
+        p.all_clips()
+            .filter(|(_, c)| c.asset == id)
+            .map(|(_, c)| (c.start - at).max(at - (c.start + c.duration)).max(0.0))
+            .fold(f64::MAX, f64::min)
+    };
+    cands.sort_by(|a, b| dist(&a.0).total_cmp(&dist(&b.0))); // stable
+}
+
 /// Which proxy builds next: `want_next` (the Jobs pane's "Build next") when it is still a candidate,
 /// else the first candidate in library order (the pre-pane behaviour).
 pub(crate) fn pick_next_proxy(
@@ -352,6 +372,27 @@ pub(crate) fn pick_next_proxy(
 mod proxy_tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn proxy_queue_is_nearest_to_playhead_first() {
+        use crate::model::{Asset, Clip, ClipKind, Project};
+        let mut p = Project::new();
+        let mut add = |path: &str, start: f64| {
+            let id = p.add_asset(Asset { path: path.into(), kind: ClipKind::Video, duration: 10.0, ..crate::engine::import::placeholder(path) });
+            let cid = p.new_id();
+            let mut c = Clip::new(cid, ClipKind::Video, "c", start, 10.0);
+            c.asset = id;
+            p.tracks[0].clips.push(c);
+        };
+        add("far", 100.0);
+        add("near", 12.0);
+        add("here", 0.0);
+        let c = |s: &str| (s.to_string(), PathBuf::from(s));
+        let mut cands = vec![c("unused"), c("far"), c("near"), c("here")];
+        order_by_playhead(&mut cands, &p, 5.0);
+        let names: Vec<_> = cands.iter().map(|c| c.0.as_str()).collect();
+        assert_eq!(names, ["here", "near", "far", "unused"]);
+    }
 
     #[test]
     fn proxy_next_wins_over_library_order() {

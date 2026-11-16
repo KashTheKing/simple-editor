@@ -166,6 +166,7 @@ mod tests {
             range: None,
             effects: Vec::new(),
             html: None,
+            proxy: None,
         });
         let a = p.assets[0].id;
         let playhead = 1.0;
