@@ -55,7 +55,7 @@ fn fill_background(out: &mut Frame, bg: BackgroundMode) {
 }
 
 /// Recursion limit for nested sequences.
-const MAX_DEPTH: usize = 8;
+pub(crate) const MAX_DEPTH: usize = 8;
 /// Mask polygon vertex cap - same as the GPU's `m_points[64]`.
 const MAX_MASK_POINTS: usize = 64;
 

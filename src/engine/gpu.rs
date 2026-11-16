@@ -18,7 +18,7 @@
 //!
 //! What the caller owes us (`LayerSet`): one decoded frame per visual clip that is on screen at `t`,
 //! keyed by clip id - including both clips of a transition (they are rendered virtually extended past
-//! their own bounds), the rendered bitmap of a `Text`/`Shape` clip, the rendered canvas of a nested
+//! their own bounds), the rendered bitmap of a `Text`/`Shape` clip, a `LayerSet::nested` tree per nested
 //! `Sequence` clip, and, under `LayerSet::SUBTITLES`, the subtitle bitmap. Anything missing is skipped.
 //! Footage is placed from its asset's native size, so any decode size works; text/shape/subtitle
 //! bitmaps are placed 1:1 and must be rasterised for `render_size(w, h, quality)`, not for `w`×`h`.
@@ -973,6 +973,13 @@ impl GpuRenderer {
                     }));
                 }
                 masks |= c.mask.is_some();
+                // ws:nested-gpu: a nested sequence's clips run their effects here too (one level deep)
+                for n in
+                    project.sequence_tracks(c.sequence).filter(|_| c.kind == ClipKind::Sequence).into_iter().flatten()
+                {
+                    effects.extend(n.clips.iter().flat_map(|c| c.effects.iter()));
+                    masks |= n.clips.iter().any(|c| c.mask.is_some());
+                }
             }
             for tr in track.transitions.iter().filter(|t| t.kind == crate::model::TransitionKind::Shader) {
                 if let Some(right) = track.clips.iter().find(|c| c.id == tr.right) {
@@ -1742,12 +1749,16 @@ impl GpuRenderer {
             return self.draw_browser(project, clip, t, canvas, layers, opacity, extra);
         }
 
-        let Some(frame) = layers.get(clip.id) else { return canvas };
-        if frame.is_empty() {
-            return canvas;
-        }
+        // ws:nested-gpu: a nested sequence comes as a layer tree of its own, drawn below into a canvas
+        let nested = layers.nested.iter().find(|n| n.id == clip.id);
+        let frame = layers.get(clip.id).filter(|f| !f.is_empty());
+        let lsize = match (nested, frame) {
+            (Some(n), _) => (n.w, n.h),
+            (None, Some(f)) => (f.width, f.height),
+            (None, None) => return canvas,
+        };
         let contain = !matches!(clip.kind, ClipKind::Text | ClipKind::Shape);
-        let native = self.native_size(project, clip, frame);
+        let native = self.native_size(project, clip, lsize);
         let mut p = crate::engine::compose::placement(project, clip, t, native, cw, ch, contain);
         if !(p.w.is_finite() && p.h.is_finite() && p.w > 0.0 && p.h > 0.0) {
             return canvas;
@@ -1787,10 +1798,18 @@ impl GpuRenderer {
         self.view.apply(&mut p);
         let Some(inv) = inverse_placement(&p, focal, z0) else { return canvas };
 
+        // ws:nested-gpu: the same render_canvas as the top level, at the size it was decoded for
+        let view = self.view;
+        let sub = nested.and_then(|n| self.render_canvas(&n.view, n.t, n.w, n.h, &n.set));
+        self.view = view;
         let perf_t0 = std::time::Instant::now(); // ws:perf-baseline
-        let tex = self.upload(clip.id, frame);
+        let tex = match (&sub, frame) {
+            (Some(c), _) => c.tex,
+            (None, Some(f)) => self.upload(clip.id, f),
+            (None, None) => return canvas,
+        };
         self.perf_upload_us += perf_t0.elapsed().as_micros() as u64; // ws:perf-baseline
-        let lsize = (frame.width, frame.height);
+
         // effect scale: layer px per project px (matches compose::apply_effects' img_scale - footage
         // is decoded at roughly the placed size, text/shape bitmaps arrive at canvas scale already)
         let img_scale = if contain { s * (lsize.0 as f32 / p.w.max(1e-3)) } else { s };
@@ -1813,6 +1832,9 @@ impl GpuRenderer {
             if let Some(t) = processed {
                 self.pool.put(t);
             }
+        }
+        if let Some(c) = sub {
+            self.pool.put(c);
         }
         out
     }
@@ -2144,7 +2166,7 @@ impl GpuRenderer {
 
     /// The layer's "native" size for placement: the asset/sequence size for footage, the bitmap size
     /// for anything the caller rendered for us.
-    fn native_size(&self, project: &Project, clip: &Clip, frame: &Frame) -> (u32, u32) {
+    fn native_size(&self, project: &Project, clip: &Clip, frame: (u32, u32)) -> (u32, u32) {
         let wh = match clip.kind {
             ClipKind::Video | ClipKind::Image => project.asset(clip.asset).map(|a| (a.width, a.height)),
             ClipKind::Sequence => project.sequence(clip.sequence).map(|s| (s.width, s.height)),
@@ -2152,7 +2174,7 @@ impl GpuRenderer {
         };
         match wh {
             Some((w, h)) if w > 0 && h > 0 => (w, h),
-            _ => (frame.width.max(1), frame.height.max(1)),
+            _ => (frame.0.max(1), frame.1.max(1)),
         }
     }
 }
@@ -2237,6 +2259,21 @@ pub struct LayerSet {
     /// (`compose::covers`, its frame in `layers`), so the tracks below were not decoded and are
     /// not drawn. 0 = draw everything.
     pub base: usize,
+    /// ws:nested-gpu: nested sequence clips, each a layer tree drawn into a canvas of its own.
+    pub nested: Vec<NestedSet>,
+}
+
+/// ws:nested-gpu: one nested sequence clip's layers (`playback::layer_for`), drawn by the same
+/// `render_canvas` as the top level at `w`x`h`, then placed, faded, masked and blended as that clip.
+pub struct NestedSet {
+    pub id: crate::model::Id,
+    /// The sequence as a project of its own (its tracks and size, no subtitles), built once per edit.
+    pub view: Arc<Project>,
+    /// Sequence time the layers were made at.
+    pub t: f64,
+    pub w: u32,
+    pub h: u32,
+    pub set: LayerSet,
 }
 
 impl LayerSet {
@@ -2818,6 +2855,8 @@ mod interop; // #158: zero-copy decode, D3D11 textures shared into GL
 mod browser_tests; // ws:browser-layer: the browser clip and polygon masks on the real driver
 #[cfg(test)]
 mod library_tests; // ws:shader-library: every library shader on the real driver
+#[cfg(test)]
+mod nested_tests; // ws:nested-gpu: nested sequences as layer trees vs the CPU compositor
 
 #[cfg(test)]
 mod driver_tests {

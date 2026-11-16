@@ -809,6 +809,8 @@ fn render_thread(
     let mut comp = Compositor::new();
     let mut shapes = ShapeRasterizer::new();
     let mut project = lock(&shared.project).clone();
+    // ws:nested-gpu: nested sequences as projects of their own, made once per project
+    let mut nest = Nest::default();
     let mut dirty = false;
     let mut pending: Option<Cmd> = None;
     // GPU mode state + recycled layer buffers
@@ -936,6 +938,7 @@ fn render_thread(
                         }
                     }
                     project = new;
+                    nest.views.clear(); // (cached sets still hold the views they were made with)
                 }
                 Cmd::Seek => {
                     dirty = true;
@@ -1014,7 +1017,18 @@ fn render_thread(
                     let exact = w > lock(&shared.clock).canvas.0;
                     pool.set_exact(exact);
                     guarded(&mut pool, |pool| {
-                        set = layers_with(&project, t, w, h, pool, &mut spare_layers, text, &mut shapes, &mut comp)
+                        set = layers_with(
+                            &project,
+                            t,
+                            w,
+                            h,
+                            pool,
+                            &mut spare_layers,
+                            text,
+                            &mut shapes,
+                            &mut comp,
+                            &mut nest,
+                        )
                     });
                     pool.set_exact(false);
                     let _ = reply.send(Arc::new(set));
@@ -1040,7 +1054,18 @@ fn render_thread(
                         let mut set = LayerSet::default();
                         let text = &mut TextRef::Shared(&text);
                         guarded(&mut pool, |pool| {
-                            set = layers_with(&project, t, w, h, pool, &mut spare_layers, text, &mut shapes, &mut comp)
+                            set = layers_with(
+                                &project,
+                                t,
+                                w,
+                                h,
+                                pool,
+                                &mut spare_layers,
+                                text,
+                                &mut shapes,
+                                &mut comp,
+                                &mut nest,
+                            )
                         });
                         *lock(&shared.reply) = Some((id, Arc::new(set)));
                     }
@@ -1128,6 +1153,7 @@ fn render_thread(
                         &text,
                         &mut shapes,
                         &mut comp,
+                        &mut nest,
                         &shared.cache_hits,
                     );
                     (Some(set), None, ok)
@@ -1668,6 +1694,7 @@ fn gpu_cached(
     text: &Mutex<TextRasterizer>,
     shapes: &mut ShapeRasterizer,
     comp: &mut Compositor,
+    nest: &mut Nest,
     hits: &AtomicU64,
 ) -> (Arc<LayerSet>, bool) {
     if let Some(s) = cache.get(idx) {
@@ -1679,7 +1706,7 @@ fn gpu_cached(
     let ok = {
         let perf_t0 = Instant::now(); // ws:perf-baseline
         let ok = guarded(pool, |pool| {
-            set = layers_with(project, t, w, h, pool, spare, &mut TextRef::Shared(text), shapes, comp)
+            set = layers_with(project, t, w, h, pool, spare, &mut TextRef::Shared(text), shapes, comp, nest)
         });
         decode_stats::record(perf_t0.elapsed().as_micros() as u64); // ws:perf-baseline
         ok
@@ -1694,8 +1721,13 @@ fn gpu_cached(
         // once held a full frame still holds that much when a small layer is decoded into it
         let still = |id| project.clip(id).is_some_and(|c| c.kind == ClipKind::Image);
         let own = |id, f: &Arc<Frame>| if Arc::strong_count(f) == 1 || !still(id) { f.bytes() } else { 0 };
-        let bytes: usize = set.layers.iter().map(|(id, f)| own(*id, f)).sum::<usize>()
-            + set.motion.iter().map(|(id, _, f)| own(*id, f)).sum::<usize>();
+        // ws:nested-gpu: a nested sequence's layers count as much as the top level's
+        fn bytes(set: &LayerSet, own: &dyn Fn(crate::model::Id, &Arc<Frame>) -> usize) -> usize {
+            set.layers.iter().map(|(id, f)| own(*id, f)).sum::<usize>()
+                + set.motion.iter().map(|(id, _, f)| own(*id, f)).sum::<usize>()
+                + set.nested.iter().map(|n| bytes(&n.set, own)).sum::<usize>()
+        }
+        let bytes = bytes(&set, &own);
         for old in cache.insert(idx, bytes, set.clone()) {
             recycle(Some(old), spare);
         }
@@ -1707,9 +1739,10 @@ fn gpu_cached(
 /// visual clip on screen at `t` - **both** clips of a transition, which the renderer draws virtually
 /// extended past their own bounds - plus the subtitle bitmap under `LayerSet::SUBTITLES`. Media is
 /// decoded at the size the compositor would have used (placement, capped at the source's native size);
-/// text/shape clips are rasterised and nested sequences composited on the CPU, all at (w, h) - which is
-/// already the quality-scaled render size, so `gpu::render_size` must not be applied again. Adjustment
-/// layers need no bitmap (they re-process the canvas). Effects that `needs_motion()` also get neighbours.
+/// text/shape clips are rasterised, all at (w, h) - which is already the quality-scaled render size, so
+/// `gpu::render_size` must not be applied again - and a nested sequence is a `NestedSet` of its own.
+/// Adjustment layers need no bitmap (they re-process the canvas). Effects that `needs_motion()` also get
+/// neighbours.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decode_layers(
     project: &Project,
@@ -1723,7 +1756,42 @@ pub(crate) fn decode_layers(
     comp: &mut Compositor,
 ) -> LayerSet {
     let _s = crate::perf::span("layer_decode");
-    layers_with(project, t, w, h, pool, spare, &mut TextRef::Own(text), shapes, comp)
+    // ponytail: export and prerender may hand a changed project to the same caller state, so their
+    // sequence views are made per frame (one clone per nested sequence on screen, as before). Only the
+    // player keeps them across frames (`Nest` there is cleared on every SetProject).
+    layers_with(project, t, w, h, pool, spare, &mut TextRef::Own(text), shapes, comp, &mut Nest::default())
+}
+
+/// ws:nested-gpu: what `layers_with` carries down into nested sequences: how deep it is, and each
+/// sequence as a project of its own (`NestedSet::view`), kept until the project changes.
+#[derive(Default)]
+struct Nest {
+    /// (sequence, made from the open-for-editing project) -> the view
+    views: HashMap<(crate::model::Id, bool), Arc<Project>>,
+    depth: usize,
+}
+
+impl Nest {
+    /// The sequence `seq` as a project: its tracks at its size `qw`x`qh`, no subtitles (they belong to
+    /// the outer canvas). `editing`: it is the one open for editing, so `project` holds it already.
+    fn view(&mut self, project: &Project, seq: crate::model::Id, editing: bool, q: (u32, u32)) -> Option<Arc<Project>> {
+        if let Some(v) = self.views.get(&(seq, editing)) {
+            return Some(v.clone());
+        }
+        let tracks = if editing { None } else { Some(&project.sequence(seq)?.tracks) };
+        let mut sub = project.clone();
+        if let Some(tracks) = tracks {
+            sub.tracks.clone_from(tracks);
+            (sub.width, sub.height) = q;
+            sub.editing = Some(seq);
+        }
+        sub.show_subtitles = false;
+        // nothing draws these with subtitles off, and a transcript can be the biggest part of a project
+        (sub.subtitles, sub.transcripts) = (Vec::new(), Vec::new());
+        let v = Arc::new(sub);
+        self.views.insert((seq, editing), v.clone());
+        Some(v)
+    }
 }
 
 /// The text rasteriser `decode_layers` draws with: the caller's own, or the shared one - locked
@@ -1788,8 +1856,11 @@ fn layers_with(
     text: &mut TextRef,
     shapes: &mut ShapeRasterizer,
     comp: &mut Compositor,
+    nest: &mut Nest,
 ) -> LayerSet {
     let mut set = LayerSet::default();
+    // a clip's layer is a bitmap, or a nested sequence's own set
+    let has = |set: &LayerSet, id| set.get(id).is_some() || set.nested.iter().any(|n| n.id == id);
     let mut later = Deferred { jobs: Vec::new(), hole: Arc::new(Frame::default()) };
     // a cold frame (a scrub onto a stack of stills nothing has shown yet) opens its sources side by
     // side, not one after the other
@@ -1821,8 +1892,8 @@ fn layers_with(
             }
             let Some(clip) = on_screen(track, t).find(|c| covering(c)) else { continue };
             // decoded on the spot: whether the tracks below are needed hangs on this frame
-            layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, None);
-            if set.get(clip.id).is_some() {
+            layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, nest, None);
+            if has(&set, clip.id) {
                 set.base = ti;
                 break;
             }
@@ -1836,14 +1907,14 @@ fn layers_with(
         // drawn past their own bounds, so filtering by `contains(t)` here would hard-cut every transition
         if let Some((_, left, right)) = track.transition_at(t) {
             for clip in [left, right].into_iter().flatten() {
-                layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, Some(&mut later));
+                layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, nest, Some(&mut later));
             }
             continue;
         }
         for clip in on_screen(track, t) {
             // (a cover candidate is in the set already, whether or not it ended up covering)
-            if set.get(clip.id).is_none() && !(cull && unseen(clip)) {
-                layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, Some(&mut later));
+            if !has(&set, clip.id) && !(cull && unseen(clip)) {
+                layer_for(project, clip, t, w, h, pool, spare, text, shapes, comp, &mut set, nest, Some(&mut later));
             }
         }
     }
@@ -1939,8 +2010,8 @@ fn still_need(project: &Project, clip: &Clip, size: (u32, u32)) -> (u32, u32) {
     (((w * z).ceil() as u32).min(size.0), ((h * z).ceil() as u32).min(size.1))
 }
 
-/// One clip's layer: video/images decode, text/shapes rasterise, a nested sequence is composited on the
-/// CPU. Kinds the renderer draws without a bitmap (Adjustment) or not at all (Audio) push nothing.
+/// One clip's layer: video/images decode, text/shapes rasterise, a nested sequence becomes a
+/// `NestedSet` (its own layers, made by `layers_with`). Kinds the renderer draws without a bitmap (Adjustment) or not at all (Audio) push nothing.
 /// `later`: video frames that are not in the source cache are left to it (a hole in their place)
 /// instead of decoded here.
 #[allow(clippy::too_many_arguments)]
@@ -1956,6 +2027,7 @@ fn layer_for<'p>(
     shapes: &mut ShapeRasterizer,
     comp: &mut Compositor,
     set: &mut LayerSet,
+    nest: &mut Nest,
     mut later: Option<&mut Deferred<'p>>,
 ) {
     // Asset nodes sample footage that need not be on the timeline, so nothing else decodes it: one
@@ -2066,6 +2138,9 @@ fn layer_for<'p>(
             }
         }
         ClipKind::Sequence => {
+            if nest.depth >= crate::engine::compose::MAX_DEPTH {
+                return;
+            }
             let editing = project.editing == Some(clip.sequence);
             let (qw, qh) = if editing {
                 (project.width, project.height) // its live size is swapped into the project
@@ -2086,20 +2161,13 @@ fn layer_for<'p>(
             let dh = (p.h.round() as u32).clamp(1, qh);
             let dur = project.sequence_duration(clip.sequence);
             let st = clip.src_time(t).clamp(0.0, (dur - 1e-6).max(0.0));
-            // ponytail: gpu.rs wants a nested sequence as a ready bitmap, so the CPU compositor renders
-            // it - through a shallow project view (one Project clone per frame while a sequence clip is
-            // on screen). Making `Compositor::render_tracks` pub would drop both the clone and this.
-            let mut sub = project.clone();
-            if !editing {
-                let Some(sq) = project.sequence(clip.sequence) else { return };
-                sub.tracks.clone_from(&sq.tracks);
-                (sub.width, sub.height) = (qw, qh);
-                sub.editing = Some(clip.sequence);
-            }
-            sub.show_subtitles = false; // subtitles belong to the outer canvas
-            let mut frame = spare.pop().unwrap_or_default();
-            text.with(|tx| comp.render(&sub, st, dw, dh, pool, tx, &mut frame));
-            set.layers.push((clip.id, Arc::new(frame)));
+            // ws:nested-gpu: the sequence's own layer tree, made by this same builder (parallel decode
+            // and all) against the sequence as a project of its own; gpu.rs draws it into a canvas
+            let Some(view) = nest.view(project, clip.sequence, editing, (qw, qh)) else { return };
+            nest.depth += 1;
+            let inner = layers_with(&view, st, dw, dh, pool, spare, text, shapes, comp, nest);
+            nest.depth -= 1;
+            set.nested.push(crate::engine::gpu::NestedSet { id: clip.id, view, t: st, w: dw, h: dh, set: inner });
         }
         // ---- ws:browser-layer ---- the window art, cursor sprite and overlays, under slot keys
         ClipKind::Browser => {
@@ -2170,7 +2238,13 @@ fn recycle(old: Option<Arc<LayerSet>>, spare: &mut Vec<Frame>) {
     // ponytail: a count, not bytes; a byte cap if 4K stacks make 16 spares show in RAM.
     const KEEP: usize = 16;
     let Some(Ok(set)) = old.map(Arc::try_unwrap) else { return };
-    let frames = set.layers.into_iter().map(|(_, f)| f).chain(set.motion.into_iter().map(|(_, _, f)| f));
+    // ws:nested-gpu: a nested sequence's own sets give theirs back too
+    let mut frames = Vec::new();
+    let mut sets = vec![set];
+    while let Some(set) = sets.pop() {
+        frames.extend(set.layers.into_iter().map(|(_, f)| f).chain(set.motion.into_iter().map(|(_, _, f)| f)));
+        sets.extend(set.nested.into_iter().map(|n| n.set));
+    }
     for f in frames {
         if spare.len() >= KEEP {
             return;
@@ -2555,7 +2629,21 @@ mod render_thread_tests {
             for c in tr.clips.iter().filter(|c| c.enabled && c.contains(t)) {
                 let text = &mut TextRef::Own(&mut text);
                 let spare = &mut Vec::new();
-                layer_for(&project, c, t, 1280, 720, &mut pool, spare, text, &mut shapes, &mut comp, &mut sequential, None);
+                layer_for(
+                    &project,
+                    c,
+                    t,
+                    1280,
+                    720,
+                    &mut pool,
+                    spare,
+                    text,
+                    &mut shapes,
+                    &mut comp,
+                    &mut sequential,
+                    &mut Nest::default(),
+                    None,
+                );
             }
         }
         assert_eq!(parallel.layers.iter().map(|l| l.0).collect::<Vec<_>>(), ids, "every clip, bottom to top");
@@ -3298,7 +3386,10 @@ mod tests {
         let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());
         let set = decode_layers(&project, 1.0, 320, 240, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
         assert!(set.get(shp).is_some(), "shape clip has no layer");
-        assert!(set.get(seq).is_some(), "nested sequence has no layer");
+        // ws:nested-gpu: a layer tree of its own, not a bitmap the CPU compositor made
+        assert!(set.get(seq).is_none(), "a nested sequence is no longer composited on the CPU");
+        let n = set.nested.iter().find(|n| n.id == seq).expect("nested sequence has no layer tree");
+        assert_eq!((n.w, n.h, n.set.layers.len()), (320, 240, 1), "its shape, at its own size");
         if text.families().is_empty() {
             eprintln!("no system fonts - skipping the text assertions");
             return;
