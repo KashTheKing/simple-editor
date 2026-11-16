@@ -25,7 +25,9 @@
 - **Performance window** (Window ▸ Performance…): live FPS in a donut chart of where each frame's time goes,
   live tiles (dropped frames, worst gap, decode, cache, background jobs) coloured against the budgets, and a
   Project tab ranking the heaviest sources and clips with Jump to and one-click fixes (Make proxy, Pre-render,
-  Free cache, Pause jobs). `perf.report`, `perf.window`, `playback.trace` (Chrome trace).
+  Free cache, Pause jobs). For AI agents: `perf.bench` (play a range in the live app and get dropped frames,
+  fps, worst gap, UI p95 and the cost breakdown against the budgets), `perf.report`, `perf.window`, `playback.trace`
+  (Chrome trace).
 - **Performance benchmark and gate**: `scripts/perf-bench.ps1` plays a copy of a project (or a synthetic stress
   project) in a scratch profile and records `perf_log.csv`; `/se-verify` fails on dropped frames or regressions.
 
