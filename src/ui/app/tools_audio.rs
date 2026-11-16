@@ -11,6 +11,7 @@ use super::*;
 use crate::engine::analysis::{self, NormMode};
 use crate::engine::autocut::{self, AutoCutParams};
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
+use crate::engine::visualizer;
 use crate::media::waveform::Peaks;
 use std::sync::Arc;
 
@@ -369,23 +370,48 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "audio.visualizer",
-        desc: "Add a Neon Orb audio visualizer over an audio clip: a full-frame layer spanning the clip whose orb \
-               swells and boils with its loudness (level keyframes baked from the audio, like \
-               audio.bake_keys). Same as right-click > Audio > Add Audio Visualizer. Returns the new clip id.",
-        args: &["clip_id:integer:true:the audio clip to visualize"],
+        desc: "Add an audio visualizer over an audio clip: a full-frame layer spanning it whose shader follows \
+               the music (level + 6 spectrum bands baked to keyframes once, so playback stays cheap). Same as \
+               right-click > Audio > Add Audio Visualizer. Given a visualizer clip instead, switches its style \
+               and bakes the audio under it again. style: a name from audio.visualizer_styles (built-in Neon \
+               Orb (default), Spectrum Bars, or a custom library effect that declares level/band1..band6).",
+        args: &[
+            "clip_id:integer:true:an audio clip (adds a visualizer) or a visualizer clip (restyles it)",
+            "style:string:false:style name, default Neon Orb",
+        ],
         kind: ToolKind::Mutate,
         run: |app, args| {
-            let src = req(Args(args).id("clip_id"), "clip_id")?;
-            let peaks = get_peaks(app, src).ok_or("waveform still computing - try again in a moment")?;
-            let id = add_visualizer(&mut app.project, &peaks, src)?;
-            Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": id})))
+            let a = Args(args);
+            let id = req(a.id("clip_id"), "clip_id")?;
+            let style = visualizer::find(a.str("style"))?;
+            let backend = app.backend();
+            let clip = app.project.clip(id).ok_or("no such clip_id")?;
+            if clip.effects.iter().any(|e| visualizer::style_of(e).is_some()) {
+                visualizer::restyle(&mut app.project, id, &style, backend)?;
+                return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": id, "style": style.name})));
+            }
+            let vid = visualizer::add(&mut app.project, id, &style, backend)?;
+            Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": vid, "style": style.name})))
+        },
+    },
+    ToolDef {
+        name: "audio.visualizer_styles",
+        desc: "The audio visualizer styles audio.visualizer and the Inspector offer: the built-ins, then every \
+               library effect that reads audio (its header declares `level` or `band1`..`band6`; save one \
+               with library.save kind=effect).",
+        args: &[],
+        kind: ToolKind::Read,
+        run: |_, _| {
+            let rows: Vec<Value> =
+                visualizer::styles().iter().map(|s| json!({"name": s.name, "custom": s.custom})).collect();
+            Ok(ToolOutcome::Done(json!({"styles": rows})))
         },
     },
 ];
 
 /// Bake audio clip `src`'s loudness into keyframes on `dst`'s effect `ei` (default: the last one),
 /// parameter `name`: one key per `1/fps` s over `dst`, 0..1 loudness mapped onto the parameter's range.
-/// Shared by `audio.bake_keys` and `Action::AddAudioVisualizer`. Returns the key count.
+/// Used by `audio.bake_keys`. Returns the key count.
 pub(super) fn bake_level(
     p: &mut Project,
     peaks: &Peaks,
@@ -415,24 +441,6 @@ pub(super) fn bake_level(
         .map(|&(t, v)| crate::model::Keyframe { t, v: lo + (hi - lo) * v, ease: Default::default() })
         .collect();
     Ok(level.len())
-}
-
-/// A full-frame black shape over audio clip `src`'s span carrying the Neon Orb effect, its `level` baked
-/// from `src`'s loudness: the one-click audio visualizer (clip menu ▸ Audio, `ui.action`). Returns the
-/// new clip.
-pub(super) fn add_visualizer(p: &mut Project, peaks: &Peaks, src: Id) -> Result<Id, String> {
-    let (at, dur) = p.clip(src).map(|c| (c.start, c.duration)).ok_or("no such clip")?;
-    let id = p.add_shape_clip(crate::model::ShapeKind::Rect, at, dur);
-    // ShapeStyle w/h are half-sizes: the layer is exactly the frame
-    let (w, h) = (p.width as f64 / 2.0, p.height as f64 / 2.0);
-    let c = p.clip_mut(id).ok_or("shape clip vanished")?;
-    c.name = "Audio Visualizer".into();
-    if let Some(s) = c.shape.as_mut() {
-        (s.w, s.h, s.fill) = (crate::model::Animated::new(w), crate::model::Animated::new(h), [0, 0, 0, 255]);
-    }
-    c.effects.push(crate::model::Effect::from_shader(crate::ui::spiky_ball::SRC));
-    bake_level(p, peaks, src, id, None, "level", 30.0)?;
-    Ok(id)
 }
 
 /// (clip-local time, 0..1 loudness) every `1/fps` s over `len` s; `src(lt)` maps to source time. Peak
@@ -470,7 +478,7 @@ mod tests {
     /// App-construction deviation note in tools_registry_tests.rs) so this stays at the registry level.
     #[test]
     fn tools_audio_args_parse_and_round_trip() {
-        assert_eq!(TOOLS.len(), 11);
+        assert_eq!(TOOLS.len(), 12);
         let names = [
             "audio.analyze",
             "audio.beats",
@@ -483,6 +491,7 @@ mod tests {
             "media.scene_cuts",
             "audio.bake_keys",
             "audio.visualizer",
+            "audio.visualizer_styles",
         ];
         for (t, want) in TOOLS.iter().zip(names) {
             assert_eq!(t.name, want);
@@ -509,33 +518,5 @@ mod tests {
         assert!(k[18].1 > 0.3 && k[18].1 < k[15].1, "then decays, no snap to 0");
         assert!((k[45].1 - 0.5).abs() < 0.05, "half as loud, half as high: {}", k[45].1);
         assert!(k.iter().all(|&(_, v)| (0.0..=1.0).contains(&v)));
-    }
-
-    /// The one-click visualizer: a full-frame opaque layer above the music, exactly its span, carrying
-    /// the Neon Orb with `level` keyed from the audio (and one undo-able project edit, no other clip moved).
-    #[test]
-    fn add_visualizer_covers_the_audio_with_a_baked_orb() {
-        let mut p = Project::new();
-        let ati = *p.audio_tracks().first().unwrap();
-        let mut music = Clip::new(p.new_id(), ClipKind::Audio, "song", 1.0, 2.0);
-        music.src_in = 0.0;
-        let src = music.id;
-        p.tracks[ati].clips.push(music);
-        let max: Vec<f32> = (0..300).map(|i| if i == 150 { 0.9 } else { 0.05 }).collect();
-        let peaks = Peaks { min: max.iter().map(|m| -m).collect(), max };
-        let id = add_visualizer(&mut p, &peaks, src).unwrap();
-        let c = p.clip(id).unwrap();
-        assert_eq!((c.start, c.duration), (1.0, 2.0), "spans the music");
-        assert!(p.tracks[p.track_of(id).unwrap()].kind == TrackKind::Video);
-        let s = c.shape.as_ref().unwrap();
-        assert_eq!(s.fill[3], 255);
-        let (lw, lh) = crate::engine::shapes::ShapeRasterizer::size(s, 0.0);
-        assert_eq!((lw as u32, lh as u32), (p.width, p.height), "the layer is exactly the frame");
-        assert_eq!(c.effects.len(), 1);
-        assert_eq!(c.effects[0].name(), "Neon Orb");
-        let keys = &c.effects[0].params[0].keys;
-        assert_eq!(keys.len(), 61, "level keyed at 30 fps over 2 s");
-        // the hit at source 1.5 s = clip-local 1.5 s (music starts at source 0, clip at timeline 1)
-        assert!(keys[45].v > 0.99 && keys[5].v < 0.1, "loud at the hit, quiet elsewhere");
     }
 }

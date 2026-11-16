@@ -150,7 +150,7 @@ impl Rig {
         f("ratio", W as f32 / H as f32);
         f("u_frames", 2.0);
         gl.uniform_1_i32(gl.get_uniform_location(prog, "u_has_mask").as_ref(), 0);
-        for i in 0..8 {
+        for i in 0..crate::engine::shaderlib::MAX_PARAMS {
             f(&format!("p{i}"), meta.params.get(i).map_or(0.0, |p| p.default as f32));
         }
         set(&f);

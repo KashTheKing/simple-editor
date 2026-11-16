@@ -126,13 +126,10 @@ pub fn act(app: &mut App, a: Action) -> bool {
                 app.toast("Select an audio clip (or a video clip with linked audio)");
                 return true;
             };
-            let asset = app.project.clip(src).map_or(0, |c| c.asset);
-            let Some(peaks) = asset_peaks(&mut app.waveforms)(&app.project, asset) else {
-                app.toast("Waveform still computing - try again in a moment");
-                return true;
-            };
             let before = app.project.to_json();
-            match super::tools_audio::add_visualizer(&mut app.project, &peaks, src) {
+            let backend = app.backend();
+            let style = crate::engine::visualizer::find(None).expect("a built-in style");
+            match crate::engine::visualizer::add(&mut app.project, src, &style, backend) {
                 Ok(id) => {
                     app.push_undo_labeled(before, "Add Audio Visualizer");
                     app.selection = vec![id];

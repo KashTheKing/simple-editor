@@ -2930,35 +2930,49 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         assert!(log.contains("(2)") || log.contains(":2:"), "error must point at user line 2: {log}");
     }
 
-    /// Library Neon Orb at its header defaults: a bright cyan orb in the centre of a black void, and a
-    /// louder `level` makes it bigger and brighter. Writes target/neon-orb-{quiet,loud}.ppm to look at.
+    /// Every visualizer style (the built-ins and the custom sample) on the real driver: something lit on
+    /// a dark void, and loud audio (every audio param at its max) draws more light than quiet audio
+    /// (0.1). Writes target/visualizer-<style>-{quiet,loud}.ppm to look at.
     #[test]
-    fn neon_orb_glows_in_a_dark_void() {
+    fn visualizer_styles_react_to_audio_on_the_real_driver() {
         let Some(gl) = gl() else {
             eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
             return;
         };
-        let src = include_str!("../../library/effects/neon-orb.glsl");
+        let mut styles: Vec<(&str, &str)> = crate::engine::visualizer::BUILTIN.to_vec();
+        styles.push(("Pulse Rings", include_str!("../../tools/visualizer-sample/pulse-rings.glsl")));
         let (w, h) = (480, 270);
-        let lit = |px: &[u8]| px.chunks_exact(4).filter(|p| p[1] as u32 + p[2] as u32 > 200).count();
-        let mut counts = Vec::new();
-        for (name, level) in [("quiet", 0.1f32), ("loud", 1.0)] {
-            let params = [level, 0.35, 0.48, 1.0, 1.0, 0.5, 1.0];
-            let px = unsafe { run_sized(&gl, src, w, h, 2.0, &params) }.unwrap();
-            let at = |x: i32, y: i32| &px[((y * w + x) * 4) as usize..][..4];
-            assert!(at(2, 2)[..3].iter().all(|&c| c < 8), "{name}: corner stays void: {:?}", at(2, 2));
-            let mut ppm = format!("P6 {w} {h} 255
+        for (style, src) in styles {
+            let meta = crate::engine::shaderlib::parse_meta(src);
+            let mut light = Vec::new();
+            for (name, level) in [("quiet", 0.1f64), ("loud", 1.0)] {
+                let params: Vec<f32> = meta
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let audio = crate::engine::visualizer::AUDIO_PARAMS.contains(&p.id.as_str());
+                        // a black backdrop for styles that offer one, so "void" is comparable
+                        let v = if audio { p.min + (p.max - p.min) * level } else if p.id == "background" { 2.0 } else { p.default };
+                        v as f32
+                    })
+                    .collect();
+                let px = unsafe { run_sized(&gl, src, w, h, 2.0, &params) }.unwrap();
+                let at = |x: i32, y: i32| &px[((y * w + x) * 4) as usize..][..4];
+                assert!(at(2, 2)[..3].iter().all(|&c| c < 8), "{style} {name}: corner stays void: {:?}", at(2, 2));
+                let mut ppm = format!("P6 {w} {h} 255
 ").into_bytes();
-            for y in (0..h).rev() {
-                for x in 0..w {
-                    ppm.extend_from_slice(&at(x, y)[..3]);
+                for y in (0..h).rev() {
+                    for x in 0..w {
+                        ppm.extend_from_slice(&at(x, y)[..3]);
+                    }
                 }
+                let file = crate::engine::library::slug(style);
+                let _ = std::fs::write(format!("target/visualizer-{file}-{name}.ppm"), ppm);
+                light.push(px.chunks_exact(4).map(|p| p[0] as u64 + p[1] as u64 + p[2] as u64).sum::<u64>());
             }
-            let _ = std::fs::write(format!("target/neon-orb-{name}.ppm"), ppm);
-            counts.push(lit(&px));
+            assert!(light[0] > 20_000, "{style}: visible even when quiet: {light:?}");
+            assert!(light[1] > light[0] * 11 / 10, "{style}: louder = more light: {light:?}");
         }
-        assert!(counts[0] > 500, "a visible orb even when quiet: {counts:?}");
-        assert!(counts[1] > counts[0], "louder = bigger/brighter: {counts:?}");
     }
 
     /// Shadertoy's default plasma at a 320x240 layer and at 1920x1080: red falls smoothly and

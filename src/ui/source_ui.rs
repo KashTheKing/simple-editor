@@ -47,6 +47,8 @@ pub struct SourceState {
     pub src_out: Option<f64>,
     pub tape: Option<Tape>,
     ball: Orb,
+    /// (style name, shader source) the visualizer draws: re-read only when the Settings pick changes.
+    viz: Option<(String, String)>,
     /// The timecode's text while it is being typed (`preview::timecode_label`).
     tc_edit: Option<String>,
     /// Viewer zoom (1 = fit) and pan, like `PreviewState.view`; `fit_px` = the fitted picture's width.
@@ -77,6 +79,7 @@ impl SourceState {
             src_out: None,
             tape: None,
             ball: Orb::default(),
+            viz: None,
             tc_edit: None,
             view: (1.0, egui::Vec2::ZERO),
             fit_px: 0.0,
@@ -321,24 +324,27 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
             // cover art (an audio file's embedded picture) wins over the visualizer when there is one
             let cover =
                 thumbs.and_then(|t| t.texture(ui.ctx(), &path, 0.0, (rect.height() * ui.pixels_per_point()) as u32));
-            if let Some((tex, size)) = cover {
-                let aspect = size[0].max(1) as f32 / size[1].max(1) as f32;
-                let lb = preview::letterbox(rect, aspect, ui.pixels_per_point());
-                ui.painter().image(
-                    tex,
-                    lb,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
+            if cover.is_some() || !settings.audio_visualizer {
+                // ws:audio-visualizer: the "now playing" card - cover (or the music-note icon) + title
+                let title = crate::ui::audio_card::title(ui.ctx(), &path);
+                crate::ui::audio_card::paint(ui, rect, cover, &title);
             } else if settings.audio_visualizer {
                 // animate only while playing: paused, the orb holds still and asks for no repaints
                 if playing {
                     if let Some(p) = waveforms.and_then(|w| w.get(&path, 0)) {
-                        st.ball.update(crate::ui::spiky_ball::loudness(&p, playhead), ui.input(|i| i.stable_dt));
+                        st.ball.update(crate::ui::spiky_ball::live(&p, playhead), ui.input(|i| i.stable_dt));
                     }
                     ui.ctx().request_repaint();
                 }
-                st.ball.paint(ui.painter(), rect);
+                let want = &settings.audio_visualizer_style;
+                if st.viz.as_ref().is_none_or(|(n, _)| n != want) {
+                    let name = (!want.is_empty()).then_some(want.as_str());
+                    let src = crate::engine::visualizer::find(name).or_else(|_| crate::engine::visualizer::find(None));
+                    st.viz = Some((want.clone(), src.map(|s| s.src).unwrap_or_default()));
+                }
+                if let Some((_, src)) = &st.viz {
+                    st.ball.paint(ui.painter(), rect, src);
+                }
             }
         }
         // what is open: the file name in the corner, over a dim plate
@@ -384,9 +390,23 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
                     }
                 });
             }
-            if !has_video && menu::check(ui, settings.audio_visualizer, "Audio Visualizer", "").clicked() {
-                settings.audio_visualizer = !settings.audio_visualizer;
-                resp.settings_changed = true;
+            if !has_video {
+                // ws:audio-visualizer: Off, or one of the styles (built-ins + custom library shaders)
+                menu::sub(ui, None, "Audio Visualizer", |ui| {
+                    if menu::check(ui, !settings.audio_visualizer, "Off", "").clicked() {
+                        settings.audio_visualizer = false;
+                        resp.settings_changed = true;
+                    }
+                    let current = st.viz.as_ref().map(|(n, _)| n.clone()).unwrap_or_default();
+                    for (i, s) in crate::engine::visualizer::styles().into_iter().enumerate() {
+                        let on = settings.audio_visualizer && (s.name == current || (current.is_empty() && i == 0));
+                        if menu::check(ui, on, &s.name, "").clicked() {
+                            settings.audio_visualizer = true;
+                            settings.audio_visualizer_style = if i == 0 { String::new() } else { s.name };
+                            resp.settings_changed = true;
+                        }
+                    }
+                });
             }
             if has_video {
                 menu::sub(ui, Some(Glyph::Zoom), "Zoom", |ui| preview::zoom_rows(ui, &mut st.view, fit_px, width));

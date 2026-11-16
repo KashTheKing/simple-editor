@@ -629,6 +629,25 @@
       "thumb": "thumbs/effects-sparks.jpg"
     },
     {
+      "id": "effects/spectrum-bars",
+      "kind": "effect",
+      "name": "Spectrum Bars",
+      "desc": "Audio visualizer: a mirrored field of thin bars receding to a horizon, in blue and green bands, low notes by the centre. Right-click an audio clip ▸ Audio ▸ Add Audio Visualizer and pick this style; the bars follow the music's spectrum.",
+      "tags": [
+        "visualizer",
+        "audio",
+        "music",
+        "spectrum",
+        "bars",
+        "equalizer",
+        "retro"
+      ],
+      "file": "effects/spectrum-bars.glsl",
+      "size": 2888,
+      "credit": "",
+      "thumb": "thumbs/effects-spectrum-bars.jpg"
+    },
+    {
       "id": "effects/speed-lines",
       "kind": "effect",
       "name": "Speed Lines",
@@ -696,6 +715,27 @@
       "size": 2726,
       "credit": "",
       "thumb": "thumbs/effects-vhs-pro.jpg"
+    },
+    {
+      "id": "effects/voxel-blocks",
+      "kind": "effect",
+      "name": "Voxel Blocks",
+      "desc": "Audio visualizer: a blocky voxel island with pixel-art grass, dirt, stone and ores. Columns rise with the music's spectrum, a block drops in and stacks on every beat while the oldest ones break away, and the camera slowly orbits. Background 0 is transparent for overlays.",
+      "tags": [
+        "visualizer",
+        "audio",
+        "music",
+        "beat",
+        "voxel",
+        "blocks",
+        "pixel art",
+        "3d",
+        "game"
+      ],
+      "file": "effects/voxel-blocks.glsl",
+      "size": 11153,
+      "credit": "",
+      "thumb": "thumbs/effects-voxel-blocks.jpg"
     },
     {
       "id": "effects/zoom-blur",

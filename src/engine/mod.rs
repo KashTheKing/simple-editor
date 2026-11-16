@@ -50,6 +50,7 @@ pub mod tracking;
 pub mod transcribe;
 // ---- ws:transcript-captions ----
 pub mod tts;
+pub mod visualizer; // ws:audio-visualizer
 // ---- ws:voice-input ----
 pub mod voice;
 pub mod xmeml;
