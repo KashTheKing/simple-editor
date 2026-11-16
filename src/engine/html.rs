@@ -1310,7 +1310,7 @@ impl Ws {
         let s = TcpStream::connect(("127.0.0.1", port)).map_err(|e| e.to_string())?;
         s.set_nodelay(true).ok();
         s.set_read_timeout(Some(Duration::from_secs(30))).ok();
-        let mut w = s.try_clone().map_err(|e| e.to_string())?;
+        let mut w = crate::mcp::clone_socket(&s).map_err(|e| e.to_string())?;
         // no Origin header: Edge then needs no --remote-allow-origins
         write!(
             w,
@@ -2119,7 +2119,7 @@ fn live_run(slot: usize) -> Result<(), String> {
     })?;
     let ws = Ws::connect(port, &path)?;
     let (tx, rx) = std::sync::mpsc::channel();
-    let w = ws.w.try_clone().map_err(|e| e.to_string())?;
+    let w = crate::mcp::clone_socket(&ws.w).map_err(|e| e.to_string())?;
     {
         let tx = tx.clone();
         let (mut r, mut pong) = (ws.r, ws.w);

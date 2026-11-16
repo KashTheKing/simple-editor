@@ -162,6 +162,21 @@ impl Server {
     }
 }
 
+/// `s.try_clone()`, not inheritable. On Windows the clone (`WSADuplicateSocketW`) comes back inheritable,
+/// so every child spawned while it was open - an ffmpeg pipe that lives as long as its decoder - kept a
+/// copy of the socket: when the connection's thread closed it, it stayed open, and the client's next
+/// request on that keep-alive connection was never read nor refused. It looked like a frozen UI
+/// (perf-bench: `playback.seek` timed out after 300 s while the UI thread was idle).
+pub(crate) fn clone_socket(s: &TcpStream) -> std::io::Result<TcpStream> {
+    use std::os::windows::io::AsRawSocket;
+    use windows::Win32::Foundation::{SetHandleInformation, HANDLE, HANDLE_FLAGS, HANDLE_FLAG_INHERIT};
+    let c = s.try_clone()?;
+    // SAFETY: the live socket `c` owns; only its inherit flag changes
+    unsafe { SetHandleInformation(HANDLE(c.as_raw_socket() as _), HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) }
+        .map_err(std::io::Error::other)?;
+    Ok(c)
+}
+
 /// The `claude mcp add` command line shown in the settings UI. `port` is the configured one; while the
 /// app's server runs on another (the configured port was busy) the running port wins.
 pub fn claude_code_command(port: u16) -> String {
@@ -182,7 +197,7 @@ fn handle_connection(
     stop: &AtomicBool,
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(READ_TIMEOUT))?;
-    let mut reader = BufReader::new(stream.try_clone()?);
+    let mut reader = BufReader::new(clone_socket(&stream)?);
     loop {
         if stop.load(Ordering::Relaxed) {
             return Ok(());
@@ -517,6 +532,32 @@ fn crc32(a: &[u8], b: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    /// Regression: a child spawned while an MCP connection is open must not keep that socket alive -
+    /// once the server side closes it, the client sees the close at once (it hung until its own timeout).
+    #[test]
+    fn mcp_socket_closes_although_a_child_was_spawned_while_it_was_open() {
+        use std::io::Read;
+        let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let mut client = std::net::TcpStream::connect(l.local_addr().unwrap()).unwrap();
+        let (server, _) = l.accept().unwrap();
+        let reader = super::clone_socket(&server).unwrap(); // as `handle_connection` does
+        // a long-lived child, like a decoder's ffmpeg pipe
+        let mut child = std::process::Command::new("cmd").args(["/c", "ping -n 8 127.0.0.1 >nul"]).spawn().unwrap();
+        drop((server, reader));
+        client.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+        let got = client.read(&mut [0u8; 8]);
+        let _ = child.kill();
+        let _ = child.wait();
+        // closed (EOF or reset) at once - not a read that times out while the child holds a copy
+        let closed = match &got {
+            Ok(n) => *n == 0,
+            Err(e) => !matches!(e.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock),
+        };
+        assert!(closed, "the socket outlived its connection: {got:?}");
+        // every socket clone goes through `clone_socket` (the DevTools sockets too)
+        assert!(!include_str!("../engine/html.rs").contains(".try_clone()"));
+    }
+
     use super::*;
 
     fn read_response(stream: &TcpStream) -> (u16, String) {
