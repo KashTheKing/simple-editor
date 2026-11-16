@@ -303,7 +303,7 @@ pub(super) fn clip_menu(
                 }
                 acts(ui, &[Some(Normalize), Some(MatchLoudness), Some(AutoDuck), None]);
                 acts(ui, &[Some(DetectBeats), Some(SplitAtBeats), None, Some(AutoCut)]);
-                acts(ui, &[None, Some(AddAudioVisualizer), Some(AddBeatSyncedClip)]); // ws:audio-visualizer
+                acts(ui, &[None, Some(AddAudioVisualizer)]); // ws:audio-visualizer
             });
         }
         menu::sub(ui, Some(Glyph::Sequence), "Nest", |ui| {

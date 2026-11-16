@@ -40,25 +40,6 @@
       "thumb": "thumbs/effects-beat-pulse.jpg"
     },
     {
-      "id": "effects/beat-sprite",
-      "kind": "effect",
-      "name": "Beat Sprite",
-      "desc": "Beat-synced animation: put it on a sprite-sheet image (a dance loop, cols x rows frames) and the loop steps in time with the music, one full loop every Loop Beats beats with poses landing on the beats, plus a bounce on each hit. Right-click an audio clip ▸ Audio ▸ Add Beat-Synced Clip… makes the sheet from a video or image sequence.",
-      "tags": [
-        "visualizer",
-        "audio",
-        "beat",
-        "sprite",
-        "animation",
-        "dance",
-        "loop"
-      ],
-      "file": "effects/beat-sprite.glsl",
-      "size": 1884,
-      "credit": "",
-      "thumb": "thumbs/effects-beat-sprite.jpg"
-    },
-    {
       "id": "effects/bloom",
       "kind": "effect",
       "name": "Bloom",

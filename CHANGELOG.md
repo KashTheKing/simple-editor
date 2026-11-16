@@ -48,8 +48,6 @@
   for it and the export matches the preview.
 - **Your own visualizers**: any GLSL effect in your library that declares `level`, `band1`..`band6`, `beat`,
   `beats` or `bpm` shows up as a style. Shaders may now have up to 14 controls.
-- **Add Beat-Synced Clip…**: a dance loop (a video or a sprite sheet such as `dance_4x2.png`) that steps in
-  time with the beats, poses landing on them (`audio.beat_sprite`).
 - **Now playing**: sound with no picture and no visualizer shows its cover art and title / artist (or the
   music-note icon) in the Source and Program monitors. The Source monitor's visualizer style is pickable from
   its right-click menu.

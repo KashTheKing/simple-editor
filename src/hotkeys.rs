@@ -164,7 +164,6 @@ actions! {
     MatchLoudness => "match_loudness", "Match Loudness across Selection", None;
     // ---- ws:audio-visualizer ----
     AddAudioVisualizer => "add_audio_visualizer", "Add Audio Visualizer", None;
-    AddBeatSyncedClip => "add_beat_synced_clip", "Add Beat-Synced Clip…", None;
     // ---- ws:audio-dsp-automation ----
     // ---- ws:color-engine ----
     // Unbound by design: no free chord in the skeleton keymap (per the plan's Actions/hotkeys table).
@@ -647,7 +646,7 @@ pub fn group(a: Action) -> &'static str {
         MulticamCreate | MulticamAngles | NextAngle | PrevAngle | MatchFrame | RevealInLibrary => "Clip",
         ReplaceWithLibrarySelection => "Clip",
         AddText | AddShape | AddAdjustment | AddMask | AddSubtitle | AddContainer => "Add",
-        AutoCut | DetectBeats | SplitAtBeats | AutoDuck | Normalize | MatchLoudness | AddAudioVisualizer | AddBeatSyncedClip => "Audio",
+        AutoCut | DetectBeats | SplitAtBeats | AutoDuck | Normalize | MatchLoudness | AddAudioVisualizer => "Audio",
         AutoColor | ColorMatch | BypassGrade | CompareWipe | SaveStill => "Color",
         GetCaptions | TranscribeClip | ViewTranscript => "Captions",
         ToggleTranscript | RemoveFillers | ExportTranscript => "Captions",
