@@ -963,6 +963,7 @@ fn render_thread(
                 Cmd::Gpu(on) => {
                     if gpu != on {
                         gpu = on;
+                        pool.set_gpu_frames(on); // #158: zero-copy decode for the GPU preview
                         *lock(&shared.layers) = None;
                         dirty = true;
                         clear_caches!();
@@ -1691,7 +1692,7 @@ fn gpu_cached(
         // pins every frame it ever played at 0 bytes. Capacity, not length: a recycled buffer that
         // once held a full frame still holds that much when a small layer is decoded into it
         let still = |id| project.clip(id).is_some_and(|c| c.kind == ClipKind::Image);
-        let own = |id, f: &Arc<Frame>| if Arc::strong_count(f) == 1 || !still(id) { f.rgba.capacity() } else { 0 };
+        let own = |id, f: &Arc<Frame>| if Arc::strong_count(f) == 1 || !still(id) { f.bytes() } else { 0 };
         let bytes: usize = set.layers.iter().map(|(id, f)| own(*id, f)).sum::<usize>()
             + set.motion.iter().map(|(id, _, f)| own(*id, f)).sum::<usize>();
         for old in cache.insert(idx, bytes, set.clone()) {
@@ -2172,7 +2173,8 @@ fn recycle(old: Option<Arc<LayerSet>>, spare: &mut Vec<Frame>) {
         if spare.len() >= KEEP {
             return;
         }
-        if let Ok(f) = Arc::try_unwrap(f) {
+        // a GPU frame has no buffer to lend (and would hold its texture while it waited)
+        if let Some(f) = Arc::try_unwrap(f).ok().filter(|f| f.gpu.is_none()) {
             spare.push(f);
         }
     }

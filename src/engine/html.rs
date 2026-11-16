@@ -2238,7 +2238,7 @@ fn live_run_fast(slot: usize) -> Result<(), String> {
             if req.playing || gen != shown_gen || t != last_t {
                 let t0 = Instant::now();
                 let pic = h.frame(id, t, &req.params, req.ptr, false)?;
-                let f = Frame { width: pic.w, height: pic.h, pts: 0.0, rgba: pic.bytes, bgrx: false };
+                let f = Frame { width: pic.w, height: pic.h, pts: 0.0, rgba: pic.bytes, bgrx: false, gpu: None };
                 let wake = {
                     let mut all = lock(&LIVE);
                     let g = &mut all[slot];
@@ -2335,7 +2335,7 @@ pub fn decode_png(png: &[u8]) -> Result<Frame, String> {
     if rgba.len() != (w * h * 4) as usize {
         return Err(format!("could not decode the {w}x{h} picture"));
     }
-    Ok(Frame { width: w, height: h, pts: 0.0, rgba, bgrx: false })
+    Ok(Frame { width: w, height: h, pts: 0.0, rgba, bgrx: false, gpu: None })
 }
 
 /// The device scale for a project: CSS pixels are 1080-reference pixels.

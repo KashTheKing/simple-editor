@@ -340,6 +340,8 @@ pub struct GpuRenderer {
     view: crate::engine::browser::LayerView,
     // ---- ws:export-pipeline ----
     readback: Readback,
+    /// #158: D3D11 textures shared into GL for zero-copy decoded layers (`interop`); None = no sharing.
+    interop: Option<interop::Interop>,
 }
 
 /// High bit of the layer-texture key space reserved for the Source monitor's canvas.
@@ -386,7 +388,12 @@ impl GpuRenderer {
                 key_tag: 0,
                 view: crate::engine::browser::LayerView::NONE,
                 readback: Readback::default(), // ws:export-pipeline
+                interop: None,
             };
+            r.interop = interop::Interop::open(&r.gl);
+            if r.interop.is_some() {
+                crate::media::mf::set_zero_copy(true);
+            }
             // The composite program is the one nothing works without: fail loudly here instead of
             // silently rendering black later.
             r.ensure(K_COMPOSITE)?;
@@ -399,6 +406,9 @@ impl GpuRenderer {
     pub fn upload(&mut self, key: u64, frame: &Frame) -> glow::Texture {
         if frame.is_empty() {
             return self.blank;
+        }
+        if let Some(g) = &frame.gpu {
+            return self.upload_gpu(key, frame, g); // #158: zero-copy decode, see `interop`
         }
         let key = key | self.key_tag;
         let gl = self.gl.clone();
@@ -2801,6 +2811,7 @@ mod tests {
 
 /// Real-driver checks: a legacy WGL context on a hidden window (compatibility profiles accept
 /// `#version 330 core`). Skips, loudly, on a machine with no OpenGL driver.
+mod interop; // #158: zero-copy decode, D3D11 textures shared into GL
 #[cfg(test)]
 mod browser_tests; // ws:browser-layer: the browser clip and polygon masks on the real driver
 #[cfg(test)]

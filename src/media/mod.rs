@@ -3,6 +3,7 @@
 //!  * `ffpipe` - ffmpeg.exe / ffprobe.exe child processes. Universal fallback, images, probing, export.
 //! Everything produces top-down RGBA8 frames and interleaved stereo f32 audio at SAMPLE_RATE.
 
+pub mod d3d;
 pub mod ffpipe;
 pub mod mf;
 pub mod proxy;
@@ -23,6 +24,10 @@ pub const CHANNELS: usize = 2;
 /// keeps MF's B,G,R,X byte order (no per-pixel swizzle on the decode path). `engine::gpu::upload`
 /// takes it as it is; every CPU reader goes through `to_rgba` / `make_rgba` (or gets its pixels from
 /// `DecoderPool::frame_at` / `VideoSource::frame_at`, which are always RGBA).
+/// And one more, `gpu`: a zero-copy video frame (`DecoderPool::set_gpu_frames`) has no pixels in
+/// `rgba` at all - they are in a D3D11 texture that `engine::gpu::upload` shares into GL. Such frames
+/// only ever reach a `LayerSet` (`DecoderPool::frames_arc`); `to_rgba` / `make_rgba` / `copy_from`
+/// read them back for a CPU reader all the same.
 #[derive(Clone, Default)]
 pub struct Frame {
     pub width: u32,
@@ -32,15 +37,18 @@ pub struct Frame {
     pub rgba: Vec<u8>,
     /// Pixels are B,G,R,X (X undefined, alpha is 255) instead of RGBA. See above.
     pub bgrx: bool,
+    /// The pixels are on the GPU (`rgba` is empty). See above.
+    pub gpu: Option<Arc<d3d::GpuFrame>>,
 }
 
 impl Frame {
     pub fn new(width: u32, height: u32) -> Self {
-        Self { width, height, pts: 0.0, rgba: vec![0; (width * height * 4) as usize], bgrx: false }
+        Self { width, height, pts: 0.0, rgba: vec![0; (width * height * 4) as usize], bgrx: false, gpu: None }
     }
     /// Resize (contents undefined/zero when the size changes). The writer is about to fill it as RGBA.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.bgrx = false;
+        self.gpu = None;
         if self.width != width || self.height != height {
             self.width = width;
             self.height = height;
@@ -52,7 +60,7 @@ impl Frame {
     /// a fresh one comes zeroed from the allocator (lazily, page by page) instead of by a memset.
     pub fn resize_for_overwrite(&mut self, width: u32, height: u32) {
         let n = (width * height * 4) as usize;
-        (self.width, self.height, self.bgrx) = (width, height, false);
+        (self.width, self.height, self.bgrx, self.gpu) = (width, height, false, None);
         if self.rgba.capacity() < n {
             self.rgba = vec![0; n];
         } else {
@@ -61,6 +69,11 @@ impl Frame {
     }
     /// Turn a `bgrx` frame into RGBA in place (nothing to do for one that is RGBA already).
     pub fn make_rgba(&mut self) {
+        if let Some(g) = self.gpu.take() {
+            let pts = self.pts;
+            g.read(self);
+            self.pts = pts;
+        }
         if std::mem::take(&mut self.bgrx) {
             for px in self.rgba.chunks_exact_mut(4) {
                 px.swap(0, 2);
@@ -71,7 +84,7 @@ impl Frame {
     /// This frame as RGBA: itself, or a converted copy of a `bgrx` one - for CPU readers of a
     /// frame that may have come from `DecoderPool::frame_arc`.
     pub fn to_rgba(&self) -> std::borrow::Cow<'_, Frame> {
-        if !self.bgrx {
+        if !self.bgrx && self.gpu.is_none() {
             return std::borrow::Cow::Borrowed(self);
         }
         let mut f = self.clone();
@@ -89,8 +102,17 @@ impl Frame {
     pub fn is_empty(&self) -> bool {
         self.width == 0 || self.height == 0
     }
+    /// Memory this frame holds: its buffer's capacity, or a GPU frame's texture.
+    pub fn bytes(&self) -> usize {
+        self.rgba.capacity() + self.gpu.as_ref().map_or(0, |g| g.size().0 as usize * g.size().1 as usize * 4)
+    }
     /// Become a copy of `f`, reusing this buffer.
     pub fn copy_from(&mut self, f: &Frame) {
+        if let Some(g) = &f.gpu {
+            g.read(self);
+            self.pts = f.pts;
+            return;
+        }
         self.resize_for_overwrite(f.width, f.height);
         self.rgba.copy_from_slice(&f.rgba);
         self.pts = f.pts;
@@ -120,6 +142,12 @@ pub trait VideoSource: Send {
             spare.push(f);
             None
         }
+    }
+    /// The frame at `t` left on the GPU (`Frame::gpu`, any size - the GPU places footage by its
+    /// native size), for a pool that asked for that (`DecoderPool::set_gpu_frames`). None: this
+    /// source has no zero-copy path (or not right now) - the caller goes on to `frame_shared`.
+    fn frame_gpu(&mut self, _t: f64, _w: u32, _h: u32) -> Option<Arc<Frame>> {
+        None
     }
     /// A still image: every `t` is the same picture, so callers may cache one frame per size.
     fn is_still(&self) -> bool {
@@ -187,10 +215,29 @@ pub fn probe(path: &str, backend: Backend) -> Result<Asset, String> {
 /// A still the caller knows the use of: (the file's size, the largest size it is ever shown at).
 pub type StillUse = ((u32, u32), (u32, u32));
 
-/// `open_video`, with what a preview pool knows about a still (`DecoderPool::set_stills`).
-fn open_known(path: &str, backend: Backend, still: Option<StillUse>) -> Result<Box<dyn VideoSource>, String> {
+/// `open_video`, with what a preview pool knows about a still (`DecoderPool::set_stills`) and whether
+/// it wants GPU frames (`DecoderPool::set_gpu_frames`): then MF opens the source zero-copy, and any
+/// failure there (software-only codec, rotated, no D3D11 video) opens it the usual way, logged once.
+fn open_known(
+    path: &str,
+    backend: Backend,
+    still: Option<StillUse>,
+    gpu: bool,
+) -> Result<Box<dyn VideoSource>, String> {
     match still {
         Some((size, top)) if is_image_path(path) => ffpipe::open_still(path, size, top),
+        _ if gpu
+            && backend != Backend::Ffmpeg
+            && mf::zero_copy()
+            && !is_image_path(path)
+            && !proxy::is_stacked(std::path::Path::new(path)) =>
+        {
+            mf::open_video_gpu(path).or_else(|e| {
+                static ONCE: std::sync::Once = std::sync::Once::new();
+                ONCE.call_once(|| eprintln!("zero-copy decode off for {path}: {e}"));
+                open_video(path, backend)
+            })
+        }
         _ => open_video(path, backend),
     }
 }
@@ -249,6 +296,8 @@ pub struct DecoderPool {
     exact: bool,
     /// A source finished opening and `video` took it in itself: `collect` has yet to say so.
     arrived: bool,
+    /// Open video zero-copy and hand out GPU frames from `frames_arc` (`set_gpu_frames`).
+    gpu_frames: bool,
 }
 
 /// Byte-budgeted LRU of decoded source frames, keyed by (SOURCE path, request time in µs, w, h) -
@@ -377,6 +426,15 @@ impl DecoderPool {
             missed: false,
             exact: false,
             arrived: false,
+            gpu_frames: false,
+        }
+    }
+    /// The GPU preview's pool: open video zero-copy (`mf::open_video_gpu`, once `engine::gpu::interop`
+    /// said GL can take it) and let `frames_arc` hand out `Frame::gpu` frames. Reopens every source.
+    pub fn set_gpu_frames(&mut self, on: bool) {
+        if on != self.gpu_frames {
+            self.gpu_frames = on;
+            self.clear();
         }
     }
     /// Start opening `path` on a thread of its own, unless it is open (or opening) already; `video`
@@ -397,12 +455,15 @@ impl DecoderPool {
     }
     fn open_on_thread(&mut self, path: String, first: Option<f64>) {
         mf::init_thread(); // COM must stay up on the thread that will use the reader
-        let (b, p, still) = (self.backend, path.clone(), self.stills.get(&path).copied());
+        let (b, p, still, gpu) = (self.backend, path.clone(), self.stills.get(&path).copied(), self.gpu_frames);
         let opening = std::thread::spawn(move || {
-            let mut v = open_known(&p, b, still).ok()?;
+            let mut v = open_known(&p, b, still, gpu).ok()?;
             if let Some(t) = first.filter(|_| !v.is_still()) {
                 let (w, h) = v.size();
-                v.frame_at(t, w, h, &mut Frame::default());
+                // a zero-copy source leaves it on the GPU: no full-size readback just to warm up
+                if v.frame_gpu(t, w, h).is_none() {
+                    v.frame_at(t, w, h, &mut Frame::default());
+                }
             }
             Some(v)
         });
@@ -605,11 +666,18 @@ impl DecoderPool {
         }
         // (request, frame, its source-cache time key - None for a still the decoder keeps itself)
         type Done = Vec<(usize, Arc<Frame>, Option<i64>)>;
+        let gpu = self.gpu_frames;
         let run = &|dec: &mut Box<dyn VideoSource>, idx: &[usize], spare: &mut Vec<Frame>| -> Done {
             let mut done = Vec::new();
             for &i in idx {
                 let (_, t, w, h) = jobs[i];
                 if let Some(f) = dec.still(w, h) {
+                    done.push((i, f, None));
+                    continue;
+                }
+                // a GPU frame stays out of the source cache: its CPU readers would pay a readback
+                // ponytail: so a scrub back re-decodes zero-copy sources; cache them (VRAM-budgeted) if that shows
+                if let Some(f) = gpu.then(|| dec.frame_gpu(t, w, h)).flatten() {
                     done.push((i, f, None));
                     continue;
                 }
@@ -680,7 +748,7 @@ impl DecoderPool {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
-        let b = self.backend;
+        let (b, gpu) = (self.backend, self.gpu_frames);
         self.tick += 1;
         let tick = self.tick;
         let (warming, stills, arrived) = (&mut self.warming, &self.stills, &mut self.arrived);
@@ -690,7 +758,7 @@ impl DecoderPool {
                     *arrived = true;
                     opening.join().ok().flatten()
                 }
-                None => open_known(path, b, stills.get(path).copied()).ok(),
+                None => open_known(path, b, stills.get(path).copied(), gpu).ok(),
             };
             (tick, v)
         });
@@ -1059,7 +1127,7 @@ mod tests {
     /// A BGRX frame reads as RGBA through `to_rgba` / `make_rgba`; an RGBA one is not copied.
     #[test]
     fn bgrx_frames_convert_to_rgba() {
-        let mut f = Frame { width: 2, height: 1, pts: 0.5, rgba: vec![1, 2, 3, 0, 4, 5, 6, 9], bgrx: true };
+        let mut f = Frame { width: 2, height: 1, pts: 0.5, rgba: vec![1, 2, 3, 0, 4, 5, 6, 9], bgrx: true, gpu: None };
         assert_eq!(f.to_rgba().rgba, [3, 2, 1, 255, 6, 5, 4, 255]);
         assert!(!f.to_rgba().bgrx && f.bgrx, "to_rgba leaves the frame itself alone");
         f.make_rgba();
@@ -1077,7 +1145,7 @@ mod tests {
                 false
             }
             fn frame_shared(&mut self, _t: f64, _w: u32, _h: u32, _s: &mut Vec<Frame>) -> Option<Arc<Frame>> {
-                Some(Arc::new(Frame { width: 1, height: 1, pts: 0.0, rgba: vec![10, 20, 30, 0], bgrx: true }))
+                Some(Arc::new(Frame { width: 1, height: 1, rgba: vec![10, 20, 30, 0], bgrx: true, ..Frame::default() }))
             }
         }
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
