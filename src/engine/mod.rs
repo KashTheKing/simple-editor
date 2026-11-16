@@ -29,6 +29,7 @@ pub mod prerender;
 pub mod presets;
 pub mod html;
 pub mod blitz; // ws:html-layer: the fast renderer (se-html helper)
+pub mod enhance; // the AI enhancer add-on (Real-ESRGAN, downloaded on demand)
 pub mod html_lint;
 #[cfg(test)]
 mod blitz_tests;

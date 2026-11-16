@@ -225,6 +225,10 @@ pub(super) struct ClipMenu<'a> {
     pub html: bool,
     /// A shape clip: offers "Convert to HTML Layer".
     pub shape: bool,
+    // ---- ws:ai-enhancer ----
+    /// The clip's largest zoom (scale × the larger axis factor, keys included): past
+    /// `enhance::OFFER_ZOOM` the AI Upscale entry says so (the zoom is where an upscale shows).
+    pub zoom: f64,
 }
 
 /// The clip body / edge right-click menu. Actions run on the selection (a right-click on an unselected
@@ -238,6 +242,12 @@ pub(super) fn clip_menu(
     edit_labels: &mut bool,
 ) {
     use Action::*;
+    // ---- ws:ai-enhancer ----
+    let upscalable = m.native_size && !m.sequence && !m.html;
+    let zoomed = m.zoom > crate::engine::enhance::OFFER_ZOOM;
+    let upscale_rows = |ui: &mut egui::Ui| {
+        acts(ui, &[Some(AiUpscale2Game), Some(AiUpscale2Real), Some(AiUpscale4Game), Some(AiUpscale4Real)])
+    };
     menu::scroll(ui, |ui| {
         acts(ui, &[Some(CutClips), Some(CopyClips), Some(PasteClips)]);
         menu::sub(ui, None, "Attributes", |ui| acts(ui, &[Some(CopyAttributes), Some(PasteAttributes)]));
@@ -255,6 +265,9 @@ pub(super) fn clip_menu(
                 }
                 if menu::row(ui, None, "Fit to Screen", "").clicked() {
                     *act = Some(Act::FitToScreen);
+                }
+                if upscalable && !zoomed {
+                    menu::sub(ui, None, "AI Upscale", upscale_rows);
                 }
             });
         }
@@ -316,6 +329,11 @@ pub(super) fn clip_menu(
             menu::sub(ui, Some(Glyph::Transcript), "Transcript", |ui| {
                 acts(ui, &[Some(TranscribeClip), Some(ViewTranscript), Some(ExportTranscript)])
             });
+        }
+        // ---- ws:ai-enhancer ---- the optional Real-ESRGAN add-on (an action offers to install it first).
+        // Under Transform; a clip zoomed past OFFER_ZOOM gets it at the top level, where the zoom shows.
+        if upscalable && zoomed {
+            menu::sub(ui, None, &format!("AI Upscale — zoomed {:.1}×", m.zoom), upscale_rows);
         }
         menu::sub(ui, Some(Glyph::Swatch), "Label", |ui| label_menu(ui, m.labels, act, edit_labels));
         // second way into the inline keyframe graph (the zoomed-in corner icon is the first)

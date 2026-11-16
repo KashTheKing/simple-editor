@@ -496,7 +496,7 @@ pub fn parse_manifest(text: &str) -> Result<Manifest, String> {
     Ok(m)
 }
 
-fn sha256_of(path: &std::path::Path) -> Result<String, String> {
+pub(crate) fn sha256_of(path: &std::path::Path) -> Result<String, String> {
     let out = ffpipe::command(std::path::Path::new("certutil"))
         .args(["-hashfile"])
         .arg(path)
@@ -591,7 +591,7 @@ pub fn start_install() {
     });
 }
 
-fn curl(url: &str, dest: &std::path::Path, max_secs: u32) -> Result<(), String> {
+pub(crate) fn curl(url: &str, dest: &std::path::Path, max_secs: u32) -> Result<(), String> {
     let curl = ffpipe::find_exe("curl.exe", "").ok_or("curl.exe not found")?;
     if let Some(d) = dest.parent() {
         std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;

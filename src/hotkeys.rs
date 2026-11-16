@@ -374,6 +374,12 @@ actions! {
     CursorWaypoints => "cursor_waypoints", "Place Cursor Waypoints", None;
     CursorPress => "cursor_press", "Press What Is under the Cursor", None;
     ImportWebPage => "import_web_page", "Import Web Page…", None;
+    // ---- ws:ai-enhancer ----
+    // clip menu ▸ AI Upscale (the optional Real-ESRGAN add-on); ui::app::enhance_ctl::act. Unbound.
+    AiUpscale2Game => "ai_upscale_2_game", "AI Upscale ×2 (Game / Animation)", None;
+    AiUpscale2Real => "ai_upscale_2_real", "AI Upscale ×2 (Real-World)", None;
+    AiUpscale4Game => "ai_upscale_4_game", "AI Upscale ×4 (Game / Animation)", None;
+    AiUpscale4Real => "ai_upscale_4_real", "AI Upscale ×4 (Real-World)", None;
     SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
     PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
@@ -687,6 +693,8 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:browser-layer ----
         AddBrowser | ImportWebPage => "Add",
         BrowserFitPages | BrowserNextPage | RecordMouse | CursorWaypoints | CursorPress | SharpenZooms | PageMakeEditable => "Clip",
+        // ---- ws:ai-enhancer ----
+        AiUpscale2Game | AiUpscale2Real | AiUpscale4Game | AiUpscale4Real => "Clip",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

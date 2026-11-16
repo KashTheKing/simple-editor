@@ -274,6 +274,26 @@ a last line. Write for an assistant that edits through the app's tools (`docs/cu
 them): say what to inspect first, which tools to call, what to check, and when to stop and ask. Name
 real tools only. Keep the user in control: one undo group, no export or file deletion without asking.
 
+## Add-on downloads (`bin/*.json`)
+
+Optional programs the app installs on a click, never bundled in the exe. Each manifest names one download:
+`{"version", "url", "sha256", "size"}` (`url` is relative to the library or a full address).
+
+- `bin/se-html.json`: the fast HTML renderer (`tools/se-html/README.md` ▸ "Ship (and update) the helper").
+- `bin/enhancer.json`: the AI enhancer, Real-ESRGAN `realesrgan-ncnn-vulkan` for Windows (a zip with the
+  exe, `vcomp140.dll` and `models/`; `engine::enhance::install` unpacks it with Windows' `tar.exe` into
+  `%APPDATA%\SimpleEditor\bin\enhancer`). It points straight at the upstream release
+  (xinntao/Real-ESRGAN v0.2.5.0, BSD-3-Clause), pinned by size and SHA-256. To publish or update it:
+  1. Pick the zip (upstream, or re-hosted: `gh release create enhancer-vYYYYMMDD <zip> --repo
+     KashTheKing/simple-editor --title "AI enhancer YYYYMMDD"`) and download it once.
+  2. `certutil -hashfile <zip> SHA256` and the byte size (`(Get-Item <zip>).Length`) go into the manifest,
+     with `url` set to that download address. The zip must hold `realesrgan-ncnn-vulkan.exe` at its root or
+     one folder down, with `models/` beside it.
+  3. Try it before publishing: Settings ▸ Library folder → a local copy of `library/`, then Settings ▸
+     General ▸ AI enhancer ▸ Install (or the `enhance.install` tool).
+  4. Commit `library/bin/enhancer.json` on `main` and push: the manifest on `main` is the switch (same rule
+     and throwaway-worktree trick as the se-html manifest). Existing installs update by Uninstall + Install.
+
 ## index.json (generated)
 
 ```json
