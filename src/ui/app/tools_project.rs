@@ -104,10 +104,21 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "caches.size",
-        desc: "Returns the on-disk cache directory size in bytes.",
+        desc: "Returns the on-disk cache directory size in bytes, the budgeted part (html, prerender, proxies, peaks), the budget (Settings cache_disk_gb) and free bytes on the cache drive.",
         args: &[],
         kind: ToolKind::Read,
-        run: |_app, _args| Ok(ToolOutcome::Done(json!({"bytes": caches::cache_bytes()}))),
+        run: |app, _args| Ok(ToolOutcome::Done(caches::size_report(&app.settings))),
+    },
+    // ---- ws:cache-budget ----
+    ToolDef {
+        name: "caches.prune",
+        desc: "Runs the cache pruner now (least recently used files first, down to Settings cache_disk_gb); returns the budget and what is left.",
+        args: &[],
+        kind: ToolKind::Ui,
+        run: |app, _args| {
+            caches::prune_now(app);
+            Ok(ToolOutcome::Done(caches::size_report(&app.settings)))
+        },
     },
     ToolDef {
         name: "ui.toast",

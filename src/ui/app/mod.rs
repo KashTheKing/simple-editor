@@ -1819,6 +1819,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     gallery_mine::frame,
     // ---- ws:browser-layer ----
     browser_ctl::tick,
+    // ---- ws:cache-budget ----
+    caches::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[

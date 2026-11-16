@@ -581,6 +581,10 @@ pub struct Settings {
     pub social_profiles: Vec<crate::ui::social::profile::SocialProfile>,
     /// The profile used per network (id), when more than one exists.
     pub social_active: BTreeMap<String, String>,
+    // ---- ws:cache-budget ----
+    /// One disk budget (GB) for the html, prerender, proxy and peaks caches; least recently used files go
+    /// first. 0 = unlimited. Models and the library are not counted.
+    pub cache_disk_gb: u32,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -829,6 +833,8 @@ impl Default for Settings {
             guide_view: "default".into(),
             social_profiles: Vec::new(),
             social_active: BTreeMap::new(),
+            // ---- ws:cache-budget ----
+            cache_disk_gb: 30,
         }
     }
 }
