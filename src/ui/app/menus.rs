@@ -367,6 +367,8 @@ impl App {
         });
         menu::sub(ui, None, "Layout", |ui| self.layout_menu(ui));
         acts(ui, &[Some(Action::MaximizePane)]);
+        // ws:perf-window
+        acts(ui, &[None, Some(Action::PerfWindow)]);
         // ---- ws:command-palette ---- (per-script icon/hotkey/desc from ScriptMeta)
         if !self.script_metas().is_empty() {
             menu::sub(ui, Some(tools::Glyph::Terminal), "Scripts", |ui| {

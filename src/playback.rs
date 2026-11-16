@@ -315,6 +315,12 @@ struct Shared {
     frame_cost_us: AtomicU64,
     /// µs from the clock starting to the audio ring holding its first block (0 = it was filled first).
     audio_lag_us: AtomicU64,
+    // ---- ws:perf-window ---- (`Player::perf_sample`)
+    /// `worst_gap`'s twin for the Performance window, so it never steals `playback.status`'s reading.
+    win_gap: AtomicU64,
+    /// Bytes held by the render thread's frame + layer caches, and their budget.
+    cache_bytes: AtomicU64,
+    cache_budget: AtomicU64,
 }
 
 /// What the render thread has cached from a paused playhead: whole frames `lo..=hi` (grid indices),
@@ -449,6 +455,9 @@ impl Player {
             pauses: AtomicU64::new(0),
             frame_cost_us: AtomicU64::new(0),
             audio_lag_us: AtomicU64::new(0),
+            win_gap: AtomicU64::new(0),
+            cache_bytes: AtomicU64::new(0),
+            cache_budget: AtomicU64::new(0),
         });
         let (render, rx) = mpsc::channel();
         let (s, c) = (shared.clone(), ctx.clone());
@@ -772,6 +781,20 @@ impl Player {
     pub fn publish_stats(&self) -> (u64, f64) {
         (self.shared.published.load(Ordering::Relaxed), self.shared.worst_gap.swap(0, Ordering::Relaxed) as f64 / 1e3)
     }
+    // ---- ws:perf-window ----
+    /// The Performance window's sample: (frames published, dropped, longest wait between two frames in ms
+    /// since its last sample, RAM cache bytes, RAM cache budget, frames queued ahead of the clock).
+    pub fn perf_sample(&self) -> (u64, u64, f64, u64, u64, usize) {
+        let s = &self.shared;
+        (
+            s.published.load(Ordering::Relaxed),
+            s.dropped.load(Ordering::Relaxed),
+            s.win_gap.swap(0, Ordering::Relaxed) as f64 / 1e3,
+            s.cache_bytes.load(Ordering::Relaxed),
+            s.cache_budget.load(Ordering::Relaxed),
+            lock(&s.ahead).len(),
+        )
+    }
     /// Queue a non-blocking one-shot layer decode at `t` (at most `max_w` px wide); returns a request
     /// id. Newest request always wins - an in-flight older request's reply is never surfaced once a
     /// newer one has been queued. Never blocks the caller (unlike `layers_once`).
@@ -885,6 +908,9 @@ fn render_thread(
     }
     loop {
         let _s = crate::perf::span("render_frame");
+        // ws:perf-window: what the caches hold, for the Performance window (two relaxed stores)
+        shared.cache_bytes.store((fcache.bytes + lcache.bytes) as u64, Ordering::Relaxed);
+        shared.cache_budget.store(budget as u64, Ordering::Relaxed);
         let playing = {
             let mut c = lock(&shared.clock);
             c.now();
@@ -1281,6 +1307,7 @@ fn render_thread(
             last_pub = idx;
             shared.published.fetch_add(1, Ordering::Relaxed);
             shared.worst_gap.fetch_max(mark.elapsed().as_micros() as u64, Ordering::Relaxed);
+            shared.win_gap.fetch_max(mark.elapsed().as_micros() as u64, Ordering::Relaxed); // ws:perf-window
             mark = Instant::now();
             ctx.request_repaint();
         }
@@ -1714,6 +1741,7 @@ fn gpu_cached(
     let t = idx as f64 / fps;
     let mut set = LayerSet::default();
     let ok = {
+        let _s = crate::perf::span("layer_decode"); // ws:perf-window: the player's decode, too
         let perf_t0 = Instant::now(); // ws:perf-baseline
         let ok = guarded(pool, |pool| {
             set = layers_with(project, t, w, h, pool, spare, &mut TextRef::Shared(text), shapes, comp, nest)

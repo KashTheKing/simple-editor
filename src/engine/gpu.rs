@@ -1800,7 +1800,10 @@ impl GpuRenderer {
 
         // ws:nested-gpu: the same render_canvas as the top level, at the size it was decoded for
         let view = self.view;
-        let sub = nested.and_then(|n| self.render_canvas(&n.view, n.t, n.w, n.h, &n.set));
+        let sub = nested.and_then(|n| {
+            let _s = crate::perf::span("nested_render"); // ws:perf-window
+            self.render_canvas(&n.view, n.t, n.w, n.h, &n.set)
+        });
         self.view = view;
         let perf_t0 = std::time::Instant::now(); // ws:perf-baseline
         let tex = match (&sub, frame) {
@@ -1813,7 +1816,10 @@ impl GpuRenderer {
         // effect scale: layer px per project px (matches compose::apply_effects' img_scale - footage
         // is decoded at roughly the placed size, text/shape bitmaps arrive at canvas scale already)
         let img_scale = if contain { s * (lsize.0 as f32 / p.w.max(1e-3)) } else { s };
-        let processed = self.run_chain(project, clip, t, project.fps, layers, tex, lsize, img_scale);
+        let processed = {
+            let _s = crate::perf::span("effects"); // ws:perf-window
+            self.run_chain(project, clip, t, project.fps, layers, tex, lsize, img_scale)
+        };
         let (src, size, own) = match &processed {
             Some(target) => (target.tex, (target.w, target.h), true),
             None => (tex, lsize, false),

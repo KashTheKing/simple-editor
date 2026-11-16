@@ -25,6 +25,7 @@ pub mod spiky_ball;
 // ---- ws:layout-modes-onboarding ----
 pub mod home;
 pub mod hud; // ws:perf-baseline
+pub mod perf_ui; // ws:perf-window
 pub mod import_ui;
 pub mod inspector;
 pub mod inspector_audio;

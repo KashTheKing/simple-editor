@@ -166,6 +166,7 @@ mod tools_social;
 // ---- ws:ai-enhancer ----
 mod enhance_ctl;
 mod whatsnew;
+mod perf_ctl; // ws:perf-window
 #[path = "windows.rs"]
 mod windows_dlg;
 
@@ -493,6 +494,9 @@ pub struct App {
     // ---- ws:perf-baseline ----
     /// Frame-time HUD numbers (`ui::hud`), fed at the end of every `update`, drawn when `settings.hud`.
     hud: crate::ui::hud::Hud,
+    // ---- ws:perf-window ----
+    /// The Performance window (`ui::perf_ui`, `perf_ctl`).
+    perf: crate::ui::perf_ui::PerfWin,
     // ---- ws:pro-schema ----
     /// The Assistant pane's prompt / pending requests / log (`ui::assistant_ui`).
     pub(crate) assistant: crate::ui::assistant_ui::AssistantState,
@@ -961,6 +965,7 @@ impl App {
             // ---- ws:keys-actions ----
             // ---- ws:perf-baseline ----
             hud: Default::default(),
+            perf: Default::default(), // ws:perf-window
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -1669,6 +1674,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_social::TOOLS,
     // ---- ws:ai-enhancer ----
     enhance_ctl::TOOLS,
+    // ---- ws:perf-window ----
+    perf_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1750,6 +1757,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     browser_ctl::act,
     // ---- ws:ai-enhancer ----
     enhance_ctl::act,
+    // ---- ws:perf-window ----
+    perf_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1830,6 +1839,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     caches::tick,
     // ---- ws:ai-enhancer ----
     enhance_ctl::tick,
+    // ---- ws:perf-window ----
+    perf_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -1900,6 +1911,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     gallery_mine::windows,
     // ---- ws:browser-layer ----
     browser_ctl::windows,
+    // ---- ws:perf-window ----
+    perf_ctl::window,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
