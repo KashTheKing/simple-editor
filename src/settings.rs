@@ -288,7 +288,7 @@ pub struct Settings {
     pub whisper_dir: String,
     /// Model the Subtitles pane offers first: a `engine::transcribe::MODELS` name or file name.
     pub transcribe_model: String,
-    /// Library asset preview: draw a "spiky ball" audio visualizer over audio-only files that have
+    /// Library asset preview: draw the Neon Orb audio visualizer over audio-only files that have
     /// no thumbnail. Off = plain black, on = the ball. Toggled from the preview's right-click menu.
     pub audio_visualizer: bool,
     /// Social-guide platform drawn over the preview (None = off): an id from `ui::social`'s guides.json.

@@ -14,7 +14,7 @@ use crate::playback::Player;
 use crate::settings::Settings;
 use crate::theme::Palette;
 use crate::ui::library::PreviewFrame;
-use crate::ui::spiky_ball::SpikyBall;
+use crate::ui::spiky_ball::Orb;
 use crate::ui::tools::{self, Glyph};
 use crate::ui::{menu, preview};
 use eframe::egui;
@@ -46,7 +46,7 @@ pub struct SourceState {
     pub src_in: Option<f64>,
     pub src_out: Option<f64>,
     pub tape: Option<Tape>,
-    ball: SpikyBall,
+    ball: Orb,
     /// The timecode's text while it is being typed (`preview::timecode_label`).
     tc_edit: Option<String>,
     /// Viewer zoom (1 = fit) and pan, like `PreviewState.view`; `fit_px` = the fitted picture's width.
@@ -76,7 +76,7 @@ impl SourceState {
             src_in: None,
             src_out: None,
             tape: None,
-            ball: SpikyBall::default(),
+            ball: Orb::default(),
             tc_edit: None,
             view: (1.0, egui::Vec2::ZERO),
             fit_px: 0.0,
@@ -331,14 +331,14 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
                     egui::Color32::WHITE,
                 );
             } else if settings.audio_visualizer {
-                // animate only while playing: paused, the ball holds still and asks for no repaints
+                // animate only while playing: paused, the orb holds still and asks for no repaints
                 if playing {
                     if let Some(p) = waveforms.and_then(|w| w.get(&path, 0)) {
-                        st.ball.update(&crate::ui::spiky_ball::spikes(&p, playhead), ui.input(|i| i.stable_dt));
+                        st.ball.update(crate::ui::spiky_ball::loudness(&p, playhead), ui.input(|i| i.stable_dt));
                     }
                     ui.ctx().request_repaint();
                 }
-                st.ball.paint(ui.painter(), rect, palette);
+                st.ball.paint(ui.painter(), rect);
             }
         }
         // what is open: the file name in the corner, over a dim plate
@@ -517,7 +517,7 @@ mod tests {
         audio.width = 0;
         audio.height = 0;
         let audio_st = SourceState::new(ctx_player(&ctx), &audio, PathBuf::from("C:/x.wav"), Some(2));
-        assert!(!audio_st.has_video, "the audio state draws the spiky ball");
+        assert!(!audio_st.has_video, "the audio state draws the orb");
         for mut st in [state(&ctx), audio_st] {
             idle_frames(&mut st);
         }
