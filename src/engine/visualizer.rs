@@ -166,40 +166,157 @@ pub struct Analysis {
     pub bpm: Option<f64>,
 }
 
-/// Analyse `len` seconds of `src` starting at source second `from` (played at `speed`), `fps` frames a
-/// second: `len * fps + 1` frames, plus the beats `analysis::onsets` finds (the same picker as Detect
-/// Beats / `audio.beats`, on a waveform envelope built from the same pass). Decodes the audio once.
-// ponytail: runs on the caller's thread (an edit, never playback); a 4-minute song is about a second.
-pub fn analyze(src: &mut dyn AudioSource, from: f64, len: f64, speed: f64, fps: f64) -> Analysis {
-    let n = (len * fps).floor() as usize + 1;
-    let speed = if speed.is_finite() && speed > 0.0 { speed } else { 1.0 };
-    let hop = ((SAMPLE_RATE as f64 * speed / fps).round() as usize).max(1);
-    let mut stereo = vec![0f32; hop * 2];
-    let mut hist: Vec<f32> = vec![0.0; DFT_N.max(hop)];
-    // the envelope for the beat picker: PEAKS_PER_SEC buckets of source time from `from`
-    let bucket = (SAMPLE_RATE / crate::media::waveform::PEAKS_PER_SEC) as usize;
-    let mut peaks = crate::media::waveform::Peaks { min: Vec::new(), max: Vec::new() };
-    let mut pend: Vec<f32> = Vec::new();
-    let raw: Vec<Frame> = (0..n)
-        .map(|i| {
-            src.read_at(from + i as f64 * hop as f64 / SAMPLE_RATE as f64, &mut stereo);
-            let mono: Vec<f32> = stereo.chunks_exact(2).map(|c| 0.5 * (c[0] + c[1])).collect();
-            pend.extend_from_slice(&mono);
-            while pend.len() >= bucket {
-                let b: Vec<f32> = pend.drain(..bucket).collect();
-                peaks.min.push(b.iter().fold(0.0f32, |m, &v| m.min(v)));
-                peaks.max.push(b.iter().fold(0.0f32, |m, &v| m.max(v)));
+/// Frames a second of the whole-song analysis (`SongAnalysis`).
+pub const ANALYSIS_HZ: f64 = 100.0;
+
+/// One song file analysed once, start to end: `[level, band1..band6]` shaped (normalised over the whole
+/// song, ~0.15 s release) at `ANALYSIS_HZ`, plus its beats (source seconds). Everything that draws a
+/// visualizer reads this at a SOURCE TIME - the timeline bake (`rebake`), the Source monitor
+/// (`at`) and so the export - so a visualized frame is a pure function of (song, source time): the
+/// same after a seek, a stall or a buffering pause, in preview and in export.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SongAnalysis {
+    pub frames: Vec<Frame>,
+    /// Beat onsets, source seconds.
+    pub beats: Vec<f64>,
+}
+
+impl SongAnalysis {
+    /// Decode `src` start to end once (sequential reads) and analyse it.
+    // ponytail: naive per-band DFT at 100 Hz, ~0.3 s per minute of song in a release build; an FFT when
+    // the band mixer needs real band edges.
+    pub fn compute(src: &mut dyn AudioSource) -> SongAnalysis {
+        let dur = src.duration().max(0.0);
+        let hop = (SAMPLE_RATE as f64 / ANALYSIS_HZ).round() as usize; // = one waveform peak bucket
+        let n = (dur * ANALYSIS_HZ).ceil() as usize + 1;
+        let mut stereo = vec![0f32; hop * 2];
+        let mut hist: Vec<f32> = vec![0.0; DFT_N];
+        let mut peaks = crate::media::waveform::Peaks { min: Vec::with_capacity(n), max: Vec::with_capacity(n) };
+        let raw: Vec<Frame> = (0..n)
+            .map(|i| {
+                src.read_at(i as f64 * hop as f64 / SAMPLE_RATE as f64, &mut stereo);
+                let mono: Vec<f32> = stereo.chunks_exact(2).map(|c| 0.5 * (c[0] + c[1])).collect();
+                peaks.min.push(mono.iter().fold(0.0f32, |m, &v| m.min(v)));
+                peaks.max.push(mono.iter().fold(0.0f32, |m, &v| m.max(v)));
+                hist.drain(..mono.len().min(hist.len()));
+                hist.extend_from_slice(&mono);
+                let mut f = raw_frame(&hist[hist.len() - DFT_N..]);
+                f[0] = mono.iter().fold(0.0f32, |m, &s| m.max(s.abs())); // the peak of this hop only
+                f
+            })
+            .collect();
+        let beats = crate::engine::analysis::onsets(&peaks, 0.0, dur, BEAT_REFRACTORY, BEAT_SENSITIVITY);
+        SongAnalysis { frames: shape(&raw, ANALYSIS_HZ), beats }
+    }
+
+    /// The frame at source second `t` (the loudest over [t, t + span) so a sparse reader never steps
+    /// over a hit); silence outside the song.
+    pub fn at_span(&self, t: f64, span: f64) -> Frame {
+        let i0 = (t * ANALYSIS_HZ).floor();
+        if !i0.is_finite() || i0 < 0.0 || i0 as usize >= self.frames.len() {
+            return [0.0; 1 + BANDS];
+        }
+        let i0 = i0 as usize;
+        let i1 = ((t + span.max(0.0)) * ANALYSIS_HZ).ceil().max(i0 as f64 + 1.0) as usize;
+        let mut out = [0.0f32; 1 + BANDS];
+        for f in &self.frames[i0..i1.min(self.frames.len())] {
+            for (o, &v) in out.iter_mut().zip(f) {
+                *o = o.max(v);
             }
-            hist.drain(..mono.len().min(hist.len()));
-            hist.extend_from_slice(&mono);
-            let mut f = raw_frame(&hist[hist.len() - DFT_N..]);
-            f[0] = mono.iter().fold(0.0f32, |m, &s| m.max(s.abs())); // the peak of this frame only
-            f
-        })
-        .collect();
-    let onsets = crate::engine::analysis::onsets(&peaks, 0.0, len * speed, BEAT_REFRACTORY, BEAT_SENSITIVITY);
-    let bpm = crate::engine::analysis::bpm(&onsets);
-    Analysis { frames: shape(&raw, fps), beats: onsets.iter().map(|t| t / speed).collect(), bpm }
+        }
+        out
+    }
+
+    /// The frame shown at source second `t`: what one 1/`FPS` timeline frame there bakes to.
+    pub fn at(&self, t: f64) -> Frame {
+        self.at_span(t, 1.0 / FPS)
+    }
+
+    /// The beat inputs at source second `t`, exactly as `bake` keys them for a clip starting at the song's
+    /// start: (`beat` phase 0..1 since the last beat, `beats` passed, `bpm`).
+    pub fn beat_at(&self, t: f64) -> (f64, f64, Option<f64>) {
+        let bpm = crate::engine::analysis::bpm(&self.beats);
+        let n = self.beats.partition_point(|&b| b <= t);
+        if n == 0 {
+            return (0.0, 0.0, bpm);
+        }
+        let last = self.beats[n - 1];
+        let next = self.beats.get(n).copied().unwrap_or(last + bpm.map_or(0.5, |b| 60.0 / b));
+        (((t - last) / (next - last).max(1e-6)).clamp(0.0, 1.0), n as f64, bpm)
+    }
+
+    /// The span a clip plays: `len` timeline seconds from source second `from` at `speed`, `fps` keys a
+    /// second, beats in clip-local seconds.
+    pub fn span(&self, from: f64, len: f64, speed: f64, fps: f64) -> Analysis {
+        let speed = if speed.is_finite() && speed > 0.0 { speed } else { 1.0 };
+        let n = (len * fps).floor() as usize + 1;
+        let frames = (0..n).map(|i| self.at_span(from + i as f64 / fps * speed, speed / fps)).collect();
+        let end = from + len * speed;
+        let beats: Vec<f64> = self.beats.iter().filter(|&&b| b >= from && b <= end).map(|b| (b - from) / speed).collect();
+        let bpm = crate::engine::analysis::bpm(&beats);
+        Analysis { frames, beats, bpm }
+    }
+}
+
+/// path + stream -> its analysis (None while a background compute runs).
+type Cache = std::collections::HashMap<(String, usize), Option<std::sync::Arc<SongAnalysis>>>;
+static SONGS: std::sync::Mutex<Option<Cache>> = std::sync::Mutex::new(None);
+/// Songs kept analysed (a minute of song is ~170 KB).
+const SONGS_KEPT: usize = 24;
+
+fn songs() -> std::sync::MutexGuard<'static, Option<Cache>> {
+    SONGS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn remember(key: (String, usize), a: Option<std::sync::Arc<SongAnalysis>>) {
+    let mut g = songs();
+    let m = g.get_or_insert_with(Default::default);
+    if m.len() >= SONGS_KEPT && !m.contains_key(&key) {
+        m.retain(|_, v| v.is_none()); // ponytail: drop the finished ones wholesale; an LRU if it ever thrashes
+    }
+    m.insert(key, a);
+}
+
+/// The song's analysis, computed on this thread when not cached yet (an edit: Add / restyle / re-bake).
+pub fn analysis(path: &str, stream: usize, backend: Backend) -> Result<std::sync::Arc<SongAnalysis>, String> {
+    let key = (path.to_string(), stream);
+    if let Some(Some(a)) = songs().as_ref().and_then(|m| m.get(&key)) {
+        return Ok(a.clone());
+    }
+    let mut src = crate::media::open_audio(path, stream, backend)?;
+    let a = std::sync::Arc::new(SongAnalysis::compute(&mut *src));
+    remember(key, Some(a.clone()));
+    Ok(a)
+}
+
+/// The song's analysis if ready, else start it on a background thread (once) and answer None; `done`
+/// runs when it lands (a repaint). For the Source monitor: never blocks the UI thread.
+pub fn analysis_async(path: &str, stream: usize, backend: Backend, done: impl FnOnce() + Send + 'static) -> Option<std::sync::Arc<SongAnalysis>> {
+    let key = (path.to_string(), stream);
+    {
+        let mut g = songs();
+        let m = g.get_or_insert_with(Default::default);
+        match m.get(&key) {
+            Some(Some(a)) => return Some(a.clone()),
+            Some(None) => return None,
+            None => {
+                m.insert(key.clone(), None);
+            }
+        }
+    }
+    std::thread::spawn(move || {
+        let a = crate::media::open_audio(&key.0, key.1, backend).map(|mut s| std::sync::Arc::new(SongAnalysis::compute(&mut *s)));
+        // a file that will not open still resolves (to silence), never stays pending
+        remember(key, Some(a.unwrap_or_default()));
+        done();
+    });
+    None
+}
+
+/// Analyse `len` seconds of `src` from source second `from` at `speed`, `fps` frames a second (the whole
+/// source is analysed, then the span read): see `SongAnalysis`.
+pub fn analyze(src: &mut dyn AudioSource, from: f64, len: f64, speed: f64, fps: f64) -> Analysis {
+    SongAnalysis::compute(src).span(from, len, speed, fps)
 }
 
 /// Detect Beats' defaults (`Settings::beat_thr`, `Action::DetectBeats`' refractory window).
@@ -280,9 +397,9 @@ pub fn rebake(p: &mut Project, vis: Id, audio: Id, backend: Backend) -> Result<u
     let path = p.asset(a.asset).ok_or("the audio clip has no media")?.path.clone();
     let v = p.clip(vis).ok_or("no such clip")?;
     let (start, len) = (v.start, v.duration);
-    let mut src = crate::media::open_audio(&path, a.audio_stream, backend)?;
+    let song = analysis(&path, a.audio_stream, backend)?;
     // ponytail: one source time + speed for the whole span; reversed / retimed-curve clips read linearly
-    let an = analyze(&mut *src, a.src_time(start), len, a.speed.abs(), FPS);
+    let an = song.span(a.src_time(start), len, a.speed.abs(), FPS);
     let v = p.clip_mut(vis).ok_or("no such clip")?;
     let e = v.effects.iter_mut().find(|e| style_of(e).is_some()).ok_or("the clip has no visualizer effect")?;
     Ok(bake(e, &an, FPS))
@@ -494,6 +611,12 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
         assert_eq!(e.at(1, b0 - 0.01), 0.0);
         assert_eq!((e.at(1, b0 + 0.01), e.at(1, b1 + 0.01)), (1.0, 2.0), "count steps on each beat");
         assert!((e.at(2, 1.0) - bpm).abs() < 1e-9);
+        // the Source monitor reads the same beat inputs from the whole-song analysis
+        let song = SongAnalysis::compute(&mut Tone(clicks, 4.0));
+        for t in [0.1, b0 + 0.05, (b0 + b1) / 2.0, 2.33, 3.6] {
+            let (phase, count, _) = song.beat_at(t);
+            assert!((phase - e.at(0, t)).abs() < 0.02 && count == e.at(1, t), "beat inputs at {t}: {phase} {count}");
+        }
         assert!(is_visualizer(src), "beat params alone make a visualizer");
     }
 
@@ -557,6 +680,48 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
         let before = clips(&p);
         assert!(add_song(&mut p, 9999, 0.0, &style, Backend::Ffmpeg).is_err());
         assert_eq!(clips(&p), before);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    /// Seek anywhere: the clip's baked value at a timeline time is the song analysis at that SOURCE
+    /// time - the very function the Source monitor shows (`SongAnalysis::at`) - so preview, Source
+    /// monitor and export agree at every moment, and nothing depends on how playback got there.
+    #[test]
+    fn the_baked_value_is_the_song_analysis_at_the_source_time() {
+        let wav = song_wav("seek");
+        let mut p = Project::new();
+        let asset = song_asset(&mut p, &wav);
+        let song = analysis(&wav.to_string_lossy(), 0, Backend::Ffmpeg).unwrap();
+        // placed at 0.5 s, trimmed to start 0.4 s into the song: timeline t -> source t - 0.5 + 0.4
+        let (audio, vis) = add_song(&mut p, asset, 0.5, &find(None).unwrap(), Backend::Ffmpeg).unwrap();
+        let group = p.linked(audio);
+        assert!(p.trim_edges(&group.iter().map(|&id| (id, true)).collect::<Vec<_>>(), 0.4, false));
+        rebake(&mut p, vis, audio, Backend::Ffmpeg).unwrap();
+        let c = p.clip(vis).unwrap();
+        let a = p.clip(audio).unwrap();
+        for k in [0, 7, 15, 22, 30] {
+            let local = k as f64 / FPS; // a key time
+            let src = a.src_time(c.start + local);
+            assert!((src - (0.4 + local)).abs() < 1e-9);
+            let want = song.at(src);
+            let got = c.effects[0].at(0, local);
+            assert!((got - want[0] as f64).abs() < 1e-6, "level at {local}: {got} vs {}", want[0]);
+        }
+        let _ = std::fs::remove_file(wav);
+    }
+
+    /// The whole-song analysis is computed once and shared: a second request is the same object.
+    #[test]
+    fn the_song_analysis_is_cached() {
+        let wav = song_wav("cache");
+        let path = wav.to_string_lossy().into_owned();
+        let a = analysis(&path, 0, Backend::Ffmpeg).unwrap();
+        let b = analysis(&path, 0, Backend::Ffmpeg).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&a, &b));
+        assert!(analysis_async(&path, 0, Backend::Ffmpeg, || {}).is_some_and(|c| std::sync::Arc::ptr_eq(&a, &c)));
+        assert_eq!(a.frames.len(), 201, "2 s at 100 Hz");
+        assert!(a.at(0.5)[0] > 0.9 && a.at(1.6)[0] < 0.1, "loud then quiet");
+        assert_eq!(a.at(5.0), [0.0; 7], "silence past the end");
         let _ = std::fs::remove_file(wav);
     }
 

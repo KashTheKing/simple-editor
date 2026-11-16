@@ -2911,7 +2911,20 @@ mod driver_tests {
 
     /// The whole `w`x`h` RGBA8 output at clip time `t` (row 0 = uv.y 0 = top of the image).
     unsafe fn run_sized(gl: &glow::Context, src: &str, w: i32, h: i32, t: f32, params: &[f32]) -> Result<Vec<u8>, String> {
-        let vert = compile(gl, glow::VERTEX_SHADER, shaders::VERT)?;
+        run_sized_with(gl, shaders::VERT, src, w, h, t, params)
+    }
+
+    /// `run_sized` with another vertex shader (the Source monitor's screen-space one).
+    unsafe fn run_sized_with(
+        gl: &glow::Context,
+        vert_src: &str,
+        src: &str,
+        w: i32,
+        h: i32,
+        t: f32,
+        params: &[f32],
+    ) -> Result<Vec<u8>, String> {
+        let vert = compile(gl, glow::VERTEX_SHADER, vert_src)?;
         let prog = build(gl, vert, &shaders::user_shader(src))?;
         let tex = gl.create_texture()?;
         gl.bind_texture(glow::TEXTURE_2D, Some(tex));
@@ -3031,6 +3044,90 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
             assert!(light[0] > 20_000, "{style}: visible even when quiet: {light:?}");
             assert!(light[1] > light[0] * 11 / 10, "{style}: louder = more light: {light:?}");
         }
+    }
+
+    /// Each built-in style the right way up, in the renderer's convention (`uv.y = 0` at the top = row 0
+    /// of the readback, so these rows read top to bottom): Spectrum Bars' light sits below the
+    /// horizon, Voxel Blocks has sky above and ground below. And the Source monitor's screen-space
+    /// triangle (`spiky_ball::SCREEN_VERT`) is that image mirrored in y - exactly what a bottom-up
+    /// window framebuffer needs to show it the same way up (1.3.0 drew it upside down there).
+    #[test]
+    fn visualizer_styles_are_the_right_way_up() {
+        let Some(gl) = gl() else {
+            eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+            return;
+        };
+        let (w, h) = (320, 180);
+        let defaults = |src: &str| -> Vec<f32> {
+            crate::engine::shaderlib::parse_meta(src).params.iter().map(|p| p.default as f32).collect()
+        };
+        // (sum of light in the top half, in the bottom half), rows top to bottom
+        let halves = |px: &[u8], f: &dyn Fn(&[u8]) -> u64| {
+            let row = (w * 4) as usize;
+            let top: u64 = px[..row * (h as usize / 2)].chunks_exact(4).map(f).sum();
+            let bottom: u64 = px[row * (h as usize / 2)..].chunks_exact(4).map(f).sum();
+            (top, bottom)
+        };
+        let lum = |p: &[u8]| p[0] as u64 + p[1] as u64 + p[2] as u64;
+        let bars = crate::engine::visualizer::BUILTIN[1].1;
+        let px = unsafe { run_sized(&gl, bars, w, h, 1.0, &defaults(bars)) }.unwrap();
+        let (top, bottom) = halves(&px, &lum);
+        assert!(bottom > top * 3, "Spectrum Bars stand on a floor below the horizon: top {top} bottom {bottom}");
+        let voxel = crate::engine::visualizer::BUILTIN[2].1;
+        let px = unsafe { run_sized(&gl, voxel, w, h, 1.0, &defaults(voxel)) }.unwrap();
+        let c = |p: &[u8]| (p[0] as i32, p[1] as i32, p[2] as i32);
+        let sky = |p: &[u8]| {
+            let (r, _, b) = c(p);
+            u64::from(b > 200 && b > r + 40) // the light blue of the sky
+        };
+        let ground = |p: &[u8]| {
+            let (r, g, b) = c(p);
+            u64::from(g > b + 20 || (r > b + 20 && r > 60)) // grass / dirt
+        };
+        let (sky_top, sky_bottom) = halves(&px, &sky);
+        let (ground_top, ground_bottom) = halves(&px, &ground);
+        assert!(sky_top > sky_bottom, "Voxel Blocks: sky above ({sky_top} vs {sky_bottom})");
+        assert!(ground_bottom > ground_top, "Voxel Blocks: the island below ({ground_bottom} vs {ground_top})");
+        // the screen path: the same pixels, rows in the opposite order
+        let screen = unsafe { run_sized_with(&gl, crate::ui::spiky_ball::SCREEN_VERT, voxel, w, h, 1.0, &defaults(voxel)) }.unwrap();
+        let row = (w * 4) as usize;
+        let flipped: Vec<u8> = screen.chunks_exact(row).rev().flatten().copied().collect();
+        let diff = flipped.iter().zip(&px).filter(|(a, b)| (**a as i32 - **b as i32).abs() > 2).count();
+        assert!(diff * 100 < px.len(), "the screen triangle is the texture one mirrored in y ({diff} bytes differ)");
+    }
+
+    /// No hidden state between frames: a moment rendered cold equals the same moment rendered after a
+    /// run of others (a seek, a stall, a buffering pause cannot shift what a time looks like) - and it is
+    /// the path the export renders with.
+    #[test]
+    fn a_visualized_moment_is_the_same_whatever_came_before() {
+        let Some(gl) = gl() else {
+            eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+            return;
+        };
+        use crate::engine::visualizer;
+        let wav = visualizer::tests::song_wav("history");
+        let mut p = crate::model::Project::new();
+        (p.width, p.height) = (320, 180);
+        let asset = visualizer::tests::song_asset(&mut p, &wav);
+        visualizer::add_song(&mut p, asset, 0.0, &visualizer::find(Some("Voxel Blocks")).unwrap(), crate::media::Backend::Ffmpeg).unwrap();
+        let mut pool = crate::media::DecoderPool::new(crate::media::Backend::Ffmpeg);
+        let (mut spare, mut text) = (Vec::new(), crate::engine::text::TextRasterizer::new());
+        let (mut shapes, mut comp) = (crate::engine::shapes::ShapeRasterizer::new(), crate::engine::compose::Compositor::new());
+        let mut r = GpuRenderer::new(std::sync::Arc::new(gl)).expect("renderer");
+        let mut frame = |r: &mut GpuRenderer, t: f64| {
+            let layers =
+                crate::playback::decode_layers(&p, t, 320, 180, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
+            let mut out = Frame::default();
+            r.render_frame(&p, t, 320, 180, &layers, &mut out);
+            out.rgba
+        };
+        let cold = frame(&mut r, 0.8);
+        for t in [1.9, 0.1, 1.5, 0.4, 1.0] {
+            frame(&mut r, t);
+        }
+        let _ = std::fs::remove_file(wav);
+        assert!(frame(&mut r, 0.8) == cold, "the same moment renders the same pixels after any history");
     }
 
     /// What an export draws: `GpuRenderer::render_frame` (the compositor the export's GPU path runs) of a
