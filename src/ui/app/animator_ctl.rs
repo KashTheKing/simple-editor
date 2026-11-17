@@ -12,6 +12,11 @@ pub(super) fn frame(app: &mut App, ctx: &egui::Context) {
         crate::ui::animator::set_onion(0);
         app.animator.here = false;
     }
+    // the Animator's loop ends with it: Loop switched off, or a press back on the timeline / Viewer
+    if app.animator.looping && !(app.animator.here && app.animator.loop_play) {
+        app.player.set_loop(None);
+        app.animator.looping = false;
+    }
     // Delete / Backspace / Split belong to the Animator's block or keys after a press in it, and to the
     // timeline's clips again after a press on the timeline or the Viewer
     if ctx.input(|i| i.pointer.any_pressed()) {
@@ -208,6 +213,22 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             Action::ToolSelect => app.animator.tool = AnimTool::Select,
             Action::ToolCut => app.animator.tool = AnimTool::Cut,
             Action::ToggleSnap => app.animator.no_snap = !app.animator.no_snap,
+            // Play runs the range the Animator shows and stops at its end (or repeats it with Loop on)
+            Action::PlayPause
+                if !app.player.is_playing() && !app.play_gate.buffering() && app.animator.range.1 > app.animator.range.0 =>
+            {
+                let (t0, t1) = app.animator.range;
+                if app.playhead < t0 - 1e-6 || app.playhead >= t1 - 1e-3 {
+                    app.seek(t0);
+                }
+                app.play_gated(1.0);
+                if app.animator.loop_play {
+                    app.player.set_loop(Some((t0, t1)));
+                    app.animator.looping = true;
+                } else {
+                    app.play_stop_at = Some(t1);
+                }
+            }
             _ => return false,
         }
         return true;

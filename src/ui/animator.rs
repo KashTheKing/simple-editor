@@ -69,6 +69,11 @@ pub struct AnimState {
     pub tool: AnimTool,
     /// The Animator's own snapping, off (it is on by default).
     pub no_snap: bool,
+    /// The range the lanes cover (set each frame): Play in the Animator runs it and stops at its end.
+    pub range: (f64, f64),
+    /// Play in the Animator repeats `range` until stopped; `looping` = the player's loop is the Animator's.
+    pub loop_play: bool,
+    pub looping: bool,
     pub view: View,
     pub sel: Option<(Id, usize)>,
     open: Vec<(Id, usize)>,
@@ -1158,6 +1163,10 @@ fn lanes_view(
             }
             ui.separator();
         }
+        let tip = "Play repeats the range shown here until you stop it (Play in the Animator runs just that range)";
+        if chip(ui, st.loop_play, "Loop").on_hover_text(tip).clicked() {
+            st.loop_play = !st.loop_play;
+        }
         match view {
             View::Blocks => {
                 if picked(st).len() > 1 {
@@ -1184,6 +1193,7 @@ fn lanes_view(
             }
         }
         fit = range_of(st.whole, project);
+        st.range = fit;
         if st.win_for != ids {
             (st.win, st.win_for) = (None, ids.to_vec());
         }
@@ -1192,6 +1202,7 @@ fn lanes_view(
         // on the right: the range toggle, then the zoom
         if zoom_bar(ui, pal, &mut st.win, fit, *playhead, &mut st.whole) {
             fit = range_of(st.whole, project);
+        st.range = fit;
             st.win = Some(fit); // switching shows the whole of the new range
         }
     });
