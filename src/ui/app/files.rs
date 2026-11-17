@@ -281,6 +281,7 @@ impl App {
             // ws:export-audio-tracks
             audio: export::AudioLayout::parse(&self.settings.export_audio),
             stem_by: export::StemBy::parse(&self.settings.export_stem_by),
+            overlay: None,
         }
     }
 
@@ -339,11 +340,13 @@ impl App {
         if !choice.use_project_bg {
             project.preview_bg = crate::model::BackgroundMode::Black;
         }
-        let prog = if choice.lossless {
-            export::start_lossless_cut(project, choice.opts.out_path.clone())
+        // ws:export-pipeline: the same frame source every other export gets (GPU when it is on)
+        let mut opts = ExportOptions { frames: self.export_frames(), ..choice.opts };
+        self.deliver(&mut project, &mut opts, None, None);
+        // a burnt-in guide or caption change needs the re-encode a lossless cut skips
+        let prog = if choice.lossless && opts.overlay.is_none() && export::lossless_segments(&project).is_some() {
+            export::start_lossless_cut(project, opts.out_path)
         } else {
-            // ws:export-pipeline: the same frame source every other export gets (GPU when it is on)
-            let opts = ExportOptions { frames: self.export_frames(), ..choice.opts };
             export::start_export(project, opts, self.text.clone())
         };
         self.export = Some((prog.clone(), ExportKind::File { path }));
@@ -450,7 +453,7 @@ impl App {
     /// that isn't burned into the video (subtitles, planner, notes, sequences, extra media) would be
     /// silently dropped - offer to save a .sedit first. Same Save/Discard/Cancel shape as
     /// `confirm_discard_then`, so it reuses `confirm::ask_discard`.
-    fn act_overwrite_offer_save_first(&mut self, src: String) {
+    pub(super) fn act_overwrite_offer_save_first(&mut self, src: String) {
         let p = &self.project;
         let loses = !p.plan.is_empty()
             || !p.notes.is_empty()
@@ -506,6 +509,8 @@ impl App {
             ExportKind::File { path } => path.clone(),
             ExportKind::Overwrite { original, .. } => original.clone(),
         };
+        // ws:quick-export: a Quick Export's result opens in the media player once it is in place
+        let play = self.quick_open.take_if(|p| *p == hook_path);
         if let Some(e) = prog.error() {
             if let ExportKind::Overwrite { temp, .. } = &kind {
                 let _ = std::fs::remove_file(temp);
@@ -529,30 +534,37 @@ impl App {
                 } else {
                     format!("Export finished in {took}")
                 };
+                if let Some(p) = &play {
+                    quick_export::open_in_player(p);
+                }
                 self.push_toast(feedback::Toast::with_folder(msg, path).kind(feedback::ToastKind::Success));
             }
             ExportKind::Overwrite { original, temp } => {
+                // ws:quick-export: an empty project first - `release_files` also empties the frame cache, and
+                // a paused render thread re-rendered the current frame at once, reopening the source
+                self.player.set_project(&Project::new());
                 self.player.release_files();
+                if let Some(s) = self.source.as_mut() {
+                    s.player.release_files();
+                }
                 // the thumbnail worker holds a decoder (ffmpeg child) on the source - drop it while we retry
                 self.thumbs.clear();
-                // ponytail: killed ffmpeg children release their file handle a few ms after wait() returns - retry briefly
-                let mut r = std::fs::rename(&temp, &original);
-                let deadline = Instant::now() + Duration::from_millis(500);
-                while r.is_err() && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(10));
-                    r = std::fs::rename(&temp, &original);
-                }
-                match r {
+                // ws:quick-export: original kept as <name>.bak until the atomic rename succeeds
+                match quick_export::swap_with_backup(&temp, &original) {
                     Ok(()) => {
                         self.toast_with_folder("Saved over the original video", original.clone());
                         // in-memory peaks are keyed by path only and the file behind it just changed
                         self.waveforms.clear();
                         self.open_media(&original);
+                        if play.is_some() {
+                            quick_export::open_in_player(&original);
+                        }
                     }
                     Err(e) => {
                         self.toast(format!(
-                            "Couldn't replace the original ({e}); edited file left at {}",
-                            temp.display()
+                            "Couldn't replace the original ({e}); edited file left at {}, original backed up as {}",
+                            temp.display(),
+                            quick_export::bak_path(&original).display()
                         ));
                         self.player.set_project(&self.project);
                     }

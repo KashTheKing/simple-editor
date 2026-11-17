@@ -10,6 +10,11 @@
       say("Open a web page (http or https) and try again.", "bad");
       return;
     }
+    if (!chrome.pageCapture) {
+      // Firefox and some others cannot save a page as one file
+      say("This browser cannot save a page as one file. Press Ctrl+S, save as \"Web Page, complete\", and use Import a saved page in Simple Editor.", "bad");
+      return;
+    }
     const blob = await new Promise((resolve, reject) =>
       chrome.pageCapture.saveAsMHTML({ tabId: tab.id }, (b) =>
         chrome.runtime.lastError ? reject(new Error(chrome.runtime.lastError.message)) : resolve(b)));

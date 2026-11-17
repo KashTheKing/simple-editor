@@ -205,7 +205,9 @@ enum Job {
 }
 
 fn worker(shared: Arc<(Mutex<Shared>, Condvar)>, ctx: egui::Context) {
-    super::bg::lower_thread();
+    // ponytail: normal priority, not `bg::lower_thread`: thumbnails decode in-process now (WIC, MF) and are
+    // on screen, so a background-mode thread starved behind a busy PC (a build: the Gallery's HTML cards took
+    // 87 s, measured) - playback is still protected by `pause_point` below
     let mut pool: Option<DecoderPool> = None;
     loop {
         let job = {
@@ -262,6 +264,14 @@ fn worker(shared: Arc<(Mutex<Shared>, Condvar)>, ctx: egui::Context) {
 
 /// Decode `path` at `t` scaled to `h` px tall, aspect kept. None on any failure.
 fn decode_thumb(pool: &mut DecoderPool, path: &str, t: f64, h: u32) -> Option<Frame> {
+    // a picture Windows can read itself (jpg, png, bmp, gif, tiff): in-process, a few ms - through the pool
+    // it was an ffprobe + ffmpeg.exe per picture (~0.7 s each, one at a time: the Gallery's HTML cards took
+    // 9 s to appear). Anything else (webp without its codec, psd, tga) still goes to ffmpeg.
+    if is_image_path(path) {
+        if let Some(f) = wic_thumb(path, h) {
+            return Some(f);
+        }
+    }
     let v = pool.video(path)?;
     let (w0, h0) = v.size();
     if w0 == 0 || h0 == 0 {
@@ -275,6 +285,46 @@ fn decode_thumb(pool: &mut DecoderPool, path: &str, t: f64, h: u32) -> Option<Fr
         Some(out)
     } else {
         None
+    }
+}
+
+/// `path` decoded by Windows Imaging Component and scaled to `h` px tall (aspect kept, never upscaled past
+/// 2160), straight RGBA. None when WIC cannot read it.
+pub(crate) fn wic_thumb(path: &str, h: u32) -> Option<Frame> {
+    use windows::core::{Interface, HSTRING};
+    use windows::Win32::Foundation::GENERIC_READ;
+    use windows::Win32::Graphics::Imaging::*;
+    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
+    // SAFETY: plain COM calls on this thread; every interface is released when it drops
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED); // S_FALSE / RPC_E_CHANGED_MODE are fine
+        let f: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let dec = f
+            .CreateDecoderFromFilename(&HSTRING::from(path), None, GENERIC_READ, WICDecodeMetadataCacheOnDemand)
+            .ok()?;
+        let frame = dec.GetFrame(0).ok()?;
+        let (mut w0, mut h0) = (0u32, 0u32);
+        frame.GetSize(&mut w0, &mut h0).ok()?;
+        if w0 == 0 || h0 == 0 {
+            return None;
+        }
+        let h = h.clamp(1, 2160);
+        let w = ((w0 as f64 * h as f64 / h0 as f64).round() as u32).max(1);
+        let scaler = f.CreateBitmapScaler().ok()?;
+        scaler.Initialize(&frame.cast::<IWICBitmapSource>().ok()?, w, h, WICBitmapInterpolationModeFant).ok()?;
+        let conv = f.CreateFormatConverter().ok()?;
+        conv.Initialize(
+            &scaler.cast::<IWICBitmapSource>().ok()?,
+            &GUID_WICPixelFormat32bppRGBA,
+            WICBitmapDitherTypeNone,
+            None,
+            0.0,
+            WICBitmapPaletteTypeCustom,
+        )
+        .ok()?;
+        let mut out = Frame::new(w, h);
+        conv.CopyPixels(std::ptr::null(), w * 4, &mut out.rgba).ok()?;
+        Some(out)
     }
 }
 
@@ -324,6 +374,64 @@ mod tests {
     fn centre(f: &Frame) -> [u8; 3] {
         let i = ((f.height / 2 * f.width + f.width / 2) * 4) as usize;
         [f.rgba[i], f.rgba[i + 1], f.rgba[i + 2]]
+    }
+
+    /// Regression: the Gallery's HTML cards took ~9 s to appear in a blank project - every shipped .jpg
+    /// thumbnail was an ffprobe + ffmpeg.exe, one at a time. They decode in-process now.
+    #[test]
+    fn shipped_library_thumbnails_decode_in_process_quickly() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("library").join("thumbs");
+        let jpgs: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.to_string_lossy().contains("html-"))
+            .collect();
+        assert!(jpgs.len() >= 40, "the library ships its HTML thumbnails");
+        let t0 = std::time::Instant::now();
+        for p in &jpgs {
+            let f = wic_thumb(&p.to_string_lossy(), 64).unwrap_or_else(|| panic!("{} did not decode", p.display()));
+            assert_eq!(f.height, 64);
+            assert!(f.width > 0 && f.rgba.len() == (f.width * 64 * 4) as usize);
+            assert!(
+                f.rgba.chunks(4).any(|px| px[0] > 40 || px[1] > 40 || px[2] > 40),
+                "{}: a picture, not black",
+                p.display()
+            );
+        }
+        let took = t0.elapsed();
+        assert!(took < Duration::from_secs(3), "{} thumbnails took {took:?}", jpgs.len());
+        // through the cache too: one worker, in-process
+        let ctx = egui::Context::default();
+        let mut c = ThumbCache::new(ctx, Backend::Ffmpeg);
+        let t0 = std::time::Instant::now();
+        for p in &jpgs {
+            c.get(&p.to_string_lossy(), 0.0, 54);
+        }
+        for p in &jpgs {
+            assert!(poll(&mut c, &p.to_string_lossy(), 0.0, 54, 5).is_some());
+        }
+        assert!(t0.elapsed() < Duration::from_secs(3), "the cache took {:?}", t0.elapsed());
+        // a picture's colours come through (a PNG written here: left red, right blue)
+        let png = std::env::temp_dir().join(format!("se-wic-{}.png", std::process::id()));
+        let mut rgba = Vec::new();
+        for _y in 0..20 {
+            for x in 0..40 {
+                rgba.extend(if x < 20 { [255, 0, 0, 255] } else { [0, 0, 255, 255] });
+            }
+        }
+        let mut buf = Vec::new();
+        {
+            let mut e = png::Encoder::new(&mut buf, 40, 20);
+            e.set_color(png::ColorType::Rgba);
+            e.write_header().unwrap().write_image_data(&rgba).unwrap();
+        }
+        std::fs::write(&png, buf).unwrap();
+        let f = wic_thumb(&png.to_string_lossy(), 20).unwrap();
+        assert_eq!((f.width, f.height), (40, 20));
+        assert_eq!(&f.rgba[(10 * 40 + 5) * 4..][..4], [255, 0, 0, 255]);
+        assert_eq!(&f.rgba[(10 * 40 + 35) * 4..][..4], [0, 0, 255, 255]);
+        let _ = std::fs::remove_file(&png);
     }
 
     #[test]

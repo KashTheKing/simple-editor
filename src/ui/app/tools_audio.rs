@@ -64,11 +64,18 @@ fn get_peaks(app: &mut App, id: Id) -> Option<Arc<Peaks>> {
     app.waveforms.get(&path, stream)
 }
 
+/// A clip's linear volume as dB (silence floored at -120 dB).
+fn gain_db(volume: f64) -> f64 {
+    if volume <= 1e-6 { -120.0 } else { 20.0 * volume.log10() }
+}
+
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "audio.analyze",
-        desc: "Peak/RMS dBFS and onset count/BPM per clip (from cached waveform peaks); 'waveform still \
-               computing' if peaks aren't ready yet.",
+        desc: "Peak/RMS dBFS and onset count/BPM per clip (from cached waveform peaks of the SOURCE file); \
+               gain_db is the clip's own volume and peak_db_out / rms_db_out the levels after it \
+               (volume_keyed: the volume is automated, so the constant is not the whole story); 'waveform \
+               still computing' if peaks aren't ready yet.",
         args: &["clip_ids:array:false:defaults to selection"],
         kind: ToolKind::Read,
         run: |app, args| {
@@ -78,6 +85,7 @@ pub const TOOLS: &[ToolDef] = &[
             for id in ids {
                 let Some(c) = app.project.clip(id) else { continue };
                 let (name, src_in, src_end) = (c.name.clone(), c.src_in, c.src_in + c.duration * c.speed);
+                let (gain, keyed) = (gain_db(c.volume.value), !c.volume.keys.is_empty());
                 match get_peaks(app, id) {
                     Some(peaks) => {
                         let lv = analysis::levels(&peaks, src_in, src_end);
@@ -85,6 +93,8 @@ pub const TOOLS: &[ToolDef] = &[
                         out.push(json!({
                             "clip_id": id, "name": name, "peak_db": lv.peak_db, "rms_db": lv.rms_db,
                             "onset_count": onsets.len(), "bpm": analysis::bpm(&onsets),
+                            "gain_db": gain, "volume_keyed": keyed,
+                            "peak_db_out": lv.peak_db as f64 + gain, "rms_db_out": lv.rms_db as f64 + gain,
                         }));
                     }
                     None => out.push(json!({"clip_id": id, "name": name, "status": "waveform still computing"})),
@@ -371,26 +381,67 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "audio.visualizer",
         desc: "Add an audio visualizer over an audio clip: a full-frame layer spanning it whose shader follows \
-               the music (level + 6 spectrum bands baked to keyframes once, so playback stays cheap). Same as \
-               right-click > Audio > Add Audio Visualizer. Given a visualizer clip instead, switches its style \
-               and bakes the audio under it again. style: a name from audio.visualizer_styles (built-in Neon \
-               Orb (default), Spectrum Bars, or a custom library effect that declares level/band1..band6).",
+               the music (level + 6 spectrum bands baked to keyframes once, so playback stays cheap), LINKED to \
+               the song so moving / trimming / deleting one does the other. Same as right-click > Audio > Add \
+               Audio Visualizer. asset_id instead: places that audio file at `at` (default the playhead) with \
+               its linked visualizer, as Library > Add with Audio Visualizer does. Given a visualizer clip, \
+               switches its style (when `style` is given) and bakes the audio again. style: a name from \
+               audio.visualizer_styles (default the last used, else Neon Orb). Band mixer (which frequencies \
+               drive it): preset EDM|Hip-hop|Rock|Vocal|Lo-fi|Classical|Reset, gains = 6 numbers 0..3 \
+               (Sub, Bass, Low-mid, Mid, High-mid, Air) or {band: gain}, sensitivity 0.25..4, attack / \
+               release seconds, beat_bands = band names the beat detection hears ([] = the whole sound).                3D styles (Voxel Blocks, custom `// @camera` shaders): camera = {yaw, pitch, distance, fov,                roll (degrees / world units), target: [x,y,z], auto_orbit, orbit_speed (deg/s)}, set at                camera_time (timeline s, default the playhead); camera_key = true adds keyframes there.",
         args: &[
-            "clip_id:integer:true:an audio clip (adds a visualizer) or a visualizer clip (restyles it)",
-            "style:string:false:style name, default Neon Orb",
+            "clip_id:integer:false:an audio clip (adds a visualizer) or a visualizer clip (restyles it)",
+            "asset_id:integer:false:an audio file in the library: place it with a visualizer",
+            "at:number:false:with asset_id: timeline seconds, default the playhead",
+            "style:string:false:style name, default the last used",
+            "preset:string:false:band-mixer preset, or Reset",
+            "gains:object:false:6 gains 0..3 (array) or {band name: gain}",
+            "sensitivity:number:false:0.25..4",
+            "attack:number:false:seconds to rise",
+            "release:number:false:seconds to fall",
+            "beat_bands:array:false:band names the beats follow; [] = the whole sound",
+            "camera:object:false:3D camera fields to set",
+            "camera_time:number:false:timeline seconds the camera values apply at",
+            "camera_key:boolean:false:add camera keyframes at camera_time",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
             let a = Args(args);
-            let id = req(a.id("clip_id"), "clip_id")?;
-            let style = visualizer::find(a.str("style"))?;
+            let mix = mix_args(args)?;
+            let style = match a.str("style") {
+                Some(n) => visualizer::find(Some(n))?,
+                None => visualizer::last_used(&app.settings.visualizer_style),
+            };
             let backend = app.backend();
+            if a.str("style").is_some() && app.settings.visualizer_style != style.name {
+                app.settings.visualizer_style = style.name.clone();
+                app.settings.save();
+            }
+            if let Some(asset) = a.id("asset_id") {
+                let at = a.f64("at").unwrap_or(app.playhead);
+                let (song, vis) = visualizer::add_song(&mut app.project, asset, at, &style, backend)?;
+                apply_mix(app, vis, mix, backend)?;
+                apply_camera(app, vis, args)?;
+                return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": vis, "audio_clip_id": song, "style": style.name})));
+            }
+            let id = req(a.id("clip_id"), "clip_id or asset_id")?;
             let clip = app.project.clip(id).ok_or("no such clip_id")?;
-            if clip.effects.iter().any(|e| visualizer::style_of(e).is_some()) {
-                visualizer::restyle(&mut app.project, id, &style, backend)?;
-                return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": id, "style": style.name})));
+            if let Some(cur) = clip.effects.iter().find_map(visualizer::style_of) {
+                // a visualizer: restyle only when asked to (band settings alone keep the look)
+                let name = if a.str("style").is_some() {
+                    visualizer::restyle(&mut app.project, id, &style, backend)?;
+                    style.name
+                } else {
+                    cur
+                };
+                apply_mix(app, id, mix, backend)?;
+                apply_camera(app, id, args)?;
+                return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": id, "style": name})));
             }
             let vid = visualizer::add(&mut app.project, id, &style, backend)?;
+            apply_mix(app, vid, mix, backend)?;
+            apply_camera(app, vid, args)?;
             Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": vid, "style": style.name})))
         },
     },
@@ -408,6 +459,135 @@ pub const TOOLS: &[ToolDef] = &[
         },
     },
 ];
+
+/// The band-mixer arguments of `audio.visualizer`, applied on top of a preset (or the clip's current mix
+/// when only some are given: `apply_mix` merges). None when no band argument was passed.
+type MixArgs = Option<Box<dyn Fn(crate::model::AudioMix) -> crate::model::AudioMix>>;
+
+fn mix_args(args: &Value) -> Result<MixArgs, String> {
+    use crate::model::AudioMix;
+    let keys = ["preset", "gains", "sensitivity", "attack", "release", "beat_bands"];
+    if !keys.iter().any(|k| args.get(*k).is_some_and(|v| !v.is_null())) {
+        return Ok(None);
+    }
+    let preset = match args.get("preset").and_then(Value::as_str) {
+        Some(p) if p.eq_ignore_ascii_case("reset") => Some(AudioMix::default()),
+        Some(p) => Some(AudioMix::preset(p).ok_or_else(|| format!("no preset '{p}' (have: {})", AudioMix::PRESETS.join(", ")))?),
+        None => None,
+    };
+    let mut gains: Vec<(usize, f32)> = Vec::new();
+    match args.get("gains") {
+        Some(Value::Array(v)) => {
+            if v.len() != 6 {
+                return Err("gains: give 6 numbers (Sub, Bass, Low-mid, Mid, High-mid, Air)".into());
+            }
+            for (i, g) in v.iter().enumerate() {
+                gains.push((i, g.as_f64().ok_or("gains: numbers")? as f32));
+            }
+        }
+        Some(Value::Object(o)) => {
+            for (k, g) in o {
+                let b = AudioMix::band(k).ok_or_else(|| format!("gains: no band '{k}'"))?;
+                gains.push((b, g.as_f64().ok_or("gains: numbers")? as f32));
+            }
+        }
+        Some(Value::Null) | None => {}
+        Some(_) => return Err("gains: an array of 6 numbers or {band: gain}".into()),
+    }
+    let beat_bands: Option<[bool; 6]> = match args.get("beat_bands") {
+        Some(Value::Array(v)) => {
+            let mut b = [false; 6];
+            for n in v {
+                let n = n.as_str().ok_or("beat_bands: band names")?;
+                b[AudioMix::band(n).ok_or_else(|| format!("beat_bands: no band '{n}'"))?] = true;
+            }
+            Some(b)
+        }
+        _ => None,
+    };
+    let num = |k: &str| args.get(k).and_then(Value::as_f64).map(|v| v as f32);
+    let (sens, att, rel) = (num("sensitivity"), num("attack"), num("release"));
+    Ok(Some(Box::new(move |cur: AudioMix| {
+        let mut m = preset.clone().unwrap_or(cur);
+        let hand = !gains.is_empty() || beat_bands.is_some() || sens.is_some() || att.is_some() || rel.is_some();
+        for &(b, g) in &gains {
+            m.gains[b] = g;
+        }
+        if let Some(b) = beat_bands {
+            m.beat_bands = b;
+        }
+        m.sensitivity = sens.unwrap_or(m.sensitivity);
+        m.attack = att.unwrap_or(m.attack);
+        m.release = rel.unwrap_or(m.release);
+        if hand {
+            m.preset.clear();
+        }
+        m.clamped()
+    })))
+}
+
+/// `audio.visualizer`'s `camera` fields onto visualizer `vis`'s 3D camera, at `camera_time` (timeline
+/// seconds, default the playhead), keyed there when `camera_key` (else set like the Inspector: a key
+/// where the field is already animated, the constant otherwise).
+fn apply_camera(app: &mut App, vis: Id, args: &Value) -> Result<(), String> {
+    let Some(c) = args.get("camera").filter(|v| !v.is_null()) else { return Ok(()) };
+    let o = c.as_object().ok_or("camera: an object")?;
+    let at = args.get("camera_time").and_then(Value::as_f64).unwrap_or(app.playhead);
+    let key = args.get("camera_key").and_then(Value::as_bool).unwrap_or(false);
+    let clip = app.project.clip_mut(vis).ok_or("no such clip")?;
+    let lt = clip.local(at);
+    let e = clip
+        .effects
+        .iter_mut()
+        .find(|e| visualizer::camera_at(e, 0.0).is_some())
+        .ok_or("not a 3D visualizer (its style has no camera)")?;
+    let cam = e.camera.get_or_insert_with(crate::model::VizCamera::default);
+    let mut set = |a: &mut crate::model::Animated, v: f64| {
+        if key && !a.has_key_at(lt) {
+            a.toggle_key(lt);
+        }
+        a.set_at(lt, v);
+    };
+    for (k, v) in o {
+        let num = || v.as_f64().ok_or(format!("camera.{k}: a number"));
+        match k.as_str() {
+            "yaw" => set(&mut cam.yaw, num()?),
+            "pitch" => set(&mut cam.pitch, num()?.clamp(-89.0, 89.0)),
+            "distance" => set(&mut cam.distance, num()?.clamp(0.5, 500.0)),
+            "fov" => set(&mut cam.fov, num()?.clamp(5.0, 150.0)),
+            "roll" => set(&mut cam.roll, num()?),
+            "target" => {
+                let t: Vec<f64> = v.as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+                if t.len() != 3 {
+                    return Err("camera.target: [x, y, z]".into());
+                }
+                set(&mut cam.target_x, t[0]);
+                set(&mut cam.target_y, t[1]);
+                set(&mut cam.target_z, t[2]);
+            }
+            "auto_orbit" => cam.auto_orbit = v.as_bool().ok_or("camera.auto_orbit: true / false")?,
+            "orbit_speed" => cam.orbit_speed = num()?.clamp(-90.0, 90.0),
+            _ => return Err(format!("camera.{k}: unknown (yaw, pitch, distance, fov, roll, target, auto_orbit, orbit_speed)")),
+        }
+    }
+    Ok(())
+}
+
+/// Set visualizer `vis`'s band mix from `audio.visualizer`'s arguments and bake again.
+fn apply_mix(app: &mut App, vis: Id, mix: MixArgs, backend: crate::media::Backend) -> Result<(), String> {
+    let Some(f) = mix else { return Ok(()) };
+    let e = app
+        .project
+        .clip_mut(vis)
+        .and_then(|c| c.effects.iter_mut().find(|e| visualizer::style_of(e).is_some()))
+        .ok_or("not a visualizer clip")?;
+    let m = f(e.audio_mix.clone().unwrap_or_default());
+    e.audio_mix = (m != crate::model::AudioMix::default()).then_some(m);
+    if let Some(a) = visualizer::source_of(&app.project, vis) {
+        visualizer::rebake(&mut app.project, vis, a, backend)?;
+    }
+    Ok(())
+}
 
 /// Bake audio clip `src`'s loudness into keyframes on `dst`'s effect `ei` (default: the last one),
 /// parameter `name`: one key per `1/fps` s over `dst`, 0..1 loudness mapped onto the parameter's range.
@@ -471,6 +651,16 @@ fn loudness_keys(peaks: &Peaks, src: impl Fn(f64) -> f64, len: f64, fps: f64) ->
 mod tests {
     use super::*;
 
+    /// Live skill runs: after normalising, audio.analyze still showed the source's levels, so a skill
+    /// could not check its own mix; it now reports the clip gain and the level after it.
+    #[test]
+    fn analyze_reports_clip_gain_in_db() {
+        assert!(gain_db(1.0).abs() < 1e-9);
+        assert!((gain_db(0.5) + 6.0206).abs() < 1e-3);
+        assert!((gain_db(2.0) - 6.0206).abs() < 1e-3);
+        assert_eq!(gain_db(0.0), -120.0);
+    }
+
     /// `every_arg_spec_parses`-style check scoped to just this file's 9 rows, plus a name/kind sanity
     /// pass - the crate-wide `mutate_rows_roll_back_on_error`/`every_arg_spec_parses` structural tests
     /// (tools_registry_tests.rs / mcp/tools.rs) already exercise these generically over every
@@ -502,6 +692,30 @@ mod tests {
         for name in names {
             assert!(crate::mcp::tools::find(name).is_some(), "{name} missing from mcp::tools::all()");
         }
+    }
+
+    /// audio.visualizer's band-mixer arguments: a preset as the base, single fields on top (which makes it
+    /// hand-edited), names checked, nothing passed = no change.
+    #[test]
+    fn band_mixer_args_parse() {
+        use crate::model::AudioMix;
+        assert!(mix_args(&json!({"clip_id": 3})).unwrap().is_none());
+        let f = mix_args(&json!({"preset": "rock", "gains": {"sub": 2.5}, "beat_bands": ["mid"]})).unwrap().unwrap();
+        let m = f(AudioMix::default());
+        let rock = AudioMix::preset("Rock").unwrap();
+        assert_eq!(m.gains[0], 2.5);
+        assert_eq!(m.gains[1..], rock.gains[1..]);
+        assert_eq!(m.beat_bands, [false, false, false, true, false, false]);
+        assert_eq!(m.preset, "", "edited by hand");
+        let p = mix_args(&json!({"preset": "EDM"})).unwrap().unwrap()(AudioMix::default());
+        assert_eq!(p, AudioMix::preset("EDM").unwrap(), "a bare preset keeps its name");
+        let r = mix_args(&json!({"preset": "reset"})).unwrap().unwrap()(rock);
+        assert_eq!(r, AudioMix::default());
+        let s = mix_args(&json!({"sensitivity": 99, "gains": [0, 1, 1, 1, 1, 9]})).unwrap().unwrap()(AudioMix::default());
+        assert_eq!((s.sensitivity, s.gains[5]), (4.0, 3.0), "clamped to the UI ranges");
+        assert!(mix_args(&json!({"gains": [1, 2]})).is_err());
+        assert!(mix_args(&json!({"beat_bands": ["kick"]})).is_err());
+        assert!(mix_args(&json!({"preset": "polka"})).is_err());
     }
 
     /// Loud bursts give keys near 1 that fall off smoothly; silence stays at 0; deterministic.

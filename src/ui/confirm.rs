@@ -43,6 +43,8 @@ enum Kind {
     App(Box<dyn FnOnce(&mut App)>),
     /// Save / Discard / Cancel.
     Discard(Box<dyn FnOnce(&mut App)>),
+    /// ws:quick-export: two labelled choices + Cancel, each choice runs its own closure.
+    Choice { labels: (&'static str, &'static str), on_yes: Box<dyn FnOnce(&mut App)>, on_no: Box<dyn FnOnce(&mut App)> },
 }
 
 pub struct Pending {
@@ -65,6 +67,18 @@ pub fn ask(title: impl Into<String>, body: impl Into<String>, action: ConfirmAct
 
 pub fn ask_app(title: impl Into<String>, body: impl Into<String>, on_yes: impl FnOnce(&mut App) + 'static) {
     stage(Pending { title: title.into(), body: body.into(), kind: Kind::App(Box::new(on_yes)) });
+}
+
+/// `labels.0` runs `on_yes`, `labels.1` runs `on_no`, Cancel runs nothing (Quick Export's "Replace <name>?").
+pub(crate) fn ask_choice(
+    title: impl Into<String>,
+    body: impl Into<String>,
+    labels: (&'static str, &'static str),
+    on_yes: impl FnOnce(&mut App) + 'static,
+    on_no: impl FnOnce(&mut App) + 'static,
+) {
+    let kind = Kind::Choice { labels, on_yes: Box::new(on_yes), on_no: Box::new(on_no) };
+    stage(Pending { title: title.into(), body: body.into(), kind });
 }
 
 /// Only `App::confirm_discard_then` builds one of these.
@@ -90,7 +104,7 @@ pub(crate) fn draw(app: &mut App, ctx: &egui::Context) {
         // recent, etc) appear where the button that triggered them was clicked. Since each of these
         // windows has a fresh Id (title/body/index), `default_pos` always applies - there's no prior
         // layout memory to fight.
-        let pos = if discard { ctx.content_rect().center() } else { crate::ui::popup_open_pos(ctx) };
+        let pos = if discard || matches!(pending[i].kind, Kind::Choice { .. }) { ctx.content_rect().center() } else { crate::ui::popup_open_pos(ctx) };
         egui::Window::new(pending[i].title.clone())
             .id(egui::Id::new(("se-confirm", i, pending[i].body.clone())))
             .collapsible(false)
@@ -104,6 +118,10 @@ pub(crate) fn draw(app: &mut App, ctx: &egui::Context) {
                     if discard {
                         yes |= ui.button("Save").clicked();
                         no |= ui.button("Discard").clicked();
+                        cancel |= ui.button("Cancel").clicked();
+                    } else if let Kind::Choice { labels, .. } = &pending[i].kind {
+                        yes |= ui.button(labels.0).clicked();
+                        no |= ui.button(labels.1).clicked();
                         cancel |= ui.button("Cancel").clicked();
                     } else {
                         yes |= ui.button("Yes").clicked();
@@ -126,6 +144,13 @@ pub(crate) fn draw(app: &mut App, ctx: &egui::Context) {
                 }
                 // Discard's "no" button is labelled "Discard" above (not a plain decline) and DOES run
                 // the continuation, matching the old blocking dialog's Yes=save/No=discard/other=cancel.
+                Kind::Choice { on_yes, on_no, .. } => {
+                    if yes {
+                        on_yes(app);
+                    } else {
+                        on_no(app);
+                    }
+                }
                 Kind::Discard(on_yes) => {
                     if yes {
                         if app.save_project() {

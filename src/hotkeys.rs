@@ -171,7 +171,8 @@ actions! {
     ColorMatch => "color_match", "Colour Match to Reference", None;
     BypassGrade => "bypass_grade", "Bypass Grade", None;
     // ---- ws:command-palette ----
-    CommandPalette => "command_palette", "Command Palette", sc(CTRL, Key::K);
+    // Ctrl+P since 1.3.1 (was Ctrl+K, still an alias while nothing else holds it: `palette_ctl::tick`)
+    CommandPalette => "command_palette", "Command Palette", sc(CTRL, Key::P);
     CheatSheet => "cheat_sheet", "Keyboard Shortcuts overlay", sc(NONE, Key::F1);
     // Owned exclusively by this workstream (see plans/ui-overhaul/issues/command-palette.md's
     // "Actions and hotkeys" table): ws:layout-modes-onboarding (wave 2) consumes these two variants
@@ -263,6 +264,11 @@ actions! {
     Workspace4 => "workspace_4", "Animate page", sc(ALT, Key::Num4);
     Workspace5 => "workspace_5", "Color page", sc(ALT, Key::Num5);
     Workspace6 => "workspace_6", "Audio page", sc(ALT, Key::Num6);
+    // 7th-9th pages (Export, then any the user adds): unbound by default so any chord can be given to
+    // them in Settings ▸ Hotkeys (e.g. Export on Alt+7, or swap it onto Alt+6).
+    Workspace7 => "workspace_7", "Export page", None;
+    Workspace8 => "workspace_8", "Page 8", None;
+    Workspace9 => "workspace_9", "Page 9", None;
     MaximizePane => "maximize_pane", "Maximise Pane under Cursor", sc(NONE, Key::Backtick);
     TogglePin => "toggle_pin", "Pin / Unpin Pane under Cursor", None;
     // ToggleSource is declared by ws:source-monitor below (both workstreams needed it; kept there
@@ -391,6 +397,10 @@ actions! {
     // ---- ws:perf-window ----
     // The Performance window (Window menu / palette / `perf.window`). Unbound by design.
     PerfWindow => "performance", "Performance…", None;
+    // ---- ws:quick-export ----
+    // The top bar's Quick Export button: Save As dialog with a type dropdown, then export. Unbound by design
+    // (Ctrl+M is QuickExport, which re-runs the last export without a dialog).
+    QuickExportAs => "quick_export_as", "Quick Export…", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -442,6 +452,20 @@ impl Hotkeys {
             if let Some(a) = Action::from_id(id) {
                 h.map.insert(a, Self::parse(text));
             }
+        }
+        // A default the user never touched yields to a chord they bound themselves: a newer version's
+        // default (the palette moving to Ctrl+P) must not share a key the user already picked.
+        let own: Vec<KeyboardShortcut> =
+            Action::ALL.iter().filter(|a| s.hotkeys.contains_key(a.id())).filter_map(|&a| h.get(a)).collect();
+        for &a in Action::ALL.iter().filter(|a| !s.hotkeys.contains_key(a.id())) {
+            if own.iter().any(|&k| same(a.default_shortcut(), Some(k))) {
+                h.map.insert(a, None);
+            }
+        }
+        // ...and the palette then keeps its old Ctrl+K, when that is free
+        let ctrl_k = KeyboardShortcut::new(CTRL, Key::K);
+        if h.get(Action::CommandPalette).is_none() && !s.hotkeys.contains_key("command_palette") && h.conflict(ctrl_k).is_none() {
+            h.map.insert(Action::CommandPalette, Some(ctrl_k));
         }
         h
     }
@@ -533,8 +557,16 @@ impl Hotkeys {
         }
         // exact matching: a chord fits at most one binding, so declaration order is as good as any
         let mut out = Vec::new();
+        // text selected in a label (a chat message, a log): Ctrl+C / Ctrl+X copy that text - egui does it
+        // at the end of the frame - and must not also copy the selected clips over it
+        let text_selected = ctx
+            .plugin_opt::<egui::text_selection::LabelSelectionState>()
+            .is_some_and(|p| p.lock().has_selection());
         ctx.input_mut(|i| {
             for &a in Action::ALL.iter().filter(|&&a| is_late(a) == late) {
+                if !fires_with_text_selected(a, text_selected) {
+                    continue;
+                }
                 if self.get(a).is_some_and(|ks| consume_exact(i, &ks)) {
                     out.push(a);
                 }
@@ -542,6 +574,11 @@ impl Hotkeys {
         });
         out
     }
+}
+
+/// Copy / Cut of clips stand aside while text is selected in a label: Ctrl+C then copies that text.
+fn fires_with_text_selected(a: Action, text_selected: bool) -> bool {
+    !(text_selected && matches!(a, Action::CopyClips | Action::CutClips))
 }
 
 /// Like `InputState::consume_shortcut`, but the pressed modifiers must equal the binding's
@@ -656,7 +693,7 @@ pub fn group(a: Action) -> &'static str {
         ToggleTranscript | RemoveFillers | ExportTranscript => "Captions",
         ViewerFit | AppendAtEnd | RippleOverwrite | CloseUp | PlaceOnTop | SourceTape => "Viewer",
         // (a shared variant never sits right before `=>`: `no_duplicate_*` count "Name =>" in this file)
-        Workspace1 | Workspace2 | Workspace3 | Workspace4 | Workspace5 | Workspace6 | MaximizePane | TogglePin
+        Workspace1 | Workspace2 | Workspace3 | Workspace4 | Workspace5 | Workspace6 | Workspace7 | Workspace8 | Workspace9 | MaximizePane | TogglePin
         | ToggleLayoutMode | ToggleLibrary | ToggleInspector | ToggleEffects | ToggleTransitions | ToggleCurves
         | ToggleSubtitles | TogglePlanner | ToggleMarkers | ToggleNodes | ToggleMixer | ToggleTools | ToggleSource
         | ToggleJobs | ToggleAssistant | ToggleScopes => "Panels & Pages",
@@ -708,6 +745,8 @@ pub fn group(a: Action) -> &'static str {
         AiUpscale2Game | AiUpscale2Real | AiUpscale4Game | AiUpscale4Real => "Clip",
         // ---- ws:perf-window ----
         PerfWindow => "Playback",
+        // ---- ws:quick-export ----
+        QuickExportAs => "File",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]
@@ -802,6 +841,19 @@ mod tests {
             let (early, late) = run(ev, m);
             assert!(early.is_empty(), "{want:?} must wait for the late pass, got {early:?}");
             assert_eq!(late, vec![want]);
+        }
+    }
+
+    /// Text selected in a label (a chat message) + Ctrl+C copies just that text: the clip Copy / Cut do
+    /// not also fire and put the clips' template JSON on the clipboard over it. (egui only makes a label
+    /// selection from a real drag, so the live check is in notes.md; this pins the gate.)
+    #[test]
+    fn clip_copy_waits_while_text_is_selected() {
+        for a in [Action::CopyClips, Action::CutClips] {
+            assert!(!fires_with_text_selected(a, true) && fires_with_text_selected(a, false), "{a:?}");
+        }
+        for a in [Action::PasteClips, Action::Delete, Action::DuplicateClips] {
+            assert!(fires_with_text_selected(a, true), "{a:?}");
         }
     }
 
@@ -930,22 +982,27 @@ mod tests {
             let decl = format!("{name} =>");
             assert_eq!(src.matches(decl.as_str()).count(), 1, "{name} must be declared exactly once");
         }
-        assert!(!src.contains(&format!("Workspace{} =>", 7)), "six pages, six page Actions");
+        // pages 7-9 (Export, then user pages) have actions too, unbound by default so the user picks the chord
+        for a in [Action::Workspace7, Action::Workspace8, Action::Workspace9] {
+            assert_eq!(Hotkeys::defaults().text(a), "", "{a:?} is unbound by default");
+        }
+        assert_eq!(Action::Workspace7.label(), "Export page");
         let h = Hotkeys::defaults();
         assert_eq!(h.text(Action::ToggleLayoutMode), "", "ws:pages: the Dynamic/Granular chord left the UI");
         assert_eq!(h.text(Action::ShowWelcome), "");
         use Action::{Workspace1, Workspace2, Workspace3, Workspace4, Workspace5, Workspace6};
         let labels = [Workspace1, Workspace2, Workspace3, Workspace4, Workspace5, Workspace6].map(|a| a.label());
         assert_eq!(labels.map(|l| l.trim_end_matches(" page")), crate::ui::layout::PAGES[..6], "Alt+N is the Nth page");
-        // an unknown id in a settings file is ignored; a known one rebinds the page in that slot
+        // a page action can be rebound, including Export (slot 7) - e.g. onto Alt+7
         let mut s = Settings::default();
-        s.hotkeys.insert("workspace_9".into(), "Alt+9".into());
+        s.hotkeys.insert("workspace_7".into(), "Alt+7".into());
         s.hotkeys.insert("workspace_6".into(), "Alt+0".into());
         let rebound = Hotkeys::from_settings(&s);
         assert_eq!(
             (rebound.text(Action::Workspace1), rebound.text(Action::Workspace6)),
             ("Alt+1".into(), "Alt+0".into())
         );
+        assert_eq!(rebound.text(Action::Workspace7), "Alt+7", "the Export page takes a chord");
         for (a, want) in [
             (Action::Workspace1, "Alt+1"),
             (Action::Workspace2, "Alt+2"),

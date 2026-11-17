@@ -83,6 +83,8 @@ enum Kind {
 /// One request to the agent.
 struct Req {
     kind: Kind,
+    /// The conversation it was asked in (its replies go there, its session is resumed).
+    conv: u64,
     /// The undo label (and what the queue shows).
     label: String,
     /// The whole prompt the agent gets.
@@ -124,12 +126,34 @@ pub(super) struct AssistantRt {
     /// "Handle my comments": markers up to this id are not new; the candidate settling.
     comment_since: Option<Id>,
     comment_slot: Option<(Id, String, Instant)>,
+    /// Screenshots asked for the composer, oldest first (see `Shot`).
+    shots: Vec<Shot>,
+    next_shot: u64,
+    /// Ctrl+V was down last frame (image paste: egui reports no key when the clipboard holds no text).
+    paste_down: bool,
+    /// The root context (from the tick), so a capture asked by a tool call can wake the next frame.
+    ctx: Option<egui::Context>,
     // ---- ws:skills ----
     /// The skill the running request runs.
     skill: Option<String>,
     /// A library skill waiting for its first-run Run / Cancel, and whether it came from the Tasks box.
     read_first: Option<(Skill, bool)>,
 }
+
+/// A screenshot on its way into the composer: asked one frame after it is queued, so the menu or the
+/// area overlay that asked for it is gone from the picture.
+struct Shot {
+    tag: u64,
+    /// The crop, in points.
+    rect: egui::Rect,
+    name: String,
+    /// Context that goes with it (the timeline range's clips and tracks).
+    chip: Option<aui::Chip>,
+    asked: bool,
+}
+
+/// Tags the screenshots the Assistant asks for (`ui.screenshot` and `--screenshot` take only theirs).
+pub(super) struct AssistantShot(u64);
 
 fn busy(app: &App) -> bool {
     app.assistant_rt.run.is_some() || app.assistant_rt.queued.is_some()
@@ -197,7 +221,7 @@ pub(super) fn compose_context(live: Option<Value>, off: &[&str], pinned: &[aui::
 }
 
 /// The preamble every request starts with.
-pub(super) fn preamble(ctx: &Value, images: usize) -> String {
+pub(super) fn preamble(ctx: &Value, atts: &[aui::Attachment]) -> String {
     let mut s = String::from(
         "You are editing the video project open in Simple Editor, live, through its MCP tools. This whole request \
          is already one undo step: do not call edit.begin or edit.end.",
@@ -209,11 +233,21 @@ pub(super) fn preamble(ctx: &Value, images: usize) -> String {
     } else {
         s.push_str(" No context is attached - call editor.context when you need it.");
     }
-    if images > 0 {
-        let what = if images == 1 { "1 image".to_string() } else { format!("{images} images") };
+    if !atts.is_empty() {
+        let list: Vec<String> = atts
+            .iter()
+            .enumerate()
+            .map(|(i, a)| match &a.file {
+                Some(f) if !a.is_image() => format!("{i}: file {}", f.display()),
+                _ => format!("{i}: image \"{}\" {}x{}", a.name, a.width, a.height),
+            })
+            .collect();
         s.push_str(&format!(
-            "\nThe user attached {what}: assistant.attachment{{index}} (0 to {}) shows each one.",
-            images - 1
+            "\nThe user attached {} item{}: assistant.attachment{{index}} returns each one (an image, or a text \
+             file's text):\n{}",
+            atts.len(),
+            if atts.len() == 1 { "" } else { "s" },
+            list.join("\n")
         ));
     }
     s
@@ -226,13 +260,23 @@ fn live_context(app: &App) -> Option<Value> {
 // ---------------------------------------------------------------------------------------------------
 // sending
 
-/// Send `text` as a chat request (the palette's `>` prefix, `assistant.send`).
-pub(super) fn ask(app: &mut App, text: &str) -> Result<(), String> {
+/// **The one entry point for other parts of the app** (the Ctrl+P palette's `/ask` and `/<skill>`,
+/// `assistant.send`): send `text` to the Assistant as if the user typed it in the composer and pressed
+/// Enter. `text` is a request ("tighten the intro") or a skill run ("/captions bold": the skill's name
+/// after `/`, then its arguments); the composer's attachments and pinned context go with it. When the
+/// pane isn't on screen it opens on a new chat. Err = nothing was sent (empty, or a request is still
+/// running). Keep this signature stable: the palette calls it.
+pub(crate) fn ask(app: &mut App, text: &str) -> Result<(), String> {
     if text.trim().is_empty() {
         return Err("empty request".into());
     }
     if busy(app) {
         return Err("the assistant is still working on the last request".into());
+    }
+    if !app.layout.rects.iter().any(|(p, _)| *p == Pane::Assistant) {
+        // opened for this request: it goes into a fresh chat, which the pane then keeps on screen
+        app.assistant.new_chat();
+        app.assistant.keep_on_open = true;
     }
     app.assistant.prompt = text.to_string();
     app.assistant.tab = aui::Tab::Chat;
@@ -277,7 +321,7 @@ fn send(app: &mut App) {
     let ctx = compose_context(live, &off, &pinned);
     let st = &mut app.assistant;
     if st.conv_mut().title.is_empty() {
-        st.conv_mut().title = aui::short(&prompt, 60);
+        st.conv_mut().title = aui::short(&crate::ui::markdown::plain(&prompt), 60);
     }
     st.push(Line::User(prompt.clone()));
     if !labels.is_empty() || !images.is_empty() {
@@ -296,9 +340,10 @@ fn send(app: &mut App) {
         switch_mcp_on(app);
         return;
     }
-    let full = format!("{}\n\nRequest: {request}", preamble(&ctx, images.len()));
+    let full = format!("{}\n\nRequest: {request}", preamble(&ctx, &images));
     let skill = skill.map(|(s, _)| s.name);
-    enqueue(app, Req { kind: Kind::Chat, label: prompt, full, images, skill });
+    let conv = app.assistant.conv_mut().id;
+    enqueue(app, Req { kind: Kind::Chat, conv, label: prompt, full, images, skill });
 }
 
 /// ws:skills: `/name args` -> Some(Some((skill, args))); plain text or an unknown `/name` ->
@@ -342,20 +387,21 @@ fn add_task(app: &mut App) {
     st.push(Line::User(format!("Task: {desc}")));
     st.dirty = true;
     let ctx = compose_context(live_context(app), &[], &[]);
-    let full = format!("{}\n\n{TASK_BRIEF}\n\nTask: {what}", preamble(&ctx, 0));
-    enqueue(app, Req { kind: Kind::Task(id), label: format!("Task: {desc}"), full, images: Vec::new(), skill });
+    let full = format!("{}\n\n{TASK_BRIEF}\n\nTask: {what}", preamble(&ctx, &[]));
+    let conv = app.assistant.conv_mut().id;
+    enqueue(app, Req { kind: Kind::Task(id), conv, label: format!("Task: {desc}"), full, images: Vec::new(), skill });
 }
 
 /// "Handle my comments": a settled new comment becomes a background request.
-fn comment_req(comment: Value, id: Id) -> Req {
+fn comment_req(comment: Value, id: Id, conv: u64) -> Req {
     let note = comment["note"].as_str().unwrap_or("").to_string();
     let ctx = json!({"comment": comment});
     let full = format!(
         "{}\n\nThe user left this comment on the timeline (marker {id}). Do what it asks; the editor marks the \
          comment done when you finish, so don't mark it yourself.\nComment: {note}",
-        preamble(&ctx, 0)
+        preamble(&ctx, &[])
     );
-    Req { kind: Kind::Comment(id), label: format!("Comment: {}", aui::short(&note, 50)), full, images: Vec::new(), skill: None }
+    Req { kind: Kind::Comment(id), conv, label: format!("Comment: {}", aui::short(&note, 50)), full, images: Vec::new(), skill: None }
 }
 
 fn switch_mcp_on(app: &mut App) {
@@ -387,7 +433,7 @@ fn fail_req(app: &mut App, req: Req, why: &str) {
 }
 
 fn mark_unwritten(app: &mut App, id: u64, why: &str) {
-    if let Some(t) = app.assistant.tasks_mut().iter_mut().find(|t| t.id == id && t.status == TaskStatus::Writing) {
+    if let Some(t) = app.assistant.target_mut().tasks.iter_mut().find(|t| t.id == id && t.status == TaskStatus::Writing) {
         (t.status, t.error) = (TaskStatus::Failed, why.to_string());
     }
 }
@@ -409,7 +455,8 @@ fn start_queued(app: &mut App) {
         "custom" => (agent::Backend::Custom, s.assistant_key_env.clone()),
         _ => (agent::Backend::Claude, "ANTHROPIC_API_KEY".to_string()),
     };
-    let resume = if backend == agent::Backend::Claude { app.assistant.conv().and_then(|c| c.session.clone()) } else { None };
+    app.assistant.run_conv = Some(req.conv);
+    let resume = if backend == agent::Backend::Claude { app.assistant.target_mut().session.clone() } else { None };
     let spec = agent::Spec {
         backend,
         prompt: req.full,
@@ -462,6 +509,7 @@ fn finish(app: &mut App) {
         ));
     }
     app.assistant.push(Line::Done { undo });
+    app.assistant.run_conv = None;
     app.assistant.dirty = true;
 }
 
@@ -526,38 +574,227 @@ fn attach_dir(app: &App) -> PathBuf {
 }
 
 fn attach(app: &mut App, what: Attach) {
-    let made = match what {
-        Attach::Pin(pin) => return pin_add(app, pin),
+    match what {
+        Attach::Pin(pin) => pin_add(app, pin),
         Attach::Frame => {
             let t = app.playhead;
-            app.render_frame_now(t, aui::ATTACH_MAX).ok_or_else(|| "Couldn't render the frame".to_string()).and_then(|f| {
+            let made = app.render_frame_now(t, aui::ATTACH_MAX).ok_or_else(|| "Couldn't render the frame".to_string()).and_then(|f| {
                 let f = tools_context::tile(&[f], 1); // RGBA, opaque
                 aui::write_attachment(&attach_dir(app), &format!("Frame at {t:.2}s"), &f.rgba, f.width, f.height)
-            })
+            });
+            match made {
+                Ok(a) => {
+                    app.assistant.images.push(a);
+                    show_composer(app);
+                }
+                Err(e) => app.toast(e),
+            }
         }
         Attach::File => {
-            let Some(path) =
-                rfd::FileDialog::new().add_filter("Images", &["png", "jpg", "jpeg", "bmp", "webp"]).pick_file()
-            else {
-                return;
-            };
-            load_image(&path).and_then(|(rgba, w, h)| {
-                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                aui::write_attachment(&attach_dir(app), &name, &rgba, w, h)
-            })
+            if let Some(paths) = rfd::FileDialog::new().set_title("Attach files").pick_files() {
+                attach_paths(app, &paths);
+            }
         }
-    };
-    match made {
-        Ok(a) => {
-            app.assistant.images.push(a);
-            app.assistant.tab = aui::Tab::Chat;
-            app.assistant.focus_prompt = true;
-        }
-        Err(e) => app.toast(e),
+        Attach::Panel(pane) => capture_pane(app, pane),
+        Attach::Timeline => capture_timeline(app),
     }
 }
 
-/// A PNG / JPG / … decoded (through ffmpeg, like an image clip) to RGBA at most `ATTACH_MAX` on its long
+/// The chat composer comes to the front with the cursor in it.
+fn show_composer(app: &mut App) {
+    app.assistant.tab = aui::Tab::Chat;
+    app.assistant.focus_prompt = true;
+    app.surface(Pane::Assistant);
+}
+
+/// Picture files: attached as images the agent can see. Anything else is attached by its path.
+fn is_picture(p: &Path) -> bool {
+    p.extension().is_some_and(|e| ["png", "jpg", "jpeg", "bmp", "webp", "gif", "tif", "tiff"].iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+/// Files into the composer (the paperclip, a drop on the pane, a paste of files copied in Explorer).
+pub(super) fn attach_paths(app: &mut App, paths: &[PathBuf]) {
+    let dir = attach_dir(app);
+    for p in paths {
+        let made = if is_picture(p) {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            load_image(p).and_then(|(rgba, w, h)| aui::write_attachment(&dir, &name, &rgba, w, h)).map(|mut a| {
+                a.file = Some(p.clone());
+                a
+            })
+        } else if p.is_file() {
+            Ok(aui::Attachment::file(p))
+        } else {
+            Err(format!("Not a file: {}", p.display()))
+        };
+        match made {
+            Ok(a) => app.assistant.images.push(a),
+            Err(e) => app.toast(e),
+        }
+    }
+    show_composer(app);
+}
+
+/// "Screenshot a panel" / a pane tab's "Attach to Assistant".
+pub(super) fn capture_pane(app: &mut App, pane: Pane) {
+    match app.layout.rects.iter().find(|(p, _)| *p == pane) {
+        Some(&(_, r)) => queue_shot(app, r, format!("{} panel", pane.title()), None),
+        None => app.toast(format!("The {} panel isn't on screen", pane.title())),
+    }
+}
+
+fn queue_shot(app: &mut App, rect: egui::Rect, name: String, chip: Option<aui::Chip>) {
+    let rt = &mut app.assistant_rt;
+    rt.next_shot += 1;
+    rt.shots.push(Shot { tag: rt.next_shot, rect, name, chip, asked: false });
+    if let Some(ctx) = &rt.ctx {
+        ctx.request_repaint();
+    }
+}
+
+/// "Timeline range": In/Out (else the selected clips' span) as a picture of the Timeline cut to the range,
+/// plus a chip with the clips and tracks in it, so the agent knows exactly what is meant.
+fn capture_timeline(app: &mut App) {
+    let span = || {
+        let clips: Vec<_> = app.selection.iter().filter_map(|&id| app.project.clip(id)).collect();
+        let a = clips.iter().map(|c| c.start).fold(f64::INFINITY, f64::min);
+        let b = clips.iter().map(|c| c.end()).fold(f64::NEG_INFINITY, f64::max);
+        (b > a).then_some((a, b))
+    };
+    let range = match (app.project.in_point, app.project.out_point) {
+        (Some(a), Some(b)) if b > a => Some((a, b)),
+        _ => span(),
+    };
+    let Some((a, b)) = range else {
+        app.toast("Set In and Out (or select clips) first");
+        return;
+    };
+    let chip = timeline_chip(&app.project, a, b);
+    let Some(&(_, pane)) = app.layout.rects.iter().find(|(p, _)| *p == Pane::Timeline) else {
+        aui::pin_add(&mut app.assistant.pinned, chip);
+        app.toast("The Timeline isn't on screen: attached its clips without a picture");
+        show_composer(app);
+        return;
+    };
+    let tl = &app.timeline;
+    let (x0, x1) = (tl.x_at(a).max(tl.lanes_rect.left()), tl.x_at(b).min(tl.lanes_rect.right()));
+    // the range's columns of the pane (ruler and every track), or the whole pane when it is scrolled away
+    let rect = if x1 - x0 >= 8.0 { egui::Rect::from_x_y_ranges(x0..=x1, pane.y_range()) } else { pane };
+    queue_shot(app, rect, format!("Timeline {a:.1}s-{b:.1}s"), Some(chip));
+}
+
+/// The timeline range's context: every clip that overlaps `a..b` and the tracks they are on.
+pub(super) fn timeline_chip(p: &crate::model::Project, a: f64, b: f64) -> aui::Chip {
+    let clips: Vec<Value> = p
+        .all_clips()
+        .filter(|(_, c)| c.start < b && c.end() > a)
+        .map(|(t, c)| json!({"id": c.id, "name": c.name, "kind": format!("{:?}", c.kind), "track": t, "start": c.start, "end": c.end()}))
+        .collect();
+    let tracks: Vec<Value> = p
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| clips.iter().any(|c| c["track"] == *i))
+        .map(|(i, t)| json!({"index": i, "name": t.name, "kind": format!("{:?}", t.kind)}))
+        .collect();
+    let n = clips.len();
+    aui::Chip {
+        label: format!("Timeline {a:.1}s–{b:.1}s · {n} clip{}", if n == 1 { "" } else { "s" }),
+        data: json!({"kind": "timeline_range", "in": a, "out": b, "clips": clips, "tracks": tracks}),
+    }
+}
+
+/// A screenshot cropped to `rect` (points) as an attachment.
+pub(super) fn shot_attachment(img: &egui::ColorImage, rect: egui::Rect, ppp: f32, dir: &Path, name: &str) -> Result<aui::Attachment, String> {
+    let f = super::tools_uikit::crop_frame(img, Some(rect * ppp));
+    aui::write_attachment_max(dir, name, &f.rgba, f.width, f.height, aui::CAPTURE_MAX)
+}
+
+/// Ask for the queued screenshots and turn the ones that came back into attachments.
+fn shots_tick(app: &mut App, ctx: &egui::Context) {
+    for p in aui::take_captures() {
+        capture_pane(app, p);
+    }
+    if app.assistant_rt.shots.is_empty() {
+        return;
+    }
+    for s in app.assistant_rt.shots.iter_mut().filter(|s| !s.asked) {
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Screenshot(egui::UserData::new(AssistantShot(s.tag))));
+        s.asked = true;
+    }
+    let images: Vec<(u64, std::sync::Arc<egui::ColorImage>)> = ctx.input(|i| {
+        i.events
+            .iter()
+            .filter_map(|e| match e {
+                egui::Event::Screenshot { user_data, image, .. } => {
+                    user_data.data.as_ref()?.downcast_ref::<AssistantShot>().map(|t| (t.0, image.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    });
+    let ppp = ctx.pixels_per_point();
+    for (tag, img) in images {
+        let Some(k) = app.assistant_rt.shots.iter().position(|s| s.tag == tag) else { continue };
+        let s = app.assistant_rt.shots.remove(k);
+        match shot_attachment(&img, s.rect, ppp, &attach_dir(app), &s.name) {
+            Ok(a) => {
+                app.assistant.images.push(a);
+                if let Some(c) = s.chip {
+                    aui::pin_add(&mut app.assistant.pinned, c);
+                }
+                show_composer(app);
+            }
+            Err(e) => app.toast(format!("Couldn't capture: {e}")),
+        }
+    }
+    ctx.request_repaint(); // the picture comes back on a later frame
+}
+
+/// Ctrl+V in the composer with a picture (or files copied in Explorer) on the clipboard: egui-winit only
+/// reports a paste when the clipboard holds text, so the key is read from Windows directly.
+/// ponytail: polled while the composer has focus; a paste shortcut bound elsewhere would need the same.
+fn paste_tick(app: &mut App, ctx: &egui::Context) {
+    let focused = ctx.memory(|m| m.has_focus(aui::prompt_id()));
+    // SAFETY: GetAsyncKeyState has no preconditions; the high bit is "down now".
+    let v = focused
+        && ctx.input(|i| i.modifiers.command)
+        && unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(i32::from(b'V')) } < 0;
+    let pressed = v && !app.assistant_rt.paste_down;
+    app.assistant_rt.paste_down = v;
+    if !pressed || ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(_)))) {
+        return;
+    }
+    let Ok(mut cb) = arboard::Clipboard::new() else { return };
+    if let Ok(files) = cb.get().file_list() {
+        if !files.is_empty() {
+            attach_paths(app, &files);
+            return;
+        }
+    }
+    if let Ok(img) = cb.get_image() {
+        match aui::write_attachment_max(&attach_dir(app), "Pasted image", &img.bytes, img.width as u32, img.height as u32, aui::CAPTURE_MAX) {
+            Ok(a) => {
+                app.assistant.images.push(a);
+                show_composer(app);
+            }
+            Err(e) => app.toast(format!("Couldn't paste the picture: {e}")),
+        }
+    }
+}
+
+/// Retry: send the user message at line `i` of the shown chat again (its text and attachments); the
+/// composer's draft is kept.
+fn retry(app: &mut App, i: usize) {
+    let lines = app.assistant.log().to_vec();
+    let Some(Line::User(text)) = lines.get(i) else { return };
+    let images = aui::messages(&lines).into_iter().find(|m| m.lines.start == i).map(|m| aui::msg_attachments(&lines, &m)).unwrap_or_default();
+    let draft = (std::mem::replace(&mut app.assistant.prompt, text.clone()), std::mem::replace(&mut app.assistant.images, images));
+    send(app);
+    (app.assistant.prompt, app.assistant.images) = draft;
+}
+
+/// A picture file decoded (through ffmpeg, like an image clip) to RGBA at most `ATTACH_MAX` on its long
 /// edge - every attachment reaches the agent as a PNG, whatever it was on disk.
 fn load_image(path: &std::path::Path) -> Result<(Vec<u8>, u32, u32), String> {
     let p = path.to_string_lossy();
@@ -717,6 +954,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     let running = busy(app);
     let queued = queued_comments(app);
     let all = skills::all();
+    let panes: Vec<Pane> = app.layout.rects.iter().map(|(p, _)| *p).filter(|p| *p != Pane::Assistant).collect();
     let out = {
         let s = &app.settings;
         let v = View {
@@ -729,6 +967,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             model: &s.assistant_model,
             effort: &s.assistant_effort,
             queued,
+            panes: &panes,
         };
         aui::draw(ui, &mut app.assistant, &v)
     };
@@ -736,6 +975,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         Out::Send => send(app),
         Out::Stop => stop(app),
         Out::Undo => app.pending_actions.push(Action::Undo),
+        Out::Retry(i) => retry(app, i),
         Out::Backend(b) => {
             app.settings.assistant_backend = b.to_string();
             app.settings.assistant_model.clear(); // each agent has its own models
@@ -772,6 +1012,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         }
         Out::Skill(o) => skill_out(app, o),
         Out::None => {}
+    }
+    if app.assistant_rt.shots.iter().any(|s| !s.asked) {
+        ui.ctx().request_repaint(); // asked for on the next frame
     }
     true
 }
@@ -824,6 +1067,11 @@ fn skill_out(app: &mut App, o: aui::SkillOut) {
 
 /// WINDOW_DRAWERS entry: the New / Edit skill window and a library skill's read-first window.
 pub(super) fn skill_windows(app: &mut App, ctx: &egui::Context) {
+    aui::preview_window(ctx, &mut app.assistant);
+    if let Some(rect) = aui::area_overlay(ctx, &mut app.assistant) {
+        queue_shot(app, rect, "Area".into(), None);
+        ctx.request_repaint();
+    }
     if app.assistant.skill_draft.is_some() {
         let running = busy(app);
         if let Out::Skill(o) = aui::skill_window(ctx, &mut app.assistant, running) {
@@ -871,8 +1119,11 @@ fn migrate_quick_prompts(app: &mut App) {
 /// waiting to go, new comments to handle, the queue, the server coming up for a queued request, and
 /// the running agent's events. Schedules nothing when idle.
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
+    app.assistant_rt.ctx.get_or_insert_with(|| ctx.clone());
     migrate_quick_prompts(app); // ws:skills: once
     sync_store(app);
+    shots_tick(app, ctx);
+    paste_tick(app, ctx);
     for pin in aui::take_pins() {
         pin_add(app, pin);
     }
@@ -889,7 +1140,8 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
         let since = *rt.comment_since.get_or_insert_with(|| tools_context::max_marker_id(&app.project));
         if let Some((v, id)) = tools_context::settled_comment(&app.project, since, Instant::now(), &mut rt.comment_slot) {
             rt.comment_since = Some(id);
-            enqueue(app, comment_req(v, id));
+            let conv = app.assistant.conv_mut().id;
+            enqueue(app, comment_req(v, id, conv));
         }
         if let Some((_, _, at)) = app.assistant_rt.comment_slot {
             app.animate_until(ctx, at + tools_context::COMMENT_SETTLE);
@@ -922,6 +1174,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             undo_len: app.undo.len(),
             top_at: app.undo.last().map(|e| e.at),
             last_call: Instant::now(),
+            idle: super::tools_context::GROUP_IDLE,
         });
         app.assistant_rt.split = true;
     }
@@ -942,7 +1195,16 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     for e in events {
         match e {
             Event::Session(s) => remember_session(app, s),
-            Event::Text(t) | Event::Line(t) => app.assistant.push(Line::Text(t)),
+            Event::Text(t) => app.assistant.push(Line::Text(t)),
+            // stdout lines (codex, custom) arrive one by one: they are one Markdown text, so a fenced
+            // block or a list stays whole
+            Event::Line(t) => match app.assistant.target_mut().lines.last_mut() {
+                Some(Line::Text(prev)) => {
+                    prev.push('\n');
+                    prev.push_str(&t);
+                }
+                _ => app.assistant.push(Line::Text(t)),
+            },
             Event::Tool(t) => app.assistant.push(Line::Tool(t)),
             Event::Info(t) => app.assistant.push(Line::Info(t)),
             Event::Error(t) => app.assistant.push(Line::Error(t)),
@@ -969,7 +1231,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
 /// The agent's session id belongs to the conversation the request runs in (switching is disabled
 /// while one runs), so its next message resumes it.
 fn remember_session(app: &mut App, s: String) {
-    let c = app.assistant.conv_mut();
+    let c = app.assistant.target_mut();
     if c.session.as_deref() != Some(s.as_str()) {
         c.session = Some(s);
         app.assistant.dirty = true;
@@ -1006,6 +1268,7 @@ pub(super) fn palette_row(text: &str) -> crate::ui::palette::Row {
         glyph: Some(crate::ui::tools::Glyph::Assistant),
         enabled: !text.is_empty(),
         reason: None,
+        ..Default::default()
     }
 }
 
@@ -1076,9 +1339,43 @@ pub const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "assistant.capture",
+        desc: "Attach something to the Assistant's next chat message (it shows in the composer): what = frame (the                frame at the playhead), panel (a screenshot of `pane`, a pane title that is on screen), timeline (the                In/Out range - else the selected clips - as a picture of the Timeline plus its clips and tracks) or                files (`paths`). Screenshots land a frame or two later.",
+        args: &["what:string:true:frame, panel, timeline or files", "pane:string:false:for panel", "paths:array:false:for files"],
+        kind: ToolKind::Ui,
+        run: |app, args| {
+            let what = match req(arg_str(args, "what"), "what")? {
+                "frame" => Attach::Frame,
+                "timeline" => Attach::Timeline,
+                "panel" => {
+                    let name = req(arg_str(args, "pane"), "pane")?;
+                    let pane = Pane::by_title(name).ok_or_else(|| format!("unknown pane '{name}'"))?;
+                    if !app.layout.rects.iter().any(|(p, _)| *p == pane) {
+                        return Err(format!("pane '{name}' is not on screen"));
+                    }
+                    Attach::Panel(pane)
+                }
+                "files" => {
+                    let paths: Vec<PathBuf> = args
+                        .get("paths")
+                        .and_then(Value::as_array)
+                        .ok_or("paths: an array of file paths")?
+                        .iter()
+                        .filter_map(|p| p.as_str().map(PathBuf::from))
+                        .collect();
+                    attach_paths(app, &paths);
+                    return Ok(ToolOutcome::Done(json!({"ok": true, "attached": app.assistant.images.len()})));
+                }
+                w => return Err(format!("what: frame, panel, timeline or files (not '{w}')")),
+            };
+            attach(app, what);
+            Ok(ToolOutcome::Done(json!({"ok": true, "attached": app.assistant.images.len(), "capturing": app.assistant_rt.shots.len()})))
+        },
+    },
+    ToolDef {
         name: "assistant.attachments",
-        desc: "The images the user attached to the current Assistant request: [{index, name, width, height}]. \
-               assistant.attachment{index} returns one.",
+        desc: "What the user attached to the current Assistant request (pictures, screenshots, files): \
+               [{index, name, kind: image|file, width, height, path}]. assistant.attachment{index} returns one.",
         args: &[],
         kind: ToolKind::Read,
         run: |app, _| {
@@ -1087,19 +1384,29 @@ pub const TOOLS: &[ToolDef] = &[
                 .attachments
                 .iter()
                 .enumerate()
-                .map(|(i, a)| json!({"index": i, "name": a.name, "width": a.width, "height": a.height}))
+                .map(|(i, a)| {
+                    json!({"index": i, "name": a.name, "kind": if a.is_image() { "image" } else { "file" },
+                           "width": a.width, "height": a.height, "path": a.path()})
+                })
                 .collect();
             Ok(ToolOutcome::Done(json!(list)))
         },
     },
     ToolDef {
         name: "assistant.attachment",
-        desc: "One image the user attached to the current Assistant request, as an image (PNG).",
+        desc: "One thing the user attached to the current Assistant request: a picture as an image (PNG); a text \
+               file as its text (up to 200 KB); any other file as its path and size.",
         args: &["index:integer:true:0-based, see assistant.attachments"],
         kind: ToolKind::Read,
         run: |app, args| {
             let i = req(arg_u64(args, "index"), "index")? as usize;
             let a = app.assistant_rt.attachments.get(i).ok_or(format!("no attachment {i}"))?;
+            if !a.is_image() {
+                let path = a.path();
+                let size = std::fs::metadata(path).map(|m| m.len()).map_err(|e| format!("attachment {i}: {e}"))?;
+                let text = (size <= 200_000).then(|| std::fs::read_to_string(path).ok()).flatten();
+                return Ok(ToolOutcome::Done(json!({"index": i, "name": a.name, "path": path, "size": size, "text": text})));
+            }
             let png = std::fs::read(&a.png).map_err(|e| format!("attachment {i}: {e}"))?;
             Ok(ToolOutcome::Image {
                 png_b64: super::thumbs::base64(&png),
@@ -1120,7 +1427,7 @@ pub const TOOLS: &[ToolDef] = &[
                 Some(Kind::Task(id)) => Some(id),
                 _ => None,
             };
-            let id = aui::task_hand_over(app.assistant.tasks_mut(), slot, title, code, arg_str(args, "note").unwrap_or(""));
+            let id = aui::task_hand_over(&mut app.assistant.target_mut().tasks, slot, title, code, arg_str(args, "note").unwrap_or(""));
             app.assistant.dirty = true;
             Ok(ToolOutcome::Done(json!({"ok": true, "id": id})))
         },
@@ -1209,14 +1516,17 @@ mod tests {
         let pin = aui::Chip { label: "In/Out".into(), data: json!({"kind": "range", "in": 1.0, "out": 3.0}) };
         let off = compose_context(None, &[], &[]);
         assert_eq!(off, json!({}), "follow off, nothing pinned: nothing attached");
-        assert!(preamble(&off, 0).contains("No context is attached"));
+        assert!(preamble(&off, &[]).contains("No context is attached"));
         let c = compose_context(None, &[], std::slice::from_ref(&pin));
         assert_eq!(c, json!({"pinned": [pin.data.clone()]}));
         let c = compose_context(Some(live), &["selection"], &[pin]);
         assert!(c.get("selected_clips").is_none() && c["playhead"] == 2.0 && c["pinned"].is_array());
-        let p = preamble(&c, 2);
-        assert!(p.contains("\"pinned\"") && p.contains("2 images") && p.contains("assistant.attachment{index} (0 to 1)"), "{p}");
-        assert!(!preamble(&c, 0).contains("assistant.attachment"));
+        let img = aui::Attachment { name: "Frame".into(), png: "a.png".into(), width: 4, height: 2, ..Default::default() };
+        let file = aui::Attachment::file(Path::new("C:\\brief.txt"));
+        let p = preamble(&c, &[img, file]);
+        assert!(p.contains("\"pinned\"") && p.contains("2 items") && p.contains("assistant.attachment{index}"), "{p}");
+        assert!(p.contains("0: image \"Frame\" 4x2") && p.contains("1: file C:\\brief.txt"), "{p}");
+        assert!(!preamble(&c, &[]).contains("assistant.attachment"));
     }
 
     #[test]
@@ -1253,6 +1563,45 @@ mod tests {
         assert_eq!(allow_key("export.xml", &json!({"id": "x"})), "export.xml");
     }
 
+    /// A panel screenshot is the pane's rectangle in pixels (points x scale); an area is the dragged
+    /// rectangle; a huge capture is capped at `CAPTURE_MAX` on its long edge.
+    #[test]
+    fn panel_and_area_captures_have_the_right_size() {
+        let dir = std::env::temp_dir().join(format!("se-assistant-shot-{}", std::process::id()));
+        let img = egui::ColorImage::new([800, 600], vec![egui::Color32::from_rgb(10, 20, 30); 800 * 600]);
+        let pane = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(200.0, 120.0));
+        let a = shot_attachment(&img, pane, 2.0, &dir, "Timeline panel").unwrap();
+        assert_eq!((a.width, a.height), (400, 240), "200 x 120 points at 2 px/pt");
+        let area = egui::Rect::from_min_max(egui::pos2(10.0, 10.0), egui::pos2(47.0, 31.0));
+        let a = shot_attachment(&img, area, 1.0, &dir, "Area").unwrap();
+        assert_eq!((a.width, a.height), (37, 21));
+        let png = std::fs::read(&a.png).unwrap();
+        assert_eq!(&png[1..4], b"PNG");
+        // off the edge: clamped to the window
+        let a = shot_attachment(&img, egui::Rect::from_min_size(egui::pos2(700.0, 500.0), egui::vec2(300.0, 300.0)), 1.0, &dir, "x").unwrap();
+        assert_eq!((a.width, a.height), (100, 100));
+        let big = egui::ColorImage::new([4096, 1024], vec![egui::Color32::WHITE; 4096 * 1024]);
+        let a = shot_attachment(&big, egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(4096.0, 1024.0)), 1.0, &dir, "big").unwrap();
+        assert_eq!((a.width, a.height), (aui::CAPTURE_MAX, 512));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The timeline range's chip lists exactly the clips overlapping it and their tracks.
+    #[test]
+    fn timeline_range_chip_has_its_clips_and_tracks() {
+        let mut p = crate::model::Project::new();
+        let t = p.add_track(crate::model::TrackKind::Video);
+        for (i, (start, name)) in [(0.0, "a"), (5.0, "b"), (12.0, "c")].into_iter().enumerate() {
+            p.tracks[t].clips.push(crate::model::Clip::new(70 + i as Id, crate::model::ClipKind::Video, name, start, 4.0));
+        }
+        let chip = timeline_chip(&p, 3.0, 10.0);
+        let names: Vec<&str> = chip.data["clips"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+        assert_eq!(names, ["a", "b"], "c starts after the range");
+        assert_eq!(chip.data["kind"], "timeline_range");
+        assert_eq!(chip.data["tracks"][0]["index"], t);
+        assert_eq!(chip.label, "Timeline 3.0s–10.0s · 2 clips");
+    }
+
     #[test]
     fn palette_row_needs_text() {
         assert!(!palette_row("  ").enabled);
@@ -1265,6 +1614,7 @@ mod tests {
     fn assistant_and_task_tools_are_registered() {
         for (name, kind) in [
             ("assistant.add_selection", ToolKind::Ui),
+            ("assistant.capture", ToolKind::Ui),
             ("assistant.attachments", ToolKind::Read),
             ("assistant.attachment", ToolKind::Read),
             ("tasks.add", ToolKind::Ui),
@@ -1276,7 +1626,7 @@ mod tests {
             assert_eq!(mcp::tools::find(name).map(|d| d.kind), Some(kind), "{name}");
         }
         assert!(TASK_BRIEF.contains("tasks.add{title, code, note}") && TASK_BRIEF.contains("editor.tool(name, args)"));
-        let r = comment_req(json!({"note": "trim this", "marker_id": 4}), 4);
+        let r = comment_req(json!({"note": "trim this", "marker_id": 4}), 4, 7);
         assert!(r.full.contains("Comment: trim this") && r.kind == Kind::Comment(4) && r.label == "Comment: trim this");
     }
 }

@@ -91,6 +91,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         }
         gallery::set_template_thumbs(m);
     }
+    // ---- ws:gallery-audio ---- Titles / Templates pictures, rendered off the UI thread
+    if app.gallery.lib.is_none() && matches!(app.gallery.tab, gallery::GalleryTab::Titles | gallery::GalleryTab::Templates) {
+        template_thumbs::poll(app, ui.ctx());
+    }
     if lib_kind.is_some() {
         // not connected: reads what is installed and nothing else (no network until "Browse online library")
         library_ctl::ensure(app, false);
@@ -99,6 +103,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if matches!(lib_kind, Some(Kind::Html | Kind::Icon)) {
         crate::engine::html::prewarm();
     }
+    // ws:gallery-audio: the side / tab the user picks is saved at once (restored by `GalleryState::from_settings`)
+    let picked = |s: &crate::settings::Settings| (s.gallery_audio, s.gallery_tab.clone(), s.gallery_audio_tab.clone());
+    let before = picked(&app.settings);
     // one scroll area (inside `gallery::show`, under the pinned tab strip) - no outer one around it
     let resp = {
         let src = Source::of(&app.settings);
@@ -123,7 +130,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         let (note, loading, connected) = (online.note.clone(), online.loading(), online.connected);
         let ctx = ui.ctx().clone();
         let mut thumb = |id: &str| {
-            let p = online.thumb_path(id)?;
+            let p = online.thumb_path(id).or_else(|| {
+                // a skill's own `thumb:` (installed or yours); none: the Gallery draws its card
+                let (_, name) = crate::engine::library::split_id(id).filter(|(k, _)| *k == Kind::Skill)?;
+                crate::engine::skills::get(&name).and_then(|s| crate::engine::skills::thumb_path(&s))
+            })?;
             thumbs.texture(&ctx, &p.to_string_lossy(), 0.0, 54)
         };
         let lib = lib_kind.map(|_| gallery::LibView {
@@ -136,13 +147,18 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         });
         gallery::show(ui, st, settings, project, selection, palette, tr, lib)
     };
+    if picked(&app.settings) != before {
+        app.settings.save();
+    }
     if let Some(act) = resp.lib {
         library_act(app, act);
     }
     if let Some((tab, name, intensity)) = resp.apply {
         // (a transition / effect mirrors onto linked clips itself: the plain selection, not its links)
         let ids = match tab {
-            gallery::GalleryTab::Effects | gallery::GalleryTab::Transitions => app.selection.clone(),
+            gallery::GalleryTab::Effects
+            | gallery::GalleryTab::Transitions
+            | gallery::GalleryTab::AudioTransitions => app.selection.clone(),
             _ => app.project.expand_links(&app.selection),
         };
         let args = json!({"tab": tab.name(), "name": name, "clip_ids": ids, "intensity": intensity, "where": resp.apply_where});
@@ -215,6 +231,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             ui.ctx().request_repaint();
         }
     }
+    // ---- ws:gallery-audio ---- hear an Audio card on the selected clip while the pointer rests on it
+    gallery_audition::want(app, ui.ctx(), resp.audition);
     // ---- ws:keyframe-blocks ----
     if let Some(name) = resp.forget_block {
         if let Err(e) = app.run_tool("keyblocks.forget", &json!({"name": name})) {

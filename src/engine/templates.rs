@@ -455,6 +455,7 @@ impl Build {
             edge: TransitionEdge::Cut,
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
     }
     fn done(mut self) -> TemplateData {
@@ -602,6 +603,17 @@ pub fn builtin(name: &str, w: u32, h: u32) -> Option<TemplateData> {
         }
     }
     Some(b.done())
+}
+
+/// The built-in templates as Gallery cards (made once, for a 1920 x 1080 frame): what their pictures are drawn from.
+pub fn builtin_cards() -> &'static [crate::settings::Template] {
+    static CARDS: std::sync::OnceLock<Vec<crate::settings::Template>> = std::sync::OnceLock::new();
+    CARDS.get_or_init(|| {
+        BUILTIN_NAMES
+            .iter()
+            .filter_map(|n| Some(crate::settings::Template { name: n.to_string(), json: serde_json::to_string(&builtin(n, 1920, 1080)?).ok()? }))
+            .collect()
+    })
 }
 
 /// A template by name: yours first (`Settings.templates`), then the built-in ones (made for `w` x `h`).

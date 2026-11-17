@@ -372,7 +372,7 @@ fn primary(ui: &mut Ui, text: &str) -> egui::Response {
 }
 
 /// The segmented control (the Performance window's): a track with the picked segment filled in accent.
-fn segmented<T: PartialEq + Copy>(ui: &mut Ui, cur: &mut T, items: &[(T, &str)]) -> bool {
+pub(crate) fn segmented<T: PartialEq + Copy>(ui: &mut Ui, cur: &mut T, items: &[(T, &str)]) -> bool {
     let accent = ui.visuals().selection.stroke.color;
     let mut changed = false;
     egui::Frame::new().fill(look::TRACK).corner_radius(7.0).inner_margin(2.0).show(ui, |ui| {

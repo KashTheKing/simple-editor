@@ -316,12 +316,15 @@ impl App {
                 // ws:export-audio-tracks: the args, else what the Export pane last used
                 audio: export::AudioLayout::parse(arg_str(args, "audio").unwrap_or(&self.settings.export_audio)),
                 stem_by: export::StemBy::parse(arg_str(args, "stem_by").unwrap_or(&self.settings.export_stem_by)),
+                overlay: None,
             };
             let mut project = self.export_project();
             // MCP exports have no background opt-in either - "use_project_bg": true opts in per call
             if !arg_bool(args, "use_project_bg").unwrap_or(false) {
                 project.preview_bg = crate::model::BackgroundMode::Black;
             }
+            let mut opts = opts;
+            self.deliver(&mut project, &mut opts, arg_bool(args, "captions"), arg_bool(args, "guide"));
             let prog = export::start_export(project, opts, self.text.clone());
             // same slot the UI uses: exclusion, the progress/Cancel window and the close guard all key off it
             self.export = Some((prog.clone(), ExportKind::File { path: out.clone() }));

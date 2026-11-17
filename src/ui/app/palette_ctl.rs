@@ -35,25 +35,15 @@ pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
         return;
     }
     let query = app.cmd_palette.query.clone();
-    // ---- ws:assistant-pane ---- '>' + a request asks the assistant
-    let ask = query.strip_prefix('>').map(str::trim);
-    let rows = match (ask, query.strip_prefix(':')) {
-        (Some(text), _) => vec![assistant_ctl::palette_row(text)],
-        (None, Some(rest)) => palette::tool_rows(rest.trim_start()),
-        (None, None) => palette_rows(app, &query),
-    };
-    if let Some(cmd) = palette::show(ctx, &mut app.cmd_palette, &rows) {
-        if let Some(text) = ask {
-            if let Err(e) = assistant_ctl::ask(app, text) {
-                app.toast(format!("Assistant: {e}"));
-            }
-            return;
-        }
+    let rows = cached_rows(app, &query);
+    let picked = palette::show(ctx, &mut app.cmd_palette, &rows);
+    app.cmd_palette.rows = rows;
+    if let Some((cmd, alt)) = picked {
         // read BEFORE anything else touches cmd_palette - `palette::show`'s doc comment guarantees this
         // is still the just-submitted arg form for exactly this Command::Tool result, nothing else's.
         let arg_form = app.cmd_palette.arg_form.take();
         remember_recent(app, &cmd);
-        dispatch(app, cmd, arg_form);
+        dispatch(app, cmd, alt, arg_form);
     }
 }
 
@@ -70,6 +60,14 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
         .filter_map(|m| m.hotkey.as_deref().and_then(Hotkeys::parse).map(|ks| (m.name.clone(), ks)))
         .collect();
     app.hotkeys.set_extra(extra.clone());
+    // Ctrl+K: the palette's key before 1.3.1, kept as an alias while no binding claims it
+    let ctrl_k = egui::KeyboardShortcut::new(egui::Modifiers::CTRL, egui::Key::K);
+    if !ctx.wants_keyboard_input()
+        && app.hotkeys.conflict(ctrl_k).is_none()
+        && ctx.input_mut(|i| crate::hotkeys::consume_exact(i, &ctrl_k))
+    {
+        app.cmd_palette.open = true;
+    }
     if !ctx.wants_keyboard_input() {
         let hit = ctx.input_mut(|i| extra.iter().find(|pair| crate::hotkeys::consume_exact(i, &pair.1)).cloned());
         if let Some((name, _)) = hit {
@@ -88,13 +86,67 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     }
 }
 
-/// The palette's main rows for `query`, as the window and the `ui.palette` tool both list them: the
-/// live `ui::menu` snapshot (shortcuts, icon overrides, disabled reasons) and the Window menu's own
-/// pane -> Show / Hide Action map, so each pane gets one row.
+/// The palette's rows for `query`, in the query's mode (`palette::mode`), as the window and the
+/// `ui.palette` tool both list them. Commands use the live `ui::menu` snapshot (shortcuts, icon
+/// overrides, disabled reasons) and the Window menu's own pane -> Show / Hide Action map, so each pane
+/// gets one row; go-to rows score the cached index (`index_for`).
 pub(super) fn palette_rows(app: &mut App, query: &str) -> Vec<palette::Row> {
-    refresh_if_stale(&mut app.script_meta_cache);
-    let snap = MenuSnapshot::new(&app.hotkeys, &app.settings.icon_overrides, |a| app.enabled(a));
-    palette::rows(&snap, menus::toggle_action, &app.script_meta_cache.1, &app.settings.palette_recent, query)
+    match palette::mode(query) {
+        palette::Mode::GoTo(q) => {
+            index_for(app);
+            palette::goto_rows(&app.cmd_palette.index, &app.settings.palette_recent, q)
+        }
+        palette::Mode::Commands(q) => {
+            refresh_if_stale(&mut app.script_meta_cache);
+            let snap = MenuSnapshot::new(&app.hotkeys, &app.settings.icon_overrides, |a| app.enabled(a));
+            let toggles = tools_commands::bool_settings(&app.settings);
+            let s = &app.settings;
+            palette::rows(&snap, menus::toggle_action, &app.script_meta_cache.1, &toggles, &s.palette_recent, q)
+        }
+        palette::Mode::Tools(q) => palette::tool_rows(q),
+        palette::Mode::Assistant(rest) => {
+            palette::assistant_rows(rest, &crate::engine::skills::all(), assistant_ctl::palette_row)
+        }
+    }
+}
+
+/// `palette_rows`, reused while neither the query nor the project changed (a redraw for a hover or an
+/// arrow key scores nothing).
+fn cached_rows(app: &mut App, query: &str) -> Vec<palette::Row> {
+    let key = (query.to_string(), project_sig(app));
+    if app.cmd_palette.rows_key.as_ref() == Some(&key) {
+        return std::mem::take(&mut app.cmd_palette.rows);
+    }
+    let rows = palette_rows(app, query);
+    app.cmd_palette.rows_key = Some(key);
+    rows
+}
+
+/// A cheap fingerprint of "the project changed": every edit pushes or pops an undo entry (the top
+/// entry's time catches the 200-entry cap), opening another timeline or project changes the rest.
+fn project_sig(app: &App) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let p = &app.project;
+    (app.undo.len(), app.undo.last().map(|e| e.at.to_bits()), app.redo.len(), p.editing).hash(&mut h);
+    (p.assets.len(), p.folders.len(), p.markers.len(), p.sequences.len(), &app.project_path).hash(&mut h);
+    p.tracks.iter().map(|t| t.clips.len()).sum::<usize>().hash(&mut h);
+    h.finish()
+}
+
+/// Build the go-to index unless it is already built for this project state.
+fn index_for(app: &mut App) {
+    let sig = project_sig(app);
+    if app.cmd_palette.index_sig == Some(sig) {
+        return;
+    }
+    let gallery: Vec<_> = crate::ui::gallery::GalleryTab::ALL
+        .iter()
+        .map(|&t| (t, crate::ui::gallery::card_names(t, &app.settings)))
+        .collect();
+    let s = &app.settings;
+    app.cmd_palette.index = palette::index(&app.project, &s.pages, &gallery, &s.icon_overrides);
+    app.cmd_palette.index_sig = Some(sig);
 }
 
 fn refresh_if_stale(cache: &mut (Instant, Vec<ScriptMeta>)) {
@@ -127,26 +179,26 @@ fn arg_form_to_json(fields: &[(String, String)]) -> Value {
     Value::Object(obj)
 }
 
-/// Palette id for a `Command`, in the same shape `Settings.palette_recent` stores (Action ids reuse
-/// `Action::id()`; the others get a small namespaced prefix so they never collide with an Action id).
-fn recent_id(cmd: &Command) -> Option<String> {
-    Some(match cmd {
-        Command::Action(a) => a.id().to_string(),
-        Command::Pane(p) => format!("pane.{}", p.title()),
-        Command::Tool(name) => format!("tool.{name}"),
-        Command::Script(path) => format!("script.{}", path.to_string_lossy()),
-    })
+/// Run a row's command the way Enter (or Alt+Enter, `alt`) does, remembered as recent (`ui.palette {pick}`).
+pub(super) fn run(app: &mut App, cmd: Command, alt: bool) {
+    if let Command::Complete(text) = cmd {
+        app.cmd_palette.open = true;
+        app.cmd_palette.query = text;
+        return;
+    }
+    remember_recent(app, &cmd);
+    dispatch(app, cmd, alt, None);
 }
 
 fn remember_recent(app: &mut App, cmd: &Command) {
-    let Some(id) = recent_id(cmd) else { return };
+    let Some(id) = palette::recent_id(cmd) else { return };
     app.settings.palette_recent.retain(|r| *r != id);
     app.settings.palette_recent.insert(0, id);
     app.settings.palette_recent.truncate(20);
     app.settings.save();
 }
 
-fn dispatch(app: &mut App, cmd: Command, arg_form: Option<(&'static str, Vec<(String, String)>)>) {
+fn dispatch(app: &mut App, cmd: Command, alt: bool, arg_form: Option<(&'static str, Vec<(String, String)>)>) {
     match cmd {
         Command::Action(a) => match app.enabled(a) {
             Ok(()) => app.pending_actions.push(a),
@@ -155,13 +207,73 @@ fn dispatch(app: &mut App, cmd: Command, arg_form: Option<(&'static str, Vec<(St
         Command::Pane(p) => app.surface(p),
         Command::Tool(name) => {
             let args = arg_form.filter(|(n, _)| *n == name).map(|(_, f)| arg_form_to_json(&f)).unwrap_or(json!({}));
-            // the user's own edit: never folded into an agent's open undo group
-            app.close_group_for_user_edit();
-            if let Err(e) = app.run_tool_undoable(name, &args) {
-                app.toast(format!("{name}: {e}"));
-            }
+            run_user_tool(app, name, &args);
         }
         Command::Script(path) => app.run_script_path = Some(path),
+        Command::Setting(key, on) => run_user_tool(app, "settings.set", &json!({"key": key, "value": on.to_string()})),
+        Command::GoTo(t) => go(app, &t, alt),
+        // `/ask hi` sends "hi"; `/captions bold` sends itself, and the assistant runs that skill
+        Command::Ask(text) => {
+            if let Err(e) = assistant_ctl::ask(app, &text) {
+                app.toast(format!("Assistant: {e}"));
+            }
+        }
+        Command::Complete(_) => {} // handled inside the window
+    }
+}
+
+/// The user's own tool run (never folded into an agent's open undo group); an error is a toast.
+fn run_user_tool(app: &mut App, name: &str, args: &Value) {
+    app.close_group_for_user_edit();
+    if let Err(e) = app.run_tool_undoable(name, args) {
+        app.toast(format!("{name}: {e}"));
+    }
+}
+
+/// Go to a palette target (`alt`: its secondary action): `palette::plan` says what, this applies it.
+pub(super) fn go(app: &mut App, target: &palette::Target, alt: bool) {
+    let plan = palette::plan(target, alt, &app.project, app.playhead);
+    if let Some((tool, args)) = &plan.tool {
+        run_user_tool(app, tool, args);
+    }
+    match plan.timeline {
+        Some(Some(seq)) => app.enter_sequence(seq),
+        Some(None) => {
+            app.project.close_sequence();
+            app.sequence_view_changed(0.0);
+        }
+        None => {}
+    }
+    if let Some(t) = plan.seek {
+        app.seek(t);
+    }
+    if let Some(id) = plan.select_clip {
+        app.selection = vec![id];
+        app.sel_transitions.clear();
+    }
+    if let Some(id) = plan.select_marker {
+        app.timeline.selected_marker = Some(id);
+    }
+    if let Some((asset, folder)) = plan.library {
+        let lib = &mut app.library;
+        lib.search.clear();
+        lib.folder = Some(folder.clone());
+        lib.selected = asset;
+        lib.seen_selected = asset; // our own write: don't let show() collapse it again
+        lib.sel_ids = asset.into_iter().collect();
+        lib.sel_path = None;
+        lib.sel_paths.clear();
+        lib.sel_folders = if asset.is_none() { vec![folder] } else { Vec::new() };
+    }
+    if let Some(page) = &plan.page {
+        layout_ctl::switch_page(app, page);
+    }
+    if let Some((tab, name)) = &plan.gallery {
+        tools_gallery::open_tab(app, *tab);
+        app.gallery.reveal(*tab, name);
+    }
+    if let Some(p) = plan.pane {
+        app.surface(p);
     }
 }
 
@@ -304,8 +416,8 @@ mod tests {
 
     #[test]
     fn recent_id_namespaces_non_action_commands() {
-        assert_eq!(recent_id(&Command::Action(Action::Undo)), Some("undo".to_string()));
-        assert_eq!(recent_id(&Command::Tool("ui.palette")), Some("tool.ui.palette".to_string()));
+        assert_eq!(palette::recent_id(&Command::Action(Action::Undo)), Some("undo".to_string()));
+        assert_eq!(palette::recent_id(&Command::Tool("ui.palette")), Some("tool.ui.palette".to_string()));
     }
 
     /// With the app's real pane -> Action map, every pane is reached by exactly one palette row: its
@@ -313,7 +425,7 @@ mod tests {
     #[test]
     fn palette_has_one_row_per_pane() {
         let snap = MenuSnapshot::new(&Hotkeys::defaults(), &Default::default(), |_| Ok(()));
-        let rows = palette::rows(&snap, menus::toggle_action, &[], &[], "");
+        let rows = palette::rows(&snap, menus::toggle_action, &[], &[], &[], "");
         for &p in crate::ui::layout::Pane::ALL {
             let n = rows
                 .iter()

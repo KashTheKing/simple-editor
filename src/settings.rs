@@ -295,6 +295,9 @@ pub struct Settings {
     /// Which visualizer style the Source monitor draws (`engine::visualizer` name; empty = the default,
     /// Neon Orb). Picked from the preview's right-click menu.
     pub audio_visualizer_style: String,
+    /// The visualizer style last added or picked on the timeline (empty = Neon Orb): what Add Audio
+    /// Visualizer / Library ▸ Add with Audio Visualizer use next.
+    pub visualizer_style: String,
     /// Social-guide platform drawn over the preview (None = off): an id from `ui::social`'s guides.json.
     /// A view preference, not project data. Settings from before the data-driven guides stored a
     /// variant name ("TikTok", "YtShorts"...); `legacy_guide` maps those.
@@ -404,6 +407,12 @@ pub struct Settings {
     /// Last open Gallery tab (`GalleryTab`'s name), remembered across restarts.
     #[serde(default)]
     pub gallery_tab: String,
+    // ---- ws:gallery-audio ----
+    /// The Gallery shows its Audio side (the Video | Audio switch), and the last Audio tab.
+    #[serde(default)]
+    pub gallery_audio: bool,
+    #[serde(default)]
+    pub gallery_audio_tab: String,
     /// "Apply to All" (Gallery ▸ Transitions) leaves a clip that already has a transition at that spot
     /// alone instead of replacing it. Off by default: the new transition replaces the old one.
     #[serde(default)]
@@ -585,6 +594,11 @@ pub struct Settings {
     pub guide_render: bool,
     /// Desktop long-form player view: "default", "theatre" or "fullscreen".
     pub guide_view: String,
+    /// Export ▸ "Burn in social guide": exports draw the chosen guide over every frame (UI overlay; a
+    /// Device preview burns as its UI overlay), its bar and time following the exported frame. Off by default.
+    pub export_guide: bool,
+    /// Export ▸ "Burn in captions": None = follow the preview's subtitle toggle (what exports always did).
+    pub export_captions: Option<bool>,
     /// The user's fake accounts (Settings ▸ Social). No credentials, ever.
     pub social_profiles: Vec<crate::ui::social::profile::SocialProfile>,
     /// The profile used per network (id), when more than one exists.
@@ -593,6 +607,16 @@ pub struct Settings {
     /// One disk budget (GB) for the html, prerender, proxy and peaks caches; least recently used files go
     /// first. 0 = unlimited. Models and the library are not counted.
     pub cache_disk_gb: u32,
+    // ---- ws:neutral-web ----
+    /// Where the caches live (Settings ▸ General ▸ Cache folder); empty = `default_cache_dir()`.
+    /// Applied with `set_cache_folder`, read through `cache_dir()`.
+    pub cache_folder: String,
+    /// A cache move still to finish (the old folder): set when one starts, cleared when it ends, so a
+    /// move cut short by a crash or a quit picks up at the next start.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub cache_move_from: String,
+    /// The browser the app sends the user to (an exe path); empty = the Windows default browser.
+    pub web_browser: String,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -685,6 +709,7 @@ impl Default for Settings {
             transcribe_model: String::new(),
             audio_visualizer: true,
             audio_visualizer_style: String::new(),
+            visualizer_style: String::new(),
             guide: None,
             project_templates: Vec::new(),
             ui_look: "cozy".into(),
@@ -734,6 +759,8 @@ impl Default for Settings {
             inspector_folds: BTreeMap::new(),
             caption_presets: Vec::new(),
             gallery_tab: "Looks".into(),
+            gallery_audio: false,
+            gallery_audio_tab: String::new(),
             transition_skip_existing: false,
             // ---- ws:layout-modes-onboarding ----
             workspace: "Edit".into(),
@@ -842,13 +869,23 @@ impl Default for Settings {
             guide_worst: false,
             guide_render: false,
             guide_view: "default".into(),
+            export_guide: false,
+            export_captions: None,
             social_profiles: Vec::new(),
             social_active: BTreeMap::new(),
             // ---- ws:cache-budget ----
             cache_disk_gb: 30,
+            // ---- ws:neutral-web ----
+            cache_folder: String::new(),
+            cache_move_from: String::new(),
+            web_browser: String::new(),
         }
     }
 }
+
+/// `Settings.cache_folder` as applied (None = the default): a process global so `cache_dir()` stays a
+/// plain function every cache module can call.
+static CACHE_FOLDER: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 
 impl Settings {
     /// This page's (show video, show audio) timeline rows: the Audio page hides video by default.
@@ -872,10 +909,21 @@ impl Settings {
         let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
         base.join("SimpleEditor")
     }
-    /// %LOCALAPPDATA%\SimpleEditor\cache (waveform peaks etc.)
+    /// The cache folder (html renders, pre-render, proxies, peaks, models, library cache): the one
+    /// picked in Settings ▸ General ▸ Cache folder, else `default_cache_dir()`. Every cache path is
+    /// built from this (a test greps `src/` for any other).
     pub fn cache_dir() -> PathBuf {
+        CACHE_FOLDER.read().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(Self::default_cache_dir)
+    }
+    /// %LOCALAPPDATA%\SimpleEditor\cache
+    pub fn default_cache_dir() -> PathBuf {
         let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(Self::dir);
         base.join("SimpleEditor").join("cache")
+    }
+    /// Point `cache_dir()` at `folder` ("" = the default) from now on, for this whole process.
+    pub fn set_cache_folder(folder: &str) {
+        let f = folder.trim();
+        *CACHE_FOLDER.write().unwrap_or_else(|e| e.into_inner()) = (!f.is_empty()).then(|| PathBuf::from(f));
     }
     /// ---- ws:forgiveness ----
     /// %LOCALAPPDATA%\SimpleEditor\autosave (rolling per-project backups; see `ui::app::autosave`).
@@ -974,6 +1022,34 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ws:neutral-web: Settings ▸ General ▸ Cache folder only works if every cache path is built from
+    /// `Settings::cache_dir()`: no other file may spell out the cache folder itself.
+    #[test]
+    fn every_cache_path_goes_through_cache_dir() {
+        fn walk(d: &std::path::Path, bad: &mut Vec<String>) {
+            for e in std::fs::read_dir(d).unwrap().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, bad);
+                } else if p.extension().is_some_and(|x| x == "rs") && !p.ends_with("settings.rs") {
+                    let text = std::fs::read_to_string(&p).unwrap();
+                    let code: Vec<&str> = text.lines().filter(|l| !l.trim_start().starts_with("//")).collect();
+                    let own_folder = code.iter().any(|l| l.contains("LOCALAPPDATA")) && code.iter().any(|l| l.contains("\"SimpleEditor\")"));
+                    for l in &code {
+                        if l.contains(".join(\"cache\")") || (own_folder && l.contains("LOCALAPPDATA")) {
+                            bad.push(format!("{}: {}", p.display(), l.trim()));
+                        }
+                    }
+                }
+            }
+        }
+        let mut bad = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut bad);
+        assert!(bad.is_empty(), "build cache paths from Settings::cache_dir():\n{}", bad.join("\n"));
+        assert_eq!(Settings::cache_dir(), Settings::default_cache_dir(), "tests never move the cache");
+    }
+
     #[test]
     fn recent_keeps_tags_and_pins() {
         let mut s = Settings::default();

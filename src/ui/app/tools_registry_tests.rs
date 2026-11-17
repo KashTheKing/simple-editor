@@ -460,3 +460,62 @@ fn run_script_pushes_one_undo_per_script() {
         "run_script must push exactly one undo entry for the whole script, after it finishes"
     );
 }
+
+/// Every `tool.name {arg, ...}` a library skill names is a real tool, called with real argument names
+/// (top-level keys only). Skills are prose the assistant follows, so an invented tool or argument is a
+/// silent failure at run time; this makes it a build failure instead.
+#[test]
+fn library_skills_name_real_tools_and_args() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("library").join("skills");
+    let spaces: std::collections::HashSet<&str> =
+        mcp::tools::all().filter_map(|t| t.name.split_once('.').map(|(a, _)| a)).collect();
+    let mut bad = Vec::new();
+    for f in std::fs::read_dir(&dir).unwrap().flatten() {
+        let text = std::fs::read_to_string(f.path()).unwrap();
+        let stem = f.file_name().to_string_lossy().to_string();
+        for code in text.split('`').skip(1).step_by(2) {
+            let (name, rest) = code.split_once(' ').unwrap_or((code, ""));
+            let Some((ns, tail)) = name.split_once('.') else { continue };
+            let word = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+            if !spaces.contains(ns) || !word(tail) {
+                continue; // a file name like `index.json`, not a tool
+            }
+            let Some(def) = mcp::tools::all().find(|t| t.name == name) else {
+                bad.push(format!("{stem}: unknown tool `{name}`"));
+                continue;
+            };
+            // clip.keyframe takes the Inspector's names (`Scale`, `Position X`), not `scale` / `x`
+            if name == "clip.keyframe" && rest.split("property: \"").skip(1).any(|v| v.starts_with(|c: char| c.is_ascii_lowercase())) {
+                bad.push(format!("{stem}: `clip.keyframe` property names are capitalised (Scale, Position X)"));
+            }
+            let Some(body) = rest.trim().strip_prefix('{') else { continue };
+            // top-level keys of `{a, b: {c: 1}, d: [..]}`
+            let (mut depth, mut key, mut keys) = (0, String::new(), Vec::new());
+            let mut in_key = true;
+            for ch in body.chars() {
+                match ch {
+                    '{' | '[' | '(' => depth += 1,
+                    '}' | ']' | ')' if depth == 0 => break,
+                    '}' | ']' | ')' => depth -= 1,
+                    ',' if depth == 0 => in_key = true,
+                    ':' if depth == 0 => in_key = false,
+                    _ => {}
+                }
+                if depth == 0 && in_key && (ch.is_ascii_alphanumeric() || ch == '_') {
+                    key.push(ch);
+                } else if !key.is_empty() {
+                    keys.push(std::mem::take(&mut key));
+                }
+            }
+            if !key.is_empty() {
+                keys.push(key);
+            }
+            for k in keys.iter().filter(|k| k.as_str() != "...") {
+                if !def.args.iter().any(|a| a.split(':').next() == Some(k.as_str())) {
+                    bad.push(format!("{stem}: `{name}` has no argument `{k}`"));
+                }
+            }
+        }
+    }
+    assert!(bad.is_empty(), "skills name tools or arguments that do not exist:\n{}", bad.join("\n"));
+}

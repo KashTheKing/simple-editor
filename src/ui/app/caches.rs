@@ -69,6 +69,9 @@ fn spawn_prune(budget: Option<u64>, protect: Protect) {
             use windows::Win32::System::Threading::*;
             let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
         }
+        // once per run: Edge profiles in %TEMP% left by an app that is gone (crash, killed test run)
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        SWEPT.call_once(crate::engine::html::sweep_stale_profiles);
         let (dir, now) = (Settings::cache_dir(), std::time::SystemTime::now());
         cache_lru::prune_html(&dir, cache_lru::HTML_CAP, &protect, now);
         if let Some(b) = budget {
@@ -100,6 +103,7 @@ pub(super) fn tick(app: &mut App, _ctx: &egui::Context) {
     if cfg!(test) {
         return; // a test never touches the real cache
     }
+    move_tick(app);
     let now = Instant::now();
     let gb = app.settings.cache_disk_gb;
     let mut g = SCHED.lock().unwrap_or_else(|e| e.into_inner());
@@ -138,6 +142,85 @@ pub(super) fn clear(app: &mut App) {
         let _ = std::fs::remove_dir_all(&dir);
     });
     app.toast(format!("Cleared caches - {:.1} MB freed", freed as f64 / 1e6));
+}
+
+// ---- ws:neutral-web ----
+/// The folders the project's media lives in (a cache folder may not go inside one of them).
+fn media_dirs(app: &App) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = app.project_path.iter().filter_map(|p| p.parent().map(Path::to_path_buf)).collect();
+    let cache = Settings::cache_dir();
+    for a in &app.project.assets {
+        let p = Path::new(&a.path);
+        if let Some(d) = p.parent().filter(|_| !p.starts_with(&cache)) {
+            if !v.iter().any(|x| x == d) {
+                v.push(d.to_path_buf());
+            }
+        }
+    }
+    v
+}
+
+/// Settings ▸ General ▸ Cache folder: use `new` ("" = the default) from now on, moving what is in the
+/// old folder there (`mv`) or starting fresh (and with `delete_old`, deleting the old folder). Takes
+/// effect at once, the way Clear Caches does: open files are let go first, renders already in flight
+/// finish in the old folder (the move skips them while they are being written) and are made again in
+/// the new one when next needed. Nothing that was being written is ever copied half-done.
+pub(super) fn change_folder(app: &mut App, new: &str, mv: bool, delete_old: bool, root_ok: bool) -> Result<String, String> {
+    use crate::engine::cache_move;
+    if cache_move::running().is_some() {
+        return Err("A cache move is still running: wait for it (or cancel it in Jobs) first".into());
+    }
+    let old = Settings::cache_dir();
+    let target = if new.trim().is_empty() { Settings::default_cache_dir() } else { PathBuf::from(new.trim()) };
+    cache_move::validate(&target, &old, &media_dirs(app), root_ok)?;
+    app.player.release_files();
+    app.waveforms.clear();
+    app.thumbs.clear();
+    app.settings.cache_folder = if target == Settings::default_cache_dir() { String::new() } else { target.to_string_lossy().into_owned() };
+    Settings::set_cache_folder(&app.settings.cache_folder);
+    let msg = if mv {
+        app.settings.cache_move_from = old.to_string_lossy().into_owned();
+        cache_move::start(old, target.clone());
+        format!("Cache folder is now {} - moving the old cache there in the background (Jobs)", target.display())
+    } else {
+        if delete_old {
+            std::thread::spawn(move || {
+                let _ = std::fs::remove_dir_all(&old);
+            });
+        }
+        format!("Cache folder is now {}", target.display())
+    };
+    app.settings.save();
+    Ok(msg)
+}
+
+/// A move that ended: say so and forget it. A move cut short by a quit or a crash starts again.
+fn move_tick(app: &mut App) {
+    use crate::engine::cache_move;
+    if let Some(r) = cache_move::take_finished() {
+        app.settings.cache_move_from.clear();
+        app.settings.save();
+        match r {
+            Ok(m) => app.toast(m),
+            Err(e) => app.push_toast(feedback::Toast::new(e).kind(feedback::ToastKind::Warn)),
+        }
+    } else if !app.settings.cache_move_from.is_empty() && cache_move::running().is_none() {
+        let from = PathBuf::from(&app.settings.cache_move_from);
+        if from.is_dir() && from != Settings::cache_dir() {
+            cache_move::start(from, Settings::cache_dir());
+        } else {
+            app.settings.cache_move_from.clear();
+            app.settings.save();
+        }
+    }
+}
+
+/// The cache move as a Jobs-pane row.
+pub(super) fn move_jobs() -> Vec<jobs_pane::ProgJob> {
+    crate::engine::cache_move::running()
+        .map(|p| (crate::ui::jobs_ui::JobKind::Media, "Move cache folder".to_string(), p))
+        .into_iter()
+        .collect()
 }
 
 #[cfg(test)]

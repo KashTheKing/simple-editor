@@ -39,11 +39,17 @@ fn parse_words(v: Option<&Value>) -> Result<Vec<(f64, f64, String)>, String> {
 /// client's token limit): the full data goes to files and the reply is a small pointer.
 const INLINE_WORDS: usize = 60;
 
-/// Writes `<temp>/simple-editor-transcripts/clip-<id>.json` (full words) and `.txt` (one line per
+/// One folder per process (`<pid>`): clip ids restart in every instance, so two running editors
+/// would otherwise overwrite each other's files (seen with parallel scratch instances).
+fn transcript_dir() -> std::path::PathBuf {
+    std::env::temp_dir().join("simple-editor-transcripts").join(std::process::id().to_string())
+}
+
+/// Writes `<temp>/simple-editor-transcripts/<pid>/clip-<id>.json` (full words) and `.txt` (one line per
 /// ~12 words / sentence: `[start-end] text`, greppable and Read-able with offset/limit) and returns
 /// a summary. ponytail: files are overwritten per clip, never cleaned up (tiny).
 fn saved_transcript(clip: Id, words: &[(f64, f64, String)]) -> Value {
-    let dir = std::env::temp_dir().join("simple-editor-transcripts");
+    let dir = transcript_dir();
     let (json_path, txt_path) = (dir.join(format!("clip-{clip}.json")), dir.join(format!("clip-{clip}.txt")));
     let mut lines = String::new();
     let (mut start, mut line, mut n) = (0.0, String::new(), 0);
@@ -334,7 +340,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "tracking.run",
-        desc: "NCC point-track a region of a clip (job): box centre (cx,cy) and half-size (hw,hh) in canvas px relative to the centre. With apply (default true) the path is written as the clip's X/Y keyframes when done (read them with clip.get).",
+        desc: "NCC point-track a region of a clip (job): box centre (cx,cy) and half-size (hw,hh) in canvas px relative to the centre. With apply (default true) the path is written as the clip's X/Y keyframes when done (read them with project.get; they move the clip with the subject, so they are not a reframe, and timeline.reframe does not read them).",
         args: &[
             "clip_id:integer:true:",
             "cx:number:true:",
@@ -431,6 +437,17 @@ pub const TOOLS: &[ToolDef] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Live skill run: two scratch instances wrote `clip-<id>` into one shared temp folder and read
+    /// each other's transcripts; the folder is per process now.
+    #[test]
+    fn saved_transcripts_are_per_process() {
+        let words: Vec<_> = (0..INLINE_WORDS + 1).map(|i| (i as f64, i as f64 + 0.5, format!("w{i}"))).collect();
+        let v = saved_transcript(424242, &words);
+        let path = v.to_string();
+        assert!(path.contains(&std::process::id().to_string()), "{path}");
+        let _ = std::fs::remove_dir_all(transcript_dir());
+    }
 
     #[test]
     fn parse_words_accepts_objects_and_triples() {

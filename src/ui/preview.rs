@@ -1264,7 +1264,9 @@ fn video(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r:
 /// ws:social-guides: what the guide shows this frame (None = off).
 fn guide_view<'a>(c: &PreviewCtx<'a>) -> Option<crate::ui::social::paint::GuideView<'a>> {
     let aspect = c.project.width.max(1) as f32 / c.project.height.max(1) as f32;
-    crate::ui::social::paint::GuideView::new(c.settings, &c.project.name, aspect, c.playhead, c.project.duration())
+    let mut g = crate::ui::social::paint::GuideView::new(c.settings, &c.project.name, aspect, c.playhead, c.project.duration())?;
+    g.playing = c.playing;
+    Some(g)
 }
 
 fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
@@ -1699,6 +1701,13 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
         (Some(o), Some(pp)) => o.hit(pp, state.crop_mode),
         _ => None,
     };
+    // ---- ws:audio-visualizer ---- a lone 3D visualizer: drag / Shift+drag / scroll fly its camera
+    if handle_hit.is_none() && poly_hit.is_none() && sel.len() == 1 {
+        if let Some(edited) = crate::ui::visualizer_ui::camera_gesture(ui, &resp, c.project, sel[0], c.playhead, &mut *c.undo) {
+            r.edited |= edited;
+            return;
+        }
+    }
     if resp.drag_started_by(PointerButton::Primary) {
         (c.undo)(c.project);
         state.handle = None;

@@ -1,5 +1,147 @@
 # Changelog
 
+## 1.3.1
+
+### Quick Export
+- **A Quick Export button in the top bar** (top right, beside Jobs; also File ▸ Export ▸ Quick Export… and the
+  palette): a Save As dialog with a file type list (MP4, MOV, MKV, WebM, GIF, WAV, MP3), then the export runs as a
+  job with your current export settings, or the project's own size, frame rate and quality, and opens in your media
+  player when done. For a video you opened directly (one clip, maybe with text or captions on top) the dialog lands
+  on that file, and saving asks "Replace <name>?" first; the original stays as `<name>.bak` until the new file is in
+  place. Other quick exports remember their folder and type per project.
+### Ctrl+P: go to anything
+- **The command palette is now Ctrl+P and goes to things by name**: clips on any timeline (nested sequences too),
+  timelines, Library media and bins, markers and comments, pages, panels and Gallery cards, grouped by type with
+  their track and time or folder. Enter goes there (jump and select, open, reveal); Alt+Enter adds media at the
+  playhead or applies a Gallery card. `>` runs commands and on/off settings, `/ask` and `/<skill>` talk to the
+  assistant (the only way to it from the palette). Ctrl+K still opens it while nothing else uses Ctrl+K, and a key
+  you bound to Ctrl+P yourself keeps it.
+
+### Gallery cards
+- **Gallery: a Video | Audio switch with audio presets, and pictures for every title and template.** The Audio side
+  has Animate (fades, swell, duck, tremolo, pan sweeps), Transitions (equal-power / linear / exponential crossfades,
+  a dip, J- and L-cuts that roll only the sound), Effects (rooms, echoes, telephone, radio, bass boost, de-ess,
+  compressor, limiter, gate, pitch up / down, filter sweeps, each a Mixer bus you can edit) and Sounds; cards show
+  their curve or waveform, and resting on one plays it on the selected clip. The side is remembered, and selecting
+  an audio clip on the timeline opens it. Titles and Templates show a rendered picture (cached), else a type symbol.
+- **Skill cards are no longer empty tiles**: each skill is a document card (a .md page tinted by its category, with
+  the category's symbol: cut, captions, audio, colour, export, style, converter) with its description beside it and
+  a readable title under it; a skill header can name its own picture with `thumb:`.
+- Library items without a thumbnail (HTML, icons, effects, transitions, LUTs) show their type symbol, a sound shows
+  a waveform symbol while its waveform loads, and card names stay on one line with an ellipsis.
+
+### Assistant chat
+- **The Assistant is a chat app now**: a collapsible sidebar of chats (New chat, search over every chat, pin, rename,
+  save, delete), user and reply bubbles with Markdown, code blocks with a Copy button, tool steps folded, and a composer
+  that grows with the text. Opening the pane starts a new chat with the cursor in the composer; the agent, Tasks, Skills
+  and import / export moved into the `⋯` menu, the model and effort pickers sit small beside Send.
+- **Copy gives clean text.** Right-click a message: Copy text (no markup), Copy as Markdown, Copy attachments, Retry,
+  Edit and resend, Delete. Ctrl+C on text selected in a message copies that text - it no longer also copied the
+  selected clips' JSON over it.
+- **Attach anything**: the paperclip, a drop on the pane, or Ctrl+V of a picture or of files copied in Explorer. Click a
+  thumbnail to preview it; right-click it to Copy (the picture itself) or Save as.
+- **Capture the editor into a message**: the camera menu takes the current frame, a screenshot of any panel, an area you
+  drag anywhere in the window, or the timeline range (a picture plus its clips and tracks); every pane tab's right-click
+  menu has Attach to Assistant. New tool: `assistant.capture`.
+
+### AI enhancer
+- **AI Upscale is no longer starved on a busy PC**: the upscaler runs at normal priority and steps down only while
+  the timeline or Source monitor plays; the result is encoded on the graphics card (NVENC / QSV / AMF, x264 fallback).
+  A short upscale with every core busy went from over 30 minutes to about 2.5 minutes.
+
+### Fixes: HTML layers
+- **"Edge failed to start" on a busy PC**: 1.3.0 started Edge at below-normal priority, so while a build, an
+  export or proxies kept every core busy it wrote no DevTools port within 20 s and the HTML layer failed (3 of 3
+  starts under full load; at normal priority they take under 1.1 s). Edge starts at normal priority again, a failed
+  start is tried once more with a fresh profile, and a second failure says what to do. Edge profiles left in
+  `%TEMP%` by an app that is gone (`se-edge-<pid>-<n>`) are cleaned up at start-up.
+- **The fast renderer draws far more on its own**: measured against the installed helper, `backdrop-filter`,
+  `-webkit-text-stroke`, `@property`, `text-shadow`, ellipsis, `text-wrap: balance` and justified text all draw as
+  in Edge, so Auto no longer sends them to Edge or warns about them. Edge stays for colour filters (the helper
+  crashes on them), blend modes, `position: sticky`, 3D transforms, CSS counters and vertical writing.
+- **Inline SVG coloured by the page's CSS** (the Sale Badge's red, star fills, `fill: var(--accent)`): the rules
+  are written onto the SVG's parts before the fast renderer draws them, instead of coming out black. Only an SVG
+  animated by CSS, or styled with a selector that cannot be resolved, goes to Edge.
+- **A fast-renderer failure is no longer forever**: a crash keeps that layer on Edge for the running helper only (a
+  restart or a helper update tries again), a hang is tried once more first.
+- **The HTML preview always shows the template you picked**: picking Rating Stars right after Sale Badge could keep
+  showing an old picture (the last frame stood in for the new page, and a switch between Edge and the fast
+  renderer left it there).
+- **Gallery HTML cards appear at once**: their pictures were decoded by one ffmpeg.exe each, one at a time
+  (a blank project: 6-9 s for the HTML tab, over 2 minutes while a build kept the PC busy); now in-process on a thread that is not starved (1.6 s with every core busy). Installed HTML
+  layers and icons without a picture of their own get one drawn by the fast renderer and cached.
+- The Inspector says which renderer drew a layer and why, and offers the one-click fast-renderer install more
+  plainly.
+### Settings
+- **Cache folder** (Settings ▸ General): see where renders, pre-renders, proxies, peaks and models are kept, their
+  size and the drive's free space; **Browse…** to another folder and **Move existing cache** (a low-priority
+  background job that skips files still being written and is safe to stop or resume) or **Start fresh** (optionally
+  deleting the old folder). Takes effect at once; **Open folder**, **Reset to default**. `settings.get/set
+  cache_folder`.
+- **Web browser** (Settings ▸ General): links and the page-snapshot steps use your Windows default browser, or the
+  one you pick (any installed browser, or Other…). `settings.get/set web_browser`.
+
+### Web pages
+- **Works with any browser**: Web Page Snapshot ▸ From my browser shows the steps for your browser (its own
+  extensions page: `chrome://extensions`, `edge://extensions`, …) and watches its download folder; Firefox, which
+  cannot save a page as one file, gets the Ctrl+S ▸ Web Page, complete route instead. No browser or site is
+  named in examples any more (example.com, neutral sample captions and hashtags).
+### Audio visualizers
+- **Add with Audio Visualizer**: right-click a song in the Media Library to put it on the timeline at the
+  playhead together with a visualizer layer over the same span, in the style you used last (Neon Orb at first).
+  The two are linked like a video and its own audio: moving, trimming or deleting one takes the other along, and
+  the export renders the visualizer with the song. **Add Audio Visualizer** on a timeline clip links too.
+  `audio.visualizer {asset_id}` does the same for the Assistant.
+- **Band mixer**: tune which frequencies drive a visualizer and how strongly - six bands from Sub to Air with
+  their own intensity, sensitivity, attack / release, and which bands the beat follows (the kick or the snare),
+  with presets for EDM, Hip-hop, Rock, Vocal, Lo-fi and Classical. A spectrum of the song shows what it has.
+  Changes show at once and are saved with the project; custom shaders get the mixed values.
+- **3D camera for Voxel Blocks** (and custom shaders marked `// @camera`): with the visualizer selected, drag in
+  the Preview to orbit, Shift+drag to pan, scroll to zoom; the Inspector's Camera section sets yaw, pitch,
+  distance, field of view, roll and target, each keyframeable for fly-throughs, with auto-orbit and Reset camera.
+  Preview and export always use the same camera, and moving it costs no playback frames.
+- **Fixed: the Source monitor's visualizer lagging the music for seconds** (on a song's first play, and after a
+  loud part or a seek). It waited for the waveform to finish computing and followed the speakers through a
+  slow auto-gain; now every visualizer - Source monitor, timeline and export - shows the song's own analysis
+  at the exact moment playing, so it is in step from the first frame, after seeks and after buffering.
+- **Fixed: Spectrum Bars and Voxel Blocks upside down in the Source monitor.** The monitor now draws styles the
+  same way up as the timeline and the export.
+- **Social guides follow playback**: the guide's play button shows pause while the editor plays, and its progress
+  bar and time ("0:42 / 3:51", hours on hour-long videos) track the playhead as you play, scrub or seek. The total
+  is the whole timeline. `render.frame`, `render.contact_sheet` and `guides.preview` draw the bar and time of the
+  exact frame they render and take `playing` to choose the button.
+- **Burn in social guide** and **Burn in captions** in Export ▸ Advanced: draw the chosen guide over every
+  exported frame (playing, its bar and time following the exported video or In/Out range, without the editor's
+  labels), and choose whether the subtitles are drawn in (until changed it follows the preview, as before).
+  MCP: `export.video` takes `guide` / `captions`; `settings.set` takes `export_guide` / `export_captions`.
+- **Premiere Pro, DaVinci Resolve and CapCut themes**, each in a dark and a light variant (greys, accents, clip colours, playhead and corner radii), in Settings > Appearance > Theme. **Import theme** now also reads Premiere Pro preferences (UI brightness and highlight colour) and CapCut preferences (dark/light); Resolve has no theme file and says so.
+### Editing skills and styles (online library)
+- **Technique skills**: `/jl-cuts` (split edits by rolling only the sound cut), `/pacing` (shot-length targets per
+  style), `/loudness` (web -14, podcast -16, broadcast -23 LUFS), `/color-grade` (normalise, balance, match, then a
+  look), `/recap`. `/captions`, `/cut-silences`, `/shorts`, `/b-roll`, `/sync-to-beat`, `/clean-audio`,
+  `/highlight-reel`, `/review` and `/color-match` now use published numbers (subtitle line length and reading speed,
+  noise-floor thresholds and tone presets, beat-versus-bar cutting, duck depth); `/color-match` had the grade
+  before/after switch backwards.
+- **Style skills** with a visible style card: `/style-vlog`, `/style-documentary`, `/style-music-video`,
+  `/style-podcast-clips`, `/style-trailer`, `/style-shorts`.
+- **`/convert-from-editor`** maps a Premiere Pro, DaVinci Resolve, Avid or After Effects workflow onto Simple
+  Editor's tools (with alternatives and a not-supported list) and can save it as a skill; converted with it:
+  `/reframe`, `/audio-to-keyframes`, `/deliver`, `/apply-cdl`. Guide page: Editing skills and styles.
+- Skill headers can carry `tags` (searchable in the Gallery) and `credit` (kept in the library catalogue); a test fails the build when a library skill
+  names a tool or argument that does not exist.
+### Fixed (found by live-testing the assistant skills)
+- **Duplicate** put the audio copy of a linked clip on a video track when a new video track had to be made for the
+  picture copy.
+- **Filler removal** no longer cuts into the words on either side of a filler (the padding stops at its neighbours).
+- **Scene-cut detection** no longer reports a cut at the very first frame (splitting there made a one-frame clip).
+- **Transcription status** says "Transcribing…" once the audio is extracted, instead of "Extracting audio…" for the
+  whole run.
+- Assistant tools: markers an agent creates inside its undo group are signed with its name, not shown as yours;
+  `edit.begin` takes `idle_s` (the group closed after 30 s without calls while an agent looked at renders);
+  `audio.analyze` also reports the clip's gain and the levels after it; `library.apply` takes `intensity` for
+  LUTs; `render.contact_sheet` keeps tiles on the last frame instead of a black one past the end; transcript files
+  are kept per editor process, so two open editors no longer overwrite each other's; `history.restore` and
+  `tracking.run` descriptions say what they really do.
 ## Unreleased
 
 ### Animation templates

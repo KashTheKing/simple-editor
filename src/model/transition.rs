@@ -79,6 +79,57 @@ pub struct Transition {
     /// defaults for missing ones).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub params: Vec<f64>,
+    /// Audio only: how the two sides' gains follow the progress (Gallery ▸ Audio ▸ Transitions).
+    #[serde(default, skip_serializing_if = "XfadeCurve::is_linear")]
+    pub curve: XfadeCurve,
+}
+
+/// The gain shape of an audio crossfade. A `FadeToColor` transition on an audio track is a dip to
+/// silence instead (each side fades over its own half).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]
+pub enum XfadeCurve {
+    #[default]
+    Linear,
+    /// sin / cos: constant loudness through the middle (no dip on uncorrelated material).
+    EqualPower,
+    /// Squared: the outgoing side drops fast, the incoming one arrives late.
+    Exponential,
+}
+
+impl XfadeCurve {
+    fn is_linear(&self) -> bool {
+        *self == XfadeCurve::Linear
+    }
+    /// (outgoing, incoming) gains at progress `p` 0..1.
+    pub fn gains(self, p: f64) -> (f64, f64) {
+        let p = p.clamp(0.0, 1.0);
+        match self {
+            XfadeCurve::Linear => (1.0 - p, p),
+            XfadeCurve::EqualPower => {
+                let a = p * std::f64::consts::FRAC_PI_2;
+                (a.cos(), a.sin())
+            }
+            XfadeCurve::Exponential => ((1.0 - p) * (1.0 - p), p * p),
+        }
+    }
+}
+
+/// One side's gain of an audio transition at progress `p` (`incoming` = the right / fading-in side).
+pub fn audio_side_gain(tr: &Transition, p: f64, incoming: bool) -> f64 {
+    let (o, i) = audio_curve_gains(tr.kind == TransitionKind::FadeToColor, tr.curve, p);
+    if incoming {
+        i
+    } else {
+        o
+    }
+}
+
+/// (outgoing, incoming) gains at `p`: `curve`, or a dip (out over the first half, in over the second).
+pub fn audio_curve_gains(dip: bool, curve: XfadeCurve, p: f64) -> (f64, f64) {
+    if dip {
+        return ((1.0 - 2.0 * p).clamp(0.0, 1.0), (2.0 * p - 1.0).clamp(0.0, 1.0));
+    }
+    curve.gains(p)
 }
 
 fn black() -> [u8; 4] {

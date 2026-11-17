@@ -674,6 +674,14 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   `ui/mod.rs`. If that branch merges first, drop this copy (identical content: git should take it as the same file).
 - se-html helper publishing (2026-11-14): the install 404ed because library/bin/se-html.json was never on main. Fixed: exe is the release asset se-html-v0.1.0, manifest committed to origin/main only. How to ship an update: tools/se-html/README.md, "Ship (and update) the helper".
 - Corrupt-project repair (2026-11-15): `model/repair.rs` (`Project::load_repaired`) salvages BOM/NUL/trailing garbage, truncated files, and drops only damaged fields/entries/clips. `open_project` falls back to it (original copied to `<name>.sedit.damaged`, opens unsaved, toast lists losses). `import_files` now opens a `.sedit` as a project instead of probing it as media (the "Can't import ... tedcaptions" error). Test: `SE_REPAIR_FILE=<path> cargo test real_file`. NOT live-checked in the UI. export_ui.rs tests were already broken by someone's uncommitted edit (missing `frame` helper).
+- Editing skills (2026-11-16, feat/editing-skills): 16 new library skills (techniques, 6 `style-*`, `/convert-from-editor` +
+  4 converted ones) and 13 upgraded, all run end to end on scratch instances twice (reports + contact sheets in the side-session
+  notes folder). `library_skills_name_real_tools_and_args` fails the build when a skill names a missing tool/argument or a
+  lowercase `clip.keyframe` property. Skill-writing gotchas found live: `edit.begin` closes after 30 s idle (measure first);
+  transcripts stay in source time on the original clip after cuts; trims don't carry linked audio (ripple video, then audio
+  without ripple); `audio.analyze` ignores clip gain; `color.auto` samples the playhead frame; `library.apply` has no
+  intensity (`clip.effects_bulk {params: {Intensity}}`); contact sheets cap at 16 and `to = end` is black.
+  `connecting_loads_the_index_once` fails on a machine with installed library effects in the real %APPDATA% (environmental).
 
 ## Animator / Animate page (feat/animator, 2026-11-16)
 - Design approved from an HTML preview (artifact "Animator Window"); hand-over notes and screenshots in the session notes folder.
@@ -721,3 +729,62 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   hand, the Export... file dialog from a card's menu, dropping a .setemplate on the window, the other six built-ins by eye, playback
   smoothness of a placed template. An imported template's card picture showed only after the next repaint.
 - D: ran out of space mid-session (0 bytes); this worktree's `target/` was moved to the session scratchpad on C: and deleted from D:.
+## Gallery Video | Audio + title / template pictures (2026-11-17, feat/gallery-audio-video)
+- Audio side tabs are `GalleryTab::AudioAnimate | AudioTransitions | AudioEffects` + `Sounds`; `GalleryTab::VIDEO` /
+  `AUDIO` are the strips. Side + last tab per side live in `Settings.gallery_audio` / `gallery_tab` / `gallery_audio_tab`
+  (restored by `GalleryState::from_settings`, saved by `gallery_ctl` on change). A NEW selection pre-picks the side
+  (`auto_side`) only when the pointer is not over the pane; a video clip with linked sound leaves it alone.
+- Audio effects are Mixer buses: `mixer_fx::AUDIO_FX` / `AUDIO_SWEEPS` through `Project::apply_repair` (also by
+  `audio.repair`). Sweeps key the cutoff over the clips and get a bus each. New `FilterKind::Pitch` (two-tap delay line).
+- Audio transitions: `Transition.curve` (`XfadeCurve`, skipped when Linear so old files are unchanged); FadeToColor on
+  an audio track = a dip to silence (`audio_side_gain`, used by `mixer::gains`). J / L-cut = `roll_edit` on the sound only.
+  An audio card leaves linked video transitions exactly as they were (snapshot + restore around `add_transition`).
+- Hover audition (`gallery_audition.rs`): 4 s of the selected audio clip rendered off-thread to a WAV in
+  `<cache>/gallery-audition`, played by the Sounds preview (PlaySound). NOT heard live (would play on the user's speakers).
+- Title / Template pictures (`template_thumbs.rs`): HTML via `html::render_frame` (Blitz first), else a scratch project
+  through the CPU compositor at 4x, the first of 9 moments with >= 80 % of the peak "ink", framed around the content;
+  `<cache>/gallery-thumbs/<key>.rgba` keyed by the template JSON. A failed render retries once, then the type icon.
+- In a fresh worktree `core.autocrlf=true` checks `library/` out as CRLF, so `library_index_matches_files` and
+  `connecting_loads_the_index_once` fail there (sizes); not a code problem.
+- Quick Export (2026-11-17, feat/quick-export): top-bar button (`Action::QuickExportAs`, `ui/app/quick_export.rs`, MCP
+  `export.quick_file`). "Single footage" = `source_video` set, it is the only asset, every clip with media uses it, no
+  sequences, file on disk (module doc). Overwrite renders beside the file, hard-links `<name>.bak`, renames over, deletes
+  the backup. Found while testing: Overwrite Original Video could never replace the file - `Player::release_files` also
+  empties the frame cache, so the paused render thread re-rendered the current frame and REOPENED the source before the
+  rename. Fix: `player.set_project(&Project::new())` before `release_files`. `explorer <path>` opens Documents for a
+  forward-slash path - normalise first. NOT verified: the native Save As dialog and the Replace window by hand
+  (computer-use was denied); the overwrite was driven through `export.quick_file` + the in-app save prompt.
+
+## Ctrl+P palette (2026-11-17, feat/ctrl-p-palette)
+- `ui/palette.rs`: `mode()` picks by the FIRST character only (plain = go to, `>` commands, `/` assistant, `:` tools by name).
+  Go-to rows score an `Item` index built by `palette::index` once per project change (`palette_ctl::project_sig`: undo/redo
+  length + top entry time, open sequence, counts, project path) and on each open; rows are cached per (query, sig).
+- What a go-to does is a pure `palette::plan` (tested without an App); `palette_ctl::go` applies it. Clips inside sequences
+  open that sequence; `timelines()` knows the open one lives in `Project.tracks` and main in `main_stash`.
+- `/` reuses `assistant_ctl::ask` (a `/skill args` text runs the skill there) and `assistant_ctl::palette_row` - the only
+  touch in assistant files is `..Default::default()` in that row (Row grew `sub` / `group` / `alt`).
+- Shortcut: default Ctrl+P (nothing held it). `Hotkeys::from_settings`: an untouched default yields to a chord the user bound
+  themselves, and the palette then falls back to Ctrl+K. Ctrl+K stays an alias in `palette_ctl::tick` while unbound
+  (the Premiere preset gives it to split, so the preset no longer moves the palette).
+- `ui.palette {query, pick, alt}` lists or runs rows over MCP (kind/group/subtitle/alt per row).
+- Gotcha: a Tab on the frame right after opening beat egui's focus lock (the lock exists only once the box has focus);
+  the box now re-takes focus whenever it lost it. Git Bash rewrites a lone "/" argument into C:/Program Files/Git/ -
+  use MSYS_NO_PATHCONV=1 when driving `/` queries through ui.input from bash.
+- NOT verified: Alt+Enter on a Gallery card live (gallery.apply path; tested only as a plan), very large projects by timing.
+## Assistant chat app (2026-11-17, feat/assistant-chat)
+
+- The "copy gives a giant string" bug: Ctrl+C with clips selected fires `CopyClips`, whose template JSON (HTML layers
+  included) goes to the OS clipboard (`App::os_clipboard`). Copy / Cut of clips now stand aside while a label holds a
+  text selection (`hotkeys::fires_with_text_selected`) and while the pointer is over the Assistant. Message copies
+  go through `markdown::plain` (Copy text) or the raw Markdown; tool-call lines are never copied.
+- egui only makes a label selection from a real drag: headless synthetic drags (and `ui.input` keys, which are
+  `Key` events, not `Event::Copy`) don't select or copy. Live-checked in a scratch instance instead.
+- A right-click on a message is `menu::context_area` (a rect, not a response): its selectable labels take the
+  right-click themselves, so `menu::context` on the message never fired.
+- Picture paste: egui-winit sends no event for Ctrl+V when the clipboard holds no text, so `assistant_ctl::paste_tick`
+  reads the V key with `GetAsyncKeyState` while the composer has focus and takes the picture / file list through
+  `arboard` (already in the build via egui-winit).
+- Captures ask for a screenshot one frame after they are queued (`Shot`), so the menu or the area overlay is gone from
+  the picture; the crop is `tools_uikit::crop_frame`. Captures keep up to 2048 px (`CAPTURE_MAX`), other images 1024.
+- Line-by-line agents (codex, custom) now merge consecutive stdout lines into one Markdown text, so fenced blocks and
+  lists render whole.

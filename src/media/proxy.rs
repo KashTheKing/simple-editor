@@ -301,28 +301,42 @@ impl StackedAlpha {
     }
 }
 
+/// Rows either side of the stacked seam a scaled decode does not trust (`StackedAlpha::frame_at`).
+const SEAM: usize = 3;
+
 impl VideoSource for StackedAlpha {
     fn size(&self) -> (u32, u32) {
         let (w, h) = self.inner.size();
         (w, h / 2)
     }
     fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
-        // always the whole stacked frame: a decoder asked for a smaller one scales it, and its scaler
-        // blends the rows either side of the seam - the top of the picture picks up alpha from the
-        // bottom's brightness, a line across the preview
+        // decoded at the asked size when that is smaller: a full-frame HTML overlay (1080x3840 stacked)
+        // under a preview pane costs 2-4x less (15-20 -> 4-8 ms a frame). The decoder's scaler blends
+        // the rows either side of the seam, so the SEAM rows next to it (bottom of the picture, top of
+        // the alpha) are not read - their neighbours stand in, below.
         let (sw, sh) = self.size();
+        let (sw, sh) = if w < sw || h < sh { (w.min(sw), h.min(sh)) } else { (sw, sh) };
+        let scaled = (sw, sh) != self.size();
         if w == 0 || h == 0 || !self.inner.frame_at(t, sw, sh * 2, &mut self.both) {
+            return false;
+        }
+        // (a decoder may hand back another size than asked: fold whatever came)
+        let (sw, sh) = (self.both.width, self.both.height / 2);
+        if sw == 0 || sh == 0 {
             return false;
         }
         out.resize(w, h);
         out.pts = self.both.pts;
         let (sw, sh) = (sw as usize, sh as usize);
+        // ponytail: a fixed margin, wide enough for a bicubic / Lanczos downscale of up to ~3x; the
+        // picture loses that many edge rows (repeated) only while it is shown smaller than its size
+        let seam = if scaled && sh > 4 * SEAM { SEAM } else { 0 };
         let (colour, alpha) = self.both.rgba.split_at(sw * sh * 4);
         // ponytail: nearest neighbour below the proxy's own size (a small preview pane) - colour and
         // alpha stay paired, so no fringes; a box filter over both halves if the shimmer ever shows
         let xs: Vec<usize> = (0..w as usize).map(|x| x * sw / w as usize * 4).collect();
         for (y, row) in out.rgba.chunks_exact_mut(w as usize * 4).enumerate() {
-            let at = (y * sh / h as usize) * sw * 4;
+            let at = (y * sh / h as usize).clamp(seam, sh - 1 - seam) * sw * 4;
             let (colour, alpha) = (&colour[at..at + sw * 4], &alpha[at..at + sw * 4]);
             // indexed on purpose: this crate is built for size, and the iterator version of this
             // loop cost as much as decoding the frame
@@ -444,6 +458,47 @@ fn run_with(src: &str, dst: &PathBuf, height: u32, prog: &Progress, encode: &[&s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stacked source asked for a smaller picture decodes at that size (a full-frame HTML overlay
+    /// under the preview was decoded at 1080x3840 every frame), and the rows the scaler smears across
+    /// the seam never reach the picture.
+    #[test]
+    fn stacked_alpha_decodes_small_and_skips_the_seam() {
+        struct Fake(std::sync::Arc<std::sync::Mutex<Vec<(u32, u32)>>>);
+        impl VideoSource for Fake {
+            fn size(&self) -> (u32, u32) {
+                (1080, 3840)
+            }
+            fn frame_at(&mut self, _t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
+                self.0.lock().unwrap().push((w, h));
+                out.resize(w, h);
+                let half = (h / 2) as usize;
+                for (y, px) in out.rgba.chunks_exact_mut(w as usize * 4).enumerate() {
+                    // red, opaque; the two rows either side of the seam smeared to grey
+                    let smeared = y + 2 >= half && y < half + 2;
+                    let v = match (smeared, y < half) {
+                        (true, _) => [128, 128, 128, 255],
+                        (false, true) => [255, 0, 0, 255],
+                        (false, false) => [255; 4],
+                    };
+                    px.chunks_exact_mut(4).for_each(|p| p.copy_from_slice(&v));
+                }
+                true
+            }
+        }
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut s = StackedAlpha::new(Box::new(Fake(asked.clone())));
+        let mut out = Frame::default();
+        assert!(s.frame_at(0.0, 270, 480, &mut out));
+        assert_eq!(asked.lock().unwrap().last(), Some(&(270, 960)), "decoded at the asked size");
+        for y in [0, 240, 479] {
+            let p = &out.rgba[(y * 270 * 4) as usize..][..4];
+            assert_eq!(p, [255, 0, 0, 255], "row {y}: red and opaque, nothing from the seam");
+        }
+        // at its own size (export) nothing is scaled and every row is read
+        assert!(s.frame_at(0.0, 1080, 1920, &mut out));
+        assert_eq!(asked.lock().unwrap().last(), Some(&(1080, 3840)));
+    }
 
     /// Regression: the proxy scan and the library rows stat'ed every video source several times a
     /// pass - most of the UI thread on a 200-asset project. The mtime is remembered, but a file that

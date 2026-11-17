@@ -95,7 +95,7 @@ fn map_sticks_edges_and_keeps_centres() {
 
 #[test]
 fn caption_wraps_and_truncates_with_more() {
-    let text = "I tried the hardest obby in Roblox and you will not believe how it ended #roblox #obby #gaming";
+    let text = "I tried the hardest challenge on the internet and you will not believe how it ended #gaming #challenge #fyp";
     let (s, w) = (14.0, 200.0);
     let lines = scene::wrap(text, s, false, w);
     assert!(lines.len() >= 3, "{lines:?}");
@@ -353,6 +353,63 @@ fn the_playhead_fills_the_progress_bar() {
 fn clock_text() {
     assert_eq!(paint::clock(11.0, 538.0), "0:11 / 8:58");
     assert_eq!(paint::clock(-3.0, 0.0), "0:00 / 0:00");
+    assert_eq!(paint::clock(42.9, 231.0), "0:42 / 3:51", "rounds down like the real players");
+    assert_eq!(paint::clock(90.0 / 30.0, 10.0), "0:03 / 0:10", "frame 90 at 30 fps is 0:03, not 0:02");
+    assert_eq!(paint::clock(0.1 * 3.0 * 10.0, 10.0), "0:03 / 0:10", "2.9999... still reads 0:03");
+    assert_eq!(paint::clock(65.0, 3723.0), "0:01:05 / 1:02:03", "hours once the video is an hour long");
+}
+
+#[test]
+fn guide_time_and_progress_follow_the_playhead() {
+    let st = settings_with("yt_long", "ui", "iphone");
+    for (t, dur, p, c) in [(0.0, 231.0, 0.0, "0:00 / 3:51"), (42.0, 231.0, 42.0 / 231.0, "0:42 / 3:51"), (231.0, 231.0, 1.0, "3:51 / 3:51"), (300.0, 231.0, 1.0, "5:00 / 3:51"), (1.0, 0.0, 0.0, "0:01 / 0:00")] {
+        let g = GuideView::new(&st, "t", 16.0 / 9.0, t, dur).unwrap();
+        assert!((g.progress - p as f32).abs() < 1e-6, "progress at {t}/{dur}: {}", g.progress);
+        assert_eq!(g.clock, c);
+        assert!(!g.playing, "a new view is paused until the player says otherwise");
+        let ops = g.overlay_ops(Rect::from_min_size(pos2(0.0, 0.0), vec2(390.0, 693.0)));
+        assert!(ops.iter().any(|o| matches!(o, Op::Text { t, .. } if t == c)), "the time readout shows {c}");
+    }
+}
+
+/// The player's play button: the play triangle while paused, two pause bars while playing.
+#[test]
+fn guide_play_button_shows_the_play_state() {
+    let triangles = |playing: bool| {
+        let st = settings_with("yt_long", "ui", "iphone");
+        let mut g = GuideView::new(&st, "t", 16.0 / 9.0, 3.0, 10.0).unwrap();
+        g.playing = playing;
+        let ops = g.overlay_ops(Rect::from_min_size(pos2(0.0, 0.0), vec2(390.0, 693.0)));
+        ops.iter().filter(|o| matches!(o, Op::Poly { p, .. } if p.len() == 3)).count()
+    };
+    assert_eq!(triangles(false), triangles(true) + 1, "playing swaps the one play triangle for pause bars");
+    // the device preview's player too (desktop long form: the control bar's button)
+    let st = settings_with("yt_long", "device", "desktop");
+    let mut g = GuideView::new(&st, "t", 16.0 / 9.0, 3.0, 10.0).unwrap();
+    let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 760.0));
+    let paused = ops_key(&device::build(&g.device_view(None, 0.0), area).over);
+    g.playing = true;
+    assert_ne!(paused, ops_key(&device::build(&g.device_view(None, 0.0), area).over));
+}
+
+/// An exported (rasterised) frame: the Shorts progress bar is red up to the frame's own time.
+#[test]
+fn exported_frame_shows_the_bar_at_its_time() {
+    let st = settings_with("yt_shorts", "ui", "iphone");
+    let fps = 30.0;
+    for (frame, want) in [(75u32, 90.0), (150, 180.0), (270, 324.0)] {
+        let t = frame as f64 / fps; // the exported frame's time, 10 s timeline
+        let mut g = GuideView::new(&st, "t", 9.0 / 16.0, t, 10.0).unwrap();
+        g.playing = true;
+        let out = raster::render_overlay(Frame::new(360, 640), &g);
+        let red = (0..360).filter(|&x| {
+            let i = ((638 * 360 + x) * 4) as usize;
+            let px = &out.rgba[i..i + 4];
+            px[0] > 150 && px[1] < 90
+        });
+        let end = red.max().map_or(0.0, |x| x as f32 + 1.0);
+        assert!((end - want).abs() <= 2.0, "frame {frame}: bar ends at {end}, want {want}");
+    }
 }
 
 /// A synthetic "video": diagonal gradient with a bright centre box, so crops and bars are visible.
@@ -608,4 +665,81 @@ fn every_icon_name_has_a_glyph() {
             }
         }
     }
+}
+
+/// The red bar's right end on row `y` of an RGBA frame `w` wide (0 = no red).
+fn red_end(rgba: &[u8], w: usize, y: usize) -> f32 {
+    (0..w).filter(|&x| {
+        let px = &rgba[(y * w + x) * 4..][..4];
+        px[0] > 150 && px[1] < 90
+    })
+    .max()
+    .map_or(0.0, |x| x as f32 + 1.0)
+}
+
+/// Export ▸ Burn in social guide: each frame's bar is that frame's share of the exported video (the
+/// timeline, or the In/Out range when that is what is exported).
+#[test]
+fn burnt_in_guide_follows_the_exported_frame() {
+    let st = settings_with("yt_shorts", "device", "iphone"); // a device preview burns as its UI overlay
+    let mut p = crate::model::Project::default();
+    (p.width, p.height, p.fps) = (360, 640, 30.0);
+    p.add_text_clip(0.0, 4.0);
+    let o = raster::export_overlay(&st, &p, None).expect("a guide is chosen");
+    for (t, want) in [(1.0, 90.0), (2.0, 180.0), (3.0, 270.0)] {
+        let f = (o.0)(Frame::new(360, 640), t);
+        assert!((red_end(&f.rgba, 360, 638) - want).abs() <= 2.0, "t {t}");
+    }
+    let o = raster::export_overlay(&st, &p, Some((1.0, 3.0))).unwrap();
+    assert!((red_end(&(o.0)(Frame::new(360, 640), 2.0).rgba, 360, 638) - 180.0).abs() <= 2.0, "half way through the range");
+    assert!(raster::export_overlay(&Settings::default(), &p, None).is_none(), "no guide, nothing burnt in");
+    // none of the editor's own marks (the guide's name, "Measured ...") are burnt in
+    let mut g = GuideView::new(&st, "t", 9.0 / 16.0, 1.0, 4.0).unwrap();
+    let says = |g: &GuideView, w: &str| g.overlay_ops(Rect::from_min_size(pos2(0.0, 0.0), vec2(360.0, 640.0))).iter().any(|o| matches!(o, Op::Text { t, .. } if t.contains(w)));
+    assert!(says(&g, "Measured"), "the viewer says where the guide comes from");
+    g.export = true;
+    assert!(!says(&g, "Measured") && !says(&g, "UI preview"), "an export does not");
+
+    // a real export (skipped without ffmpeg): frame 60 of 120 has the bar half way
+    let Some(exe) = crate::media::ffpipe::ffmpeg_exe() else { return };
+    let dir = std::env::temp_dir().join(format!("se-guide-burn-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let out = dir.join("guide.mp4");
+    use crate::engine::export::{self, ExportOptions};
+    let opts = ExportOptions {
+        out_path: out.clone(),
+        encoder: "libx264".into(),
+        crf: 12,
+        preset: "ultrafast".into(),
+        backend: crate::media::Backend::Auto,
+        out_size: None,
+        scaler: "bicubic".into(),
+        frames: export::FrameSource::Cpu,
+        metadata: Vec::new(),
+        range: None,
+        loudnorm: false,
+        letterbox: false,
+        audio: Default::default(),
+        stem_by: Default::default(),
+        overlay: raster::export_overlay(&st, &p, None),
+    };
+    let prog = export::start_export(p, opts, std::sync::Arc::new(std::sync::Mutex::new(crate::engine::text::TextRasterizer::new())));
+    for _ in 0..1200 {
+        if prog.is_done() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(prog.error(), None);
+    let raw = crate::media::ffpipe::command(&exe)
+        .args(["-v", "error", "-i"])
+        .arg(&out)
+        .args(["-vf", r"select=eq(n\,60)", "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
+        .output()
+        .unwrap()
+        .stdout;
+    assert_eq!(raw.len(), 360 * 640 * 4);
+    let end = red_end(&raw, 360, 638);
+    assert!((end - 180.0).abs() <= 3.0, "exported frame 60 of 120: bar ends at {end}");
+    let _ = std::fs::remove_dir_all(&dir);
 }

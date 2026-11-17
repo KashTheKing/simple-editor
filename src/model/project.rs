@@ -92,6 +92,10 @@ pub struct Project {
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
+    // ---- ws:quick-export ----
+    /// The last (folder, extension) a normal Quick Export saved to; the next dialog starts there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quick_export: Option<(String, String)>,
 }
 
 impl Default for Project {

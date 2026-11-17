@@ -71,6 +71,9 @@ pub fn install_panic_hook() {
 /// Called once from the existing first-frame `window_shown` gate (see boot.rs): queues a non-blocking
 /// Recover offer when a newer autosave exists than the currently open project.
 pub(super) fn boot(app: &mut App) {
+    if crate::winpos::quiet() {
+        return; // no prompt on a quiet launch; the autosave stays for the next normal launch
+    }
     let Some(path) = recover_candidate(app.project_path.as_deref()) else { return };
     let path2 = path.clone();
     crate::ui::confirm::ask_app(

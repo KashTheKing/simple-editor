@@ -37,7 +37,9 @@ pub(crate) fn drop_kind(p: &DragPayload) -> Option<DropKind> {
             | GalleryTab::Luts
             | GalleryTab::Captions
             | GalleryTab::SpeedRamps
-            | GalleryTab::Effects => Some(DropKind::OnClip),
+            | GalleryTab::Effects
+            | GalleryTab::AudioEffects
+            | GalleryTab::AudioTransitions => Some(DropKind::OnClip),
             GalleryTab::Transitions => Some(DropKind::OnEdge),
             GalleryTab::Sounds => Some(DropKind::OnAudio),
             GalleryTab::Titles | GalleryTab::Templates => Some(DropKind::OnTrack),
@@ -59,6 +61,9 @@ fn takes(p: &DragPayload, c: &Clip) -> bool {
         DragPayload::Effect(k) => (c.kind == ClipKind::Audio) == k.applies_to_audio() && !c.uses_graph(),
         DragPayload::GalleryCard(GalleryTab::Looks | GalleryTab::Luts | GalleryTab::Effects, _) => {
             c.is_visual() && !c.uses_graph()
+        }
+        DragPayload::GalleryCard(GalleryTab::AudioEffects | GalleryTab::AudioTransitions, _) => {
+            c.kind == ClipKind::Audio
         }
         DragPayload::LibItem(id) => match split_id(id) {
             Some((Kind::Effect | Kind::Lut, _)) => c.is_visual() && !c.uses_graph(),

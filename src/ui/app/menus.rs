@@ -131,6 +131,8 @@ impl App {
             menu::button(ui, "Help", |ui| self.help_menu(ui));
             layout_ctl::page_switcher(self, ui);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // ---- ws:quick-export ---- (right-most; the Jobs indicator sits beside it while jobs run)
+                quick_export::button(self, ui);
                 // ---- ws:jobs-panel ----
                 jobs_pane::indicator(self, ui);
             });
@@ -154,7 +156,7 @@ impl App {
         });
         menu::sub(ui, Some(tools::Glyph::ExportArrow), "Export", |ui| {
             acts(ui, &[Some(ExportVideo)]);
-            acts_if(ui, has_clips, &[Some(QuickExport), Some(ExportFrame), Some(ExportXml), Some(ExportEdl), Some(ExportLossless)]);
+            acts_if(ui, has_clips, &[Some(QuickExportAs), Some(QuickExport), Some(ExportFrame), Some(ExportXml), Some(ExportEdl), Some(ExportLossless)]);
             let can_overwrite = self.project.source_video.is_some() && has_clips;
             let r = ui.add_enabled_ui(can_overwrite, |ui| menu::row(ui, None, "Overwrite Original Video…", "")).inner;
             if r.on_disabled_hover_text("Only for a project opened from a single video").clicked() {
@@ -488,12 +490,12 @@ impl App {
     fn help_menu(&mut self, ui: &mut egui::Ui) {
         use Action::*;
         if menu::row(ui, None, "Tutorial & Docs", "").on_hover_text(DOCS_URL).clicked() {
-            let _ = std::process::Command::new("explorer").arg(DOCS_URL).spawn();
+            crate::engine::browsers::open_url(DOCS_URL);
         }
         // the issue form on GitHub, with the version filled in (`version` is that form's field id)
         let report = format!("{ISSUES_URL}?template=bug_report.yml&version={}", env!("CARGO_PKG_VERSION"));
         if menu::row(ui, None, "Report a Bug…", "").on_hover_text("Opens the GitHub issue form").clicked() {
-            let _ = std::process::Command::new("explorer").arg(report).spawn();
+            crate::engine::browsers::open_url(&report);
         }
         acts(ui, &[Some(CheatSheet), Some(CommandPalette), None, Some(WhatsNew), Some(ShowWelcome), None]);
         ui.weak(format!("Simple Editor {}", env!("CARGO_PKG_VERSION")));

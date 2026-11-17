@@ -835,6 +835,7 @@ fn render_thread(
     mut pool: DecoderPool,
     text: Arc<Mutex<TextRasterizer>>,
 ) {
+    crate::media::bg::raise_thread();
     let mut comp = Compositor::new();
     let mut shapes = ShapeRasterizer::new();
     let mut project = lock(&shared.project).clone();
@@ -2372,6 +2373,7 @@ fn recycle(old: Option<Arc<LayerSet>>, spare: &mut Vec<Frame>) {
 
 fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
     use cpal::traits::StreamTrait;
+    crate::media::bg::raise_thread();
     let mut pool = DecoderPool::new(backend);
     let mut mixer = Mixer::new();
     let ring: Arc<Mutex<VecDeque<f32>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -2986,6 +2988,7 @@ mod tests {
             edge: Default::default(),
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         let wend = spans_using_source(&tp, &path).iter().fold(f64::MIN, |m, &(_, b)| m.max(b));
         assert!((wend - end - 1.5).abs() < 1e-6, "widened by the longest transition: {wend} vs {end}");
@@ -3538,6 +3541,7 @@ mod tests {
             edge: Default::default(),
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         let (mut pool, mut spare) = (DecoderPool::new(Backend::Ffmpeg), Vec::new());
         let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());

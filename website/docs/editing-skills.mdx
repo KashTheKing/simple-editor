@@ -1,0 +1,89 @@
+---
+title: Editing skills and styles
+description: Ready-made Assistant skills for pro editing techniques, whole editing styles, and a converter for Premiere Pro, DaVinci Resolve, Avid and After Effects recipes.
+---
+
+Skills are recipes the [Assistant](assistant.mdx) follows when you type `/` and a name. Each one inspects
+your project first, shows a plan before anything destructive, does the whole change as **one undo step**,
+and looks at the result (a rendered frame or a contact sheet) before it reports back. The ones on this page
+are in the **Skills** tab of the [online library](online-library.mdx): click one to install it, then run it
+from the Assistant. `/captions`, `/cut-silences`, `/shorts`, `/lower-third` and `/title-card` are built in.
+
+## Techniques
+
+| Skill | What it does |
+|---|---|
+| `/cut-silences [aggressive \| balanced \| gentle \| documentary]` | Removes pauses with a threshold measured from your recording (noise floor + 6 dB), not a fixed number. The tone decides how much of a pause survives. Preview first. |
+| `/remove-fillers` | Cuts "um", "uh" and any words you add, between words. |
+| `/jl-cuts [j \| l \| auto] [seconds]` | Turns hard cuts into J and L cuts: only the sound side of the cut moves (0.5 s by default), never inside a word. |
+| `/pacing [style \| seconds]` | Measures the average shot length and tightens long shots toward a style's rhythm, keeping the variation real edits have. |
+| `/b-roll [topic]` | Covers jump cuts and illustrates what is said with your own clips, starting each cutaway on the word it shows. |
+| `/sync-to-beat [mark \| cut N]` | Marks or cuts on the beat, a frame early, faster in loud sections. |
+| `/captions [style \| social]` | Long-form captions to subtitle-guide rules (2 lines of about 42 characters, at most about 20 characters per second, 0.8-7 s on screen) or social captions (1-3 words, uppercase). |
+| `/loudness [web \| podcast \| broadcast]` | Dialogue first, music ducked under it, effects on top; -14, -16 or -23 LUFS. |
+| `/clean-audio` | Repairs and levels the voice, ducks the music. |
+| `/color-grade [look]` | The colourist's order: fix exposure, balance, match the shots of a scene, then one look at partial strength. |
+| `/color-match [reference]` | Matches clips to a reference shot. |
+| `/recap [length]` | A "previously on" montage from the key lines. |
+| `/highlight-reel`, `/zoom-punch`, `/sfx-pass`, `/review`, `/chapters`, ... | The rest of the library's skills. |
+
+## Styles
+
+A style skill applies a whole look-and-feel to your footage. Each starts with a **style card**, a table of
+the numbers it uses, so you can see (and ask to change) what it will do.
+
+| Skill | Style |
+|---|---|
+| `/style-vlog [chill \| normal \| hyper]` | Fast-cut YouTube talking head: tight pauses, alternating punch-in framing on jump cuts, B-roll every 10-15 s, bold highlighted captions, a punchy look. |
+| `/style-documentary [observational \| interview \| nature]` | Long takes (5-15 s shots), L-cuts into B-roll, natural pauses kept, hard cuts with dissolves only for time or place changes, a muted grade. |
+| `/style-music-video [mellow \| normal \| hype]` | Clips cut to your song on beats or bars (faster in the chorus), punch-ins and flashes on hits, speed ramps, one look. |
+| `/style-podcast-clips [count, length, topic]` | Finds 3-5 standalone moments, each its own sequence with a hook, tight pauses, speaker switching and big captions. |
+| `/style-trailer [length, title, genre]` | Three acts that speed up (3-5 s shots, then 2-3 s, then under 1.5 s), a title card and a final "button". |
+| `/style-shorts [clean \| bold \| meme]` | Native vertical feel: hook first, a visual change every 1.5-3 s, word-by-word captions, everything inside the platform safe zone. |
+
+## Coming from Premiere Pro, DaVinci Resolve, Avid or After Effects
+
+`/convert-from-editor` takes a workflow written for another editor (a tutorial, a list of steps, a script or
+another agent's skill) and rewrites it in Simple Editor terms. It answers with a table of their steps and
+the tools that do the same here, the alternatives where there is no exact feature, and a clear **not
+supported** list (3D cameras, particles, Fusion-style compositing, AAF, plug-ins...). Add `save as <name>` to
+keep the result as your own skill.
+
+These were converted that way and ship in the library:
+
+| Skill | From |
+|---|---|
+| `/reframe [9:16 \| 1:1 \| 4:5]` | Premiere's Auto Reframe: refit every shot, follow a moving subject with a few smooth position keys, keep it in the safe zone. |
+| `/audio-to-keyframes` | After Effects' Convert Audio to Keyframes and audio-peak markers: an effect that pulses with the music, or a punch on every hit. |
+| `/deliver [preset \| check only]` | Resolve's Deliver page and Premiere's export validation: offline media, gaps, black frames, levels, captions and safe zones checked, then one export with your OK. |
+| `/apply-cdl` | Resolve and Avid ASC CDL grades: slope, offset and power map exactly onto the Primaries effect. |
+
+## Where the numbers come from
+
+The skills use published numbers and conventions, rewritten in our own words; no text, code or media from
+these sources is included.
+
+| Source | Licence | Used for |
+|---|---|---|
+| [video-use](https://github.com/browser-use/video-use) | MIT | social caption chunking, padding at cuts, loudness, duck depth, self-checking around cuts |
+| [cut-video](https://github.com/louisedesadeleer/cut-video) | MIT | tone presets for pauses, noise floor + 6 dB threshold, jump-cut pacing targets |
+| [auto-editor](https://github.com/WyattBlue/auto-editor) | public domain | safe default margins |
+| [davinci-resolve-mcp](https://github.com/samuelgursky/davinci-resolve-mcp) | MIT | guarded export, render validation, CDL import (`/deliver`, `/apply-cdl`) |
+| [Adobe_Premiere_Pro_MCP](https://github.com/hetpatel-11/Adobe_Premiere_Pro_MCP), [Adobe-Premiere-Pro-MCP](https://github.com/antipaster/Adobe-Premiere-Pro-MCP) | MIT | export validation, Auto Reframe (`/deliver`, `/reframe`) |
+| [after-effects-mcp](https://github.com/TheLlamainator/after-effects-mcp) | MIT | audio peaks to markers and keyframes (`/audio-to-keyframes`) |
+| Cutting et al., *Quicker, Faster, Darker* (2011) and *Attention and the Evolution of Hollywood Film* (2010) | article | shot-length bands by era and style; varying shot length in runs |
+| [AVE: Anatomy of Video Editing](https://arxiv.org/abs/2207.09812) (2022) | paper; no data licence, figures only | average shot length of movie scenes |
+| [Is there a language of music-video clips?](https://arxiv.org/abs/2108.00970) | CC BY 4.0 | cuts on beats versus bars, cutting slightly early |
+| ClipShots (2018), BBC Planet Earth shot annotations | research | hard cuts versus gradual transitions in online video and documentary |
+| AutoShot (2023) | paper, figures only | shots per short-form video |
+| EBU R128, AES TD1008, published subtitle style guides | standards / guides | loudness targets; caption line length, reading speed and duration |
+
+Agent servers for these editors expose their own app's buttons; none of their code runs here. Avid Media
+Composer has no open agent server to learn from, so Avid concepts come from its standard editing terms
+(splice-in, overwrite, lift, extract, locators, CDL).
+
+## Write your own
+
+`/create-skill` writes a new skill from a description, and the file format is in
+[`library/README.md`](https://github.com/KashTheKing/simple-editor/blob/main/library/README.md). A skill's header
+can carry `tags` (searched in the Gallery) and a `credit` line saying where its technique came from.

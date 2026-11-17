@@ -246,7 +246,7 @@ pub(crate) fn quick_choice(
 
 /// Default output folder for a Quick Export / bake: beside the project file, else beside the source
 /// video, else the download folder.
-fn default_out_dir(app: &App) -> PathBuf {
+pub(super) fn default_out_dir(app: &App) -> PathBuf {
     app.project_path
         .as_ref()
         .and_then(|p| p.parent().map(Path::to_path_buf))

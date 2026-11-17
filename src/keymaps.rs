@@ -2,8 +2,8 @@
 //! applied on top of `Hotkeys::defaults()`. Only ids that already exist are listed (a later
 //! workstream's new `Action` needing its own preset row is a follow-up, not this file's job - see
 //! `keymap_presets_resolve_and_have_no_duplicate_chords`). Ctrl+K is Premiere's own "Add Edit" muscle
-//! memory, so its preset rebinds `split` there and moves `command_palette` to Ctrl+Shift+P; the other
-//! presets are milder relocations (real per-app accuracy is not the point - a small, safe, genuinely
+//! memory, so its preset rebinds `split` there (the palette is on Ctrl+P, so nothing moves for it -
+//! Ctrl+K then stops being the palette's alias); the other presets are milder relocations (real per-app accuracy is not the point - a small, safe, genuinely
 //! differing diff table per app is).
 //! ---- ws:command-palette ----
 
@@ -21,7 +21,6 @@ pub const PRESETS: &[(&str, &[(&str, &str)])] = &[
         "Premiere",
         &[
             ("split", "Ctrl+K"),
-            ("command_palette", "Ctrl+Shift+P"),
             ("export", "Ctrl+M"),
             ("quick_export", "Ctrl+Alt+M"),
         ],
@@ -94,7 +93,7 @@ mod tests {
         let mut hk = Hotkeys::defaults();
         apply("Premiere", &mut hk).unwrap();
         assert_eq!(hk.text(Action::Split), "Ctrl+K");
-        assert_eq!(hk.text(Action::CommandPalette), "Ctrl+Shift+P");
+        assert_eq!(hk.text(Action::CommandPalette), "Ctrl+P");
     }
 
     #[test]

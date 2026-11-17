@@ -849,7 +849,8 @@ pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
         ui.weak(
             "The page is saved to this computer with its pictures, styles and fonts; its scripts are removed and nothing \
              is fetched again later. It becomes a page under a browser layer, with a map of its links and buttons.\n\
-             Sign in opens Microsoft Edge with a profile kept only for Simple Editor: you sign in there yourself. Simple \
+             Sign in opens a window of the page renderer the import uses (Microsoft Edge, part of Windows) with a \
+             profile kept only for Simple Editor, whatever your own browser is: you sign in there yourself. Simple \
              Editor never asks for, reads or stores your password. A page imported as you shows your own view of the \
              site (your name, your lists): it stays on this computer unless you share the project or the video.",
         );
@@ -1450,11 +1451,11 @@ mod tests {
         let mut b = BrowserStyle::default();
         apply_fields(
             &mut b,
-            &json!({"url": "https://roblox.example/games", "theme": "dark", "tabs": ["Home", {"title": "Game", "favicon": "C:/i.png"}],
+            &json!({"url": "https://www.example.com/games", "theme": "dark", "tabs": ["Home", {"title": "Game", "favicon": "C:/i.png"}],
                 "scroll": 240, "bg": [1, 2, 3, 255], "cursor": {"shape": "hand", "x": 12.5, "size": 1.5}}),
         )
         .unwrap();
-        assert_eq!((b.url.as_str(), b.theme, b.tabs.len()), ("https://roblox.example/games", BrowserTheme::Dark, 2));
+        assert_eq!((b.url.as_str(), b.theme, b.tabs.len()), ("https://www.example.com/games", BrowserTheme::Dark, 2));
         assert_eq!((b.tabs[1].favicon.as_str(), b.scroll.value, b.bg), ("C:/i.png", 240.0, [1, 2, 3, 255]));
         let c = b.cursor.as_ref().unwrap();
         assert_eq!((c.shape, c.x.value, c.size), (CursorShape::Hand, 12.5, 1.5));

@@ -114,6 +114,8 @@ pub const TOOLS: &[ToolDef] = &[
         desc: "Export the timeline to a file (blocks until done, up to 30 min); encoder/crf/audio/stem_by default to settings. audio=streams adds one audio track per stem after the mix (mp4/mov/mkv/m4v, else one mix); audio=stems writes '<name> stems/NN <stem>.wav' beside the file.",
         args: &[
             "path:string:true:",
+            "guide:boolean:false:burn in the social guide (default: the Export setting)",
+            "captions:boolean:false:burn in the subtitles (default: the Export setting, else the preview's toggle)",
             "encoder:string:false:",
             "crf:integer:false:",
             "width:integer:false:",

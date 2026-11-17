@@ -1,6 +1,6 @@
 [package]
 name = "simple-editor"
-version = "1.3.0"
+version = "1.3.1"
 edition = "2021"
 description = "Simple Editor — a tiny, fast video trimmer/editor for Windows"
 default-run = "simple-editor"
@@ -38,6 +38,8 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    # Library / Gallery picture thumbnails decoded in-process (was one ffmpeg.exe per picture: ~0.7 s each)
+    "Win32_Graphics_Imaging",
     "Win32_System_Time",
     "Win32_System_SystemInformation",
     # ws:html-layer: headless Edge trees die with the app (a crash or a test run included)
@@ -46,7 +48,12 @@ windows = { version = "0.62", features = [
     # ws:assistant-pane: the Assistant's API key in Windows Credential Manager
     "Win32_Security",
     "Win32_Security_Credentials",
+    # ws:assistant-chat: Ctrl+V of a picture into the Assistant (egui reports no key for a non-text paste)
+    "Win32_UI_Input_KeyboardAndMouse",
 ] }
+# already in the build (eframe -> egui-winit -> arboard, same features): read a picture / a file list off the
+# clipboard for the Assistant's paste
+arboard = { version = "3.6", default-features = false, features = ["image-data"] }
 
 [profile.release]
 # size-diet: gated on bench_4k_preview/1000-clip/selftest-export perf (<=10% regression) — see
