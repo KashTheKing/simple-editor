@@ -38,8 +38,8 @@ pub(crate) fn link_rev(a: &Animated, dur: f64, paths: &[PathAsset]) -> u64 {
     dur.to_bits().hash(&mut h);
     match &a.link {
         AnimLink::None => {}
-        AnimLink::PathX(id) | AnimLink::PathY(id) => {
-            matches!(a.link, AnimLink::PathX(_)).hash(&mut h);
+        AnimLink::PathX(id) | AnimLink::PathY(id) | AnimLink::PathAngle(id) => {
+            std::mem::discriminant(&a.link).hash(&mut h);
             id.hash(&mut h);
             if let Some(p) = paths.iter().find(|p| p.id == *id) {
                 for (x, y, t) in &p.points {
@@ -49,6 +49,8 @@ pub(crate) fn link_rev(a: &Animated, dur: f64, paths: &[PathAsset]) -> u64 {
                 }
             }
         }
+        // ws:animator: a layer link's samples come from `refresh_links`' first pass, which has its own stamp
+        AnimLink::Layer { .. } => {}
         AnimLink::Expr(s) => {
             s.hash(&mut h);
             a.value.to_bits().hash(&mut h);

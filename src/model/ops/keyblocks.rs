@@ -14,22 +14,30 @@ impl Project {
         at: Option<f64>,
         dur: Option<f64>,
     ) -> Option<(f64, f64)> {
-        let (w, h) = (self.width as f64, self.height as f64);
-        let c = self.clip_mut(id)?;
+        let c = self.clip(id)?;
         let mut t0 = at.unwrap_or_else(|| c.blocks.iter().map(|b| b.end()).fold(0.0, f64::max));
         while let Some(b) = c.blocks.iter().find(|b| t0 >= b.t - BK_EPS && t0 < b.end() - BK_EPS) {
             t0 = b.end();
         }
+        self.place_key_block(id, block, t0, dur)
+    }
+
+    /// ws:animator: put `block` exactly at clip-local `t0` (no chaining: a speed ramp or a shake may run during
+    /// a zoom - that's the point of separate blocks). `dur` defaults to the block's own length.
+    pub(crate) fn place_key_block(&mut self, id: Id, block: &KeyBlock, t0: f64, dur: Option<f64>) -> Option<(f64, f64)> {
+        let (w, h) = (self.width as f64, self.height as f64);
+        let c = self.clip_mut(id)?;
         let t0 = t0.clamp(0.0, c.duration);
         let dur = dur.unwrap_or(block.dur).min(c.duration - t0);
         if dur < 0.01 {
             return None;
         }
-        let props = block.write(c, t0, dur, w, h);
+        let ctl = BlockCtl::new(block.clone());
+        let props = ctl.resolve(dur).write(c, t0, dur, w, h);
         if props.is_empty() {
             return None;
         }
-        c.blocks.push(AppliedBlock { name: block.name.clone(), t: t0, dur, props });
+        c.blocks.push(AppliedBlock { name: block.name.clone(), t: t0, dur, props, ctl: Some(ctl) });
         c.blocks.sort_by(|a, b| a.t.total_cmp(&b.t));
         Some((t0, dur))
     }
@@ -60,6 +68,25 @@ impl Project {
         }
         c.blocks[i].t = t;
         c.blocks[i].dur = dur;
+        // a simulation runs in real seconds: re-run it at the new length rather than stretching it
+        if let Some(ctl) = c.blocks[i].ctl.clone().filter(|c| c.is_sim() && !c.edited) {
+            self.set_block_ctl(id, i, ctl);
+        }
+        true
+    }
+
+    /// Change applied block `i`'s controls (strength, side, ease, physics) and rewrite its keys from them.
+    /// Setting controls on a hand-edited block resets it to them.
+    pub fn set_block_ctl(&mut self, id: Id, i: usize, mut ctl: BlockCtl) -> bool {
+        let (w, h) = (self.width as f64, self.height as f64);
+        let Some(c) = self.clip_mut(id) else { return false };
+        let Some(b) = c.blocks.get(i).cloned() else { return false };
+        clear_block_keys(c, i);
+        ctl.edited = false;
+        let props = ctl.resolve(b.dur).write(c, b.t, b.dur, w, h);
+        let ab = &mut c.blocks[i];
+        ab.props = props;
+        ab.ctl = Some(ctl);
         true
     }
 
@@ -69,14 +96,7 @@ impl Project {
         if i >= c.blocks.len() {
             return false;
         }
-        for (p, k, shared) in c.block_keys(i) {
-            if let Some(a) = prop_mut(c, &p) {
-                if let (Some(j), false) = (a.key_index_at(k.t), shared) {
-                    // the constant `value` was never touched by apply, so an emptied property falls back to it
-                    a.keys.remove(j);
-                }
-            }
-        }
+        clear_block_keys(c, i);
         c.blocks.remove(i);
         true
     }
@@ -95,6 +115,18 @@ impl Project {
             }
         }
         true
+    }
+}
+
+/// Remove the keys applied block `i` wrote (a seam key shared with a chained neighbour stays).
+fn clear_block_keys(c: &mut Clip, i: usize) {
+    for (p, k, shared) in c.block_keys(i) {
+        if let Some(a) = prop_mut(c, &p) {
+            if let (Some(j), false) = (a.key_index_at(k.t), shared) {
+                // the constant `value` was never touched by apply, so an emptied property falls back to it
+                a.keys.remove(j);
+            }
+        }
     }
 }
 
@@ -120,7 +152,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), all.len());
         for b in &all {
-            assert!(b.dur > 0.0 && !b.tracks.is_empty(), "{}", b.name);
+            assert!(b.dur > 0.0 && (!b.tracks.is_empty() || b.gen.is_some()), "{}", b.name);
             for t in &b.tracks {
                 assert!(BLOCK_PROPS.contains(&t.prop.as_str()), "{}: {}", b.name, t.prop);
             }
@@ -186,6 +218,44 @@ mod tests {
         for (i, v) in before.iter().enumerate() {
             assert!((c.y.at(3.0 + i as f64 * 0.1) - v).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn controls_rewrite_the_keys_and_a_simulation_reruns_on_stretch() {
+        let (mut p, id) = proj();
+        let w = p.width as f64;
+        p.apply_key_block(id, &find("Slide In Left"), Some(1.0), None);
+        let mut ctl = p.clip(id).unwrap().blocks[0].ctl.clone().unwrap();
+        ctl.dir = Some(Dir::Right);
+        ctl.strength = 0.5;
+        assert!(p.set_block_ctl(id, 0, ctl));
+        let c = p.clip(id).unwrap();
+        assert!((c.x.at(1.0) - w * 0.5).abs() < 1e-6, "now starts half a frame to the right");
+        assert_eq!(c.x.keys.len(), 2, "the old keys went");
+        p.apply_key_block(id, &find("Camera Shake"), Some(3.0), Some(1.0));
+        let n = p.clip(id).unwrap().x.keys.len();
+        assert!(p.retime_key_block(id, 1, 3.0, 2.0));
+        let c = p.clip(id).unwrap();
+        assert!(c.x.keys.len() > n, "twice as long = twice the jolts, not a slowed-down shake");
+        assert!(c.blocks[1].props.contains(&"scale".to_string()));
+    }
+
+    #[test]
+    fn placing_a_block_overlaps_where_applying_chains() {
+        let (mut p, id) = proj();
+        p.apply_key_block(id, &find("Ken Burns"), Some(0.0), Some(4.0));
+        // a speed ramp in the middle of a zoom lands where it was asked to
+        assert_eq!(p.place_key_block(id, &find("Speed Ramp Out"), 3.0, Some(0.5)), Some((3.0, 0.5)));
+        // applying (the Gallery's click) still chains after what's there
+        assert_eq!(p.apply_key_block(id, &find("Zoom Punch"), Some(1.0), None).map(|r| r.0), Some(4.0));
+    }
+
+    #[test]
+    fn a_block_from_before_the_animator_loads_as_plain_keys() {
+        let old = r#"{"name":"Spin","t":1.0,"dur":0.8,"props":["rotation"]}"#;
+        let b: AppliedBlock = serde_json::from_str(old).unwrap();
+        assert!(b.ctl.is_none());
+        assert_eq!(serde_json::to_string(&b).unwrap(), old.replace("1.0", "1.0"));
     }
 
     #[test]

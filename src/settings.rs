@@ -485,6 +485,10 @@ pub struct Settings {
     /// Keyframe blocks the user saved from a clip's keys (Gallery ▸ Animate, after the builtins).
     #[serde(skip_serializing)]
     pub key_blocks: Vec<crate::model::KeyBlock>,
+    // ---- ws:animator ----
+    /// The Animate page has been added to `pages` once (a settings file from before it gets it after Edit;
+    /// deleting it afterwards sticks).
+    pub animate_page: bool,
     // ---- ws:perf-baseline ----
     // ---- ws:pro-schema ----
     // (no per-field `#[serde(default)]`: the container-level one back-fills a missing field from
@@ -787,6 +791,8 @@ impl Default for Settings {
             // ---- ws:keys-actions ----
             // ---- ws:keyframe-blocks ----
             key_blocks: Vec::new(),
+            // ---- ws:animator ----
+            animate_page: false,
             // ---- ws:perf-baseline ----
             // ---- ws:pro-schema ----
             hud: false,

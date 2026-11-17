@@ -307,7 +307,7 @@ pub(super) fn clip_menu(
             });
         }
         menu::sub(ui, Some(Glyph::Sequence), "Nest", |ui| {
-            acts(ui, &[Some(NestSequence)]);
+            acts(ui, &[Some(NestSequence), Some(StackOverlays)]);
             if menu::item(ui, UnnestClip, m.sequence) {
                 *act = Some(Act::Unnest(m.id));
             }

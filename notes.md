@@ -674,3 +674,18 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   `ui/mod.rs`. If that branch merges first, drop this copy (identical content: git should take it as the same file).
 - se-html helper publishing (2026-11-14): the install 404ed because library/bin/se-html.json was never on main. Fixed: exe is the release asset se-html-v0.1.0, manifest committed to origin/main only. How to ship an update: tools/se-html/README.md, "Ship (and update) the helper".
 - Corrupt-project repair (2026-11-15): `model/repair.rs` (`Project::load_repaired`) salvages BOM/NUL/trailing garbage, truncated files, and drops only damaged fields/entries/clips. `open_project` falls back to it (original copied to `<name>.sedit.damaged`, opens unsaved, toast lists losses). `import_files` now opens a `.sedit` as a project instead of probing it as media (the "Can't import ... tedcaptions" error). Test: `SE_REPAIR_FILE=<path> cargo test real_file`. NOT live-checked in the UI. export_ui.rs tests were already broken by someone's uncommitted edit (missing `frame` helper).
+
+## Animator / Animate page (feat/animator, 2026-11-16)
+- Design approved from an HTML preview (artifact "Animator Window"); hand-over notes and screenshots in the session notes folder.
+- Blocks stay keyframes: `AppliedBlock.ctl` (BlockCtl) regenerates a block's keys from its controls; `KeyBlock.gen` marks a simulated
+  block. Old applied blocks have no `ctl` and stay plain keys (no migration).
+- `Clip::src_time` now integrates the speed ramp (`src_offset`, Simpson per key segment). Before, it was local x rate, which jumped
+  between keys; existing ramped clips now land on different (correct) source frames.
+- Flow reads speeds at a hand-off exactly from the ease handles (`edge_speed`); sampling a frame-fraction away disagreed with what
+  `set_block_speed` wrote.
+- `apply_key_block` keeps chaining (the Gallery's repeat clicks); the Animator's exact placements use `place_key_block`.
+- Pre-existing failures on origin/main seen while testing (not this branch): `library_index_matches_files` (index.json out of date),
+  `connecting_loads_the_index_once`, `video_thumbs_colours_aspect_and_cache` (3 s timeout under load), and the `engine::html` tests
+  when Edge will not start ("no DevTools port after 20 s").
+- NOT verified: the compact list by eye (only its idle-repaint test), dragging blocks / handles by hand, Draw a motion path with a
+  real pencil stroke, Link to layer through the menu, onion skin while scrubbing by eye, playback smoothness of ramps.

@@ -208,7 +208,30 @@ impl Clip {
     }
     /// Length of the source window in source seconds.
     pub fn src_len(&self) -> f64 {
-        self.duration * self.speed
+        self.src_offset(self.duration)
+    }
+    /// Source seconds played over clip-local [0, l]: the rate summed over that time, so a ramp eases through
+    /// its keys and the picture never jumps (a speed-ramp transition depends on it).
+    pub fn src_offset(&self, l: f64) -> f64 {
+        if !self.speed_curve.is_animated() {
+            return l * self.speed;
+        }
+        // ponytail: Simpson's rule, 8 steps per key segment - exact on linear ramps, well under a frame on eased
+        // ones; a handful of `at` calls per key, cheap enough for every frame of playback
+        let mut cuts: Vec<f64> = vec![0.0];
+        cuts.extend(self.speed_curve.keys.iter().map(|k| k.t).filter(|&t| t > 0.0 && t < l));
+        cuts.push(l.max(0.0));
+        let r = |t: f64| self.rate(t);
+        let mut s = 0.0;
+        for w in cuts.windows(2) {
+            let h = (w[1] - w[0]) / 8.0;
+            let mut acc = r(w[0]) + r(w[1]);
+            for i in 1..8 {
+                acc += r(w[0] + i as f64 * h) * if i % 2 == 1 { 4.0 } else { 2.0 };
+            }
+            s += acc * h / 3.0;
+        }
+        s
     }
     /// Playback rate at clip-local time `l` (the ramp when keyframed, else the constant).
     pub fn rate(&self, l: f64) -> f64 {
@@ -226,7 +249,7 @@ impl Clip {
         // ponytail: a keyframed ramp samples the rate at the clip-local time instead of integrating it, so
         // the source lands where the keys say at the keys and drifts between them. Sum the eased segments
         // if the drift ever shows.
-        let l = self.local(t) * self.rate(self.local(t));
+        let l = self.src_offset(self.local(t));
         if self.reverse {
             self.src_in + self.src_len() - l
         } else {

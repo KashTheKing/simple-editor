@@ -259,9 +259,10 @@ actions! {
     Workspace1 => "workspace_1", "Media page", sc(ALT, Key::Num1);
     Workspace2 => "workspace_2", "Cut page", sc(ALT, Key::Num2);
     Workspace3 => "workspace_3", "Edit page", sc(ALT, Key::Num3);
-    Workspace4 => "workspace_4", "Color page", sc(ALT, Key::Num4);
-    Workspace5 => "workspace_5", "Audio page", sc(ALT, Key::Num5);
-    Workspace6 => "workspace_6", "Export page", sc(ALT, Key::Num6);
+    // ws:animator: Animate came after Edit, so Export (Ctrl+E) is the seventh page, without an Alt+N
+    Workspace4 => "workspace_4", "Animate page", sc(ALT, Key::Num4);
+    Workspace5 => "workspace_5", "Color page", sc(ALT, Key::Num5);
+    Workspace6 => "workspace_6", "Audio page", sc(ALT, Key::Num6);
     MaximizePane => "maximize_pane", "Maximise Pane under Cursor", sc(NONE, Key::Backtick);
     TogglePin => "toggle_pin", "Pin / Unpin Pane under Cursor", None;
     // ToggleSource is declared by ws:source-monitor below (both workstreams needed it; kept there
@@ -352,6 +353,9 @@ actions! {
     // Hold to dictate into the Assistant prompt (a tap / the palette toggles). Unbound by design.
     PushToTalk => "push_to_talk", "Push to Talk", None;
     // ---- ws:docs-release ----
+    // ---- ws:animator ----
+    // The clip under the playhead (or the selection) and its overlays into one stack. Unbound by design.
+    StackOverlays => "stack_overlays", "Stack Clip with Overlays", None;
     // ---- ws:html-layer ----
     // HTML + CSS layers (Add menu / palette; the clip menu and a double-click edit them). Unbound by design.
     AddHtmlLayer => "add_html_layer", "Add HTML Layer", None;
@@ -688,6 +692,8 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:voice-input ----
         PushToTalk => "Panels & Pages",
         // ---- ws:docs-release ----
+        // ---- ws:animator ----
+        StackOverlays => "Clip",
         // ---- ws:html-layer ----
         AddHtmlLayer | AddHtmlScene | AddChatThread | AddForumThread | AddVideoComments | ImportHtml | SnapshotWeb | EditHtml | SaveHtmlToLibrary => "Add",
         // ---- ws:my-gallery ----
@@ -930,7 +936,7 @@ mod tests {
         assert_eq!(h.text(Action::ShowWelcome), "");
         use Action::{Workspace1, Workspace2, Workspace3, Workspace4, Workspace5, Workspace6};
         let labels = [Workspace1, Workspace2, Workspace3, Workspace4, Workspace5, Workspace6].map(|a| a.label());
-        assert_eq!(labels.map(|l| l.trim_end_matches(" page")), crate::ui::layout::PAGES, "Alt+N is the Nth page");
+        assert_eq!(labels.map(|l| l.trim_end_matches(" page")), crate::ui::layout::PAGES[..6], "Alt+N is the Nth page");
         // an unknown id in a settings file is ignored; a known one rebinds the page in that slot
         let mut s = Settings::default();
         s.hotkeys.insert("workspace_9".into(), "Alt+9".into());

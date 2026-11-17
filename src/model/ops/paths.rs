@@ -93,6 +93,8 @@ impl Project {
     /// costs one hash per linked property when nothing changed.
     pub fn refresh_links(&mut self) {
         let paths = self.paths.clone(); // ponytail: cloned to split the borrow; index it if paths grow huge
+        // ws:animator: a layer link reads another clip, so its samples are made first, from a shared view
+        let layer = self.layer_link_samples();
         let mut tracks: Vec<&mut Track> = self.tracks.iter_mut().collect();
         if let Some(st) = &mut self.main_stash {
             tracks.extend(st.tracks.iter_mut());
@@ -103,8 +105,19 @@ impl Project {
         for tr in tracks {
             for c in &mut tr.clips {
                 let dur = c.duration;
-                for a in c.all_animated_mut() {
+                let cid = c.id;
+                for (ai, a) in c.all_animated_mut().into_iter().enumerate() {
                     if a.link.is_none() {
+                        continue;
+                    }
+                    if matches!(a.link, AnimLink::Layer { .. }) {
+                        if let Some((_, _, rev, res)) = layer.iter().find(|l| l.0 == cid && l.1 == ai) {
+                            a.baked_rev = *rev;
+                            match res {
+                                Ok(k) => (a.baked, a.link_err) = (k.clone(), None),
+                                Err(e) => (a.baked, a.link_err) = (Vec::new(), Some(e.clone())),
+                            }
+                        }
                         continue;
                     }
                     let rev = link_rev(a, dur, &paths);
@@ -123,6 +136,11 @@ impl Project {
                             None => Err("path no longer exists".to_string()),
                         },
                         AnimLink::Expr(src) => bake_expr(src, a, dur),
+                        AnimLink::PathAngle(id) => match paths.iter().find(|p| p.id == *id) {
+                            Some(p) => Ok(path_angle_keys(&p.points, dur)),
+                            None => Err("path no longer exists".to_string()),
+                        },
+                        AnimLink::Layer { .. } => unreachable!(),
                     };
                     match res {
                         Ok(keys) => a.baked = keys,
@@ -135,4 +153,73 @@ impl Project {
             }
         }
     }
+}
+
+impl Project {
+    /// ws:animator: (clip, index into `Clip::animated`, stamp, samples) for every layer link on the main
+    /// timeline whose stamp changed. A link to the clip itself or to something gone reports an error.
+    fn layer_link_samples(&self) -> Vec<(Id, usize, u64, Result<Vec<Keyframe>, String>)> {
+        use std::hash::{Hash, Hasher};
+        let mut out = Vec::new();
+        for (_, c) in self.all_clips() {
+            for (ai, a) in c.animated().iter().enumerate() {
+                let AnimLink::Layer { clip, prop, mul, add } = &a.link else { continue };
+                let src = self.clip(*clip).filter(|s| s.id != c.id);
+                let sa = src.and_then(|s| prop_ref(s, prop).map(|p| (s, p)));
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                (clip, prop, mul.to_bits(), add.to_bits(), c.start.to_bits(), c.duration.to_bits()).hash(&mut h);
+                if let Some((s, p)) = sa {
+                    (s.start.to_bits(), p.value.to_bits(), p.baked_rev).hash(&mut h);
+                    for k in &p.keys {
+                        (k.t.to_bits(), k.v.to_bits(), format!("{:?}", k.ease)).hash(&mut h);
+                    }
+                }
+                let rev = h.finish().max(1);
+                if rev == a.baked_rev {
+                    continue;
+                }
+                let res = match sa {
+                    Some((s, p)) => {
+                        // ponytail: 30 samples a second like an expression; follow the keys exactly if that shows
+                        let n = ((c.duration * 30.0).ceil() as usize).clamp(1, 4096) + 1;
+                        Ok((0..n)
+                            .map(|i| {
+                                let t = c.duration * i as f64 / (n - 1) as f64;
+                                Keyframe { t, v: p.at(c.start + t - s.start) * mul + add, ease: Ease::Linear }
+                            })
+                            .collect())
+                    }
+                    None => Err("the linked clip or property is gone".to_string()),
+                };
+                out.push((c.id, ai, rev, res));
+            }
+        }
+        out
+    }
+}
+
+/// Rotation (degrees, unwrapped) facing along a path over `duration` - "turn along the path".
+pub fn path_angle_keys(points: &[(f32, f32, f32)], duration: f64) -> Vec<Keyframe> {
+    let (x, y) = path_to_keys(points, duration);
+    let n = ((duration * 30.0).ceil() as usize).clamp(2, 4096);
+    let e = duration / n as f64 * 0.5;
+    let mut last: Option<f64> = None;
+    (0..=n)
+        .map(|i| {
+            let t = duration * i as f64 / n as f64;
+            let (t0, t1) = ((t - e).max(0.0), (t + e).min(duration));
+            let (dx, dy) = (x.at(t1) - x.at(t0), y.at(t1) - y.at(t0));
+            let mut a = if dx.abs() + dy.abs() > 1e-9 { dy.atan2(dx).to_degrees() } else { last.unwrap_or(0.0) };
+            if let Some(l) = last {
+                while a - l > 180.0 {
+                    a -= 360.0;
+                }
+                while a - l < -180.0 {
+                    a += 360.0;
+                }
+            }
+            last = Some(a);
+            Keyframe { t, v: a, ease: Ease::Linear }
+        })
+        .collect()
 }

@@ -34,12 +34,15 @@ pub struct BlockTrack {
     pub keys: Vec<BlockKey>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
 pub struct KeyBlock {
     pub name: String,
     /// Default length in seconds.
     pub dur: f64,
     pub tracks: Vec<BlockTrack>,
+    /// A simulated block (`animate::Gen`): `tracks` is empty and the keys come from `BlockCtl::resolve`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gen: Option<crate::model::Gen>,
 }
 
 /// Where a block was applied on a clip (clip-local seconds) - drawn as a bar on the keyframe row.
@@ -49,6 +52,10 @@ pub struct AppliedBlock {
     pub t: f64,
     pub dur: f64,
     pub props: Vec<String>,
+    /// The Animator's controls (strength, side, ease, physics): editing them rewrites this block's keys. None on
+    /// blocks from before the Animator, which stay plain keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ctl: Option<crate::model::BlockCtl>,
 }
 
 impl AppliedBlock {
@@ -58,7 +65,8 @@ impl AppliedBlock {
 }
 
 /// The properties a block can animate (`Clip` field names).
-pub const BLOCK_PROPS: [&str; 8] = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume"];
+/// `speed` is the clip's speed ramp (time remap: 1 = normal); `volume` / `pan` only sound on audio clips.
+pub const BLOCK_PROPS: [&str; 10] = ["x", "y", "scale", "scale_x", "scale_y", "rotation", "opacity", "volume", "pan", "speed"];
 
 pub fn prop_ref<'a>(c: &'a Clip, name: &str) -> Option<&'a Animated> {
     Some(match name {
@@ -70,6 +78,8 @@ pub fn prop_ref<'a>(c: &'a Clip, name: &str) -> Option<&'a Animated> {
         "rotation" => &c.rotation,
         "opacity" => &c.opacity,
         "volume" => &c.volume,
+        "pan" => &c.pan,
+        "speed" => &c.speed_curve,
         _ => return None,
     })
 }
@@ -84,6 +94,8 @@ pub fn prop_mut<'a>(c: &'a mut Clip, name: &str) -> Option<&'a mut Animated> {
         "rotation" => &mut c.rotation,
         "opacity" => &mut c.opacity,
         "volume" => &mut c.volume,
+        "pan" => &mut c.pan,
+        "speed" => &mut c.speed_curve,
         _ => return None,
     })
 }
@@ -118,7 +130,8 @@ impl KeyBlock {
         let visual = c.is_visual();
         for tr in &self.tracks {
             // volume sounds only on audio clips; everything else only draws on visual ones
-            if (tr.prop == "volume") == visual {
+            // sound props only on audio clips, picture props only on visual ones; a speed ramp on either
+            if tr.prop != "speed" && matches!(tr.prop.as_str(), "volume" | "pan") == visual {
                 continue;
             }
             let Some(a) = prop_mut(c, &tr.prop) else { continue };
@@ -196,7 +209,7 @@ impl Clip {
                 (!keys.is_empty()).then(|| BlockTrack { prop: p.to_string(), keys })
             })
             .collect();
-        Some(KeyBlock { name: name.to_string(), dur: t1 - t0, tracks })
+        Some(KeyBlock { name: name.to_string(), dur: t1 - t0, tracks, gen: None })
     }
 }
 
@@ -214,7 +227,7 @@ fn tr(prop: &str, keys: &[(f64, BlockVal, Ease)]) -> BlockTrack {
     BlockTrack { prop: prop.into(), keys: keys.iter().map(|&(f, v, ease)| BlockKey { f, v, ease }).collect() }
 }
 fn blk(name: &str, dur: f64, tracks: Vec<BlockTrack>) -> KeyBlock {
-    KeyBlock { name: name.into(), dur, tracks }
+    KeyBlock { name: name.into(), dur, tracks, gen: None }
 }
 /// `n` alternating `Add` offsets of ±`amp` settling back to 0 - shake / wiggle.
 fn jitter(prop: &str, n: usize, amp: f64, phase: f64, ease: Ease) -> BlockTrack {
@@ -353,7 +366,19 @@ pub fn builtin_blocks() -> Vec<KeyBlock> {
         blk("Swing In", 0.6, vec![tr("rotation", &[(0.0, Add(-90.0), BACK), (1.0, Add(0.0), LIN)])]),
         blk("Sound Swell", 1.0, vec![tr("volume", &[(0.0, Abs(0.0), OUT), (1.0, Abs(1.0), LIN)])]),
         blk("Sound Fade", 1.0, vec![tr("volume", &[(0.0, Mul(1.0), IN), (1.0, Abs(0.0), LIN)])]),
+        // ---- ws:animator: sound and speed ----
+        blk("Duck", 2.0, vec![tr("volume", &[(0.0, Mul(1.0), IO), (0.15, Mul(0.3), HOLD), (0.85, Mul(0.3), IO), (1.0, Mul(1.0), LIN)])]),
+        blk("Pan Sweep", 2.0, vec![tr("pan", &[(0.0, Abs(-1.0), IO), (1.0, Abs(1.0), LIN)])]),
+        blk("Pan Swing", 2.0, vec![jitter("pan", 6, 0.8, 0.0, IO)]),
+        blk("Tremolo", 1.0, vec![tr("volume", &(0..=8).map(|i| (i as f64 / 8.0, Mul(if i % 2 == 0 { 1.0 } else { 0.4 }), IO)).collect::<Vec<_>>())]),
+        blk("Speed Ramp In", 0.6, vec![tr("speed", &[(0.0, Mul(4.0), OUT), (1.0, Mul(1.0), LIN)])]),
+        blk("Speed Ramp Out", 0.6, vec![tr("speed", &[(0.0, Mul(1.0), IN), (1.0, Mul(4.0), LIN)])]),
+        blk("Slow-mo Hit", 1.5, vec![tr("speed", &[(0.0, Mul(1.0), IO), (0.25, Mul(0.25), HOLD), (0.75, Mul(0.25), IO), (1.0, Mul(1.0), LIN)])]),
+        blk("Speed Up", 1.0, vec![tr("speed", &[(0.0, Mul(1.0), IO), (1.0, Mul(2.0), LIN)])]),
     ]
+    .into_iter()
+    .chain(crate::model::sim_blocks())
+    .collect()
 }
 
 /// Deterministic bar/card colour for a block name.
