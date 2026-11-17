@@ -165,7 +165,7 @@ mod tests {
         s.effect_presets.push(EffectPreset { name: "Warm".into(), json: "[]".into() });
         s.effect_presets.push(EffectPreset { name: "Graph".into(), json: "{\"nodes\":[]}".into() });
         s.templates.push(Template { name: "Intro".into(), json: "{\"clips\":[],\"assets\":[]}".into() });
-        s.key_blocks.push(crate::model::KeyBlock { name: "Pop".into(), dur: 1.0, tracks: vec![] });
+        s.key_blocks.push(crate::model::KeyBlock { name: "Pop".into(), dur: 1.0, ..Default::default() });
         let mut style = crate::engine::presets::builtin_caption_styles().remove(0);
         style.text = "Mine bold".into();
         s.caption_presets.push(style);

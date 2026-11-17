@@ -167,6 +167,7 @@ mod tools_social;
 mod enhance_ctl;
 mod whatsnew;
 mod perf_ctl; // ws:perf-window
+mod animator_ctl; // ws:animator
 #[path = "windows.rs"]
 mod windows_dlg;
 
@@ -497,6 +498,10 @@ pub struct App {
     // ---- ws:perf-window ----
     /// The Performance window (`ui::perf_ui`, `perf_ctl`).
     perf: crate::ui::perf_ui::PerfWin,
+    // ---- ws:animator ----
+    animator: crate::ui::animator::AnimState,
+    /// "Draw a motion path" is armed: the next Viewer stroke becomes a path the selection follows.
+    path_armed: bool,
     // ---- ws:pro-schema ----
     /// The Assistant pane's prompt / pending requests / log (`ui::assistant_ui`).
     pub(crate) assistant: crate::ui::assistant_ui::AssistantState,
@@ -969,6 +974,8 @@ impl App {
             // ---- ws:perf-baseline ----
             hud: Default::default(),
             perf: Default::default(), // ws:perf-window
+            animator: Default::default(), // ws:animator
+            path_armed: false,
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -1691,6 +1698,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     enhance_ctl::TOOLS,
     // ---- ws:perf-window ----
     perf_ctl::TOOLS,
+    // ---- ws:animator ----
+    animator_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1774,6 +1783,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     enhance_ctl::act,
     // ---- ws:perf-window ----
     perf_ctl::act,
+    // ---- ws:animator ----
+    animator_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1856,6 +1867,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     enhance_ctl::tick,
     // ---- ws:perf-window ----
     perf_ctl::tick,
+    // ---- ws:animator ----
+    animator_ctl::frame,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -1988,6 +2001,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:shader-library ----
     // ---- ws:skills ----
     // ---- ws:online-library ----
+    // ---- ws:animator ----
+    animator_ctl::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

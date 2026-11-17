@@ -486,14 +486,53 @@ fn speed_reverse_freeze() {
 }
 
 #[test]
+fn a_layer_link_follows_another_clip_and_a_path_turns_the_clip() {
+    let mut p = Project::new();
+    let mut a = Clip::new(1, ClipKind::Video, "a", 0.0, 4.0);
+    a.x.keys = vec![Keyframe { t: 0.0, v: 0.0, ease: Ease::Linear }, Keyframe { t: 4.0, v: 400.0, ease: Ease::Linear }];
+    p.tracks[0].clips.push(a);
+    let mut b = Clip::new(2, ClipKind::Video, "b", 1.0, 2.0);
+    b.y.link = AnimLink::Layer { clip: 1, prop: "x".into(), mul: 0.5, add: 10.0 };
+    p.tracks[0].clips.push(b);
+    p.refresh_links();
+    let b = p.clip(2).unwrap();
+    // b's local 1 s = timeline 2 s, where a.x is 200: 200 x 0.5 + 10
+    assert!((b.y.at(1.0) - 110.0).abs() < 1e-6, "{}", b.y.at(1.0));
+    // moving the source re-bakes
+    p.clip_mut(1).unwrap().x.keys[1].v = 800.0;
+    p.refresh_links();
+    assert!((p.clip(2).unwrap().y.at(1.0) - 210.0).abs() < 1e-6);
+    // a link to a clip that went away says so
+    p.tracks[0].clips.retain(|c| c.id != 1);
+    p.refresh_links();
+    assert!(p.clip(2).unwrap().y.link_err.is_some());
+    // turning along a path: a path heading right then down faces 0 then 90 degrees
+    let pid = p.add_path("L".into(), vec![(0.0, 0.0, 0.0), (100.0, 0.0, 1.0), (100.0, 100.0, 2.0)]);
+    let c = p.clip_mut(2).unwrap();
+    c.rotation.link = AnimLink::PathAngle(pid);
+    p.refresh_links();
+    let r = &p.clip(2).unwrap().rotation;
+    assert!(r.at(0.4).abs() < 1.0 && (r.at(1.6) - 90.0).abs() < 1.0, "{} {}", r.at(0.4), r.at(1.6));
+}
+
+#[test]
 fn keyframed_speed_ramps_src_time() {
     let mut c = Clip::new(1, ClipKind::Video, "v", 2.0, 4.0);
     c.speed_curve.keys =
         vec![Keyframe { t: 0.0, v: 1.0, ease: Ease::Linear }, Keyframe { t: 4.0, v: 3.0, ease: Ease::Linear }];
     assert!(c.is_retimed());
-    // local 2 s at rate 2 → source 4 s; local 3 s at rate 2.5 → source 7.5 s
-    assert!((c.src_time(4.0) - 4.0).abs() < 1e-9, "{}", c.src_time(4.0));
-    assert!((c.src_time(5.0) - 7.5).abs() < 1e-9, "{}", c.src_time(5.0));
+    // the source is the rate summed over time: 1 → 3 over 4 s plays 1 + 0.5 t s per s, so local 2 s = 3 s of
+    // source and local 4 s = 8 s (not local x rate, which jumped between keys)
+    assert!((c.src_time(4.0) - 3.0).abs() < 1e-6, "{}", c.src_time(4.0));
+    assert!((c.src_time(6.0) - 8.0).abs() < 1e-6, "{}", c.src_time(6.0));
+    assert!((c.src_len() - 8.0).abs() < 1e-6);
+    // it only ever moves forward
+    let mut last = -1.0;
+    for i in 0..=40 {
+        let s = c.src_time(2.0 + i as f64 * 0.1);
+        assert!(s > last);
+        last = s;
+    }
     // no keys → the constant speed still rules
     c.speed_curve.keys.clear();
     c.set_speed(2.0);

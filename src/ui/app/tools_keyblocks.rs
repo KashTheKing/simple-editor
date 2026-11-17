@@ -13,8 +13,10 @@ fn done(v: Value) -> Result<ToolOutcome, String> {
 }
 
 /// `parse_ease`'s names plus the curve presets ("Smooth", "Overshoot", ...).
-fn ease_arg(s: &str) -> Option<Ease> {
-    parse_ease(s).or_else(|| Ease::PRESETS.iter().find(|(n, _)| n.eq_ignore_ascii_case(s)).map(|p| p.1))
+pub(super) fn ease_arg(s: &str) -> Option<Ease> {
+    parse_ease(s)
+        .or_else(|| Ease::PRESETS.iter().find(|(n, _)| n.eq_ignore_ascii_case(s)).map(|p| p.1))
+        .or_else(|| Ease::ALL.into_iter().find(|e| e.name().eq_ignore_ascii_case(s))) // "Ease In", the label the UI shows
 }
 
 /// Apply block `name` to `ids` at timeline time `at` (a clip that does not contain it chains after its

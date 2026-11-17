@@ -1358,6 +1358,14 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
 /// An Animate card's picture: each animated property's curve over the block, normalised to the tile,
 /// in the block's bar colour (the one its timeline bar uses).
 fn block_picture(p: &egui::Painter, tile: Rect, b: &crate::model::KeyBlock) {
+    // a simulated block has no keys of its own: picture what it makes
+    let made;
+    let b = if b.gen.is_some() {
+        made = crate::model::BlockCtl::new(b.clone()).resolve(b.dur);
+        &made
+    } else {
+        b
+    };
     let [r, g, bl] = crate::model::block_color(&b.name);
     let col = Color32::from_rgb(r, g, bl);
     let mut c = Clip::new(0, crate::model::ClipKind::Video, "", 0.0, 1.0);
@@ -2639,7 +2647,7 @@ mod tests {
     fn animate_tab_lists_builtin_blocks_then_saved_ones() {
         let mut settings = Settings::default();
         let n = crate::model::builtin_blocks().len();
-        settings.key_blocks.push(crate::model::KeyBlock { name: "Mine".into(), dur: 1.0, tracks: vec![] });
+        settings.key_blocks.push(crate::model::KeyBlock { name: "Mine".into(), dur: 1.0, ..Default::default() });
         let names = card_names(GalleryTab::Animate, &settings);
         assert_eq!(names.len(), n + 1);
         assert_eq!(names[0], "Fade In");

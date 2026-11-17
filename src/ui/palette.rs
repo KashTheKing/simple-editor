@@ -446,7 +446,7 @@ mod tests {
         assert!(all.iter().any(|r| r.cmd == Command::Pane(Pane::Timeline)), "a pane with no Action keeps Show X");
         // the pages are their Actions, once each
         let pages: Vec<_> = all.iter().filter(|r| r.label.ends_with(" page")).map(|r| r.label.as_str()).collect();
-        assert_eq!(pages.len(), crate::ui::layout::PAGES.len(), "{pages:?}");
+        assert_eq!(pages.len(), crate::ui::layout::PAGES.len().min(6), "the six Alt+N page Actions: {pages:?}");
         // arg-free tools that act are listed under a readable name; a Read tool (its reply would be
         // dropped) and an arg-taking tool only show up in ':' mode
         for t in crate::mcp::tools::all().filter(|t| t.args.is_empty()) {

@@ -682,3 +682,18 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   without ripple); `audio.analyze` ignores clip gain; `color.auto` samples the playhead frame; `library.apply` has no
   intensity (`clip.effects_bulk {params: {Intensity}}`); contact sheets cap at 16 and `to = end` is black.
   `connecting_loads_the_index_once` fails on a machine with installed library effects in the real %APPDATA% (environmental).
+
+## Animator / Animate page (feat/animator, 2026-11-16)
+- Design approved from an HTML preview (artifact "Animator Window"); hand-over notes and screenshots in the session notes folder.
+- Blocks stay keyframes: `AppliedBlock.ctl` (BlockCtl) regenerates a block's keys from its controls; `KeyBlock.gen` marks a simulated
+  block. Old applied blocks have no `ctl` and stay plain keys (no migration).
+- `Clip::src_time` now integrates the speed ramp (`src_offset`, Simpson per key segment). Before, it was local x rate, which jumped
+  between keys; existing ramped clips now land on different (correct) source frames.
+- Flow reads speeds at a hand-off exactly from the ease handles (`edge_speed`); sampling a frame-fraction away disagreed with what
+  `set_block_speed` wrote.
+- `apply_key_block` keeps chaining (the Gallery's repeat clicks); the Animator's exact placements use `place_key_block`.
+- Pre-existing failures on origin/main seen while testing (not this branch): `library_index_matches_files` (index.json out of date),
+  `connecting_loads_the_index_once`, `video_thumbs_colours_aspect_and_cache` (3 s timeout under load), and the `engine::html` tests
+  when Edge will not start ("no DevTools port after 20 s").
+- NOT verified: the compact list by eye (only its idle-repaint test), dragging blocks / handles by hand, Draw a motion path with a
+  real pencil stroke, Link to layer through the menu, onion skin while scrubbing by eye, playback smoothness of ramps.

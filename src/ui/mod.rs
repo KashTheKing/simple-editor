@@ -2,6 +2,7 @@
 //! Subtitles, Timeline, Curves, Planner, Moodboard, Auto-cut, Tracking - DaVinci-like by default, bare
 //! Windows-forms styling. Windows (Settings, Retime, Export) never block the editor.
 
+pub mod animator; // ws:animator
 pub mod app;
 pub mod autocut_ui;
 pub mod capture_ui;
@@ -132,6 +133,14 @@ pub(crate) fn take_key_seek() -> Option<f64> {
 }
 
 thread_local! {
+    /// ws:animator: the other clips a keyframe menu's "Link to layer" offers (id, name), set by the inspector.
+    static LINK_LAYERS: std::cell::RefCell<Vec<(Id, String)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+pub(crate) fn set_link_layers(v: Vec<(Id, String)>) {
+    LINK_LAYERS.with(|l| *l.borrow_mut() = v);
+}
+
+thread_local! {
     /// ws:keyframe-blocks: a block picked from a keyframe menu's Animate ▸ - only the inspector knows the
     /// clips and the undo, so it applies it (`take_block_request`).
     static BLOCK_REQ: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
@@ -170,6 +179,8 @@ pub(crate) fn key_buttons(
     let tip = match &a.link {
         AnimLink::PathX(_) | AnimLink::PathY(_) => "Following a path - right-click to unlink",
         AnimLink::Expr(_) => "Driven by an expression - right-click to unlink",
+        AnimLink::Layer { .. } => "Linked to another layer - right-click to scale, offset or unlink",
+        AnimLink::PathAngle(_) => "Turning along a path - right-click to unlink",
         AnimLink::None if here => "Remove the keyframe at the playhead (right-click: more)",
         AnimLink::None => "Add a keyframe at the playhead (right-click: more)",
     };
@@ -249,6 +260,48 @@ pub(crate) fn key_menu(
                 if menu::row(ui, None, name, "").clicked() {
                     a.unlink();
                     a.link = if axis_x { AnimLink::PathX(*pid) } else { AnimLink::PathY(*pid) };
+                    g.click();
+                }
+            }
+        });
+    }
+    // ws:animator: After Effects' pick whip - this value follows another layer's (x mul + add)
+    let layers = LINK_LAYERS.with(|l| l.borrow().clone());
+    if !layers.is_empty() {
+        menu::sub(ui, Some(Glyph::Link), "Link to layer", |ui| {
+            for (cid, name) in &layers {
+                menu::sub(ui, None, name, |ui| {
+                    for p in crate::model::BLOCK_PROPS {
+                        if menu::row(ui, None, crate::ui::animator::prop_label(p), "").clicked() {
+                            a.unlink();
+                            a.link = AnimLink::Layer { clip: *cid, prop: p.into(), mul: 1.0, add: 0.0 };
+                            g.click();
+                        }
+                    }
+                });
+            }
+        });
+    }
+    if let AnimLink::Layer { mul, add, .. } = &mut a.link {
+        ui.horizontal(|ui| {
+            ui.label("×");
+            let r1 = ui.add(egui::DragValue::new(mul).speed(0.01));
+            ui.label("+");
+            let r2 = ui.add(egui::DragValue::new(add).speed(0.5));
+            if r1.changed() || r2.changed() {
+                g.click();
+            }
+        });
+    }
+    if label == "Rotation" {
+        menu::sub(ui, Some(Glyph::Link), "Turn along path", |ui| {
+            if paths.is_empty() {
+                ui.weak("No saved paths - draw one from the Animator's ⋯ menu");
+            }
+            for (pid, name) in paths {
+                if menu::row(ui, None, name, "").clicked() {
+                    a.unlink();
+                    a.link = AnimLink::PathAngle(*pid);
                     g.click();
                 }
             }

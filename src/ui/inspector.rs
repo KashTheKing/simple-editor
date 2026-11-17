@@ -244,7 +244,11 @@ pub fn show(
 ) -> bool {
     let _s = crate::perf::span("inspector_draw");
     let first = selection.iter().copied().find(|&id| project.clip(id).is_some());
-    let edited = match first {
+    // ws:animator: the block picked in the Animator leads, its clip's own sections follow; the keyframe
+    // menus' "Link to layer" offers every other clip
+    crate::ui::set_link_layers(project.all_clips().filter(|(_, c)| !selection.contains(&c.id)).map(|(_, c)| (c.id, c.name.clone())).collect());
+    let block = crate::ui::animator::block_section(ui, project, palette, undo);
+    let edited = block | match first {
         None if !sel_transitions.is_empty() => transition_section(ui, project, sel_transitions, undo),
         None => project_section(ui, project, settings, undo),
         Some(_) => clip_section(ui, project, selection, playhead, fonts, palette, settings, undo),

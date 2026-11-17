@@ -9,6 +9,7 @@ mod editing;
 mod effects;
 mod graph;
 mod keyblocks;
+mod stacks; // ws:animator
 mod markers;
 // ---- ws:pro-monitor ----
 mod multicam;

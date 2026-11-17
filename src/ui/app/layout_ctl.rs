@@ -216,6 +216,11 @@ pub(super) fn migrate_to_pages(settings: &mut Settings) -> bool {
     if settings.pages.is_empty() {
         restore_default_pages(settings); // a hand-edited `"pages": []` - at least one page always exists
     }
+    // ws:animator: a pages list from before the Animate page gets it once, after Edit
+    if !std::mem::replace(&mut settings.animate_page, true) && !settings.pages.iter().any(|p| p == "Animate") {
+        let at = settings.pages.iter().position(|p| p == "Edit").map_or(settings.pages.len(), |i| i + 1);
+        settings.pages.insert(at, "Animate".into());
+    }
     if settings.pages.contains(&settings.page) {
         return false;
     }
@@ -988,8 +993,8 @@ mod tests {
         assert_eq!(vis(&page_start(&s, "Sound")), vis(&Layout::audio_layout()));
         assert_eq!(find_page(&s, "sound").as_deref(), Some("Sound"));
         // reorder
-        move_page(&mut s, 7, 0);
-        assert_eq!(s.pages, ["Grade", "Media", "Cut", "Edit", "Color", "Sound", "Export", "Ours"]);
+        move_page(&mut s, 8, 0);
+        assert_eq!(s.pages, ["Grade", "Media", "Cut", "Edit", "Animate", "Color", "Sound", "Export", "Ours"]);
         // round-trip through the settings file
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.pages, s.pages);
@@ -1002,7 +1007,7 @@ mod tests {
         assert!(delete_page(&mut s, "Grade").is_err(), "at least one page stays");
         assert_eq!(s.pages, ["Grade"]);
         restore_default_pages(&mut s);
-        assert_eq!(s.pages, ["Media", "Cut", "Edit", "Color", "Audio", "Export", "Grade"]);
+        assert_eq!(s.pages, ["Media", "Cut", "Edit", "Animate", "Color", "Audio", "Export", "Grade"]);
     }
 
     /// Old settings: no `pages` = the six built-ins; an emptied list is refilled; a page the list lost
@@ -1014,7 +1019,14 @@ mod tests {
         assert!(!migrate_to_pages(&mut s) && s.pages == PAGES && s.page == "Color");
         let mut s: Settings = serde_json::from_str(r#"{"page": "Color", "pages": []}"#).unwrap();
         migrate_to_pages(&mut s);
-        assert_eq!((s.pages.len(), s.page.as_str()), (6, "Color"));
+        assert_eq!((s.pages.len(), s.page.as_str()), (7, "Color"));
+        // a list from before the Animate page gets it once, after Edit; deleting it afterwards sticks
+        let mut s: Settings = serde_json::from_str(r#"{"page": "Edit", "pages": ["Media", "Edit", "Mine"]}"#).unwrap();
+        migrate_to_pages(&mut s);
+        assert_eq!(s.pages, ["Media", "Edit", "Animate", "Mine"]);
+        s.pages.retain(|p| p != "Animate");
+        migrate_to_pages(&mut s);
+        assert_eq!(s.pages, ["Media", "Edit", "Mine"]);
         let mut s: Settings = serde_json::from_str(r#"{"page": "Gone", "pages": ["Mine", "Color"]}"#).unwrap();
         assert!(migrate_to_pages(&mut s));
         assert_eq!(s.page, "Mine");

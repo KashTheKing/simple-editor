@@ -100,6 +100,21 @@
   LUTs; `render.contact_sheet` keeps tiles on the last frame instead of a black one past the end; transcript files
   are kept per editor process, so two open editors no longer overwrite each other's; `history.restore` and
   `tracking.run` descriptions say what they really do.
+## Unreleased
+
+### Animate page and the Animator
+- New **Animate** page (after Edit, Alt+4): Gallery, Preview, Inspector, a thin Timeline and the new **Animator** panel. The page bar gets it once on existing installs; Color and Audio move to Alt+5 / Alt+6 and Export keeps Ctrl+E.
+- **Animator** panel: Blocks (one lane per selected clip; drag, stretch, snap with a guide line, open a block to drag its keys; blocks that overlap stack in rows), Curves (the block's keys as curves with bezier handles, box and Shift select, ease presets, value or velocity), Flow and Speed. Narrow, it becomes a list of the clip's blocks with their controls.
+- **Animation blocks have controls**: every Gallery animation preset is now a block with Side, Strength, Length and Ease in the Inspector; changing one rewrites its keys. Projects from before keep their keys untouched.
+- **Simulated blocks**: Camera Shake (jolts per second, fade out, tilt, new pattern, hide edges), Spring In, Bounce Drop, Throw Out and Wobble.
+- **Flow**: wherever one move hands over to the next (on one clip or across a cut) a ⚡ or ✓ badge shows whether the speeds match; Smooth eases the next move, the earlier one or both so they meet. The ease editor's handles snap to the matching speed.
+- **Speed ramps** are real time remapping now (the source plays the rate summed over time, so a ramp no longer jumps); new Speed Ramp In / Out, Slow-mo Hit and Speed Up blocks and "Ramp through the cut".
+- **Sound blocks**: Duck, Pan Sweep, Pan Swing and Tremolo; Pan can be animated by blocks.
+- **Stacks**: Clip ▸ Nest ▸ Stack Clip with Overlays groups a clip and its overlays into one nested clip on the clip's own track, so a transition moves them together.
+- **Links**: Link to layer (a property follows another clip's, x multiplier + offset), Turn along path, and "Draw a motion path" (the next pencil stroke in the Viewer becomes a path the selected clips follow).
+- **Onion skin** in the Preview while the Animator is open: the selected layer's outline a few frames before and after, and where its block starts.
+- Presets: save a block to the Gallery, import presets, open the preset folder to share the files.
+- MCP: `animate.stack`, `animate.link`, `animate.follow_path`, `keyblocks.set`, `flow.seams`, `flow.match`.
 
 ## 1.3.0
 

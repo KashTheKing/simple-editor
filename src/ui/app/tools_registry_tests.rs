@@ -94,6 +94,9 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("retime_key_block", "keyblocks.retime"),
     ("remove_key_block", "keyblocks.remove"),
     ("ease_key_block", "keyblocks.ease"),
+    // ---- ws:animator ----
+    ("set_block_ctl", "keyblocks.set"),
+    ("make_stack", "animate.stack"),
     // ---- ws:browser-layer ----
     ("add_browser_clip", "browser.add"),
     ("browser_fit_pages", "browser.page"),

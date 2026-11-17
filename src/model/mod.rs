@@ -248,6 +248,23 @@ pub enum AnimLink {
     PathX(Id),
     PathY(Id),
     Expr(String),
+    // ---- ws:animator ----
+    /// Follow another clip's property at the same timeline moment, After Effects' pick whip:
+    /// `source x mul + add` (`prop` is a `BLOCK_PROPS` name).
+    Layer {
+        clip: Id,
+        prop: String,
+        #[serde(default = "crate::model::one_f")]
+        mul: f64,
+        #[serde(default)]
+        add: f64,
+    },
+    /// Turn to face along a saved path (rotation, degrees) - paired with PathX / PathY to follow it.
+    PathAngle(Id),
+}
+
+pub(crate) fn one_f() -> f64 {
+    1.0
 }
 
 impl AnimLink {
@@ -628,6 +645,7 @@ mod clip;
 mod effect;
 mod graph;
 pub(crate) mod io;
+mod animate;
 mod keyblocks;
 mod marker;
 pub mod ops;
@@ -649,6 +667,7 @@ pub use browser::*;
 pub use clip::*;
 pub use effect::*;
 pub use graph::*;
+pub use animate::*;
 pub use keyblocks::*;
 pub use marker::*;
 pub use path::*;

@@ -1554,6 +1554,30 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
             // keep the knob grabbable when the video fills the pane's height
             o.knob = o.knob.clamp(rect.min + vec2(6.0, 6.0), rect.max - vec2(6.0, 6.0));
             painter.add(Shape::closed_line(o.corners.to_vec(), stroke));
+            // ws:animator: onion skin - where the layer was (blue) / will be (orange) a few frames away, and
+            // (dashed) where the Animator's selected block starts. Outlines only: nothing is rendered.
+            let ghosts = crate::ui::animator::onion();
+            if ghosts > 0 && !c.playing {
+                let step = 2.0 / c.project.fps.max(1.0);
+                let ghost = |t: f64| Outline::new(&placement(c.project, clip, t, (a.width, a.height), cw, ch, true), to_screen, None);
+                for k in 1..=ghosts {
+                    let al = 0.85 * (1.0 - k as f32 / (ghosts as f32 + 1.0));
+                    for (dir, col) in [(-1.0, Color32::from_rgb(0x5B, 0x8C, 0xFF)), (1.0, Color32::from_rgb(0xFF, 0x9A, 0x4D))] {
+                        let t = c.playhead + dir * k as f64 * step;
+                        if clip.contains(t) {
+                            painter.add(Shape::closed_line(ghost(t).corners.to_vec(), Stroke::new(1.2, col.gamma_multiply(al))));
+                        }
+                    }
+                }
+                let start = crate::ui::animator::selected_block().filter(|s| s.0 == id).and_then(|s| clip.blocks.get(s.1)).map(|b| clip.start + b.t);
+                if let Some(t) = start.filter(|t| (t - c.playhead).abs() > 1e-3) {
+                    let g = ghost(t);
+                    let mut pts = g.corners.to_vec();
+                    pts.push(pts[0]);
+                    painter.extend(Shape::dashed_line(&pts, Stroke::new(1.2, Color32::WHITE.gamma_multiply(0.7)), 6.0, 4.0));
+                    painter.text(g.corners[0] + vec2(4.0, 4.0), egui::Align2::LEFT_TOP, "start", egui::FontId::proportional(10.0), Color32::WHITE.gamma_multiply(0.8));
+                }
+            }
             let sq = |q: Pos2| Rect::from_center_size(q, vec2(7.0, 7.0));
             for q in o.corners {
                 painter.rect_filled(sq(q), 1.0, c.palette.selection);

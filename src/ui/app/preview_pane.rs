@@ -164,7 +164,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             app.add_text(cx, cy);
         }
         if let Some(s) = resp.stroke {
-            app.add_stroke(s);
+            if !super::animator_ctl::take_stroke(app, &s) {
+                app.add_stroke(s);
+            }
         }
         if resp.edited {
             app.after_edit();

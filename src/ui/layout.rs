@@ -27,7 +27,7 @@ use std::time::Instant;
 /// The pages in Resolve's order, left to right in the menu-bar switcher and Alt+1..6
 /// (`Action::Workspace1..6`). Each page keeps its own tree (`Settings.layout` = the current one,
 /// `Settings.page_layouts` the others); `page_layout` maps a name to its built-in builder.
-pub const PAGES: &[&str] = &["Media", "Cut", "Edit", "Color", "Audio", "Export"];
+pub const PAGES: &[&str] = &["Media", "Cut", "Edit", "Animate", "Color", "Audio", "Export"];
 
 /// The built-in builder behind a `PAGES` name (`None` for a name that isn't one).
 pub fn page_layout(name: &str) -> Option<fn() -> Layout> {
@@ -35,6 +35,7 @@ pub fn page_layout(name: &str) -> Option<fn() -> Layout> {
         "Media" => Layout::media_layout,
         "Cut" => Layout::cut_layout,
         "Edit" => Layout::default_layout,
+        "Animate" => Layout::animate_layout,
         "Color" => Layout::color_layout,
         "Audio" => Layout::audio_layout,
         "Export" => Layout::export_layout,
@@ -148,6 +149,9 @@ pub enum Pane {
     /// Declared by pro-schema with a placeholder drawer; ws:assistant-pane fills it in. Tab-stacked
     /// hidden in every preset (`stack_unplaced`), never in `ROUND3`.
     Assistant,
+    // ---- ws:animator ----
+    /// Animation blocks, their curves and Flow (speed hand-offs) for the selected clips (`ui::animator`).
+    Animator,
 }
 
 impl Pane {
@@ -219,6 +223,8 @@ impl Pane {
         // ---- ws:transcribe-islands ----
         // ---- ws:voice-input ----
         // ---- ws:docs-release ----
+        // ---- ws:animator ----
+        Pane::Animator,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -252,6 +258,7 @@ impl Pane {
             Pane::Grade => Glyph::Wheel,
             Pane::Clips => Glyph::FilmStrip,
             Pane::Assistant => Glyph::Assistant,
+            Pane::Animator => Glyph::CurveIcon,
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -290,6 +297,7 @@ impl Pane {
             Pane::Grade => "Color Wheels",
             Pane::Clips => "Clips",
             Pane::Assistant => "Assistant",
+            Pane::Animator => "Animator",
         }
     }
 }
@@ -452,6 +460,23 @@ impl Layout {
         let timeline = t.insert_pane(Pane::Timeline);
         let root = Self::linear(t, Vertical, &[(top, 0.45), (timeline, 0.55)]);
         Self::stack_unplaced(t, mix);
+        Self::new(egui_tiles::Tree::new("layout", root, tiles))
+    }
+
+    /// The Animate page: [Gallery] · [Preview] · [Inspector] over a thin Timeline (the edit, for picking clips)
+    /// over the Animator (the animation timeline: blocks, curves, Flow).
+    pub fn animate_layout() -> Self {
+        use egui_tiles::LinearDir::{Horizontal, Vertical};
+        let mut tiles = egui_tiles::Tiles::default();
+        let t = &mut tiles;
+        let gallery = Self::tabs(t, &[Pane::Presets], 0);
+        let preview = t.insert_pane(Pane::Preview);
+        let inspector = t.insert_pane(Pane::Inspector);
+        let top = Self::linear(t, Horizontal, &[(gallery, 0.18), (preview, 0.52), (inspector, 0.3)]);
+        let timeline = t.insert_pane(Pane::Timeline);
+        let animator = t.insert_pane(Pane::Animator);
+        let root = Self::linear(t, Vertical, &[(top, 0.46), (timeline, 0.18), (animator, 0.36)]);
+        Self::stack_unplaced(t, gallery);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
@@ -1498,7 +1523,7 @@ mod tests {
     #[test]
     fn pages_open_with_their_default_tool() {
         use crate::ui::tools::Tool;
-        let want = [Tool::Select, Tool::Cut, Tool::Select, Tool::Select, Tool::Select, Tool::Select];
+        let want = [Tool::Select, Tool::Cut, Tool::Select, Tool::Select, Tool::Select, Tool::Select, Tool::Select];
         assert_eq!(PAGES.iter().map(|p| page_tool(p)).collect::<Vec<_>>(), want);
     }
 
@@ -1520,15 +1545,16 @@ mod tests {
     #[test]
     fn every_page_contains_every_pane() {
         use Pane::*;
-        let shown: [(&str, &[Pane]); 6] = [
+        let shown: [(&str, &[Pane]); 7] = [
             ("Media", &[Library, MediaBrowser, Source]),
             ("Cut", &[Library, Planner, Moodboard, Markers, Subtitles, Source, Preview, Inspector, Timeline]),
             ("Edit", &[Library, Presets, Source, Preview, Inspector, Timeline]),
+            ("Animate", &[Presets, Preview, Inspector, Timeline, Animator]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
             ("Audio", &[Preview, Mixer, Subtitles, Inspector, Timeline]),
             ("Export", &[Export, Preview, Inspector, Jobs, Timeline]),
         ];
-        assert_eq!(PAGES, shown.map(|(p, _)| p), "Alt+1..6 map onto the six pages in Resolve's order");
+        assert_eq!(PAGES, shown.map(|(p, _)| p), "the pages in order (Alt+1..6 are the first six)");
         for (name, visible) in shown {
             let l = page_layout(name).unwrap_or_else(|| panic!("no builder for page {name}"))();
             for &p in Pane::ALL {
