@@ -1550,6 +1550,10 @@ impl eframe::App for App {
             ctx.input_mut(|i| crate::hotkeys::consume_exact(i, &bksp));
         }
         actions.extend(self.hotkeys.poll_late(ctx));
+        // ---- ws:assistant-chat ---- over the Assistant, Ctrl+C / Ctrl+X are about its text, never the clips
+        if self.layout.hovered == Some(Pane::Assistant) {
+            actions.retain(|a| !matches!(a, Action::CopyClips | Action::CutClips));
+        }
         if let Some(text) = self.os_clipboard.take() {
             ctx.copy_text(text);
         }

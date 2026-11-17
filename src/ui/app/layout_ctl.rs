@@ -31,13 +31,16 @@ pub(super) fn is_dynamic(settings: &Settings) -> bool {
 }
 
 /// The page actions: Alt+N is the Nth page of `Settings.pages` (the user's order).
-pub(super) const PAGE_ACTIONS: [Action; 6] = [
+pub(super) const PAGE_ACTIONS: [Action; 9] = [
     Action::Workspace1,
     Action::Workspace2,
     Action::Workspace3,
     Action::Workspace4,
     Action::Workspace5,
     Action::Workspace6,
+    Action::Workspace7,
+    Action::Workspace8,
+    Action::Workspace9,
 ];
 
 pub(super) fn act(app: &mut App, a: Action) -> bool {
