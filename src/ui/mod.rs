@@ -12,6 +12,7 @@ pub mod color_ui;
 pub mod confirm;
 pub mod curves;
 pub mod effects_ui;
+pub mod brand_icons;
 pub mod export_ui;
 // ---- ws:pro-timeline ----
 pub mod find_ui;

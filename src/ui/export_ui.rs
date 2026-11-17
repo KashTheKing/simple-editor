@@ -12,14 +12,22 @@
 //! now a collapsed "Advanced" section; an "Export In/Out Range" box binds `project.in_point/out_point`
 //! into `ExportOptions.range` (and greys out the lossless cut); a loudness checkbox drives
 //! `Settings.loudnorm`; "Add to Queue" returns the same choice flagged for the render queue.
+//!
+//! Export panel redesign: top to bottom, preset cards (the two built-ins "Project settings — Max
+//! quality" and "Fast preview", then the platform tiles with their brand marks, then the user's own
+//! presets: save / edit / duplicate / delete from a right-click), then three colour-coded collapsible
+//! sections (Video blue, Audio green, Advanced amber; open state in `Settings.export_folds`), and an
+//! output bar pinned to the bottom (summary line, Speed, file name + folder, Export… / Add to Queue).
 
 use crate::engine::export::{self, ExportOptions, ExportPreset};
 use crate::media::Backend;
 use crate::model::Project;
 use crate::settings::{ExportPresetRef, Settings};
-use crate::ui::{combo, duration_text, encoder_options, ENCODER_PRESETS};
-use eframe::egui;
-use std::path::Path;
+use crate::ui::brand_icons;
+use crate::ui::tools::{draw_glyph, Glyph};
+use crate::ui::{combo, duration_text, encoder_options, menu, ENCODER_PRESETS};
+use eframe::egui::{self, Color32, CornerRadius, Stroke, StrokeKind};
+use std::path::{Path, PathBuf};
 
 #[derive(Default)]
 pub struct ExportUi {
@@ -33,11 +41,11 @@ pub struct ExportUi {
     // ---- ws:export-deliver ----
     /// "Export In/Out Range" checkbox.
     pub range: bool,
-    /// The platform tile currently applied (by name); cleared when the user edits the size by hand.
+    /// The preset card currently applied (by name); cleared when the user edits the size by hand.
     pub tile: Option<String>,
     /// Fit-and-pad instead of stretch - set with a tile, cleared with a manual size edit.
     pub letterbox: bool,
-    /// Container the applied tile asks for ("mp4"); the save dialog's default extension.
+    /// The chosen container ("mp4"; "" = mp4): the Format row, set by a preset; the save dialog's default.
     pub ext: String,
     /// Off by default: exports strip metadata unless the user turns this on.
     pub metadata_on: bool,
@@ -48,6 +56,24 @@ pub struct ExportUi {
     /// The quality percent as last shown for a given stored CRF - pct→CRF→pct round-trips lose up to
     /// 2 % (52 CRF steps vs 101 slider positions), so without this a typed "85" snapped back to 84.
     pub pct_cache: Option<(u32, u32)>,
+    // ---- export panel redesign ----
+    /// The open "Save current settings as preset…" / "Edit preset…" form.
+    pub form: Option<PresetForm>,
+    /// The output bar's file name (without extension); "" = the suggestion (`suggested_name`).
+    pub out_name: String,
+    /// The output bar's folder; None = beside the source video. The save dialog's answer updates it.
+    pub out_dir: Option<PathBuf>,
+}
+
+/// The inline preset form: a new preset from the current settings (`editing` None) or an edit of the
+/// user preset called `editing` (name, icon, colour).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PresetForm {
+    pub editing: Option<String>,
+    pub name: String,
+    pub icon: String,
+    pub color: Option<[u8; 3]>,
+    pub error: String,
 }
 
 pub struct ExportChoice {
@@ -63,18 +89,175 @@ pub struct ExportChoice {
 }
 
 // ---- ws:export-deliver ----
-/// Apply a platform tile: custom size + container + quality + loudness, fit-and-pad on.
+/// Apply a preset card: size (0 × 0 = the project's own) + container + quality + loudness + encoder +
+/// speed (+ the audio layout when the preset names one). A platform tile fits-and-pads; a preset saved
+/// from a hand-typed size stretches like that size did. Encoder and speed are always set (empty =
+/// auto / balanced), so a preset means the same export whichever card was clicked before it.
 pub fn apply_preset(state: &mut ExportUi, settings: &mut Settings, p: &ExportPreset) {
     state.tile = Some(p.name.clone());
-    state.preset = "custom".into();
-    state.custom = (p.width.max(16), p.height.max(16));
-    state.letterbox = true;
-    state.ext = p.ext.clone();
+    if p.width == 0 || p.height == 0 {
+        state.preset = "project".into();
+        state.letterbox = false;
+        settings.export_resolution = "project".into();
+    } else {
+        state.preset = "custom".into();
+        state.custom = (p.width.max(16), p.height.max(16));
+        state.letterbox = !p.stretch;
+        settings.export_resolution = format!("{}x{}", p.width, p.height);
+    }
+    state.ext = if p.ext.is_empty() { "mp4".into() } else { p.ext.clone() };
     state.lossless = false;
     state.pct_cache = None;
     settings.crf = p.crf;
     settings.loudnorm = p.loudnorm;
-    settings.export_resolution = format!("{}x{}", p.width, p.height);
+    settings.encoder = if p.encoder.is_empty() { "auto".into() } else { p.encoder.clone() };
+    settings.export_speed = if p.speed.is_empty() { "balanced".into() } else { p.speed.clone() };
+    settings.preset = "auto".into();
+    if !p.audio.is_empty() {
+        settings.export_audio = p.audio.clone();
+    }
+}
+
+/// Do the current settings still say what preset `p` says? False shows "edited" on its card.
+pub fn preset_matches(p: &ExportPreset, state: &ExportUi, settings: &Settings, project: &Project) -> bool {
+    let size = preset_size(project.width, project.height, &state.preset, state.custom);
+    let size_ok = if p.width == 0 || p.height == 0 {
+        size.is_none()
+    } else {
+        size.unwrap_or((project.width, project.height)) == (p.width, p.height)
+    };
+    let or = |v: &str, d: &'static str| if v.is_empty() { d.to_string() } else { v.to_string() };
+    size_ok
+        && default_ext(state) == or(&p.ext, "mp4")
+        && settings.crf == p.crf
+        && settings.loudnorm == p.loudnorm
+        && or(&settings.encoder, "auto") == or(&p.encoder, "auto")
+        && or(&settings.export_speed, "balanced") == or(&p.speed, "balanced")
+        && matches!(settings.preset.as_str(), "" | "auto")
+        && (p.audio.is_empty() || p.audio == settings.export_audio)
+}
+
+/// The Export pane's current settings as a preset called `name` (what "Save current settings as
+/// preset…" and `export.preset_save` store).
+pub fn current_as_preset(state: &ExportUi, settings: &Settings, project: &Project, name: &str) -> ExportPreset {
+    let (width, height) = preset_size(project.width, project.height, &state.preset, state.custom).unwrap_or((0, 0));
+    ExportPreset {
+        name: name.trim().to_string(),
+        ext: default_ext(state).to_string(),
+        width,
+        height,
+        crf: settings.crf,
+        loudnorm: settings.loudnorm,
+        encoder: settings.encoder.clone(),
+        speed: export::effective_preset(&settings.preset, &settings.export_speed),
+        audio: settings.export_audio.clone(),
+        stretch: width > 0 && !(state.letterbox && state.tile.is_some()),
+        icon: String::new(),
+        color: None,
+    }
+}
+
+/// Why `name` can't be a (new) user preset name, if it can't: empty, a built-in's or platform tile's
+/// name, or another user preset's (`except` = the one being renamed).
+fn name_refusal(settings: &Settings, name: &str, except: Option<&str>) -> Option<String> {
+    let n = name.trim();
+    if n.is_empty() {
+        return Some("Give the preset a name".into());
+    }
+    if export::is_builtin_preset(n) || settings.export_presets.iter().any(|p| p.name.eq_ignore_ascii_case(n)) {
+        return Some(format!("\"{n}\" is a built-in preset - pick another name"));
+    }
+    let clash = settings
+        .export_user_presets
+        .iter()
+        .any(|p| p.name.eq_ignore_ascii_case(n) && !except.is_some_and(|e| e.eq_ignore_ascii_case(&p.name)));
+    clash.then(|| format!("You already have a preset called \"{n}\""))
+}
+
+/// Store `p` as a user preset. `overwrite`: replace a user preset of the same name (the MCP save)
+/// instead of refusing it (the form). Built-in and platform names are always refused.
+pub fn save_user_preset(settings: &mut Settings, mut p: ExportPreset, overwrite: bool) -> Result<(), String> {
+    p.name = p.name.trim().to_string();
+    let existing = settings.export_user_presets.iter().position(|q| q.name.eq_ignore_ascii_case(&p.name));
+    match (existing, overwrite) {
+        (Some(i), true) if name_refusal(settings, &p.name, Some(&p.name)).is_none() => {
+            settings.export_user_presets[i] = p;
+            Ok(())
+        }
+        _ => match name_refusal(settings, &p.name, None) {
+            Some(why) => Err(why),
+            None => {
+                settings.export_user_presets.push(p);
+                Ok(())
+            }
+        },
+    }
+}
+
+/// Rename (and re-icon / re-colour) the user preset `old`. Built-ins and platform tiles refuse. A
+/// `Settings.last_export` pointing at it follows the new name, so Quick Export keeps working.
+pub fn edit_user_preset(
+    settings: &mut Settings,
+    old: &str,
+    name: &str,
+    icon: Option<&str>,
+    color: Option<Option<[u8; 3]>>,
+) -> Result<(), String> {
+    let Some(i) = settings.export_user_presets.iter().position(|p| p.name.eq_ignore_ascii_case(old)) else {
+        return Err(if export::is_builtin_preset(old) || settings.export_presets.iter().any(|p| p.name == old) {
+            format!("\"{old}\" is built in - duplicate it to make your own")
+        } else {
+            format!("no preset called \"{old}\"")
+        });
+    };
+    if let Some(why) = name_refusal(settings, name, Some(old)) {
+        return Err(why);
+    }
+    let p = &mut settings.export_user_presets[i];
+    let old_name = std::mem::replace(&mut p.name, name.trim().to_string());
+    if let Some(icon) = icon {
+        p.icon = icon.to_string();
+    }
+    if let Some(c) = color {
+        p.color = c;
+    }
+    let new_name = p.name.clone();
+    if settings.last_export == Some(ExportPresetRef::Preset(old_name)) {
+        settings.last_export = Some(ExportPresetRef::Preset(new_name));
+    }
+    Ok(())
+}
+
+/// Delete the user preset `name`. Built-ins and platform tiles refuse.
+pub fn delete_user_preset(settings: &mut Settings, name: &str) -> Result<(), String> {
+    let before = settings.export_user_presets.len();
+    settings.export_user_presets.retain(|p| !p.name.eq_ignore_ascii_case(name));
+    if settings.export_user_presets.len() == before {
+        return Err(if export::is_builtin_preset(name) || settings.export_presets.iter().any(|p| p.name == name) {
+            format!("\"{name}\" is built in and can't be deleted")
+        } else {
+            format!("no preset called \"{name}\"")
+        });
+    }
+    Ok(())
+}
+
+/// Copy any preset (built-in, platform or user) into the user's own as "<name> copy" (", 2", …).
+pub fn duplicate_preset(settings: &mut Settings, name: &str) -> Result<String, String> {
+    let mut p = settings.export_preset(name).ok_or_else(|| format!("no preset called \"{name}\""))?;
+    let base = format!("{} copy", p.name);
+    let mut n = base.clone();
+    let mut k = 2;
+    while name_refusal(settings, &n, None).is_some() {
+        n = format!("{base} {k}");
+        k += 1;
+    }
+    p.name = n.clone();
+    if p.icon.is_empty() {
+        p.icon = brand_icons::guess(name).join(",");
+    }
+    settings.export_user_presets.push(p);
+    Ok(n)
 }
 
 /// `ExportOptions.range` for the checkbox state: the project's in/out points (either end defaulting
@@ -155,6 +338,42 @@ pub const SCALERS: [(&str, &str); 6] = [
     ("area", "Area"),
     ("spline", "Spline"),
 ];
+/// The Format row: every container the exporter writes, video first.
+const FORMATS: [(&str, &str); 10] = [
+    ("mp4", "MP4"),
+    ("mov", "MOV"),
+    ("mkv", "MKV"),
+    ("webm", "WebM"),
+    ("avi", "AVI"),
+    ("gif", "GIF"),
+    ("mp3", "MP3"),
+    ("wav", "WAV"),
+    ("m4a", "M4A"),
+    ("flac", "FLAC"),
+];
+const SPEEDS: [(&str, &str, &str); 3] = [
+    ("speed", "Fast", "Encodes quickest; the file is a little bigger."),
+    ("balanced", "Balanced", "A good mix of encode time and file size."),
+    ("small", "Small file", "Takes longest; the smallest file at the same quality."),
+];
+
+/// Section accents: Video blue, Audio green, Advanced amber.
+const VIDEO_C: Color32 = Color32::from_rgb(66, 133, 244);
+const AUDIO_C: Color32 = Color32::from_rgb(52, 168, 83);
+const ADV_C: Color32 = Color32::from_rgb(222, 150, 40);
+/// Colours a user preset can pick.
+const SWATCHES: [[u8; 3]; 8] = [
+    [66, 133, 244],
+    [52, 168, 83],
+    [222, 150, 40],
+    [229, 57, 53],
+    [171, 71, 188],
+    [0, 172, 193],
+    [240, 98, 146],
+    [120, 144, 156],
+];
+/// Glyph icons a user preset can pick (beside the brand marks).
+const PICK_GLYPHS: [&str; 6] = ["bookmark", "star", "bolt", "clapperboard", "landscape", "portrait"];
 
 /// Output size for a resolution preset: None = project size. Height presets derive the width from the
 /// project aspect (rounded to even).
@@ -185,10 +404,36 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
-/// ---- ws:pages ---- The Export pane's body (`Pane::Export`, was the Export window): platform tiles,
-/// Advanced, range, metadata, and Export… / Add to Queue (both still ask for the file with the save
-/// dialog). Some((choice, queued)) when the user confirmed an export this frame. The options are
-/// settings, saved as they change (the window used to save them when it closed).
+/// What a card click / its right-click menu asked for.
+enum CardEv {
+    Apply(ExportPreset),
+    Duplicate(String),
+    Edit(ExportPreset),
+    Update(String),
+    Delete(String),
+    New,
+}
+
+/// Which group a card belongs to (what its menu may do).
+#[derive(Clone, Copy, PartialEq)]
+enum Group {
+    Builtin,
+    Platform,
+    User,
+}
+
+/// Test-only: remember a widget rect so headless tests can find the real button.
+#[cfg(test)]
+fn mark(ui: &egui::Ui, name: &str, rect: egui::Rect) {
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("export_ui", name.to_string())), rect));
+}
+#[cfg(not(test))]
+fn mark(_ui: &egui::Ui, _name: &str, _rect: egui::Rect) {}
+
+/// ---- ws:pages ---- The Export pane's body (`Pane::Export`, was the Export window): preset cards,
+/// the Video / Audio / Advanced sections and the pinned output bar with Export… / Add to Queue (both
+/// still ask for the file with the save dialog). Some((choice, queued)) when the user confirmed an
+/// export this frame. The options are settings, saved as they change.
 pub fn body(
     ui: &mut egui::Ui,
     state: &mut ExportUi,
@@ -202,172 +447,620 @@ pub fn body(
     }
     let mut out = None;
     let mut save = false;
-    egui::ScrollArea::vertical().id_salt("export_body").show(ui, |ui| {
-        // ---- ws:export-deliver: platform tiles (the beginner surface; everything else is Advanced) ----
-        let presets = settings.export_presets.clone();
-        ui.horizontal_wrapped(|ui| {
-            for p in &presets {
-                let on = state.tile.as_deref() == Some(p.name.as_str());
-                let text = format!("{}\n{}×{}", p.name, p.width, p.height);
-                let r = ui.selectable_label(on, text).on_hover_text(format!(
-                    "{} · CRF {}{}\nFits the picture inside (black bars, never stretched).",
-                    p.ext,
-                    p.crf,
-                    if p.loudnorm { " · −14 LUFS" } else { "" }
-                ));
-                if r.clicked() {
-                    apply_preset(state, settings, p);
-                    save = true;
+    // the output bar first, pinned to the bottom; the presets and sections scroll above it
+    egui::TopBottomPanel::bottom("export_bar")
+        .resizable(false)
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin { left: 2, right: 2, top: 8, bottom: 4 }))
+        .show_separator_line(true)
+        .show_inside(ui, |ui| {
+            out = output_bar(ui, state, project, settings, exporting, &mut save);
+        });
+    egui::CentralPanel::default().frame(egui::Frame::NONE).show_inside(ui, |ui| {
+        egui::ScrollArea::vertical().id_salt("export_body").auto_shrink([false, false]).show(ui, |ui| {
+            save |= presets_ui(ui, state, project, settings);
+            ui.add_space(6.0);
+            save |= video_section(ui, state, project, settings);
+            save |= audio_section(ui, state, settings);
+            save |= advanced_section(ui, state, project, settings, encoders);
+            ui.add_space(4.0);
+        });
+    });
+    if save {
+        settings.save();
+    }
+    out
+}
+
+// ---- presets ----
+
+/// The card grid: built-ins, platform tiles, the user's own (+ the "save current" card), and the
+/// inline save / edit form. True when settings changed.
+fn presets_ui(ui: &mut egui::Ui, state: &mut ExportUi, project: &Project, settings: &mut Settings) -> bool {
+    let builtins = export::builtin_export_presets();
+    let platform = settings.export_presets.clone();
+    let user = settings.export_user_presets.clone();
+    let mut ev: Option<CardEv> = None;
+    let groups: [(&str, Group, &[ExportPreset]); 3] = [
+        ("Project", Group::Builtin, &builtins),
+        ("Platforms", Group::Platform, &platform),
+        ("My presets", Group::User, &user),
+    ];
+    for (title, group, list) in groups {
+        if group == Group::Platform && list.is_empty() {
+            continue;
+        }
+        group_label(ui, title);
+        let mut cards: Vec<Option<&ExportPreset>> = list.iter().map(Some).collect();
+        if group == Group::User {
+            cards.push(None); // the "+ Save current settings" card
+        }
+        card_grid(ui, &cards, |ui, p, w| match p {
+            Some(p) => {
+                let on = state.tile.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(&p.name));
+                let edited = on && !preset_matches(p, state, settings, project);
+                if let Some(e) = preset_card(ui, p, group, on, edited, w) {
+                    ev = Some(e);
+                }
+            }
+            None => {
+                if new_card(ui, w).clicked() {
+                    ev = Some(CardEv::New);
                 }
             }
         });
-        if presets.is_empty() {
-            ui.weak("No platform presets - add some to settings.json's export_presets.");
+    }
+    let mut changed = false;
+    match ev {
+        Some(CardEv::Apply(p)) => {
+            apply_preset(state, settings, &p);
+            changed = true;
         }
-        ui.add_space(2.0);
+        Some(CardEv::Duplicate(name)) => {
+            if let Ok(n) = duplicate_preset(settings, &name) {
+                state.form = Some(PresetForm {
+                    editing: Some(n.clone()),
+                    name: n.clone(),
+                    icon: settings.export_preset(&n).map(|p| p.icon).unwrap_or_default(),
+                    ..Default::default()
+                });
+                changed = true;
+            }
+        }
+        Some(CardEv::Edit(p)) => {
+            state.form = Some(PresetForm {
+                editing: Some(p.name.clone()),
+                name: p.name,
+                icon: p.icon,
+                color: p.color,
+                error: String::new(),
+            });
+        }
+        Some(CardEv::Update(name)) => {
+            if let Some(i) = settings.export_user_presets.iter().position(|p| p.name == name) {
+                let old = settings.export_user_presets[i].clone();
+                let mut p = current_as_preset(state, settings, project, &name);
+                (p.icon, p.color) = (old.icon, old.color);
+                settings.export_user_presets[i] = p;
+                state.tile = Some(name);
+                changed = true;
+            }
+        }
+        Some(CardEv::Delete(name)) => {
+            changed |= delete_user_preset(settings, &name).is_ok();
+            if state.tile.as_deref() == Some(name.as_str()) {
+                state.tile = None;
+            }
+        }
+        Some(CardEv::New) => {
+            let mut n = 1;
+            while settings.export_preset(&format!("My preset {n}")).is_some() {
+                n += 1;
+            }
+            state.form =
+                Some(PresetForm { name: format!("My preset {n}"), icon: "bookmark".into(), ..Default::default() });
+        }
+        None => {}
+    }
+    changed |= preset_form(ui, state, project, settings);
+    changed
+}
 
-        // ---- ws:export-encoders: the speed/size trade-off (picking one hands the preset back to it) ----
+/// A small dim group heading above a card row.
+fn group_label(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(2.0);
+    ui.label(egui::RichText::new(title).small().color(ui.visuals().weak_text_color()));
+}
+
+/// Lay `cards` out in as many equal columns as fit (cards ≥ 150 pt wide).
+fn card_grid<T>(ui: &mut egui::Ui, cards: &[T], mut draw: impl FnMut(&mut egui::Ui, &T, f32)) {
+    let gap = 6.0;
+    let avail = ui.available_width().max(120.0);
+    let cols = (((avail + gap) / (150.0 + gap)).floor() as usize).clamp(1, 6);
+    let w = ((avail - gap * (cols - 1) as f32) / cols as f32).floor();
+    for row in cards.chunks(cols) {
         ui.horizontal(|ui| {
-            ui.label("Speed");
-            const SPEEDS: [(&str, &str); 3] = [("speed", "Speed"), ("balanced", "Balanced"), ("small", "Smallest file")];
-            if combo(ui, "export_speed", &mut settings.export_speed, &SPEEDS, None) {
-                settings.preset = "auto".into();
+            ui.spacing_mut().item_spacing.x = gap;
+            for c in row {
+                draw(ui, c, w);
+            }
+        });
+        ui.add_space(gap - ui.spacing().item_spacing.y);
+    }
+}
+
+const CARD_H: f32 = 56.0;
+
+/// One preset card: icon(s), name, size · format; accent border + tint when selected. Returns what a
+/// click or its right-click menu asked for.
+fn preset_card(ui: &mut egui::Ui, p: &ExportPreset, group: Group, on: bool, edited: bool, w: f32) -> Option<CardEv> {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(w, CARD_H), egui::Sense::click());
+    mark(ui, &format!("card:{}", p.name), rect);
+    let vis = ui.visuals().clone();
+    let accent = vis.selection.bg_fill;
+    let text = vis.text_color();
+    let cr = CornerRadius::same(6);
+    let (fill, stroke) = if on {
+        (accent.gamma_multiply(0.22), Stroke::new(2.0, accent))
+    } else if r.hovered() {
+        (vis.widgets.hovered.weak_bg_fill, Stroke::new(1.0, vis.widgets.hovered.bg_stroke.color))
+    } else {
+        (vis.widgets.inactive.weak_bg_fill, Stroke::new(1.0, vis.widgets.noninteractive.bg_stroke.color))
+    };
+    let painter = ui.painter_at(rect.expand(1.0));
+    painter.rect(rect, cr, fill, stroke, StrokeKind::Inside);
+    let tint = p.color.map(|[r, g, b]| Color32::from_rgb(r, g, b));
+    if let Some(c) = tint {
+        let strip = egui::Rect::from_min_size(rect.min + egui::vec2(2.0, 6.0), egui::vec2(3.0, rect.height() - 12.0));
+        painter.rect_filled(strip, CornerRadius::same(2), c);
+    }
+    // icons: brand marks (several side by side) or one glyph
+    let keys: Vec<String> = if p.icon.is_empty() {
+        brand_icons::guess(&p.name).into_iter().map(String::from).collect()
+    } else {
+        p.icon.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect()
+    };
+    let n = keys.len().max(1) as f32;
+    let size = if n > 1.0 { 16.0 } else { 24.0 };
+    let mut x = rect.left() + 12.0;
+    let cy = rect.center().y;
+    for k in keys.iter().take(3) {
+        let r = egui::Rect::from_center_size(egui::pos2(x + size / 2.0, cy), egui::vec2(size, size));
+        if !brand_icons::paint(&painter, r, k, brand_icons::color(k, text)) {
+            let g = Glyph::from_name(k).unwrap_or(Glyph::Bookmark);
+            draw_glyph(&painter, r.expand(4.0), g, tint.unwrap_or(accent));
+        }
+        x += size + 2.0;
+    }
+    if keys.is_empty() {
+        let r = egui::Rect::from_center_size(egui::pos2(x + size / 2.0, cy), egui::vec2(size, size));
+        draw_glyph(&painter, r.expand(4.0), Glyph::Bookmark, tint.unwrap_or(accent));
+        x += size + 2.0;
+    }
+    // name + sub line, single lines, elided
+    let tx = x.max(rect.left() + 40.0) + 6.0;
+    let max_w = (rect.right() - 8.0 - tx).max(10.0);
+    let name_font = egui::TextStyle::Body.resolve(ui.style());
+    let small = egui::TextStyle::Small.resolve(ui.style());
+    // the name may take two lines ("Project settings — Max quality" in a narrow column), the sub line one
+    let line = |s: &str, font: egui::FontId, color: Color32, rows: usize| {
+        let mut job = egui::text::LayoutJob::simple(s.to_owned(), font, color, max_w);
+        job.wrap.max_rows = rows;
+        job.wrap.overflow_character = Some('…');
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
+    let strong = if on { vis.strong_text_color() } else { text };
+    let name_g = line(&p.name, name_font, strong, 2);
+    let size_txt =
+        if p.width == 0 || p.height == 0 { "Project size".to_string() } else { format!("{}×{}", p.width, p.height) };
+    let sub = format!("{size_txt} · {}{}", p.ext.to_uppercase(), if edited { " · edited" } else { "" });
+    let sub_g = line(&sub, small, vis.weak_text_color(), 1);
+    let total = name_g.size().y + 2.0 + sub_g.size().y;
+    let top = cy - total / 2.0;
+    painter.galley(egui::pos2(tx, top), name_g, strong);
+    painter.galley(egui::pos2(tx, top + total - sub_g.size().y), sub_g, vis.weak_text_color());
+
+    let quality = export::quality_percent_from_crf(p.crf);
+    let what = match p.name.as_str() {
+        export::PRESET_MAX_QUALITY => "Exactly your project's size and frame rate, at the best quality.\n",
+        export::PRESET_FAST_PREVIEW => {
+            "Your project's size and frame rate, encoded as fast as possible to check an edit.\n"
+        }
+        _ if group == Group::Platform && !p.stretch => "Fits the picture inside (black bars, never stretched).\n",
+        _ => "",
+    };
+    let r = r.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!(
+        "{}\n{what}{size_txt} · {} · quality {quality}%{}{}{}\nRight-click for more.",
+        p.name,
+        p.ext.to_uppercase(),
+        if p.encoder.is_empty() || p.encoder == "auto" { String::new() } else { format!(" · {}", p.encoder) },
+        if p.speed.is_empty() { String::new() } else { format!(" · {} encode", speed_label(&p.speed)) },
+        if p.loudnorm { " · −14 LUFS" } else { "" },
+    ));
+    let mut ev = r.clicked().then(|| CardEv::Apply(p.clone()));
+    menu::context(&r, |ui| {
+        if menu::row(ui, Some(Glyph::Play), "Use this preset", "").clicked() {
+            ev = Some(CardEv::Apply(p.clone()));
+        }
+        if menu::row(ui, Some(Glyph::Copy), "Duplicate", "").clicked() {
+            ev = Some(CardEv::Duplicate(p.name.clone()));
+        }
+        if group == Group::User {
+            if menu::row(ui, Some(Glyph::Pencil), "Rename / icon / colour…", "").clicked() {
+                ev = Some(CardEv::Edit(p.clone()));
+            }
+            if menu::row(ui, Some(Glyph::FloppyDisk), "Update with current settings", "").clicked() {
+                ev = Some(CardEv::Update(p.name.clone()));
+            }
+            ui.separator();
+            if menu::row(ui, Some(Glyph::Cross), "Delete", "").clicked() {
+                ev = Some(CardEv::Delete(p.name.clone()));
+            }
+        } else {
+            ui.separator();
+            ui.add_enabled_ui(false, |ui| menu::row(ui, None, "Built in - duplicate it to change it", ""));
+        }
+    });
+    ev
+}
+
+/// The dashed "+ Save current settings" card at the end of My presets.
+fn new_card(ui: &mut egui::Ui, w: f32) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(w, CARD_H), egui::Sense::click());
+    mark(ui, "card:+new", rect);
+    let vis = ui.visuals();
+    let c = if r.hovered() { vis.strong_text_color() } else { vis.weak_text_color() };
+    let p = ui.painter();
+    let rr = rect.shrink(1.0);
+    for (a, b) in [
+        (rr.left_top(), rr.right_top()),
+        (rr.right_top(), rr.right_bottom()),
+        (rr.right_bottom(), rr.left_bottom()),
+        (rr.left_bottom(), rr.left_top()),
+    ] {
+        p.extend(egui::Shape::dashed_line(&[a, b], Stroke::new(1.0, c), 4.0, 3.0));
+    }
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    p.text(rect.center(), egui::Align2::CENTER_CENTER, "+  Save current settings…", font, c);
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Keep everything set below (size, format, quality, speed, audio) as your own preset card.")
+}
+
+/// The inline save / edit form under the cards. True when settings changed.
+fn preset_form(ui: &mut egui::Ui, state: &mut ExportUi, project: &Project, settings: &mut Settings) -> bool {
+    let Some(mut f) = state.form.take() else { return false };
+    let mut keep = true;
+    let mut changed = false;
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.strong(if f.editing.is_some() { "Edit preset" } else { "Save current settings as a preset" });
+        let mut submit = false;
+        egui::Grid::new("export_preset_form").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+            ui.label("Name");
+            let r = ui.add(egui::TextEdit::singleline(&mut f.name).desired_width(200.0));
+            submit |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            ui.end_row();
+            ui.label("Icon");
+            ui.horizontal_wrapped(|ui| {
+                let text = ui.visuals().text_color();
+                let accent = ui.visuals().selection.bg_fill;
+                for key in brand_icons::keys().chain(PICK_GLYPHS) {
+                    let (rect, r) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+                    let on = f.icon == key;
+                    if on || r.hovered() {
+                        let s = Stroke::new(if on { 2.0 } else { 1.0 }, if on { accent } else { text });
+                        ui.painter().rect_stroke(rect, CornerRadius::same(4), s, StrokeKind::Inside);
+                    }
+                    if !brand_icons::paint(ui.painter(), rect.shrink(5.0), key, brand_icons::color(key, text)) {
+                        draw_glyph(ui.painter(), rect, Glyph::from_name(key).unwrap_or(Glyph::Bookmark), text);
+                    }
+                    if r.clicked() {
+                        f.icon = key.to_string();
+                    }
+                }
+            });
+            ui.end_row();
+            ui.label("Colour");
+            ui.horizontal(|ui| {
+                let stroke_c = ui.visuals().strong_text_color();
+                if ui.selectable_label(f.color.is_none(), "None").clicked() {
+                    f.color = None;
+                }
+                for c in SWATCHES {
+                    let on = f.color == Some(c);
+                    let b = egui::Button::new("")
+                        .fill(Color32::from_rgb(c[0], c[1], c[2]))
+                        .stroke(Stroke::new(if on { 2.0 } else { 0.0 }, stroke_c))
+                        .corner_radius(CornerRadius::same(8))
+                        .min_size(egui::vec2(16.0, 16.0));
+                    if ui.add(b).clicked() {
+                        f.color = Some(c);
+                    }
+                }
+            });
+            ui.end_row();
+        });
+        if !f.error.is_empty() {
+            ui.colored_label(ui.visuals().error_fg_color, &f.error);
+        }
+        ui.horizontal(|ui| {
+            submit |= ui.add(accent_button(ui, "Save")).clicked();
+            if ui.button("Cancel").clicked() {
+                keep = false;
+            }
+        });
+        if submit {
+            let res = match &f.editing {
+                Some(old) => edit_user_preset(settings, old, &f.name, Some(&f.icon), Some(f.color)),
+                None => {
+                    let mut p = current_as_preset(state, settings, project, &f.name);
+                    (p.icon, p.color) = (f.icon.clone(), f.color);
+                    save_user_preset(settings, p, false)
+                }
+            };
+            match res {
+                Ok(()) => {
+                    // the saved card is the selected one: it describes exactly what is set now
+                    if f.editing.is_none() || state.tile.as_deref() == f.editing.as_deref() {
+                        state.tile = Some(f.name.trim().to_string());
+                    }
+                    keep = false;
+                    changed = true;
+                }
+                Err(e) => f.error = e,
+            }
+        }
+    });
+    if keep {
+        state.form = Some(f);
+    }
+    changed
+}
+
+// ---- sections ----
+
+/// A colour-coded collapsible section: tinted header row with its glyph and a chevron; open state in
+/// `Settings.export_folds[id]` (missing = `default_open`). True when the open state changed.
+fn section(
+    ui: &mut egui::Ui,
+    folds: &mut std::collections::BTreeMap<String, bool>,
+    id: &str,
+    title: &str,
+    hint: &str,
+    glyph: Glyph,
+    color: Color32,
+    default_open: bool,
+    body: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let open = folds.get(id).copied().unwrap_or(default_open);
+    let h = 28.0;
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+    mark(ui, &format!("sec:{id}"), rect);
+    let vis = ui.visuals();
+    let p = ui.painter();
+    let fill = color.gamma_multiply(if r.hovered() { 0.22 } else { 0.14 });
+    p.rect_filled(rect, CornerRadius::same(5), fill);
+    p.rect_filled(
+        egui::Rect::from_min_size(rect.min, egui::vec2(3.0, h)),
+        CornerRadius { nw: 5, sw: 5, ne: 0, se: 0 },
+        color,
+    );
+    draw_glyph(p, egui::Rect::from_min_size(rect.min + egui::vec2(8.0, 3.0), egui::vec2(22.0, 22.0)), glyph, color);
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let tr =
+        p.text(rect.min + egui::vec2(36.0, h / 2.0), egui::Align2::LEFT_CENTER, title, font, vis.strong_text_color());
+    if !hint.is_empty() {
+        let small = egui::TextStyle::Small.resolve(ui.style());
+        let room = rect.right() - 30.0 - (tr.right() + 10.0);
+        if room > 40.0 {
+            let mut job = egui::text::LayoutJob::simple_singleline(hint.to_owned(), small, vis.weak_text_color());
+            job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+            let g = ui.fonts_mut(|f| f.layout_job(job));
+            p.galley(egui::pos2(tr.right() + 10.0, rect.center().y - g.size().y / 2.0), g, vis.weak_text_color());
+        }
+    }
+    let chev = egui::Rect::from_center_size(egui::pos2(rect.right() - 14.0, rect.center().y), egui::vec2(10.0, 10.0));
+    let pts = if open {
+        vec![chev.left_top(), chev.right_top(), chev.center_bottom()]
+    } else {
+        vec![chev.left_top(), chev.right_center(), chev.left_bottom()]
+    };
+    p.add(egui::Shape::convex_polygon(pts, vis.text_color(), Stroke::NONE));
+    let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let mut changed = false;
+    let mut now = open;
+    if r.clicked() {
+        now = !open;
+        folds.insert(id.to_string(), now);
+        changed = true;
+    }
+    if now {
+        ui.add_space(4.0);
+        egui::Frame::NONE.inner_margin(egui::Margin { left: 10, right: 4, top: 0, bottom: 4 }).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            body(ui);
+        });
+    }
+    ui.add_space(4.0);
+    changed
+}
+
+/// Video: resolution, frame rate, format, quality (+ the lossless cut when it applies).
+fn video_section(ui: &mut egui::Ui, state: &mut ExportUi, project: &Project, settings: &mut Settings) -> bool {
+    let mut save = false;
+    let mut size_changed = false;
+    let mut folds = std::mem::take(&mut settings.export_folds);
+    let size = preset_size(project.width, project.height, &state.preset, state.custom);
+    let (w, h) = size.unwrap_or((project.width, project.height));
+    let hint = format!(
+        "{w}×{h} · {} · {}%",
+        default_ext(state).to_uppercase(),
+        export::quality_percent_from_crf(settings.crf)
+    );
+    save |= section(ui, &mut folds, "video", "Video", &hint, Glyph::FilmStrip, VIDEO_C, true, |ui| {
+        egui::Grid::new("export_video").num_columns(2).spacing([12.0, 7.0]).show(ui, |ui| {
+            ui.label("Resolution").on_hover_text("The picture size of the file. Project = the size you edit at.");
+            ui.horizontal(|ui| {
+                size_changed |= combo(ui, "export_res", &mut state.preset, &RES_PRESETS, Some(90.0));
+                if state.preset == "custom" {
+                    let (mut cw, mut ch) = state.custom;
+                    size_changed |= ui.add(egui::DragValue::new(&mut cw).range(16..=8192)).changed();
+                    ui.label("×");
+                    size_changed |= ui.add(egui::DragValue::new(&mut ch).range(16..=8192)).changed();
+                    state.custom = (cw, ch);
+                } else {
+                    ui.weak(format!("{w}×{h}"));
+                }
+            });
+            ui.end_row();
+
+            ui.label("Frame rate");
+            ui.weak(format!("{} fps", fps_text(project.fps)))
+                .on_hover_text("Exports always use the project's frame rate - change it in the project settings.");
+            ui.end_row();
+
+            ui.label("Format");
+            let mut ext = default_ext(state).to_string();
+            if combo(ui, "export_format", &mut ext, &FORMATS, Some(130.0)) {
+                state.ext = ext;
                 save = true;
             }
-        });
+            ui.end_row();
 
-        let mut changed = false;
-        egui::CollapsingHeader::new("Advanced").default_open(false).show(ui, |ui| {
-            egui::Grid::new("export_opts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                ui.label("Resolution");
-                changed |= combo(ui, "export_res", &mut state.preset, &RES_PRESETS, None);
-                ui.end_row();
-                if state.preset == "custom" {
-                    ui.label("Size");
-                    ui.horizontal(|ui| {
-                        let (mut w, mut h) = state.custom;
-                        changed |= ui.add(egui::DragValue::new(&mut w).range(16..=8192)).changed();
-                        ui.label("×");
-                        changed |= ui.add(egui::DragValue::new(&mut h).range(16..=8192)).changed();
-                        state.custom = (w, h);
-                    });
-                    ui.end_row();
-                }
-                let size = preset_size(project.width, project.height, &state.preset, state.custom);
-                ui.label("Output");
-                let (w, h) = size.unwrap_or((project.width, project.height));
-                ui.weak(format!("{w}×{h}"));
-                ui.end_row();
-
-                ui.label("Scaler");
-                ui.horizontal(|ui| {
-                    save |= combo(ui, "export_scaler", &mut settings.export_scaler, &SCALERS, None);
-                    if size.is_none() {
-                        ui.weak("(same size)");
+            if !state.lossless {
+                ui.label("Quality").on_hover_text("Higher = sharper picture and a bigger file.");
+                ui.vertical(|ui| {
+                    // the shown percent is cached per stored CRF: 101 slider positions quantize onto 52 CRF
+                    // values, so recomputing from CRF every frame snapped a typed "85" back to 84
+                    let mut pct = match state.pct_cache {
+                        Some((c, p)) if c == settings.crf => p,
+                        _ => export::quality_percent_from_crf(settings.crf),
+                    };
+                    let r = ui.add(egui::Slider::new(&mut pct, 0..=100).suffix("%"));
+                    save |= r.drag_stopped() || (r.changed() && !r.dragged());
+                    settings.crf = export::crf_from_quality_percent(pct);
+                    state.pct_cache = Some((settings.crf, pct));
+                    // bands anchored so the default (CRF 18 ~ 65 %, visually lossless for x264) does NOT warn
+                    let pct = export::quality_percent_from_crf(settings.crf);
+                    let (warning, tip) = match pct {
+                        95..=100 => ("Near-lossless", "Files will be very large."),
+                        65..=94 => ("", ""),
+                        45..=64 => ("Slightly reduced quality", "Fine for most uploads."),
+                        25..=44 => ("Medium quality loss", "Good for quick previews."),
+                        10..=24 => ("Large quality loss", "The picture will look blocky."),
+                        _ => {
+                            ("Barely recognizable", "The video will barely be recognizable at this compression level.")
+                        }
+                    };
+                    if !warning.is_empty() {
+                        // near-lossless is a note, not a warning
+                        let c = if pct >= 95 { ui.visuals().weak_text_color() } else { ui.visuals().warn_fg_color };
+                        ui.colored_label(c, egui::RichText::new(warning).small()).on_hover_text(tip);
                     }
                 });
                 ui.end_row();
-
-                ui.label("Encoder");
-                let opts: Vec<(&str, &str)> = std::iter::once(("auto", "auto"))
-                    .chain(encoder_options(encoders).into_iter().map(|e| (e, e)))
-                    .collect();
-                save |= combo(ui, "export_encoder", &mut settings.encoder, &opts, None);
-                ui.end_row();
-
-                ui.label("Quality");
-                // the shown percent is cached per stored CRF: 101 slider positions quantize onto 52 CRF
-                // values, so recomputing from CRF every frame snapped a typed "85" back to 84
-                let mut pct = match state.pct_cache {
-                    Some((c, p)) if c == settings.crf => p,
-                    _ => export::quality_percent_from_crf(settings.crf),
-                };
-                let r = ui.add(egui::Slider::new(&mut pct, 0..=100).suffix("%"));
-                save |= r.drag_stopped() || (r.changed() && !r.dragged());
-                settings.crf = export::crf_from_quality_percent(pct);
-                state.pct_cache = Some((settings.crf, pct));
-                ui.end_row();
-
-                ui.label("Preset");
-                // ws:export-encoders: "auto" follows the Speed choice; a named preset wins over it
-                let opts: Vec<(&str, &str)> = std::iter::once(("auto", "auto (Speed)"))
-                    .chain(ENCODER_PRESETS.iter().map(|p| (*p, *p)))
-                    .collect();
-                save |= combo(ui, "export_preset", &mut settings.preset, &opts, None);
-                ui.end_row();
-
-                ui.label("Smart render");
-                save |= ui
-                    .checkbox(&mut settings.export_smart_render, "Experimental")
-                    .on_hover_text(
-                        "Copy the untouched stretches of a single H.264/HEVC source instead of \
-                         re-encoding them. Not wired into exports yet - every export is a full encode.",
-                    )
-                    .changed();
-                ui.end_row();
-            });
+            }
         });
-        let size = preset_size(project.width, project.height, &state.preset, state.custom);
-        let out_size = size.unwrap_or((project.width, project.height));
-        if changed {
-            save = true;
-            // a hand-edited size is no longer "the tile": plain stretch, like every custom export before
-            state.tile = None;
-            state.letterbox = false;
-            let (w, h) = out_size;
-            settings.export_resolution = if state.preset == "project" { "project".into() } else { format!("{w}x{h}") };
+        if export::lossless_segments(project).is_some() {
+            // ws:export-deliver: a range needs a re-encode, so the -c copy path greys out while it's on
+            if state.range {
+                state.lossless = false;
+            }
+            ui.add_enabled(!state.range, egui::Checkbox::new(&mut state.lossless, "Fast lossless cut"))
+                .on_hover_text("Instant, no quality loss; cuts snap to keyframes (may shift up to a few frames). Saves in the source's own format.")
+                .on_disabled_hover_text("Not with a range: cuts on keyframes can't honour In/Out points");
+        } else {
+            state.lossless = false;
         }
+    });
+    settings.export_folds = folds;
+    if size_changed {
+        save = true;
+        // a hand-edited size is no longer "the tile": plain stretch, like every custom export before
+        state.tile = None;
+        state.letterbox = false;
+        let (w, h) = preset_size(project.width, project.height, &state.preset, state.custom)
+            .unwrap_or((project.width, project.height));
+        settings.export_resolution = if state.preset == "project" { "project".into() } else { format!("{w}x{h}") };
+    }
+    save
+}
 
-        // ---- ws:export-deliver: range ----
-        let has_range = project.in_point.is_some() || project.out_point.is_some();
-        if !has_range {
-            state.range = false;
+/// "30" / "29.97".
+fn fps_text(fps: f64) -> String {
+    let s = format!("{fps:.3}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn speed_label(s: &str) -> &'static str {
+    SPEEDS.iter().find(|(k, _, _)| *k == s).map(|(_, l, _)| *l).unwrap_or("Balanced")
+}
+
+/// Audio: Mix / Separate tracks / WAV stems, loudness.
+fn audio_section(ui: &mut egui::Ui, state: &ExportUi, settings: &mut Settings) -> bool {
+    let mut save = false;
+    let mut folds = std::mem::take(&mut settings.export_folds);
+    let layout = match settings.export_audio.as_str() {
+        "streams" => "Separate tracks",
+        "stems" => "WAV stems",
+        _ => "Mix",
+    };
+    let hint = format!("{layout}{}", if settings.loudnorm { " · −14 LUFS" } else { "" });
+    let mut changed = false;
+    save |= section(ui, &mut folds, "audio", "Audio", &hint, Glyph::Waveform, AUDIO_C, true, |ui| {
+        // ---- ws:export-audio-tracks ----
+        changed |= audio_row(ui, state, settings);
+        // ws:export-deliver
+        changed |= ui
+            .checkbox(&mut settings.loudnorm, "Normalize loudness (−14 LUFS)")
+            .on_hover_text("Evens out the loudness to the level YouTube and Spotify play at (ffmpeg loudnorm). Skipped when there is no audio.")
+            .changed();
+        if export::AUDIO_EXTS.contains(&default_ext(state)) {
+            ui.weak("Sound only: this format has no picture.");
+        } else if default_ext(state) == "gif" {
+            ui.weak("GIF has no sound.");
         }
-        ui.add_enabled(has_range, egui::Checkbox::new(&mut state.range, "Export In/Out Range"))
+    });
+    settings.export_folds = folds;
+    save | changed
+}
+
+/// Advanced: range, metadata, background, burn-ins, scaler / encoder / preset, smart render, GPU note.
+fn advanced_section(
+    ui: &mut egui::Ui,
+    state: &mut ExportUi,
+    project: &Project,
+    settings: &mut Settings,
+    encoders: &[String],
+) -> bool {
+    let mut save = false;
+    let mut folds = std::mem::take(&mut settings.export_folds);
+    let has_range = project.in_point.is_some() || project.out_point.is_some();
+    if !has_range {
+        state.range = false;
+    }
+    let mut hint = Vec::new();
+    if state.range {
+        hint.push("In/Out range".to_string());
+    }
+    if settings.encoder != "auto" && !settings.encoder.is_empty() {
+        hint.push(settings.encoder.clone());
+    }
+    let size = preset_size(project.width, project.height, &state.preset, state.custom);
+    let mut body_save = false;
+    save |= section(ui, &mut folds, "advanced", "Advanced", &hint.join(" · "), Glyph::Sliders, ADV_C, false, |ui| {
+        // ---- ws:export-deliver: range ----
+        ui.add_enabled(has_range, egui::Checkbox::new(&mut state.range, "Export In/Out range only"))
             .on_disabled_hover_text("Set In/Out points on the timeline first (I / O)")
             .on_hover_text("Only the part between the In and Out points is written.");
-        let range = export_range(project, state.range);
-        let export_dur = range.map(|(a, b)| b - a).unwrap_or_else(|| project.duration());
 
-        // meaningless for a lossless cut (-c copy ignores quality entirely)
-        if !state.lossless {
-            let (w, h) = out_size;
-            // ws:export-audio-tracks: "Separate tracks in file" adds one stream per stem
-            let streams = if export::effective_layout(export::AudioLayout::parse(&settings.export_audio), default_ext(state))
-                == export::AudioLayout::Streams
-            {
-                let span = range.unwrap_or((0.0, project.duration()));
-                1 + crate::engine::stems::count(project, export::StemBy::parse(&settings.export_stem_by), span) as u32
-            } else {
-                1
-            };
-            let est_bytes = export::estimate_export_bytes(w, h, project.fps, export_dur, settings.crf, streams);
-            ui.weak(format!(
-                "~{} ({w}×{h} · {:.0} fps · {})",
-                format_bytes(est_bytes),
-                project.fps,
-                duration_text(export_dur)
-            ))
-            .on_hover_text("Estimated - actual size depends on the footage (and audio-only formats ignore it).");
-            let pct = export::quality_percent_from_crf(settings.crf);
-            // bands anchored so the default (CRF 18 ~ 65 %, visually lossless for x264) does NOT warn
-            let warning = match pct {
-                65..=100 => "",
-                45..=64 => "Quality will be reduced slightly.",
-                25..=44 => "Quality will be reduced a medium amount.",
-                10..=24 => "Quality will be reduced a large amount.",
-                _ => "The video will barely be recognizable at this compression level.",
-            };
-            if !warning.is_empty() {
-                ui.colored_label(ui.visuals().warn_fg_color, warning);
-            }
-            if pct >= 95 {
-                ui.weak("Near-lossless - files will be very large.");
-            }
-        }
-
-        ui.add_space(2.0);
-        if ui.checkbox(&mut state.metadata_on, "Write metadata").changed() && state.metadata.is_empty() {
+        if ui
+            .checkbox(&mut state.metadata_on, "Write metadata")
+            .on_hover_text(
+                "Title, artist and other tags in the file. Off: no title, encoder or creation time is written.",
+            )
+            .changed()
+            && state.metadata.is_empty()
+        {
             state.metadata = vec![
                 ("title".into(), project.name.clone()),
                 ("artist".into(), String::new()),
@@ -378,6 +1071,7 @@ pub fn body(
             let mut drop: Option<usize> = None;
             for (i, (k, v)) in state.metadata.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
+                    ui.add_space(18.0);
                     ui.add(egui::TextEdit::singleline(k).desired_width(70.0).hint_text("key"));
                     ui.add(egui::TextEdit::singleline(v).desired_width(140.0).hint_text("value"));
                     if ui.small_button("\u{2715}").on_hover_text("Remove").clicked() {
@@ -388,26 +1082,12 @@ pub fn body(
             if let Some(i) = drop {
                 state.metadata.remove(i);
             }
-            if ui.small_button("+ field").clicked() {
-                state.metadata.push((String::new(), String::new()));
-            }
-        } else {
-            ui.weak("No title, encoder or creation time is written.");
-        }
-        ui.add_space(2.0);
-
-        if export::lossless_segments(project).is_some() {
-            // ws:export-deliver: a range needs a re-encode, so the -c copy path greys out while it's on
-            if state.range {
-                state.lossless = false;
-            }
-            ui.add_enabled(!state.range, egui::Checkbox::new(&mut state.lossless, "Fast lossless cut (-c copy)"))
-                .on_disabled_hover_text("Not with a range: cuts on keyframes can't honour In/Out points");
-            if state.lossless {
-                ui.weak("Instant, no re-encode; cuts snap to keyframes (may shift up to a few frames).");
-            }
-        } else {
-            state.lossless = false;
+            ui.horizontal(|ui| {
+                ui.add_space(18.0);
+                if ui.small_button("+ field").clicked() {
+                    state.metadata.push((String::new(), String::new()));
+                }
+            });
         }
         ui.checkbox(&mut state.use_project_bg, "Use project background").on_hover_text(
             "Bakes the preview's Background setting (see the preview's right-click menu) into the \
@@ -423,66 +1103,235 @@ pub fn body(
                 .changed()
             {
                 settings.export_captions = Some(caps);
-                save = true;
+                body_save = true;
             }
         }
-        save |= ui
+        body_save |= ui
             .add_enabled(settings.guide.is_some(), egui::Checkbox::new(&mut settings.export_guide, "Burn in social guide"))
             .on_hover_text(
-                "Draws the Social Guide chosen in the preview (right-click the Preview) over every frame, playing, its                  progress bar and time following the exported video (the In/Out range when that is what you export).                  A Device preview burns in as its UI preview.",
+                "Draws the Social Guide chosen in the preview (right-click the Preview) over every frame, playing, its \
+                 progress bar and time following the exported video (the In/Out range when that is what you export). \
+                 A Device preview burns in as its UI preview.",
             )
             .on_disabled_hover_text("Choose a guide first: right-click the Preview ▸ Social Guides.")
             .changed();
-        // ws:export-deliver
-        save |= ui
-            .checkbox(&mut settings.loudnorm, "Normalize loudness (−14 LUFS)")
-            .on_hover_text("ffmpeg loudnorm, the level YouTube/Spotify play back at. Skipped when there is no audio.")
-            .changed();
-        // ---- ws:export-audio-tracks ----
-        save |= audio_row(ui, state, settings);
-        ui.weak("Audio extensions (mp3, wav, m4a, flac) export audio only; gif has no audio.");
+
+        ui.add_space(4.0);
+        egui::Grid::new("export_opts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+            ui.label("Scaler")
+                .on_hover_text("How the picture is resized when the export size differs from the project's.");
+            ui.horizontal(|ui| {
+                body_save |= combo(ui, "export_scaler", &mut settings.export_scaler, &SCALERS, None);
+                if size.is_none() {
+                    ui.weak("(same size)");
+                }
+            });
+            ui.end_row();
+
+            ui.label("Encoder").on_hover_text(
+                "auto = your graphics card's hardware encoder when there is one (fast), else x264 (software).",
+            );
+            let opts: Vec<(&str, &str)> = std::iter::once(("auto", "auto"))
+                .chain(encoder_options(encoders).into_iter().map(|e| (e, e)))
+                .collect();
+            body_save |= combo(ui, "export_encoder", &mut settings.encoder, &opts, None);
+            ui.end_row();
+
+            ui.label("Encoder preset");
+            // ws:export-encoders: "auto" follows the Speed choice; a named preset wins over it
+            let opts: Vec<(&str, &str)> =
+                std::iter::once(("auto", "auto (Speed)")).chain(ENCODER_PRESETS.iter().map(|p| (*p, *p))).collect();
+            body_save |= combo(ui, "export_preset", &mut settings.preset, &opts, None);
+            ui.end_row();
+
+            ui.label("Smart render");
+            body_save |= ui
+                .checkbox(&mut settings.export_smart_render, "Experimental")
+                .on_hover_text(
+                    "Copy the untouched stretches of a single H.264/HEVC source instead of \
+                     re-encoding them. Not wired into exports yet - every export is a full encode.",
+                )
+                .changed();
+            ui.end_row();
+        });
         if settings.gpu || settings.preview_quality < 100 {
             // Settings ▸ Performance only changes what you watch, never what is written
-            ui.weak("GPU preview and preview quality do not change the exported picture.");
+            ui.weak("ⓘ The export is always full quality").on_hover_text(
+                "GPU preview and preview quality (Settings ▸ Performance) change only what you watch, never the exported picture.",
+            );
         }
-        ui.add_space(4.0);
+    });
+    settings.export_folds = folds;
+    save | body_save
+}
+
+// ---- output bar ----
+
+/// A filled accent-coloured button (the primary action).
+fn accent_button<'a>(ui: &egui::Ui, text: &'a str) -> egui::Button<'a> {
+    let accent = ui.visuals().selection.bg_fill;
+    egui::Button::new(egui::RichText::new(text).strong().color(crate::ui::tools::on_accent(accent)))
+        .fill(accent)
+        .min_size(egui::vec2(96.0, 28.0))
+}
+
+/// The file name the output bar suggests: "<project>_<preset slug>" / "<project>_edit".
+fn suggested_name(state: &ExportUi, project: &Project) -> String {
+    let suffix = match state.tile.as_deref() {
+        Some(t) if export::is_builtin_preset(t) => {
+            if t.eq_ignore_ascii_case(export::PRESET_FAST_PREVIEW) {
+                "preview".into()
+            } else {
+                "edit".into()
+            }
+        }
+        Some(t) => slug(t),
+        None => "edit".into(),
+    };
+    format!("{}_{suffix}", project.name)
+}
+
+/// The folder the save dialog opens in: the bar's, else beside the source video.
+fn out_folder(state: &ExportUi, project: &Project) -> Option<PathBuf> {
+    state
+        .out_dir
+        .clone()
+        .or_else(|| project.source_video.as_ref().and_then(|p| Path::new(p).parent().map(Path::to_path_buf)))
+}
+
+/// The pinned bar: summary line, Speed, file name / folder, Export… / Add to Queue.
+fn output_bar(
+    ui: &mut egui::Ui,
+    state: &mut ExportUi,
+    project: &Project,
+    settings: &mut Settings,
+    exporting: bool,
+    save: &mut bool,
+) -> Option<(ExportChoice, bool)> {
+    let mut out = None;
+    let size = preset_size(project.width, project.height, &state.preset, state.custom);
+    let (w, h) = size.unwrap_or((project.width, project.height));
+    let range = export_range(project, state.range);
+    let export_dur = range.map(|(a, b)| b - a).unwrap_or_else(|| project.duration());
+    let ext = default_ext(state).to_string();
+    // summary: preset · size · fps · duration · estimated size
+    let mut parts = vec![];
+    if state.lossless {
+        parts.push("Lossless cut · same as the source".to_string());
+    } else if export::AUDIO_EXTS.contains(&ext.as_str()) {
+        parts.push(format!("{} sound only", ext.to_uppercase()));
+    } else {
+        parts.push(format!("{w}×{h}"));
+        parts.push(format!("{} fps", fps_text(project.fps)));
+    }
+    parts.push(duration_text(export_dur));
+    if !state.lossless && !export::AUDIO_EXTS.contains(&ext.as_str()) {
+        // ws:export-audio-tracks: "Separate tracks in file" adds one stream per stem
+        let streams = if export::effective_layout(export::AudioLayout::parse(&settings.export_audio), &ext)
+            == export::AudioLayout::Streams
+        {
+            let span = range.unwrap_or((0.0, project.duration()));
+            1 + crate::engine::stems::count(project, export::StemBy::parse(&settings.export_stem_by), span) as u32
+        } else {
+            1
+        };
+        parts.push(format!(
+            "~{}",
+            format_bytes(export::estimate_export_bytes(w, h, project.fps, export_dur, settings.crf, streams))
+        ));
+    }
+    ui.horizontal(|ui| {
+        let preset = state.tile.clone().unwrap_or_else(|| "Custom settings".into());
+        ui.label(egui::RichText::new(preset).strong().color(ui.visuals().selection.bg_fill));
+        ui.label(egui::RichText::new(parts.join(" · ")).strong())
+            .on_hover_text("The size is an estimate - the real one depends on the footage.");
+    });
+    ui.add_space(4.0);
+    egui::Grid::new("export_bar_grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+        // ---- ws:export-encoders: the speed/size trade-off (picking one hands the preset back to it) ----
+        ui.label("Speed");
         ui.horizontal(|ui| {
-            let can = !exporting && !project.is_empty();
-            if ui.add_enabled(can, egui::Button::new("Export…")).clicked() {
-                settings.save();
-                if let Some(choice) = pick_and_build(state, project, settings) {
-                    out = Some((choice, false));
+            for (k, label, tip) in SPEEDS {
+                if ui.selectable_label(settings.export_speed == k, label).on_hover_text(tip).clicked()
+                    && settings.export_speed != k
+                {
+                    settings.export_speed = k.to_string();
+                    settings.preset = "auto".into();
+                    *save = true;
                 }
-            }
-            // ws:export-deliver: queue while one runs (the queue drains in order, one at a time)
-            if ui
-                .add_enabled(!project.is_empty(), egui::Button::new("Add to Queue"))
-                .on_hover_text("Pick a file now; it renders after whatever is running or queued.")
-                .clicked()
-            {
-                settings.save();
-                if let Some(choice) = pick_and_build(state, project, settings) {
-                    out = Some((choice, true));
-                }
-            }
-            if exporting {
-                ui.weak("export running…");
             }
         });
+        ui.end_row();
+
+        ui.label("File");
+        ui.horizontal(|ui| {
+            let ext_w = 44.0;
+            let folder = out_folder(state, project);
+            let folder_txt = folder
+                .as_ref()
+                .and_then(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .unwrap_or_else(|| "Choose…".into());
+            let btn_w = 110.0;
+            let name_w = (ui.available_width() - ext_w - btn_w - 16.0).clamp(80.0, 300.0);
+            let hint = suggested_name(state, project);
+            ui.add(egui::TextEdit::singleline(&mut state.out_name).hint_text(hint).desired_width(name_w))
+                .on_hover_text("The file name. Empty: the suggestion shown.");
+            ui.weak(format!(".{}", if state.lossless { "same" } else { &ext }));
+            let b = egui::Button::new(egui::RichText::new(format!("\u{1F4C1} {folder_txt}"))).truncate();
+            let r = ui.add_sized([btn_w, ui.spacing().interact_size.y], b).on_hover_text(match &folder {
+                Some(d) => format!("Saves in {}\nClick to pick another folder.", d.display()),
+                None => "Pick the folder (or choose one when you export).".into(),
+            });
+            if r.clicked() {
+                let mut d = rfd::FileDialog::new().set_title("Export folder");
+                if let Some(dir) = &folder {
+                    d = d.set_directory(dir);
+                }
+                if let Some(dir) = d.pick_folder() {
+                    state.out_dir = Some(dir);
+                }
+            }
+        });
+        ui.end_row();
     });
-    if save {
-        settings.save();
-    }
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        let can = !exporting && !project.is_empty();
+        let r = ui
+            .add_enabled(can, accent_button(ui, "Export…"))
+            .on_hover_text("Pick where to save, then export now. It runs in the Jobs list while you keep working.");
+        mark(ui, "export", r.rect);
+        if r.clicked() {
+            settings.save();
+            if let Some(choice) = pick_and_build(state, project, settings) {
+                out = Some((choice, false));
+            }
+        }
+        // ws:export-deliver: queue while one runs (the queue drains in order, one at a time)
+        if ui
+            .add_enabled(!project.is_empty(), egui::Button::new("Add to Queue").min_size(egui::vec2(0.0, 28.0)))
+            .on_hover_text("Pick a file now; it renders after whatever is running or queued.")
+            .clicked()
+        {
+            settings.save();
+            if let Some(choice) = pick_and_build(state, project, settings) {
+                out = Some((choice, true));
+            }
+        }
+        if exporting {
+            ui.weak("export running…");
+        }
+    });
     out
 }
 
 // ---- ws:export-audio-tracks ----
-/// The container the save dialog will default to (`pick_and_build`'s rule).
+/// The container the save dialog will default to (`pick_and_build`'s rule): the Format row's.
 fn default_ext(state: &ExportUi) -> &str {
-    if state.tile.is_some() && !state.ext.is_empty() {
-        state.ext.as_str()
-    } else {
+    if state.ext.is_empty() {
         "mp4"
+    } else {
+        state.ext.as_str()
     }
 }
 
@@ -491,36 +1340,43 @@ fn default_ext(state: &ExportUi) -> &str {
 fn audio_row(ui: &mut egui::Ui, state: &ExportUi, settings: &mut Settings) -> bool {
     let mut changed = false;
     let multi = export::MULTI_AUDIO_EXTS.contains(&default_ext(state));
-    ui.horizontal(|ui| {
-        ui.label("Audio");
-        let a = &mut settings.export_audio;
-        changed |= ui.selectable_value(a, "mix".to_string(), "Mix").clicked();
-        changed |= ui
-            .add_enabled_ui(multi, |ui| ui.selectable_value(a, "streams".to_string(), "Separate tracks in file"))
-            .inner
-            .on_hover_text(
-                "The mix first (the default track), then one audio track per stem. Only MP4, MOV and MKV \
-                 support it - saved as another container, the file gets one mix instead.",
-            )
-            .on_disabled_hover_text(format!(
-                "{} can't hold several audio tracks - only MP4, MOV and MKV support it",
-                default_ext(state)
-            ))
-            .clicked();
-        changed |= ui
-            .selectable_value(a, "stems".to_string(), "WAV stems")
-            .on_hover_text("The file gets the mix; each stem is written as 24-bit WAV in a \"<name> stems\" folder beside it.")
-            .clicked();
-    });
-    if settings.export_audio != "mix" {
+    egui::Grid::new("export_audio").num_columns(2).spacing([12.0, 7.0]).show(ui, |ui| {
+        ui.label("Tracks");
         ui.horizontal(|ui| {
+            let a = &mut settings.export_audio;
+            changed |= ui
+                .selectable_value(a, "mix".to_string(), "Mix")
+                .on_hover_text("One stereo mix of everything.")
+                .clicked();
+            changed |= ui
+                .add_enabled_ui(multi, |ui| ui.selectable_value(a, "streams".to_string(), "Separate tracks in file"))
+                .inner
+                .on_hover_text(
+                    "The mix first (the default track), then one audio track per stem. Only MP4, MOV and MKV \
+                     support it - saved as another container, the file gets one mix instead.",
+                )
+                .on_disabled_hover_text(format!(
+                    "{} can't hold several audio tracks - only MP4, MOV and MKV support it",
+                    default_ext(state)
+                ))
+                .clicked();
+            changed |= ui
+                .selectable_value(a, "stems".to_string(), "WAV stems")
+                .on_hover_text(
+                    "The file gets the mix; each stem is written as 24-bit WAV in a \"<name> stems\" folder beside it.",
+                )
+                .clicked();
+        });
+        ui.end_row();
+        if settings.export_audio != "mix" {
             ui.label("Split by");
             const BY: [(&str, &str); 3] = [("track", "Track"), ("bus", "Bus"), ("role", "Role")];
             changed |= combo(ui, "export_stem_by", &mut settings.export_stem_by, &BY, None);
-        });
-        if settings.export_audio == "streams" && !multi {
-            ui.weak("This container gets one mix - pick mp4, mov or mkv for separate tracks.");
+            ui.end_row();
         }
+    });
+    if settings.export_audio == "streams" && !multi {
+        ui.weak("This format gets one mix - pick MP4, MOV or MKV for separate tracks.");
     }
     changed
 }
@@ -531,40 +1387,49 @@ fn init_from_settings(state: &mut ExportUi, _settings: &Settings, project: &Proj
     state.preset = "project".into();
 }
 
-/// Save dialog (same filters as the app's Export) → ExportChoice.
-fn pick_and_build(state: &ExportUi, project: &Project, settings: &Settings) -> Option<ExportChoice> {
+/// Save dialog (same filters as the app's Export, the Format row's first) → ExportChoice.
+fn pick_and_build(state: &mut ExportUi, project: &Project, settings: &Settings) -> Option<ExportChoice> {
     let mut d = rfd::FileDialog::new();
+    let stem = if state.out_name.trim().is_empty() {
+        suggested_name(state, project)
+    } else {
+        state.out_name.trim().to_string()
+    };
     if state.lossless {
         let src = project.source_video.clone().or_else(|| project.assets.first().map(|a| a.path.clone()));
         let ext = src
             .as_ref()
             .and_then(|s| Path::new(s).extension().map(|e| e.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "mp4".into());
+        let stem = if state.out_name.trim().is_empty() { format!("{}_cut", project.name) } else { stem };
         d = d
             .add_filter(format!("{} (same container)", ext.to_uppercase()), &[ext.as_str()])
-            .set_file_name(format!("{}_cut.{ext}", project.name));
+            .set_file_name(format!("{stem}.{ext}"));
     } else {
-        // ws:export-deliver: a tile's container and name lead the filter list
-        let ext = if state.tile.is_some() && !state.ext.is_empty() { state.ext.as_str() } else { "mp4" };
-        let suffix = state.tile.as_deref().map(slug).unwrap_or_else(|| "edit".into());
-        d = d
-            .add_filter("MP4 video", &["mp4"])
-            .add_filter("MOV video", &["mov"])
-            .add_filter("MKV video", &["mkv"])
-            .add_filter("WebM video", &["webm"])
-            .add_filter("AVI video", &["avi"])
-            .add_filter("GIF", &["gif"])
-            .add_filter("MP3 audio", &["mp3"])
-            .add_filter("WAV audio", &["wav"])
-            .add_filter("M4A audio", &["m4a"])
-            .add_filter("FLAC audio", &["flac"])
-            .add_filter("Any (by extension)", &["*"])
-            .set_file_name(format!("{}_{suffix}.{ext}", project.name));
+        // the chosen format's filter leads, so the dialog keeps its extension
+        let ext = default_ext(state).to_string();
+        const FILTERS: [(&str, &str); 10] = [
+            ("MP4 video", "mp4"),
+            ("MOV video", "mov"),
+            ("MKV video", "mkv"),
+            ("WebM video", "webm"),
+            ("AVI video", "avi"),
+            ("GIF", "gif"),
+            ("MP3 audio", "mp3"),
+            ("WAV audio", "wav"),
+            ("M4A audio", "m4a"),
+            ("FLAC audio", "flac"),
+        ];
+        for (label, e) in FILTERS.iter().filter(|(_, e)| *e == ext).chain(FILTERS.iter().filter(|(_, e)| *e != ext)) {
+            d = d.add_filter(*label, &[*e]);
+        }
+        d = d.add_filter("Any (by extension)", &["*"]).set_file_name(format!("{stem}.{ext}"));
     }
-    if let Some(dir) = project.source_video.as_ref().and_then(|p| Path::new(p).parent()) {
+    if let Some(dir) = out_folder(state, project) {
         d = d.set_directory(dir);
     }
     let out_path = d.save_file()?;
+    state.out_dir = out_path.parent().map(Path::to_path_buf);
     Some(build_choice(state, project, settings, out_path))
 }
 
@@ -586,7 +1451,12 @@ mod tests {
     use super::*;
 
     /// One frame of the Export pane body (the old window's `frame`).
-    fn frame(ctx: &egui::Context, state: &mut ExportUi, project: &Project, settings: &mut Settings) -> Option<(ExportChoice, bool)> {
+    fn frame(
+        ctx: &egui::Context,
+        state: &mut ExportUi,
+        project: &Project,
+        settings: &mut Settings,
+    ) -> Option<(ExportChoice, bool)> {
         let mut out = None;
         let _ = ctx.run(Default::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| out = body(ui, state, project, settings, &[], false));
@@ -620,7 +1490,8 @@ mod tests {
         assert_eq!(state.preset, "project");
     }
 
-    /// ws:pages: 30 idle frames of the Export pane (tiles, Advanced, range box) request no repaint.
+    /// ws:pages: 30 idle frames of the Export pane (cards, sections, output bar) request no repaint -
+    /// also with Advanced open, a user preset with a brand icon, and the save form open.
     #[test]
     fn assert_no_idle_repaint_export() {
         let project = ranged_project();
@@ -632,6 +1503,18 @@ mod tests {
             assert!(frame(&ctx, &mut state, &project, &mut settings).is_none());
         }
         assert!(!ctx.has_requested_repaint(), "the idle Export pane requested a repaint");
+        settings.export_folds.insert("advanced".into(), true);
+        settings.export_user_presets.push(ExportPreset {
+            name: "Mine".into(),
+            ext: "mp4".into(),
+            icon: "vimeo".into(),
+            ..Default::default()
+        });
+        state.form = Some(PresetForm { name: "x".into(), ..Default::default() });
+        for _ in 0..30 {
+            assert!(frame(&ctx, &mut state, &project, &mut settings).is_none());
+        }
+        assert!(!ctx.has_requested_repaint(), "the idle Export pane (all open) requested a repaint");
     }
 
     // ---- ws:export-deliver ----
@@ -645,8 +1528,8 @@ mod tests {
         p
     }
 
-    /// The 4 tiles + the collapsed Advanced grid + the range box lay out across 2 headless frames,
-    /// and a tile click's effect (`apply_preset`) lands in state + settings.
+    /// The 4 tiles + the sections + the range box lay out across 2 headless frames, and a tile
+    /// click's effect (`apply_preset`) lands in state + settings.
     #[test]
     fn show_headless_with_preset_tiles() {
         let project = ranged_project();
@@ -714,5 +1597,177 @@ mod tests {
         let ctx = egui::Context::default();
         let _ = frame(&ctx, &mut st, &project, &mut settings);
         assert!(st.range && !st.lossless);
+    }
+
+    // ---- export panel redesign ----
+
+    #[test]
+    fn builtins_come_first_and_resolve_to_the_project() {
+        let settings = Settings::default();
+        let all = settings.all_export_presets();
+        assert_eq!(all[0].name, export::PRESET_MAX_QUALITY);
+        assert_eq!(all[1].name, export::PRESET_FAST_PREVIEW);
+        assert_eq!(all[2].name, "YouTube 1080p", "platform tiles follow the built-ins");
+        // both keep the project's own size (and so its fps - exports never change the frame rate)
+        let mut project = ranged_project();
+        project.width = 2560;
+        project.height = 1440;
+        for (name, fast) in [(export::PRESET_MAX_QUALITY, false), (export::PRESET_FAST_PREVIEW, true)] {
+            let p = settings.export_preset(name).unwrap();
+            let (mut st, mut s) = (ExportUi::default(), Settings::default());
+            apply_preset(&mut st, &mut s, &p);
+            let c = build_choice(&st, &project, &s, "x.mp4".into());
+            assert_eq!(c.opts.out_size, None, "{name}: the project's size");
+            assert!(!c.opts.letterbox);
+            assert!(preset_matches(&p, &st, &s, &project));
+            if fast {
+                assert!(c.opts.crf > 24 && c.opts.encoder == "auto" && c.opts.preset == "speed" && !c.opts.loudnorm);
+            } else {
+                assert_eq!(c.opts.crf, export::CRF_BEST as u32, "max quality = the slider's 100 %");
+                assert_eq!(export::quality_percent_from_crf(c.opts.crf), 100);
+                assert_eq!((c.opts.encoder.as_str(), c.opts.preset.as_str()), ("libx264", "small"));
+            }
+        }
+        let max = settings.export_preset(export::PRESET_MAX_QUALITY).unwrap();
+        let fast = settings.export_preset(export::PRESET_FAST_PREVIEW).unwrap();
+        assert!(max.crf < fast.crf, "max quality has the lower CRF");
+    }
+
+    #[test]
+    fn builtins_and_platform_tiles_cannot_be_deleted_or_renamed() {
+        let mut s = Settings::default();
+        for name in [export::PRESET_MAX_QUALITY, export::PRESET_FAST_PREVIEW, "YouTube 1080p"] {
+            assert!(delete_user_preset(&mut s, name).is_err(), "{name}");
+            assert!(edit_user_preset(&mut s, name, "Mine", None, None).is_err(), "{name}");
+        }
+        // nor can a user preset take their names
+        let p = ExportPreset { name: export::PRESET_FAST_PREVIEW.into(), ..Default::default() };
+        assert!(save_user_preset(&mut s, p, true).is_err());
+        assert_eq!(s.all_export_presets().len(), 6);
+        // duplicating a built-in makes an editable copy
+        let n = duplicate_preset(&mut s, export::PRESET_MAX_QUALITY).unwrap();
+        assert_eq!(n, format!("{} copy", export::PRESET_MAX_QUALITY));
+        assert!(edit_user_preset(&mut s, &n, "Master", Some("star"), Some(Some([1, 2, 3]))).is_ok());
+        assert_eq!(s.export_user_presets[0].crf, export::CRF_BEST as u32);
+        assert_eq!(s.export_user_presets[0].color, Some([1, 2, 3]));
+    }
+
+    #[test]
+    fn custom_preset_save_apply_rename_delete_round_trip() {
+        let project = ranged_project();
+        let mut s = Settings::default();
+        let mut st = ExportUi { preset: "720".into(), ext: "webm".into(), ..Default::default() };
+        s.crf = 24;
+        s.loudnorm = false;
+        s.encoder = "h264_nvenc".into();
+        s.export_speed = "speed".into();
+        s.export_audio = "stems".into();
+        let mut p = current_as_preset(&st, &s, &project, "  Vimeo draft ");
+        p.icon = "vimeo".into();
+        save_user_preset(&mut s, p, false).unwrap();
+        let dup = current_as_preset(&st, &s, &project, "vimeo DRAFT");
+        assert!(save_user_preset(&mut s, dup, false).is_err(), "names are unique");
+        // survives a settings.json round trip, and an old file without the new fields still loads
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        let saved = back.export_preset("Vimeo draft").expect("found by name, wherever it lives");
+        assert_eq!((saved.width, saved.height, saved.ext.as_str(), saved.crf), (1280, 720, "webm", 24));
+        assert_eq!(
+            (saved.encoder.as_str(), saved.speed.as_str(), saved.audio.as_str()),
+            ("h264_nvenc", "speed", "stems")
+        );
+        assert!(saved.stretch, "a hand-picked size stretches like it did");
+        assert_eq!(back.all_export_presets().last().unwrap().name, "Vimeo draft", "user presets come last");
+        let old: ExportPreset =
+            serde_json::from_str(r#"{"name":"Old","ext":"mp4","width":1,"height":2,"crf":18,"loudnorm":true}"#)
+                .unwrap();
+        assert!(old.encoder.is_empty() && old.icon.is_empty() && !old.stretch);
+        // apply it on a fresh pane: every setting comes back
+        let mut s2 = back.clone();
+        s2.crf = 18;
+        s2.encoder = "auto".into();
+        s2.export_audio = "mix".into();
+        st = ExportUi::default();
+        apply_preset(&mut st, &mut s2, &saved);
+        let c = build_choice(&st, &project, &s2, "x.webm".into());
+        assert_eq!(c.opts.out_size, Some((1280, 720)));
+        assert!(!c.opts.letterbox);
+        assert_eq!(
+            (c.opts.crf, c.opts.encoder.as_str(), c.opts.preset.as_str(), c.opts.loudnorm),
+            (24, "h264_nvenc", "speed", false)
+        );
+        assert_eq!(c.opts.audio, export::AudioLayout::Stems);
+        assert_eq!(c.last, ExportPresetRef::Preset("Vimeo draft".into()));
+        assert!(preset_matches(&saved, &st, &s2, &project));
+        s2.crf = 30;
+        assert!(!preset_matches(&saved, &st, &s2, &project), "a changed setting shows 'edited'");
+        // a rename keeps Quick Export's "last export" pointing at it
+        s2.last_export = Some(ExportPresetRef::Preset("Vimeo draft".into()));
+        edit_user_preset(&mut s2, "Vimeo draft", "Vimeo", None, None).unwrap();
+        assert_eq!(s2.last_export, Some(ExportPresetRef::Preset("Vimeo".into())), "Quick Export follows a rename");
+        assert!(s2.export_preset("Vimeo draft").is_none() && s2.export_preset("vimeo").is_some());
+        delete_user_preset(&mut s2, "Vimeo").unwrap();
+        assert!(s2.export_user_presets.is_empty());
+        assert!(delete_user_preset(&mut s2, "Vimeo").is_err());
+    }
+
+    #[test]
+    fn platform_tiles_reset_encoder_and_speed() {
+        let mut s = Settings::default();
+        let mut st = ExportUi::default();
+        let max = s.export_preset(export::PRESET_MAX_QUALITY).unwrap();
+        apply_preset(&mut st, &mut s, &max);
+        assert_eq!(s.encoder, "libx264");
+        let yt = s.export_preset("YouTube 4K").unwrap();
+        apply_preset(&mut st, &mut s, &yt);
+        assert_eq!((s.encoder.as_str(), s.export_speed.as_str(), s.crf), ("auto", "balanced", 18));
+        assert_eq!((st.custom, st.letterbox, st.ext.as_str()), ((3840, 2160), true, "mp4"));
+    }
+
+    /// The output bar is pinned under the sections: Export…'s rect is below every section header and
+    /// card, at the bottom of the pane, whether Advanced is open or closed.
+    #[test]
+    fn output_bar_sits_below_the_sections() {
+        let project = ranged_project();
+        let mut settings = Settings::default();
+        let mut state = ExportUi::default();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let rect = |name: &str| ctx.data(|d| d.get_temp::<egui::Rect>(egui::Id::new(("export_ui", name.to_string()))));
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 1400.0));
+        for open in [false, true] {
+            settings.export_folds.insert("advanced".into(), open);
+            for _ in 0..3 {
+                let input = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+                let _ = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default()
+                        .show(ctx, |ui| body(ui, &mut state, &project, &mut settings, &[], false));
+                });
+            }
+            let export = rect("export").expect("the Export button was drawn");
+            for name in ["sec:video", "sec:audio", "sec:advanced", "card:Fast preview", "card:+new"] {
+                let r = rect(name).unwrap_or_else(|| panic!("{name} drawn"));
+                assert!(export.top() > r.bottom(), "{name} ({r:?}) must be above Export… ({export:?})");
+            }
+            assert!(export.bottom() > screen.bottom() - 60.0, "the bar is pinned to the bottom: {export:?}");
+            // cards come before the sections, the sections in order
+            assert!(rect("card:+new").unwrap().bottom() < rect("sec:video").unwrap().top());
+            let order: Vec<f32> =
+                ["sec:video", "sec:audio", "sec:advanced"].iter().map(|n| rect(n).unwrap().top()).collect();
+            assert!(order.windows(2).all(|w| w[0] < w[1]), "Video, Audio, Advanced in that order: {order:?}");
+        }
+    }
+
+    #[test]
+    fn section_open_state_persists() {
+        // drawing alone stores nothing (the defaults stay the defaults), a stored choice round-trips
+        let project = ranged_project();
+        let mut settings = Settings::default();
+        let mut state = ExportUi::default();
+        let ctx = egui::Context::default();
+        let _ = frame(&ctx, &mut state, &project, &mut settings);
+        assert!(settings.export_folds.is_empty());
+        let s = Settings { export_folds: [("advanced".to_string(), true)].into(), ..Default::default() };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.export_folds.get("advanced"), Some(&true));
     }
 }

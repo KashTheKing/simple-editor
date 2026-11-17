@@ -394,6 +394,14 @@ pub struct Settings {
     /// settings.json upgrading from before this key existed (`default_loudnorm`, not bool's false).
     #[serde(default = "default_loudnorm")]
     pub loudnorm: bool,
+    /// The user's own export presets (Export ▸ "Save current settings as preset…"), after the built-ins
+    /// and the platform tiles; Quick Export finds them by name too (`Settings::export_preset`).
+    #[serde(default)]
+    pub export_user_presets: Vec<crate::engine::export::ExportPreset>,
+    /// Which Export pane sections are open ("video" / "audio" / "advanced"); a missing key = the
+    /// section's own default (Video open, Audio open, Advanced closed).
+    #[serde(default)]
+    pub export_folds: BTreeMap<String, bool>,
     // ---- ws:inspector-gallery ----
     /// Which inspector `section()` blocks are expanded, keyed by the section's `id` string (stable
     /// across sessions - not the clip/effect it currently belongs to). Missing key = that section's own
@@ -755,6 +763,8 @@ impl Default for Settings {
             export_presets: crate::engine::export::default_export_presets(),
             last_export: None,
             loudnorm: default_loudnorm(),
+            export_user_presets: Vec::new(),
+            export_folds: BTreeMap::new(),
             // ---- ws:inspector-gallery ----
             inspector_folds: BTreeMap::new(),
             caption_presets: Vec::new(),
@@ -888,6 +898,17 @@ impl Default for Settings {
 static CACHE_FOLDER: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 
 impl Settings {
+    /// Every export preset card in order: built-ins, platform tiles, the user's own.
+    pub fn all_export_presets(&self) -> Vec<crate::engine::export::ExportPreset> {
+        crate::engine::export::all_export_presets(&self.export_presets, &self.export_user_presets)
+    }
+
+    /// An export preset by name (case-insensitive), wherever it lives - what the Export pane, Quick
+    /// Export and the `export.*` tools look presets up with.
+    pub fn export_preset(&self, name: &str) -> Option<crate::engine::export::ExportPreset> {
+        self.all_export_presets().into_iter().find(|p| p.name.eq_ignore_ascii_case(name))
+    }
+
     /// This page's (show video, show audio) timeline rows: the Audio page hides video by default.
     pub fn track_kinds(&self) -> (bool, bool) {
         self.track_kinds.get(&self.page).copied().unwrap_or((self.page != "Audio", true))

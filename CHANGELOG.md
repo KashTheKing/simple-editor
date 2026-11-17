@@ -2,6 +2,15 @@
 
 ## 1.3.1
 
+### Export panel redesign
+- **A simpler, colour-coded Export panel**: preset cards with icons on top, then Video (blue), Audio (green) and
+  Advanced (amber, closed at first) sections that remember whether they are open, and an output bar pinned to the
+  bottom with the size · frame rate · length · estimated size, Speed, the file name and folder, and **Export…** /
+  **Add to Queue**. Explanations moved into hover tips; nothing was removed. Two built-in cards always come first:
+  **Project settings — Max quality** and **Fast preview** (project size and frame rate, fastest encode). The
+  platform cards show the real YouTube, Shorts, Instagram and TikTok marks (Simple Icons, CC0). **Your own
+  presets**: "Save current settings…" (name, icon, colour), right-click to duplicate, rename, update or delete;
+  Quick Export and the new `export.preset_save` / `preset_apply` / `preset_rename` / `preset_delete` tools use them too.
 ### Quick Export
 - **A Quick Export button in the top bar** (top right, beside Jobs; also File ▸ Export ▸ Quick Export… and the
   palette): a Save As dialog with a file type list (MP4, MOV, MKV, WebM, GIF, WAV, MP3), then the export runs as a
