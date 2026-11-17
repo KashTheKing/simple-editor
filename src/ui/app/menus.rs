@@ -131,6 +131,8 @@ impl App {
             menu::button(ui, "Help", |ui| self.help_menu(ui));
             layout_ctl::page_switcher(self, ui);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // ---- ws:quick-export ---- (right-most; the Jobs indicator sits beside it while jobs run)
+                quick_export::button(self, ui);
                 // ---- ws:jobs-panel ----
                 jobs_pane::indicator(self, ui);
             });
@@ -154,7 +156,7 @@ impl App {
         });
         menu::sub(ui, Some(tools::Glyph::ExportArrow), "Export", |ui| {
             acts(ui, &[Some(ExportVideo)]);
-            acts_if(ui, has_clips, &[Some(QuickExport), Some(ExportFrame), Some(ExportXml), Some(ExportEdl), Some(ExportLossless)]);
+            acts_if(ui, has_clips, &[Some(QuickExportAs), Some(QuickExport), Some(ExportFrame), Some(ExportXml), Some(ExportEdl), Some(ExportLossless)]);
             let can_overwrite = self.project.source_video.is_some() && has_clips;
             let r = ui.add_enabled_ui(can_overwrite, |ui| menu::row(ui, None, "Overwrite Original Video…", "")).inner;
             if r.on_disabled_hover_text("Only for a project opened from a single video").clicked() {

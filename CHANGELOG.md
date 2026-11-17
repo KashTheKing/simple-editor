@@ -2,6 +2,14 @@
 
 ## 1.3.1
 
+### Quick Export
+- **A Quick Export button in the top bar** (top right, beside Jobs; also File ▸ Export ▸ Quick Export… and the
+  palette): a Save As dialog with a file type list (MP4, MOV, MKV, WebM, GIF, WAV, MP3), then the export runs as a
+  job with your current export settings, or the project's own size, frame rate and quality, and opens in your media
+  player when done. For a video you opened directly (one clip, maybe with text or captions on top) the dialog lands
+  on that file, and saving asks "Replace <name>?" first; the original stays as `<name>.bak` until the new file is in
+  place. Other quick exports remember their folder and type per project.
+
 ### Gallery cards
 - **Gallery: a Video | Audio switch with audio presets, and pictures for every title and template.** The Audio side
   has Animate (fades, swell, duck, tremolo, pan sweeps), Transitions (equal-power / linear / exponential crossfades,

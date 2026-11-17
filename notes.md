@@ -715,3 +715,11 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   `<cache>/gallery-thumbs/<key>.rgba` keyed by the template JSON. A failed render retries once, then the type icon.
 - In a fresh worktree `core.autocrlf=true` checks `library/` out as CRLF, so `library_index_matches_files` and
   `connecting_loads_the_index_once` fail there (sizes); not a code problem.
+- Quick Export (2026-11-17, feat/quick-export): top-bar button (`Action::QuickExportAs`, `ui/app/quick_export.rs`, MCP
+  `export.quick_file`). "Single footage" = `source_video` set, it is the only asset, every clip with media uses it, no
+  sequences, file on disk (module doc). Overwrite renders beside the file, hard-links `<name>.bak`, renames over, deletes
+  the backup. Found while testing: Overwrite Original Video could never replace the file - `Player::release_files` also
+  empties the frame cache, so the paused render thread re-rendered the current frame and REOPENED the source before the
+  rename. Fix: `player.set_project(&Project::new())` before `release_files`. `explorer <path>` opens Documents for a
+  forward-slash path - normalise first. NOT verified: the native Save As dialog and the Replace window by hand
+  (computer-use was denied); the overwrite was driven through `export.quick_file` + the in-app save prompt.

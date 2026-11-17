@@ -169,6 +169,7 @@ mod tools_social;
 mod enhance_ctl;
 mod whatsnew;
 mod perf_ctl; // ws:perf-window
+mod quick_export; // ws:quick-export
 mod animator_ctl; // ws:animator
 #[path = "windows.rs"]
 mod windows_dlg;
@@ -253,6 +254,8 @@ pub struct App {
     mcp: Option<(mcp::Server, Receiver<mcp::ToolCall>)>,
     mcp_port_running: u16,
     mcp_jobs: Vec<McpJob>,
+    /// ws:quick-export: the Quick Export output to open in the media player once its export finishes.
+    quick_open: Option<PathBuf>,
     /// Library "Convert To…" jobs: (progress, output path) - polled each frame, imported when done.
     convert_jobs: Vec<(Arc<Progress>, PathBuf)>,
     /// Asset id + target extension for the Convert To… options window.
@@ -860,6 +863,7 @@ impl App {
             mcp: None,
             mcp_port_running: 0,
             mcp_jobs: Vec::new(),
+            quick_open: None, // ws:quick-export
             convert_jobs: Vec::new(),
             convert_dialog: None,
             compress: None,
@@ -1701,6 +1705,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     enhance_ctl::TOOLS,
     // ---- ws:perf-window ----
     perf_ctl::TOOLS,
+    // ---- ws:quick-export ----
+    quick_export::TOOLS,
     // ---- ws:animator ----
     animator_ctl::TOOLS,
 ];
@@ -1786,6 +1792,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     enhance_ctl::act,
     // ---- ws:perf-window ----
     perf_ctl::act,
+    // ---- ws:quick-export ----
+    quick_export::act,
     // ---- ws:animator ----
     animator_ctl::act,
 ];

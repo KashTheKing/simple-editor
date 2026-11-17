@@ -62,6 +62,7 @@ impl Project {
             // ---- ws:pro-timeline ----
             // ---- ws:text-titles ----
             // ---- ws:docs-refresh ----
+            quick_export: None, // ws:quick-export
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);

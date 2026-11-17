@@ -391,6 +391,10 @@ actions! {
     // ---- ws:perf-window ----
     // The Performance window (Window menu / palette / `perf.window`). Unbound by design.
     PerfWindow => "performance", "Performance…", None;
+    // ---- ws:quick-export ----
+    // The top bar's Quick Export button: Save As dialog with a type dropdown, then export. Unbound by design
+    // (Ctrl+M is QuickExport, which re-runs the last export without a dialog).
+    QuickExportAs => "quick_export_as", "Quick Export…", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -708,6 +712,8 @@ pub fn group(a: Action) -> &'static str {
         AiUpscale2Game | AiUpscale2Real | AiUpscale4Game | AiUpscale4Real => "Clip",
         // ---- ws:perf-window ----
         PerfWindow => "Playback",
+        // ---- ws:quick-export ----
+        QuickExportAs => "File",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]
