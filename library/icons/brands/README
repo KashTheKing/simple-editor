@@ -1,0 +1,25 @@
+Platform marks for the Export page's preset cards
+=================================================
+
+Source: Simple Icons (https://simpleicons.org), simple-icons@13.21.0 from
+https://cdn.jsdelivr.net/npm/simple-icons@13.21.0/icons/<slug>.svg
+
+The Simple Icons SVG data is released under CC0 1.0 (public domain dedication). The brand
+marks themselves are trademarks of their respective owners (YouTube and YouTube Shorts:
+Google LLC; Instagram and Facebook: Meta Platforms, Inc.; TikTok: ByteDance Ltd.; X: X Corp.;
+Vimeo: Vimeo.com, Inc.; Twitch: Twitch Interactive, Inc.). Simple Editor uses them only to
+identify the platform an export preset is made for; it is not affiliated with or endorsed by
+any of them. Follow each owner's brand guidelines if you reuse them.
+
+Files
+-----
+<slug>.svg   the original Simple Icons path (24 x 24 viewBox), unchanged
+<slug>.png   64 x 64 white glyph on a transparent background, embedded in the exe by
+             src/ui/brand_icons.rs and tinted with the brand colour when painted
+
+Slugs: youtube, youtubeshorts, tiktok, instagram, x, facebook, vimeo, twitch
+
+The PNGs are made by scripts/brand-icons.sh (headless Edge renders each SVG black on white at
+64 px, ffmpeg turns that into a white-on-alpha mask), so the app needs no SVG renderer. Run it
+again after replacing an SVG. This folder is not part of the online icon library (that only
+reads the .svg files directly in library/icons).

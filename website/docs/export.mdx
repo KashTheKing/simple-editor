@@ -13,36 +13,61 @@ render queue) on the right. Export needs FFmpeg.
 
 ![The Export panel](/img/tutorial/export-panel.png)
 
-1. Click a **platform tile**: **YouTube 1080p**, **YouTube 4K**, **Shorts / Reels / TikTok** (1080×1920)
-   or **Instagram 1:1**. The picture is fitted inside that size with black bars, never stretched.
-2. Optional: tick **Export In/Out Range** to export only the part between your In and Out marks.
-3. Click **Export…**, pick a name and a format (MP4, MOV, MKV, WebM, AVI, GIF, or MP3 / WAV / M4A / FLAC
-   for sound only), and save.
+The panel reads top to bottom: pick a **preset**, check the **Video**, **Audio** and **Advanced** sections if
+you want to, then press **Export…** in the bar at the bottom.
+
+1. Click a **preset card**. The selected card is outlined in your accent colour (and says *edited* once you
+   change something it set).
+   - **Project settings — Max quality**: exactly your project's size and frame rate, at the best quality.
+   - **Fast preview**: the same size and frame rate, encoded as fast as your computer can (the graphics
+     card's encoder when it has one), with a smaller file - for checking an edit.
+   - The platform cards: **YouTube 1080p**, **YouTube 4K**, **Shorts / Reels / TikTok** (1080×1920) and
+     **Instagram 1:1**. The picture is fitted inside that size with black bars, never stretched.
+   - **My presets**: your own (see below).
+2. Optional: open a section to change something (each remembers whether you left it open).
+3. Check the summary line at the bottom (size · frame rate · length · estimated file size), pick a
+   **Speed** (Fast, Balanced or Small file), the file name and the folder.
+4. Click **Export…**, confirm the name and the format, and save.
 
 The export runs in the background with a progress bar and time left in the **Jobs** list, so you can keep
 working. **Add to Queue** picks a file name now and renders it after whatever is already running; the
 **Jobs** list shows the order, and ▲ / ▼ change it. **Cancel** stops an export; cancelling the running
 one also empties the queue.
 
-The line under the settings estimates the file size and warns if the quality is very low or very high.
+### Your own presets
 
-### Advanced
+Set things up the way you like, then click **+ Save current settings…** under *My presets*: give it a name and,
+if you like, a platform icon or a colour. It stores the size, format, quality, encoder, speed and audio
+layout. Right-click any card for **Duplicate**; right-click one of yours for **Rename / icon / colour…**,
+**Update with current settings** or **Delete**. The two built-in cards and the platform cards can't be
+changed - duplicate one to make your own version. **Quick Export** (<kbd>Ctrl+M</kbd>) re-runs whichever card
+you exported with last, yours included.
 
-Open **Advanced** for the **Resolution** (project size, 720p, 1080p, 1440p, 4K or custom), the
-**Scaler**, the **Encoder** (including NVIDIA, Intel and AMD hardware encoders if your graphics driver has
-them), the **Quality** and the encoder **Preset**. The frame rate is the project's.
+### Video (blue)
 
-Also on the panel:
+**Resolution** (project size, 720p, 1080p, 1440p, 4K or custom), the **Frame rate** (always the project's),
+the **Format** (MP4, MOV, MKV, WebM, AVI, GIF, or MP3 / WAV / M4A / FLAC for sound only) and the **Quality**,
+with a warning when it is low. **Fast lossless cut** appears when the timeline is a plain cut of one video:
+instant, no quality loss, but cuts snap to the video's keyframes.
 
-- **Normalize loudness (−14 LUFS)**, on by default: evens out the loudness for YouTube and friends.
+### Audio (green)
+
+**Mix**, **Separate tracks in file** or **WAV stems** (see [Export audio tracks](export-audio-tracks)), and
+**Normalize loudness (−14 LUFS)**, on by default: evens out the loudness for YouTube and friends.
+
+### Advanced (amber, closed at first)
+
+- **Export In/Out range only**: only the part between your In and Out marks.
 - **Write metadata**: title and other tags in the file.
+- **Use project background**.
 - **Burn in captions**: draws the subtitles into the picture. Until you change it here it follows the preview's
   subtitle toggle (what exports always did); untick it to deliver captions as a separate .srt instead.
 - **Burn in social guide**: draws the Social Guide chosen in the Preview over every frame, with its progress bar
   and time following the export (see [Social guides](social-guides)). Greyed out until a guide is chosen.
-- **Use project background**.
-- **Fast lossless cut (-c copy)**: only when the timeline is a plain cut of one video. Instant, no quality
-  loss, but cuts snap to the video's keyframes.
+- The **Scaler**, the **Encoder** (including NVIDIA, Intel and AMD hardware encoders if your graphics driver has
+  them), the encoder **Preset** and Smart render.
+
+Hover over any option for a short explanation.
 
 ## Quick ways out
 

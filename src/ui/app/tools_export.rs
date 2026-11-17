@@ -198,13 +198,14 @@ pub(crate) fn wants_repaint(queued: usize, baking: usize) -> bool {
     queued > 0 || baking > 0
 }
 
-/// What Quick Export re-runs: the last export, else the first platform tile.
+/// What Quick Export re-runs: the last export, else the first preset card (the built-in
+/// "Project settings — Max quality").
 pub(crate) fn quick_target(settings: &Settings) -> Result<ExportPresetRef, &'static str> {
     if let Some(last) = &settings.last_export {
         return Ok(last.clone());
     }
     settings
-        .export_presets
+        .all_export_presets()
         .first()
         .map(|p| ExportPresetRef::Preset(p.name.clone()))
         .ok_or("No export presets - open Export (Ctrl+E) once, or add tiles in settings.json")
@@ -223,12 +224,8 @@ pub(crate) fn quick_choice(
     let mut s = settings.clone();
     let label = match target {
         ExportPresetRef::Preset(name) => {
-            let p = s
-                .export_presets
-                .iter()
-                .find(|p| p.name.eq_ignore_ascii_case(name))
-                .cloned()
-                .ok_or_else(|| format!("no export preset '{name}'"))?;
+            // built-ins, platform tiles and the user's own presets alike
+            let p = s.export_preset(name).ok_or_else(|| format!("no export preset '{name}'"))?;
             export_ui::apply_preset(&mut st, &mut s, &p);
             p.name.clone()
         }
@@ -278,13 +275,7 @@ pub(crate) fn quick_export(
         None => {
             let (suffix, ext) = match &target {
                 ExportPresetRef::Preset(name) => {
-                    let ext = app
-                        .settings
-                        .export_presets
-                        .iter()
-                        .find(|p| p.name.eq_ignore_ascii_case(name))
-                        .map(|p| p.ext.clone())
-                        .unwrap_or_else(|| "mp4".into());
+                    let ext = app.settings.export_preset(name).map(|p| p.ext).unwrap_or_else(|| "mp4".into());
                     (export_ui::slug(name), ext)
                 }
                 ExportPresetRef::Custom { ext, .. } => ("edit".into(), ext.clone()),
@@ -743,20 +734,124 @@ fn bake_tool(app: &mut App, args: &Value, kind: BakeKind) -> Result<ToolOutcome,
     start_bake(app, &ids, kind).map(|(p, out)| ToolOutcome::Job(p, out))
 }
 
+/// "#rrggbb" / "rrggbb" → [r, g, b] (a preset card's colour from MCP).
+fn hex_rgb(s: &str) -> Option<[u8; 3]> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 {
+        return None;
+    }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
+}
+
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "export.presets",
-        desc: "List platform export presets (name, ext, size, crf, loudnorm).",
+        desc: "List every export preset card in order: the 2 built-ins (project size; max quality / fast preview), the platform tiles, then the user's own. width/height 0 = the project's size; kind = builtin | platform | custom.",
         args: &[],
         kind: ToolKind::Read,
         run: |app, _| {
-            let list: Vec<Value> = app
-                .settings
-                .export_presets
+            let s = &app.settings;
+            let kind = |name: &str| {
+                if export::is_builtin_preset(name) {
+                    "builtin"
+                } else if s.export_presets.iter().any(|p| p.name == name) {
+                    "platform"
+                } else {
+                    "custom"
+                }
+            };
+            let list: Vec<Value> = s
+                .all_export_presets()
                 .iter()
-                .map(|p| json!({"name": p.name, "ext": p.ext, "width": p.width, "height": p.height, "crf": p.crf, "loudnorm": p.loudnorm}))
+                .map(|p| {
+                    json!({"name": p.name, "kind": kind(&p.name), "ext": p.ext, "width": p.width, "height": p.height,
+                        "crf": p.crf, "quality_percent": export::quality_percent_from_crf(p.crf), "loudnorm": p.loudnorm,
+                        "encoder": if p.encoder.is_empty() { "auto" } else { p.encoder.as_str() },
+                        "speed": if p.speed.is_empty() { "balanced" } else { p.speed.as_str() },
+                        "audio": p.audio, "icon": p.icon,
+                        "color": p.color.map(|[r, g, b]| format!("#{r:02x}{g:02x}{b:02x}")),
+                        "selected": app.export_ui.tile.as_deref() == Some(p.name.as_str())})
+                })
                 .collect();
             Ok(ToolOutcome::Done(json!(list)))
+        },
+    },
+    ToolDef {
+        name: "export.preset_save",
+        desc: "Save the Export pane's current settings (size, format, quality, encoder, speed, audio) as a custom preset card; Quick Export finds it by name too. Overwrites a custom preset of the same name; built-in and platform names are refused.",
+        args: &[
+            "name:string:true:",
+            "icon:string:false:brand (youtube, youtubeshorts, tiktok, instagram, x, facebook, vimeo, twitch) or glyph (bookmark, star, bolt, ...)",
+            "color:string:false:#rrggbb card accent",
+        ],
+        kind: ToolKind::Ui,
+        run: |app, args| {
+            let name = req(arg_str(args, "name"), "name")?.trim().to_string();
+            let project = app.export_project();
+            if app.export_ui.preset.is_empty() {
+                app.export_ui.preset = "project".into();
+                app.export_ui.custom = (project.width, project.height);
+            }
+            let mut p = export_ui::current_as_preset(&app.export_ui, &app.settings, &project, &name);
+            p.icon = arg_str(args, "icon").unwrap_or("bookmark").to_string();
+            p.color = match arg_str(args, "color") {
+                Some(c) => Some(hex_rgb(c).ok_or_else(|| format!("color: '{c}' is not #rrggbb"))?),
+                None => None,
+            };
+            export_ui::save_user_preset(&mut app.settings, p, true)?;
+            app.export_ui.tile = Some(name.clone());
+            app.settings.save();
+            Ok(ToolOutcome::Done(json!({"ok": true, "name": name})))
+        },
+    },
+    ToolDef {
+        name: "export.preset_apply",
+        desc: "Apply an export preset card (any kind) to the Export pane, as clicking it does.",
+        args: &["name:string:true:"],
+        kind: ToolKind::Ui,
+        run: |app, args| {
+            let name = req(arg_str(args, "name"), "name")?;
+            let p = app.settings.export_preset(name).ok_or_else(|| format!("no export preset '{name}'"))?;
+            export_ui::apply_preset(&mut app.export_ui, &mut app.settings, &p);
+            app.settings.save();
+            Ok(ToolOutcome::Done(json!({"ok": true, "name": p.name})))
+        },
+    },
+    ToolDef {
+        name: "export.preset_rename",
+        desc: "Rename a custom export preset (optionally a new icon and #rrggbb color, or color none). Built-in and platform presets refuse.",
+        args: &["name:string:true:", "new_name:string:true:", "icon:string:false:", "color:string:false:#rrggbb or none"],
+        kind: ToolKind::Ui,
+        run: |app, args| {
+            let name = req(arg_str(args, "name"), "name")?;
+            let new_name = req(arg_str(args, "new_name"), "new_name")?;
+            let color = match arg_str(args, "color") {
+                None => None,
+                Some("none") | Some("") => Some(None),
+                Some(c) => Some(Some(hex_rgb(c).ok_or_else(|| format!("color: '{c}' is not #rrggbb"))?)),
+            };
+            export_ui::edit_user_preset(&mut app.settings, name, new_name, arg_str(args, "icon"), color)?;
+            if app.export_ui.tile.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(name)) {
+                app.export_ui.tile = Some(new_name.trim().to_string());
+            }
+            app.settings.save();
+            Ok(ToolOutcome::Done(json!({"ok": true})))
+        },
+    },
+    ToolDef {
+        name: "export.preset_delete",
+        desc: "Delete a custom export preset. Built-in and platform presets refuse.",
+        args: &["name:string:true:"],
+        kind: ToolKind::Ui,
+        run: |app, args| {
+            let name = req(arg_str(args, "name"), "name")?;
+            export_ui::delete_user_preset(&mut app.settings, name)?;
+            if app.export_ui.tile.as_deref().is_some_and(|t| t.eq_ignore_ascii_case(name)) {
+                app.export_ui.tile = None;
+            }
+            app.settings.save();
+            Ok(ToolOutcome::Done(json!({"ok": true})))
         },
     },
     ToolDef {
@@ -1111,20 +1206,27 @@ mod tests {
     #[test]
     fn quick_export_falls_back_to_first_preset() {
         let mut s = Settings::default();
-        assert_eq!(quick_target(&s), Ok(ExportPresetRef::Preset("YouTube 1080p".into())));
+        // the first card is the built-in "Project settings — Max quality"
+        assert_eq!(quick_target(&s), Ok(ExportPresetRef::Preset(export::PRESET_MAX_QUALITY.into())));
         let custom = ExportPresetRef::Custom { ext: "webm".into(), width: 640, height: 360 };
         s.last_export = Some(custom.clone());
         assert_eq!(quick_target(&s), Ok(custom.clone()));
+        // with no platform tiles left the built-ins are still there
         s.export_presets.clear();
         s.last_export = None;
-        assert!(quick_target(&s).is_err());
+        assert_eq!(quick_target(&s), Ok(ExportPresetRef::Preset(export::PRESET_MAX_QUALITY.into())));
 
-        // the fallback tile really drives the options (the toast names it via `label`)
+        // the fallback preset really drives the options (the toast names it via `label`)
         let s = Settings::default();
         let mut p = Project::new();
         p.width = 1280;
         p.height = 720;
         let (choice, label) = quick_choice(&quick_target(&s).unwrap(), &p, &s, "out.mp4".into()).unwrap();
+        assert_eq!(label, export::PRESET_MAX_QUALITY);
+        assert_eq!(choice.opts.out_size, None, "the project's own size");
+        assert_eq!(choice.opts.crf, export::CRF_BEST as u32);
+        let (choice, label) =
+            quick_choice(&ExportPresetRef::Preset("YouTube 1080p".into()), &p, &s, "out.mp4".into()).unwrap();
         assert_eq!(label, "YouTube 1080p");
         assert_eq!(choice.opts.out_size, Some((1920, 1080)));
         assert!(choice.opts.letterbox && choice.opts.loudnorm);
@@ -1134,6 +1236,43 @@ mod tests {
         assert_eq!(c2.opts.out_size, Some((640, 360)));
         assert!(!c2.opts.letterbox, "a custom size keeps the plain stretch");
         assert!(quick_choice(&ExportPresetRef::Preset("nope".into()), &p, &s, "x.mp4".into()).is_err());
+    }
+
+    /// A user's own preset (Export ▸ Save current settings as preset…) is visible to Quick Export by name.
+    #[test]
+    fn quick_export_finds_custom_presets() {
+        let mut s = Settings::default();
+        let p = Project::new();
+        s.export_user_presets.push(crate::engine::export::ExportPreset {
+            name: "Client review".into(),
+            ext: "mov".into(),
+            width: 1280,
+            height: 720,
+            crf: 26,
+            encoder: "libx264".into(),
+            speed: "speed".into(),
+            stretch: true,
+            ..Default::default()
+        });
+        let (c, label) =
+            quick_choice(&ExportPresetRef::Preset("client REVIEW".into()), &p, &s, "o.mov".into()).unwrap();
+        assert_eq!(label, "Client review");
+        assert_eq!((c.opts.out_size, c.opts.crf, c.opts.preset.as_str()), (Some((1280, 720)), 26, "speed"));
+        assert!(!c.opts.letterbox);
+        s.last_export = Some(c.last.clone());
+        assert_eq!(quick_target(&s), Ok(ExportPresetRef::Preset("Client review".into())));
+        assert_eq!(hex_rgb("#ff0069"), Some([255, 0, 105]));
+        assert_eq!(hex_rgb("nope"), None);
+        // the MCP rows exist
+        for t in [
+            "export.presets",
+            "export.preset_save",
+            "export.preset_apply",
+            "export.preset_rename",
+            "export.preset_delete",
+        ] {
+            assert!(TOOLS.iter().any(|d| d.name == t), "{t}");
+        }
     }
 
     #[test]

@@ -263,7 +263,11 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `export.bake` | Job | clip_ids | Render the given clip(s) in place (effects flattened into a new asset) and swap them onto it; the original asset stays in the library. Blocks until the swap lands. |
 | `export.denoise` | Job | clip_ids | Bake the clip(s) through ffmpeg afftdn spectral audio denoise, then swap them onto the result. |
 | `export.edl` | Read | path | Write the main timeline as CMX 3600 EDL (for Avid): one file per video track (the first at path, others as <stem>_V2.edl …), the first also carrying every audio track; dissolves as D events. |
-| `export.presets` | Read | - | List platform export presets (name, ext, size, crf, loudnorm). |
+| `export.preset_apply` | Ui | name | Apply an export preset card (any kind) to the Export pane, as clicking it does. |
+| `export.preset_delete` | Ui | name | Delete a custom export preset. Built-in and platform presets refuse. |
+| `export.preset_rename` | Ui | color, icon, name, new_name | Rename a custom export preset (optionally a new icon and #rrggbb color, or color none). Built-in and platform presets refuse. |
+| `export.preset_save` | Ui | color, icon, name | Save the Export pane's current settings (size, format, quality, encoder, speed, audio) as a custom preset card; Quick Export finds it by name too. Overwrites a custom preset of the same name; built-in and platform names are refused. |
+| `export.presets` | Read | - | List every export preset card in order: the 2 built-ins (project size; max quality / fast preview), the platform tiles, then the user's own. width/height 0 = the project's size; kind = builtin \| platform \| custom. |
 | `export.queue` | Ui | audio, path, preset, range_in, range_out, stem_by | Append an export job to the render queue; returns immediately with its queue position. audio: mix \| streams \| stems, stem_by: track \| bus \| role (default the Export pane's). |
 | `export.quick` | Job | path, preset | Export with the last-used (or given) preset/options; blocks until the file is written (up to 30 min). |
 | `export.slowmo` | Job | clip_ids, factor | Bake the clip(s) through setpts+minterpolate optical-flow slow motion, then swap them onto the result (the clip keeps its length and now shows the first part of the slowed footage — extend its end to reveal the rest). |
