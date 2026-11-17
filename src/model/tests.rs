@@ -515,6 +515,24 @@ fn a_layer_link_follows_another_clip_and_a_path_turns_the_clip() {
     assert!(r.at(0.4).abs() < 1.0 && (r.at(1.6) - 90.0).abs() < 1.0, "{} {}", r.at(0.4), r.at(1.6));
 }
 
+/// ws:animator (bug report): `timeline.trim` with both edges collapsed the clip - the right edge was
+/// limited by the media left before the left edge moved.
+#[test]
+fn trimming_both_edges_at_once_lands_where_asked() {
+    let mut p = Project::new();
+    p.assets.push(asset(7, 10.0, 0));
+    let mut c = Clip::new(1, ClipKind::Video, "v", 4.0, 6.0);
+    c.asset = 7;
+    c.src_in = 4.0;
+    p.tracks[0].clips.push(c);
+    // open both edges out to the whole 10 s of media
+    assert_eq!(p.trim_clip(1, Some(0.0), Some(10.0)), Ok((0.0, 10.0)));
+    assert_eq!(p.clip(1).unwrap().src_in, 0.0);
+    // in to the middle
+    assert_eq!(p.trim_clip(1, Some(2.0), Some(5.0)), Ok((2.0, 5.0)));
+    assert!(p.trim_clip(1, Some(5.0), Some(3.0)).is_err());
+}
+
 #[test]
 fn keyframed_speed_ramps_src_time() {
     let mut c = Clip::new(1, ClipKind::Video, "v", 2.0, 4.0);

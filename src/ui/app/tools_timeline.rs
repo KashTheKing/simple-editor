@@ -155,10 +155,14 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 Ok(json!({"ok": true}))
             }
             "timeline.move" => {
-                let ids = app.project.expand_links(&req(arg_ids(args, "clip_ids"), "clip_ids")?);
+                let asked = req(arg_ids(args, "clip_ids"), "clip_ids")?;
+                let ids = app.project.expand_links(&asked);
                 let dt = req(arg_f64(args, "dt"), "dt")?;
                 let dtrack = args.get("dtrack").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                let moved = app.project.move_clips(&ids, dt, dtrack, None);
+                // `move_clips` only changes the track of clips of the given kind (a linked audio twin stays on
+                // its audio track, like a timeline drag): the kind of the first clip asked for
+                let kind = asked.first().and_then(|&id| app.project.track_of(id)).map(|t| app.project.tracks[t].kind);
+                let moved = app.project.move_clips(&ids, dt, dtrack, kind);
                 if moved {
                     Ok(json!({"ok": true}))
                 } else {
@@ -167,19 +171,8 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
             }
             "timeline.trim" => {
                 let id = req(arg_u64(args, "clip_id"), "clip_id")?;
-                let clip = app.project.clip(id).ok_or("no such clip")?.clone();
-                let headroom = app.project.head_room(&clip);
-                let max_dur = app.project.max_clip_duration(&clip);
-                let c = app.project.clip_mut(id).ok_or("no such clip")?;
-                if let Some(s) = arg_f64(args, "start") {
-                    c.trim_start(s, headroom);
-                }
-                if let Some(e) = arg_f64(args, "end") {
-                    c.trim_end(e, max_dur);
-                }
-                let (start, duration) = (c.start, c.duration);
-                app.project.tidy();
-                Ok(json!({"ok": true, "start": start, "end": start + duration}))
+                let (start, end) = app.project.trim_clip(id, arg_f64(args, "start"), arg_f64(args, "end"))?;
+                Ok(json!({"ok": true, "start": start, "end": end}))
             }
             "timeline.add_transition" => {
                 let right = req(arg_u64(args, "right_clip_id"), "right_clip_id")?;

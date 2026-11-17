@@ -15,6 +15,10 @@
 - **Onion skin** in the Preview while the Animator is open: the selected layer's outline a few frames before and after, and where its block starts.
 - Presets: save a block to the Gallery, import presets, open the preset folder to share the files.
 - MCP: `animate.stack`, `animate.link`, `animate.follow_path`, `keyblocks.set`, `flow.seams`, `flow.match`.
+- **Hand keys to blocks**: keys you made by hand show as a dashed "Hand keys" row in the Animator; click it (or right-click the clip ▸ Turn hand keys into blocks, or select keys in Curves ▸ Make a block) and they become a Custom block with strength, ease and side controls, the motion unchanged. MCP: `keyblocks.from_keys`.
+- The Animator gives each clip a lane per kind of property its blocks animate: Motion, Opacity, Speed, Sound.
+- Motion and speed-ramp presets drop as blocks; timeline clips no longer draw keyframes (a thin colour strip marks an animated clip).
+- Fixed: `timeline.move` ignored `dtrack`; `timeline.trim` with both `start` and `end` limited the end by the media left before the start moved; `clip.keyframe` / `clip.set` property names now accept the short names (`x`, `X`, `position_y`, `speed`, …).
 
 ## 1.3.0
 

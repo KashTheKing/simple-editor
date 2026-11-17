@@ -62,6 +62,27 @@ impl Project {
         true
     }
 
+    /// ws:animator: turn the keys made by hand in clip-local [from, to] into a block with controls (strength,
+    /// ease, side when it moves along x / y) - the motion is unchanged until a control is. `None` span = every
+    /// loose span (`Clip::loose_key_spans`). Returns how many blocks it made.
+    pub fn block_from_keys(&mut self, id: Id, span: Option<(f64, f64)>, name: &str) -> usize {
+        let (w, h) = (self.width as f64, self.height as f64);
+        let Some(c) = self.clip_mut(id) else { return 0 };
+        let spans = match span {
+            Some(s) => vec![s],
+            None => c.loose_key_spans(),
+        };
+        let mut n = 0;
+        for (from, to) in spans {
+            let bare = without_block_keys(c);
+            let Some(block) = bare.capture_block(name, from, to, w, h) else { continue };
+            // the captured block starts / ends at its first / last key, which is the span we replace
+            let (t0, dur) = (from.max(0.0), block.dur);
+            n += c.place_block(&block, t0, Some(dur), w, h).is_some() as usize;
+        }
+        n
+    }
+
     /// Change applied block `i`'s controls (strength, side, ease, physics) and rewrite its keys from them.
     /// Setting controls on a hand-edited block resets it to them.
     pub fn set_block_ctl(&mut self, id: Id, i: usize, mut ctl: BlockCtl) -> bool {
@@ -102,6 +123,50 @@ impl Project {
             }
         }
         true
+    }
+}
+
+/// ws:animator: the clip with every block's keys taken out - what is left are the keys made by hand.
+fn without_block_keys(c: &Clip) -> Clip {
+    let mut k = c.clone();
+    for i in (0..k.blocks.len()).rev() {
+        clear_block_keys(&mut k, i);
+    }
+    k.blocks.clear();
+    k
+}
+
+impl Clip {
+    /// ws:animator: spans (clip-local) of keys made by hand - keys no block owns - one per cluster (a gap over
+    /// a second splits), each with keys at two or more times and no block on the same properties in it.
+    pub fn loose_key_spans(&self) -> Vec<(f64, f64)> {
+        let bare = without_block_keys(self);
+        let mut times: Vec<(f64, &str)> = BLOCK_PROPS
+            .iter()
+            .filter_map(|&p| prop_ref(&bare, p).map(|a| (p, a)))
+            .flat_map(|(p, a)| a.keys.iter().map(move |k| (k.t, p)))
+            .collect();
+        times.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut spans: Vec<(f64, f64, Vec<&str>)> = Vec::new();
+        for (t, p) in times {
+            match spans.last_mut() {
+                Some(s) if t - s.1 <= 1.0 => {
+                    s.1 = t;
+                    if !s.2.contains(&p) {
+                        s.2.push(p);
+                    }
+                }
+                _ => spans.push((t, t, vec![p])),
+            }
+        }
+        spans
+            .into_iter()
+            .filter(|(a, b, props)| {
+                b - a > BK_EPS
+                    && !self.blocks.iter().any(|bl| bl.t < *b && bl.end() > *a && bl.props.iter().any(|p| props.contains(&p.as_str())))
+            })
+            .map(|(a, b, _)| (a, b))
+            .collect()
     }
 }
 
@@ -235,6 +300,38 @@ mod tests {
         assert_eq!(p.place_key_block(id, &find("Speed Ramp Out"), 3.0, Some(0.5)), Some((3.0, 0.5)));
         // applying (the Gallery's click) still chains after what's there
         assert_eq!(p.apply_key_block(id, &find("Zoom Punch"), Some(1.0), None).map(|r| r.0), Some(4.0));
+    }
+
+    #[test]
+    fn hand_made_keys_become_a_block_that_keeps_the_motion() {
+        let (mut p, id) = proj();
+        let w = p.width as f64;
+        // hand keys: x 0 -> 300 -> 0 over 1..3 s, and a block elsewhere that must not be swallowed
+        {
+            let c = p.clip_mut(id).unwrap();
+            for (t, v) in [(1.0, 0.0), (2.0, 300.0), (3.0, 0.0)] {
+                c.x.keys.push(Keyframe { t, v, ease: Ease::EaseInOut });
+            }
+        }
+        p.apply_key_block(id, &find("Fade Out"), Some(5.0), None);
+        let before: Vec<f64> = (0..=20).map(|i| p.clip(id).unwrap().x.at(1.0 + i as f64 * 0.1)).collect();
+        assert_eq!(p.clip(id).unwrap().loose_key_spans(), vec![(1.0, 3.0)]);
+        assert_eq!(p.block_from_keys(id, None, "Custom"), 1);
+        let c = p.clip(id).unwrap();
+        assert_eq!(c.blocks.len(), 2);
+        let b = c.blocks.iter().find(|b| b.name == "Custom").unwrap();
+        assert!((b.t, b.dur) == (1.0, 2.0) && b.ctl.is_some(), "{b:?}");
+        for (i, v) in before.iter().enumerate() {
+            assert!((c.x.at(1.0 + i as f64 * 0.1) - v).abs() < 1e-6, "unchanged at {}", 1.0 + i as f64 * 0.1);
+        }
+        assert!(c.loose_key_spans().is_empty(), "nothing loose left");
+        // and now its controls work: half strength = half the swing
+        let i = c.blocks.iter().position(|b| b.name == "Custom").unwrap();
+        let mut ctl = c.blocks[i].ctl.clone().unwrap();
+        ctl.strength = 0.5;
+        p.set_block_ctl(id, i, ctl);
+        assert!((p.clip(id).unwrap().x.at(2.0) - 150.0).abs() < 1e-6);
+        let _ = w;
     }
 
     #[test]

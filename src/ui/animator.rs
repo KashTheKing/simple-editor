@@ -622,22 +622,45 @@ fn mode_seg(ui: &mut Ui, st: &mut AnimState) {
     ui.label(egui::RichText::new("Smooth by easing").size(11.0).weak());
 }
 
-/// A row per block so that blocks overlapping in time never share one (in time order, first free row).
-fn pack_rows(blocks: &[AppliedBlock]) -> Vec<usize> {
-    let mut ends: Vec<f64> = Vec::new();
-    blocks
-        .iter()
-        .map(|b| match ends.iter().position(|&e| e <= b.t + 1e-4) {
-            Some(r) => {
-                ends[r] = b.end();
-                r
-            }
-            None => {
-                ends.push(b.end());
-                ends.len() - 1
-            }
-        })
-        .collect()
+/// The lanes a clip's blocks sit in, by what they animate.
+const GROUPS: [&str; 4] = ["Motion", "Opacity", "Speed", "Sound"];
+fn group_of(b: &AppliedBlock) -> usize {
+    let only = |set: &[&str]| !b.props.is_empty() && b.props.iter().all(|p| set.contains(&p.as_str()));
+    if only(&["speed"]) {
+        2
+    } else if only(&["volume", "pan"]) {
+        3
+    } else if only(&["opacity"]) {
+        1
+    } else {
+        0
+    }
+}
+
+/// Each block's row and each row's label: a lane per kind of property a clip's blocks animate (Motion,
+/// Opacity, Speed, Sound - only the ones in use), and inside a lane another row only where two blocks overlap.
+fn lane_rows(blocks: &[AppliedBlock]) -> (Vec<usize>, Vec<&'static str>) {
+    let mut rows = vec![0; blocks.len()];
+    let mut labels = Vec::new();
+    for (g, name) in GROUPS.iter().enumerate() {
+        let base = labels.len();
+        let mut ends: Vec<f64> = Vec::new();
+        for (i, b) in blocks.iter().enumerate().filter(|(_, b)| group_of(b) == g) {
+            let r = match ends.iter().position(|&e| e <= b.t + 1e-4) {
+                Some(r) => {
+                    ends[r] = b.end();
+                    r
+                }
+                None => {
+                    ends.push(b.end());
+                    ends.len() - 1
+                }
+            };
+            rows[i] = base + r;
+        }
+        labels.extend(std::iter::repeat_n(*name, ends.len()));
+    }
+    (rows, labels)
 }
 
 /// The timeline range the lanes show: the selected clips plus a little air.
@@ -698,9 +721,12 @@ fn blocks(
         let mut act: Option<Box<dyn FnOnce(&mut Project, &mut AnimState, &mut AnimResp)>> = None;
         for &id in ids {
             let Some(c) = project.clip(id).cloned() else { continue };
-            // blocks that overlap in time (a speed ramp during a zoom) stack in rows inside the lane
-            let pack = pack_rows(&c.blocks);
-            let nrows = pack.iter().copied().max().map_or(1, |m| m + 1);
+            // a lane per kind of property (Motion / Opacity / Speed / Sound), more rows only where blocks
+            // overlap, and a last row of keys made by hand (click one to make it a block)
+            let (pack, labels) = lane_rows(&c.blocks);
+            let loose = c.loose_key_spans();
+            let keys_row = labels.len();
+            let nrows = (labels.len() + (!loose.is_empty()) as usize).max(1);
             let (row, _) = ui
                 .allocate_exact_size(vec2(full.width(), LANE_H + (nrows - 1) as f32 * (LANE_H - 8.0)), Sense::hover());
             let p = ui.painter_at(row.expand(1.0));
@@ -728,7 +754,73 @@ fn blocks(
                 elided(ui, &c.name, FontId::proportional(12.0), if on { Color32::WHITE } else { look::TEXT }, name_w);
             p.galley(pos2(head.left() + 22.0, hy - name_g.size().y / 2.0), name_g, look::TEXT);
             p.galley(pos2(head.right() - 8.0 - tag_g.size().x, hy - tag_g.size().y / 2.0), tag_g, look::DIM);
-            ui.interact(head, ui.id().with(("lane-head", id)), Sense::hover()).on_hover_text(&c.name);
+            // the other rows' names: the lane they are (the first row carries the clip's name)
+            for r in 1..nrows {
+                let label = labels.get(r).copied().unwrap_or("Hand keys");
+                let ry = row.top() + LANE_H / 2.0 + r as f32 * (LANE_H - 8.0);
+                let same = r < labels.len() && labels[r] == labels[r - 1];
+                if !same {
+                    p.text(
+                        pos2(head.left() + 22.0, ry),
+                        Align2::LEFT_CENTER,
+                        label,
+                        FontId::proportional(10.5),
+                        look::MUTED,
+                    );
+                }
+            }
+            let hr = ui.interact(head, ui.id().with(("lane-head", id)), Sense::click()).on_hover_text(format!(
+                "{}{}",
+                c.name,
+                labels.first().map_or(String::new(), |l| format!(" - first lane: {l}"))
+            ));
+            menu::context(&hr, |ui| {
+                let r = ui
+                    .add_enabled_ui(!loose.is_empty(), |ui| menu::row(ui, None, "Turn hand keys into blocks", ""))
+                    .inner;
+                if r.clicked() {
+                    act = Some(Box::new(move |p, _, o| {
+                        let n = p.block_from_keys(id, None, "Custom");
+                        o.toast = Some(format!("Made {n} block{} from hand keys", if n == 1 { "" } else { "s" }));
+                    }));
+                }
+            });
+            // keys made by hand: a dashed "Hand keys" bar per cluster; a click makes it a block with controls
+            for &(a, b) in &loose {
+                let ktop = row.top() + 5.0 + keys_row as f32 * (LANE_H - 8.0);
+                let kr = Rect::from_min_max(
+                    pos2(x(c.start + a) - 4.0, ktop),
+                    pos2(x(c.start + b) + 4.0, ktop + LANE_H - 10.0),
+                );
+                let mut e = vec![kr.left_top(), kr.right_top(), kr.right_bottom(), kr.left_bottom()];
+                e.push(e[0]);
+                p.rect_filled(kr, 6.0, pal.keyframe.gamma_multiply(0.08));
+                p.extend(egui::Shape::dashed_line(&e, Stroke::new(1.0, pal.keyframe.gamma_multiply(0.7)), 4.0, 3.0));
+                p.with_clip_rect(kr.shrink(1.0)).text(
+                    pos2(kr.left() + 8.0, kr.center().y),
+                    Align2::LEFT_CENTER,
+                    "Hand keys · click to make a block",
+                    FontId::proportional(10.5),
+                    look::TEXT,
+                );
+                let r = ui
+                    .interact(kr, ui.id().with(("loose", id, (a * 1000.0) as i64)), Sense::click())
+                    .on_hover_cursor(CursorIcon::PointingHand)
+                    .on_hover_text(
+                        "Turn these keys into a block with controls (strength, ease, side) - the motion stays the same",
+                    );
+                if r.clicked() {
+                    act = Some(Box::new(move |p, s, o| {
+                        if p.block_from_keys(id, Some((a, b)), "Custom") > 0 {
+                            s.sel = p
+                                .clip(id)
+                                .and_then(|c| c.blocks.iter().position(|bl| (bl.t - a).abs() < 1e-6))
+                                .map(|i| (id, i));
+                            o.toast = Some("Made a block from the hand keys: its controls are in the Inspector".into());
+                        }
+                    }));
+                }
+            }
             // the clip's own span: a faint dashed box the blocks live in
             let span = Rect::from_min_max(
                 pos2(x(c.start).max(body_x0), row.top() + 4.0),
@@ -1115,6 +1207,21 @@ fn curves(
             }
         }
     });
+    if bi.is_none() && !st.keys.is_empty() {
+        let ts: Vec<f64> =
+            st.keys.iter().filter_map(|&(p, k)| prop_ref(&c, p).and_then(|a| a.keys.get(k)).map(|k| k.t)).collect();
+        let (a, b) = ts.iter().fold((f64::MAX, f64::MIN), |(a, b), &t| (a.min(t), b.max(t)));
+        if b > a && chip(ui, false, "Make a block from the selected keys").clicked() {
+            undo(project);
+            if project.block_from_keys(id, Some((a, b)), "Custom") > 0 {
+                st.keys.clear();
+                out.toast = Some("Made a block: its controls are in the Inspector".into());
+                out.edited = true;
+            } else {
+                out.toast = Some("Those keys already belong to a block".into());
+            }
+        }
+    }
     if props.is_empty() {
         ui.add_space(12.0);
         ui.label(
@@ -1857,6 +1964,11 @@ fn compact_list(
                 });
             }
         }
+        if !c.loose_key_spans().is_empty() && chip(ui, false, "Turn hand keys into blocks").clicked() {
+            act = Some(Box::new(move |p, _| {
+                p.block_from_keys(id, None, "Custom");
+            }));
+        }
         if c.blocks.is_empty() {
             ui.label(
                 egui::RichText::new("No blocks on this clip yet: + Block adds one at the playhead.")
@@ -2222,7 +2334,7 @@ mod tests {
         p.apply_key_block(1, &f("Fade Out"), None, None);
         p.place_key_block(1, &f("Speed Ramp Out"), 0.2, Some(0.5));
         let b = &p.clip(1).unwrap().blocks;
-        assert_eq!(pack_rows(b), vec![0, 1, 0], "{b:?}");
+        assert_eq!(lane_rows(b), (vec![0, 1, 0], vec!["Opacity", "Speed"]), "{b:?}");
     }
 
     #[test]

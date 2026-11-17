@@ -97,6 +97,8 @@ const OP_TOOLS: &[(&str, &str)] = &[
     // ---- ws:animator ----
     ("set_block_ctl", "keyblocks.set"),
     ("make_stack", "animate.stack"),
+    ("trim_clip", "timeline.trim"),
+    ("block_from_keys", "keyblocks.from_keys"),
     // ---- ws:browser-layer ----
     ("add_browser_clip", "browser.add"),
     ("browser_fit_pages", "browser.page"),
