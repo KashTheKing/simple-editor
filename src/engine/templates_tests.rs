@@ -146,6 +146,12 @@ fn building_marks_slots_placeholders_and_cards() {
         assert_eq!(layer(s.card) + 1, layer(s.clip));
     }
     assert!((d.thumb_t - 1.0).abs() < 1e-9);
+    // placed and built again: the cards on the timeline are the slots' cards, none is added
+    let mut q = Project::new();
+    let ids = apply(&mut q, d.clone(), 0.0, &[]);
+    let again = build(&q, &ids, &[], 0.0);
+    assert_eq!(again.clips.len(), d.clips.len());
+    assert!(again.slot_list().iter().all(|s| again.clip(s.card).is_some_and(|c| c.kind == ClipKind::Shape)));
     // sound that is left out is dropped; footage that stays is kept, and a slot can keep its footage
     let (p, ids) = animated_project();
     let d = build(&p, &ids, &[Part { clip: ids[0], slot: Some((String::new(), SlotWant::Any, SlotFit::Trim)), include: true }], 0.0);
@@ -388,6 +394,8 @@ fn a_template_exports_and_imports_with_and_without_footage() {
     export_package("With Picture", &d, false, Some(&png), &pic).unwrap();
     let item = import_package(&root, &pic).unwrap();
     assert_eq!(std::fs::read(thumb_path(&item.path)).unwrap(), b"PNGDATA");
+    let left: Vec<_> = std::fs::read_dir(root.join("templates").join("footage")).unwrap().flatten().collect();
+    assert!(left.iter().all(|d| std::fs::read_dir(d.path()).unwrap().count() > 0), "no empty footage folder is left behind");
 
     // not a template, or cut short: an error, nothing saved
     let junk = dir.join("junk.setemplate");

@@ -81,7 +81,11 @@ fn prop_row(
                     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("test_pan_slider"), r.id));
                     r
                 }
-                "Scale" | "Scale X" | "Scale Y" => ui.add(DragValue::new(&mut v).speed(0.01).range(0.01..=20.0)),
+                // (the range limits what is typed or dragged, not what is shown: a Pop In starts at scale 0, and
+                // clamping that on sight counted as an edit - written to every selected clip)
+                "Scale" | "Scale X" | "Scale Y" => {
+                    ui.add(DragValue::new(&mut v).speed(0.01).range(0.01..=20.0).clamp_existing_to_range(false))
+                }
                 "Opacity" => {
                     let mut pct = v * 100.0;
                     let r = ui.add(Slider::new(&mut pct, 0.0..=100.0).suffix(" %").fixed_decimals(0));
@@ -415,6 +419,26 @@ fn role_and_bus(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ws:animator-templates: a scale of 0 at the playhead (the first frame of a Pop In) is shown, not edited.
+    #[test]
+    fn a_scale_below_the_range_is_not_changed_by_being_shown() {
+        let ctx = egui::Context::default();
+        let palette = crate::theme::palette_with(&ctx, &Default::default());
+        let mut a = Animated::new(1.0);
+        use crate::model::Keyframe;
+        a.keys = vec![Keyframe { t: 0.0, v: 0.0, ease: Default::default() }, Keyframe { t: 0.4, v: 1.0, ease: Default::default() }];
+        let mut g = Gesture::default();
+        for _ in 0..3 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    egui::Grid::new("t").num_columns(2).show(ui, |ui| prop_row(ui, "Scale", &mut a, 0.0, &palette, &mut g, &[], None));
+                });
+            });
+        }
+        assert_eq!(a.keys[0].v, 0.0);
+        assert!(!g.changed && !g.start, "drawing the row is not an edit");
+    }
 
     #[test]
     fn db_gain_roundtrip() {

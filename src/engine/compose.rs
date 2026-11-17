@@ -561,7 +561,7 @@ impl Compositor {
                         text: label_text,
                         size: crate::model::Animated::new(32.0),
                         color: [220, 220, 220, 255],
-                        box_color: [40, 40, 40, 220],
+                        box_color: [40, 40, 40, 96],
                         box_padding: 16.0,
                         align: 1,
                         ..Default::default()

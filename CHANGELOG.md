@@ -9,6 +9,7 @@
 - Templates now keep their track order, transitions and animation blocks with their Animator controls. Templates saved before still load and place as they did.
 - **Share a template** as one `.setemplate` file, with or without its footage (right-click a template card ▸ Export…); import it from the Gallery's Import… or by dropping the file on the window. Footage that is not in the file becomes empty slots; no folder path of your PC is written into it.
 - MCP: `templates.slots`, `templates.use`, `templates.build`, `templates.export`, `templates.import`; `templates.list` / `templates.apply` know the built-in ones.
+- Fixed: with several clips selected and the playhead on a frame where the first one's scale is 0 (the start of a Pop In), the Inspector's Scale box counted showing the value as an edit and shifted the scale of every selected clip.
 
 ### Animate page and the Animator
 - New **Animate** page (after Edit, Alt+4): Gallery, Preview, Inspector, a thin Timeline and the new **Animator** panel. The page bar gets it once on existing installs; Color and Audio move to Alt+5 / Alt+6 and Export keeps Ctrl+E.

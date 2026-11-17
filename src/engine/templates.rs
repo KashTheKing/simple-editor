@@ -211,6 +211,15 @@ impl TemplateData {
             if card != 0 {
                 continue;
             }
+            // (built again from a placed template: the card that came with the slot is taken, not doubled)
+            let (name, at, len) = (format!("{} card", self.slots[si].name), self.clips[i].start, self.clips[i].duration);
+            let old = self.clips.iter().find(|c| {
+                c.kind == ClipKind::Shape && c.name == name && (c.start - at).abs() < 1e-6 && (c.duration - len).abs() < 1e-6
+            });
+            if let Some(old) = old {
+                self.slots[si].card = old.id;
+                continue;
+            }
             if !doubled {
                 // room for a card track under every track
                 self.layers.iter_mut().for_each(|l| *l = *l * 2 + 1);
@@ -476,14 +485,15 @@ pub fn builtin(name: &str, w: u32, h: u32) -> Option<TemplateData> {
     let mut b = Build::new(w, h);
     let (fw, fh, u) = (b.w, b.h, b.u);
     match BUILTIN_NAMES.iter().position(|n| n.eq_ignore_ascii_case(name.trim()))? {
-        // photos that slide in from alternating sides, drift slowly, and dissolve into each other
+        // photos that drift slowly; the first pops in, the next ones push in from alternating sides or dissolve
         0 => {
-            let ins = ["Pop In", "Slide In Right", "Slide In Left", "Slide In Bottom"];
+            let cuts = [(TransitionKind::Push, 0), (TransitionKind::Push, 1), (TransitionKind::CrossFade, 0)];
             for i in 0..4 {
                 let t = i as f64 * 3.0;
-                let id = b.slot(&format!("Photo {}", i + 1), SlotWant::Image, 0, t, 3.0, (0.0, 0.0), 1.0, &[(ins[i], 0.0, 0.6), ("Ken Burns", 0.6, 2.4)]);
+                let anims: &[Anim] = if i == 0 { &[("Pop In", 0.0, 0.5), ("Ken Burns", 0.5, 2.5)] } else { &[("Ken Burns", 0.0, 3.0)] };
+                let id = b.slot(&format!("Photo {}", i + 1), SlotWant::Image, 0, t, 3.0, (0.0, 0.0), 1.0, anims);
                 if i > 0 {
-                    b.cut(id, TransitionKind::CrossFade, 0.5, 0);
+                    b.cut(id, cuts[i - 1].0, 0.5, cuts[i - 1].1);
                 }
             }
             b.text("Title", "Our Trip", 110.0, 1, 0.3, 2.7, (0.0, fh * 0.32), &[("Pop In", 0.0, 0.4), ("Fade Out", -0.4, 0.4)]);
@@ -762,6 +772,7 @@ pub fn import_package(root: &Path, file: &Path) -> Result<Item, String> {
     if let Some(t) = thumb {
         let _ = std::fs::rename(t, thumb_path(&item.path));
     }
+    let _ = std::fs::remove_dir(&dir); // (only when nothing but the picture was in it)
     Ok(item)
 }
 
