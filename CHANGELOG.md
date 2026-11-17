@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.3.1
+
+### AI enhancer
+- **AI Upscale is no longer starved on a busy PC**: the upscaler runs at normal priority and steps down only while
+  the timeline or Source monitor plays; the result is encoded on the graphics card (NVENC / QSV / AMF, x264 fallback).
+  A short upscale with every core busy went from over 30 minutes to about 2.5 minutes.
 
 ### Fixes: HTML layers
 - **"Edge failed to start" on a busy PC**: 1.3.0 started Edge at below-normal priority, so while a build, an
