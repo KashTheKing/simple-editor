@@ -111,15 +111,14 @@ fn dedupe_push(toasts: &mut Vec<Toast>, mut t: Toast) {
 /// WINDOW_DRAWER: renders every live toast, oldest first, bottom-right - verbatim behaviour from the
 /// pre-extraction inline block, plus the kind colour / Undo button / progress bar this workstream adds.
 pub(super) fn draw(app: &mut App, ctx: &egui::Context) {
-    app.toasts.retain(|t| {
-        t.at.elapsed().as_secs_f32() < if t.open_path.is_some() || t.action.is_some() { 10.0 } else { 5.0 }
-    });
+    app.toasts.retain(|t| t.at.elapsed().as_secs_f32() < lifetime(t));
     if app.toasts.is_empty() {
         return;
     }
     let palette = app.palette.clone();
     let mut clicked_undo: Option<Action> = None;
-    egui::Area::new(egui::Id::new("toasts"))
+    let mut copied = false;
+    let area = egui::Area::new(egui::Id::new("toasts"))
         .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
@@ -131,11 +130,16 @@ pub(super) fn draw(app: &mut App, ctx: &egui::Context) {
                         ToastKind::Warn => ui.visuals().warn_fg_color,
                         ToastKind::Error => ui.visuals().error_fg_color,
                     };
-                    ui.colored_label(color, &t.msg);
+                    // selectable: drag over the text and Ctrl+C copies just that part
+                    ui.add(egui::Label::new(egui::RichText::new(&t.msg).color(color)).selectable(true));
                     if let Some(p) = &t.progress {
                         ui.add(egui::ProgressBar::new(p.fraction()).show_percentage());
                     }
                     ui.horizontal(|ui| {
+                        if ui.small_button("Copy").on_hover_text("Copy this message").clicked() {
+                            ui.ctx().copy_text(t.msg.clone());
+                            copied = true;
+                        }
                         if let Some(p) = &t.open_path {
                             if ui.small_button("Open Folder").clicked() {
                                 let mut cmd = std::process::Command::new("explorer");
@@ -156,10 +160,31 @@ pub(super) fn draw(app: &mut App, ctx: &egui::Context) {
                 });
             }
         });
+    // reading or selecting a toast keeps every toast open: the clock restarts while the pointer is on them
+    if area.response.contains_pointer() {
+        let now = Instant::now();
+        for t in &mut app.toasts {
+            t.at = now;
+        }
+    }
     if let Some(a) = clicked_undo {
         app.pending_actions.push(a);
     }
+    if copied {
+        app.push_toast(Toast::new("Copied").kind(ToastKind::Success));
+    }
     ctx.request_repaint_after(std::time::Duration::from_millis(500));
+}
+
+/// How long a toast stays (seconds): errors and toasts with a button get longer to read/act on.
+fn lifetime(t: &Toast) -> f32 {
+    if t.kind == ToastKind::Error {
+        12.0
+    } else if t.open_path.is_some() || t.action.is_some() || t.kind == ToastKind::Warn {
+        10.0
+    } else {
+        5.0
+    }
 }
 
 #[cfg(test)]
@@ -178,6 +203,13 @@ mod tests {
         // a different kind is a different toast, even with the same text
         dedupe_push(&mut toasts, Toast::new("Saved").kind(ToastKind::Error));
         assert_eq!(toasts.len(), 2);
+    }
+
+    /// Errors stay longest, then toasts with a button / warnings, then plain info.
+    #[test]
+    fn errors_stay_up_longer() {
+        assert!(lifetime(&Toast::new("x").kind(ToastKind::Error)) > lifetime(&Toast::new("x").undo(Action::Undo)));
+        assert!(lifetime(&Toast::new("x").kind(ToastKind::Warn)) > lifetime(&Toast::new("x")));
     }
 
     #[test]
