@@ -67,7 +67,7 @@ pub struct AnimState {
     boxsel: Option<(Pos2, Pos2)>,
     ranges: Option<Vec<(&'static str, f64, f64)>>,
     speed_sel: Option<usize>,
-    /// Onion-skin ghosts each side (`onion`); `None` = the default, 3.
+    /// Onion-skin ghosts each side (`onion`); `None` = the default, off.
     pub ghosts: Option<u8>,
     /// Width of the lanes' label column (the splitter between labels and lanes); `None` = `HEAD_W`.
     pub head_w: Option<f32>,
@@ -80,13 +80,15 @@ pub struct AnimState {
     ctx_t: Option<f64>,
     /// The time window shown (timeline seconds) after a zoom / pan; `None` = fit.
     pub win: Option<(f64, f64)>,
+    /// The clips `win` was framed for: another selection frames its own blocks again.
+    win_for: Vec<Id>,
     /// Blocks: the lanes span the whole timeline (else just the selected clips).
     pub whole: bool,
     /// More blocks picked with Shift / Ctrl-click (`sel` is the main one, the Inspector's).
     pub multi: Vec<(Id, usize)>,
     /// The app's snapping setting (the caller sets it each frame): off = a dragged block snaps to nothing.
     pub snap: bool,
-    /// Curves: width of the channel list (the splitter between it and the graph); `None` = 236.
+    /// Curves: width of the channel list (the splitter between it and the graph); `None` = 300.
     pub ch_w: Option<f32>,
     /// The last press was in the Animator: Delete / Backspace / Split act on its block or keys, not the clip.
     pub here: bool,
@@ -540,7 +542,7 @@ pub fn show(
     let main = st.sel;
     st.multi.retain(|&(id, i)| Some((id, i)) != main && project.clip(id).is_some_and(|c| i < c.blocks.len()));
     SEL.with(|s| s.set(st.sel));
-    set_onion(st.ghosts.unwrap_or(3));
+    set_onion(st.ghosts.unwrap_or(0));
     let compact = ui.available_width() < COMPACT_W;
     header(ui, st, project, &ids, *playhead, compact, presets, undo, &mut out);
     ui.separator();
@@ -643,7 +645,7 @@ fn header(
                 }
             }
         }
-        let on = st.ghosts.unwrap_or(3) > 0;
+        let on = st.ghosts.unwrap_or(0) > 0;
         if chip(ui, on, "Onion skin").on_hover_text("Ghost outlines of the selected layer a few frames before (blue) and after (orange), and where the selected block starts (dashed)").clicked() {
             st.ghosts = Some(if on { 0 } else { 3 });
         }
@@ -779,8 +781,38 @@ fn range(project: &Project, ids: &[Id]) -> (f64, f64) {
     ((a - pad).max(0.0), b + pad)
 }
 
+/// The window the lanes open on: the clips' blocks with a little air, never so wide that the shortest block
+/// is a sliver (at most 14 of it across), inside `fit`. No blocks: `fit`.
+fn block_fit(project: &Project, ids: &[Id], fit: (f64, f64)) -> (f64, f64) {
+    let spans: Vec<(f64, f64)> = ids
+        .iter()
+        .filter_map(|&id| project.clip(id))
+        .flat_map(|c| c.blocks.iter().map(move |b| (c.start + b.t, c.start + b.end())))
+        .collect();
+    if spans.is_empty() {
+        return fit;
+    }
+    let (a, b) = spans.iter().fold((f64::MAX, f64::MIN), |(a, b), s| (a.min(s.0), b.max(s.1)));
+    let short = spans.iter().map(|s| s.1 - s.0).fold(f64::MAX, f64::min).max(0.05);
+    let pad = ((b - a) * 0.15).max(0.3);
+    let (a, b) = (a - pad, (b + pad).min(a - pad + short * 14.0));
+    let len = (b - a).min(fit.1 - fit.0);
+    let a = a.clamp(fit.0, (fit.1 - len).max(fit.0));
+    (a, a + len)
+}
+
+/// A keyed block that wiggles and comes back to where it started (a shake, a pulse): it has no side and no
+/// origin / target, and its picture is its real curve.
+fn wiggles(ctl: &BlockCtl) -> bool {
+    let t = &ctl.src.tracks;
+    ctl.src.gen.is_none()
+        && t.iter().any(|t| t.keys.len() > 2)
+        && t.iter().all(|t| t.keys.first().map(|k| k.v) == t.keys.last().map(|k| k.v))
+}
+
 fn ruler(ui: &mut Ui, rect: Rect, t0: f64, t1: f64, playhead: &mut f64, pal: &Palette, out: &mut AnimResp) {
-    let p = ui.painter_at(rect);
+    // a label centred on the first / last tick hangs over the edge: let it (else "0s" reads "s")
+    let p = ui.painter_at(rect.expand2(vec2(14.0, 0.0)));
     let x = |t: f64| rect.left() + ((t - t0) / (t1 - t0)) as f32 * rect.width();
     for t in ticks(t0, t1, rect.width()) {
         p.line_segment([pos2(x(t), rect.bottom() - 5.0), pos2(x(t), rect.bottom())], Stroke::new(1.0, pal.border));
@@ -821,7 +853,7 @@ fn zoom_bar(ui: &mut Ui, pal: &Palette, win: &mut Option<(f64, f64)>, fit: (f64,
         });
     });
     if fitted || z <= 1.0 + 1e-6 && z != z0 {
-        *win = None;
+        *win = Some(fit); // the whole range, kept (None would frame the blocks again)
     } else if z != z0 {
         let len = flen / z.min(400.0);
         let at = if (t0..=t1).contains(&playhead) { playhead } else { (t0 + t1) / 2.0 };
@@ -856,7 +888,10 @@ fn blocks(
             link_now = chip(ui, false, "Link into one block").on_hover_text(tip).clicked();
         }
         fit = if st.whole { (0.0, project.duration().max(1.0) * 1.02) } else { range(project, ids) };
-        st.win = st.win.filter(|w| w.1 > fit.0 && w.0 < fit.1);
+        if st.win_for != ids {
+            (st.win, st.win_for) = (None, ids.to_vec());
+        }
+        st.win = st.win.filter(|w| w.1 > fit.0 && w.0 < fit.1).or_else(|| Some(block_fit(project, ids, fit)));
         zoom_bar(ui, pal, &mut st.win, fit, *playhead);
     });
     let ph = *playhead;
@@ -1242,7 +1277,7 @@ fn blocks(
             for (i, b) in c.blocks.iter().enumerate().filter(|(i, _)| st.open.contains(&(id, *i))) {
                 let (sub, _) = ui.allocate_exact_size(vec2(full.width(), STRING_H), Sense::hover());
                 ui.painter_at(sub).rect_filled(sub, 0.0, look::DEEP);
-                let live = b.ctl.as_ref().filter(|c| !c.edited && !c.is_sim());
+                let live = b.ctl.as_ref().filter(|c| !c.edited && !c.is_sim() && !wiggles(c));
                 let (xa, xb) = (x(c.start + b.t), x(c.start + b.end()));
                 let (y0, y1) = (sub.bottom() - 18.0, sub.top() + 18.0);
                 let at = |fx: f32, fy: f32| pos2(xa + fx * (xb - xa), y0 + fy * (y1 - y0));
@@ -1527,7 +1562,7 @@ fn curves(
     });
 
     ui.horizontal_top(|ui| {
-        let w = st.ch_w.unwrap_or(236.0).clamp(150.0, 480.0);
+        let w = st.ch_w.unwrap_or(300.0).clamp(150.0, 480.0);
         ui.vertical(|ui| {
             ui.set_width(w);
             channel_list(ui, st, project, id, &channels, playhead, undo, out);
@@ -1756,10 +1791,12 @@ fn graph(
             .iter()
             .map(|&p| {
                 let a = prop_ref(c, p).unwrap();
-                let (q0, q1) = (f0.max(0.0).min(s0), f1.min(c.duration).max(s1));
-                let vs: Vec<f64> = (0..=80)
+                // what is on screen, sampled as finely as it is drawn, plus the keys themselves (a shake's
+                // peaks fall between coarse samples)
+                let (q0, q1) = (f0, f1);
+                let mut vs: Vec<f64> = (0..=240)
                     .map(|i| {
-                        let t = q0 + (q1 - q0) * i as f64 / 80.0;
+                        let t = q0 + (q1 - q0) * i as f64 / 240.0;
                         if st.velocity {
                             vel(a, t)
                         } else {
@@ -1767,6 +1804,9 @@ fn graph(
                         }
                     })
                     .collect();
+                if !st.velocity {
+                    vs.extend(a.keys.iter().filter(|k| k.t >= q0 && k.t <= q1).map(|k| k.v));
+                }
                 let (mut lo, mut hi) = vs.iter().fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
                 if st.velocity {
                     let m = lo.abs().max(hi.abs()).max(1e-3);
@@ -1819,7 +1859,7 @@ fn graph(
             })
             .collect();
         let foc = Some(p) == focus;
-        painter.add(egui::Shape::line(pts, Stroke::new(if foc { 2.2 } else { 1.4 }, prop_color(p).gamma_multiply(if foc { 1.0 } else { 0.55 }))));
+        painter.with_clip_rect(plot).add(egui::Shape::line(pts, Stroke::new(if foc { 2.2 } else { 1.4 }, prop_color(p).gamma_multiply(if foc { 1.0 } else { 0.55 }))));
     }
     // keys + the selected keys' handles (value view only: the handles are the segment's bezier)
     let mut hits: Vec<(Rect, &'static str, usize, i8)> = Vec::new();
@@ -2141,6 +2181,8 @@ fn flow(
     // this clip and the one it cuts to (Flow is about hand-offs, and the cut is the one people feel most)
     let next = project.tracks[tr].clips.iter().find(|n| (n.start - c.end()).abs() < 1.5 / project.fps).cloned();
     let (t0, t1) = (c.start, next.as_ref().map_or(c.end(), |n| n.start + n.duration.min(c.duration.max(2.0))));
+    // the zoom the Blocks lanes are at, while it shows some of this
+    let (t0, t1) = st.win.filter(|w| w.1 > t0 && w.0 < t1).unwrap_or((t0, t1));
     let seams: Vec<Seam> = project.block_seams().into_iter().filter(|s| s.left.0 == id || s.right.0 == id).collect();
     let prop = seams
         .iter()
@@ -2172,7 +2214,10 @@ fn flow(
         });
     });
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click());
-    let plot = Rect::from_min_max(rect.min + vec2(64.0, 30.0), rect.max - vec2(14.0, 40.0));
+    let plot = Rect::from_min_max(rect.min + vec2(64.0, 30.0), rect.max - vec2(14.0, 66.0));
+    if let Some(w) = wheel_zoom(ui, &resp, plot, (t0, t1), false) {
+        st.win = Some(w);
+    }
     let x = |t: f64| plot.left() + ((t - t0) / (t1 - t0).max(1e-3)) as f32 * plot.width();
     let samples: Vec<(f64, Option<f64>)> = (0..=300)
         .map(|i| {
@@ -2210,7 +2255,7 @@ fn flow(
             pal.text_dim,
         );
     }
-    if next.is_some() {
+    if next.is_some() && (t0..=t1).contains(&c.end()) {
         p.line_segment(
             [pos2(x(c.end()), plot.top() - 8.0), pos2(x(c.end()), plot.bottom())],
             Stroke::new(1.0, pal.text_dim),
@@ -2231,16 +2276,24 @@ fn flow(
             .map(|(t, v)| pos2(x(*t), y(v.unwrap())))
             .collect();
         if pts.len() > 1 {
-            p.add(egui::Shape::line(pts, Stroke::new(2.2, col)));
+            p.with_clip_rect(plot).add(egui::Shape::line(pts, Stroke::new(2.2, col)));
         }
     }
-    // the blocks underneath, for orientation
-    let mut row = 0.0;
+    // the blocks underneath, for orientation: a row each where they overlap in time (three rows at most)
+    let mut ends: Vec<f64> = Vec::new();
     for cl in std::iter::once(&c).chain(next.iter()) {
         for b in &cl.blocks {
+            let (a, e) = (cl.start + b.t, cl.start + b.end());
+            let lane = ends.iter().position(|&x| x <= a + 1e-4).unwrap_or(ends.len()).min(2);
+            if lane == ends.len() {
+                ends.push(e);
+            } else {
+                ends[lane] = e;
+            }
+            let row = lane as f32 * 13.0;
             let r = Rect::from_min_max(
-                pos2(x(cl.start + b.t).max(plot.left()), plot.bottom() + 8.0 + row),
-                pos2(x(cl.start + b.end()).min(plot.right()), plot.bottom() + 20.0 + row),
+                pos2(x(a).max(plot.left()), plot.bottom() + 8.0 + row),
+                pos2(x(e).min(plot.right()), plot.bottom() + 20.0 + row),
             );
             if r.width() > 1.0 {
                 p.rect_filled(r, 3.0, block_col(b).gamma_multiply(0.45));
@@ -2252,7 +2305,6 @@ fn flow(
                     Color32::WHITE,
                 );
             }
-            row = if row == 0.0 { 13.0 } else { 0.0 };
         }
     }
     let mut act = None;
@@ -2683,9 +2735,10 @@ fn block_controls(
         .map(|c| b.props.iter().take(3).filter_map(|p| prop_ref(c, p).map(|a| (p.clone(), a.at(b.t), a.at(b.end())))).collect())
         .unwrap_or_default();
     egui::Grid::new(("anim-ctl", id, i)).num_columns(2).spacing([12.0, 9.0]).min_col_width(70.0).show(ui, |ui| {
-        let moves_xy = ctl.src.gen.map_or(ctl.dir.is_some(), |g| g.has_dir());
+        let wig = wiggles(&ctl);
+        let moves_xy = ctl.src.gen.map_or(ctl.dir.is_some() && !wig, |g| g.has_dir());
         if moves_xy {
-            field(ui, if b.name.contains("Out") || ctl.src.gen == Some(Gen::ThrowOut) { "Toward" } else { "From" });
+            field(ui, if b.name.contains("Out") || ctl.src.gen == Some(Gen::ThrowOut) { "Toward side" } else { "From side" });
             let lr = ctl.src.gen.is_none() && b.name == "Spin";
             if let Some(d) = side_pad(ui, ctl.dir, lr) {
                 ctl.dir = Some(d);
@@ -2701,7 +2754,7 @@ fn block_controls(
         if r.changed() {
             gesture |= r.drag_started() || !r.dragged();
         }
-        for (label, to) in [("From", false), ("To", true)].into_iter().filter(|_| ctl.src.gen.is_none()) {
+        for (label, to) in [("From", false), ("To", true)].into_iter().filter(|_| ctl.src.gen.is_none() && !wig) {
             field(ui, label);
             ui.horizontal(|ui| {
                 for (p, v0, v1) in &ends {
@@ -2956,6 +3009,24 @@ mod tests {
         p.place_key_block(1, &f("Speed Ramp Out"), 0.2, Some(0.5));
         let b = &p.clip(1).unwrap().blocks;
         assert_eq!(lane_rows(b), (vec![0, 1, 0], vec!["Opacity", "Speed"]), "{b:?}");
+    }
+
+    /// The lanes open framed on the blocks, not the whole clip: short blocks on a long clip stay readable.
+    #[test]
+    fn the_lanes_open_on_the_blocks_and_a_shake_has_no_side() {
+        let f = |n| find_block(&[], n).unwrap();
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "a", 0.0, 30.0));
+        let fit = range(&p, &[1]);
+        assert_eq!(block_fit(&p, &[1], fit), fit, "no blocks: the whole clip");
+        p.place_key_block(1, &f("Pop In"), 10.0, Some(0.4));
+        p.place_key_block(1, &f("Slide Out Right"), 12.0, Some(0.6));
+        let (a, b) = block_fit(&p, &[1], fit);
+        assert!(a <= 10.0 && a >= fit.0 && b <= fit.1, "{a} {b}");
+        // the shortest block (0.4 s) is at least a fourteenth of the window
+        assert!(b - a <= 0.4 * 14.0 + 1e-9 && b - a >= 0.4, "{a} {b}");
+        assert!(wiggles(&BlockCtl::new(f("Shake"))));
+        assert!(!wiggles(&BlockCtl::new(f("Slide In Left"))) && !wiggles(&BlockCtl::new(f("Fade Out"))));
     }
 
     #[test]

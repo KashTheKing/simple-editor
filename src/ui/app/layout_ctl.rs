@@ -363,6 +363,9 @@ pub(super) fn switch_page(app: &mut App, name: &str) -> bool {
     if swap_page(layout, settings, undo, redo, &page) {
         app.tools.tool = layout::page_tool(&page);
         app.preview.crop_mode = false; // tools-panel: a page opens on its plain tool, never a leftover Crop
+        if page == "Animate" {
+            app.gallery.tab = crate::ui::gallery::GalleryTab::Animate; // the page's Gallery opens on the blocks
+        }
         app.layout_json = app.settings.layout.clone();
         app.settings.save();
     }
