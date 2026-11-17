@@ -140,6 +140,8 @@ pub struct LibraryResponse {
     pub import: bool,
     /// "Import folder as bin…" (header button, empty state, right-click menu): the app opens the picker.
     pub import_folder: bool,
+    /// Where the header's folder button was drawn (tests find it here: its id is scoped to the pane's Ui).
+    pub folder_button: Option<egui::Rect>,
     /// A folder was just linked: bring the Media Browser pane (where linked folders live) forward.
     pub show_browser: bool,
     /// Assets to put on the timeline, back to back in THIS order (the selection's click order).
@@ -1586,7 +1588,11 @@ fn header(
                     resp.import = true;
                 }
                 let tip = "Import a folder as a bin: its sub-folders become nested bins";
-                if icon_button(ui, palette, egui::Id::new("lib-import-folder"), Glyph::Folder, tip, false).clicked() {
+                // scoped to this Ui: the library can be drawn twice in one frame (two panes / pages), and a
+                // global id made egui report "second use of widget ID" and share the button's state
+                let b = icon_button(ui, palette, ui.id().with("lib-import-folder"), Glyph::Folder, tip, false);
+                resp.folder_button = Some(b.rect);
+                if b.clicked() {
                     resp.import_folder = true;
                 }
                 menu::button(ui, "View ▾", |ui| view_menu(ui, state, settings, columns_changed));
@@ -4247,8 +4253,8 @@ mod tests {
         let mut state = LibraryState::default();
         let mut pane = Pane::new(300.0, 600.0);
         pane.step(&mut state, &mut project, &mut settings, vec![]);
-        pane.step(&mut state, &mut project, &mut settings, vec![]);
-        let at = pane.ctx.read_response(egui::Id::new("lib-import-folder")).expect("folder button drawn").rect.center();
+        let (_, r0) = pane.step(&mut state, &mut project, &mut settings, vec![]);
+        let at = r0.folder_button.expect("folder button drawn").center();
         let (_, r) = pane.step(&mut state, &mut project, &mut settings, press(at, egui::PointerButton::Primary));
         assert!(r.import_folder && !r.import);
     }
