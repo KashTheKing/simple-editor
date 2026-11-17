@@ -260,7 +260,7 @@ impl App {
         acts_if(ui, tools_monitor::multicam_available(self), &[Some(MulticamAngles)]);
         acts(ui, &[None, Some(MatchFrame), Some(RevealInLibrary), None]);
         acts_if(ui, has_sel || !self.sel_transitions.is_empty(), &[Some(SaveToGallery)]);
-        acts_if(ui, has_sel, &[Some(SaveTemplate)]);
+        acts(ui, &[Some(SaveTemplate)]); // ws:animator-templates: the builder (selection, or the timeline)
         acts_if(ui, self.selection.len() == 2, &[Some(ApplyFlow)]);
     }
 

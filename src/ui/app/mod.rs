@@ -168,6 +168,7 @@ mod enhance_ctl;
 mod whatsnew;
 mod perf_ctl; // ws:perf-window
 mod animator_ctl; // ws:animator
+mod template_ctl; // ws:animator-templates
 #[path = "windows.rs"]
 mod windows_dlg;
 
@@ -451,6 +452,8 @@ pub struct App {
     gallery: crate::ui::gallery::GalleryState,
     /// "Save to Gallery…" / rename / tags prompt (`gallery_mine`).
     save_dialog: gallery_mine::SaveDialog,
+    /// ws:animator-templates: the Use Template and Template Builder windows (`template_ctl`).
+    templates: template_ctl::State,
     /// The sound the Gallery is previewing (`gallery_mine::frame`).
     sound_playing: Option<PathBuf>,
     // ---- ws:media-library ----
@@ -943,6 +946,7 @@ impl App {
             gallery_textures: Vec::new(),
             gallery: crate::ui::gallery::GalleryState::default(),
             save_dialog: Default::default(),
+            templates: Default::default(), // ws:animator-templates
             sound_playing: None,
             // ---- ws:media-library ----
             media_jobs: Vec::new(),
@@ -1685,6 +1689,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     perf_ctl::TOOLS,
     // ---- ws:animator ----
     animator_ctl::TOOLS,
+    // ---- ws:animator-templates ----
+    template_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1770,6 +1776,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     perf_ctl::act,
     // ---- ws:animator ----
     animator_ctl::act,
+    // ---- ws:animator-templates ----
+    template_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1926,6 +1934,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     browser_ctl::windows,
     // ---- ws:perf-window ----
     perf_ctl::window,
+    // ---- ws:animator-templates ----
+    template_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[

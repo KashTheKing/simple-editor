@@ -77,6 +77,20 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if app.gallery.lib.is_none() && matches!(app.gallery.tab, gallery::GalleryTab::Looks | gallery::GalleryTab::Luts) {
         app.build_gallery_thumbnails(ui.ctx());
     }
+    // ws:animator-templates: the pictures of the saved templates' cards (a `.png` beside each one)
+    if app.gallery.lib.is_none() && app.gallery.tab == gallery::GalleryTab::Templates {
+        let ctx = ui.ctx().clone();
+        let mut m = std::collections::HashMap::new();
+        for i in gallery::mine_items(crate::engine::gallery::Kind::Template, ctx.input(|i| i.time)).iter() {
+            let png = crate::engine::templates::thumb_path(&i.path);
+            if png.is_file() {
+                if let Some(t) = app.thumbs.texture(&ctx, &png.to_string_lossy(), 0.0, 54) {
+                    m.insert(i.name.clone(), t);
+                }
+            }
+        }
+        gallery::set_template_thumbs(m);
+    }
     if lib_kind.is_some() {
         // not connected: reads what is installed and nothing else (no network until "Browse online library")
         library_ctl::ensure(app, false);
@@ -137,9 +151,12 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             Err(e) => app.toast(e),
         }
     }
+    // ws:animator-templates: a template with slots asks for footage first (`template_ctl` counts the use)
     if let Some(name) = resp.place {
-        app.place_template(&name, app.playhead);
-        count_use(app, "Templates", &name);
+        template_ctl::card_clicked(app, &name);
+    }
+    if resp.builder {
+        template_ctl::open_builder(app);
     }
     // ---- ws:text-titles ----
     if let Some(name) = resp.place_title {

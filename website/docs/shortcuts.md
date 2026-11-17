@@ -158,7 +158,7 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Match Frame | <kbd>F</kbd> |
 | Reveal in Library | <kbd>Ctrl+Shift+R</kbd> |
 | Add Transition at Clip End | - |
-| Save Selection as Template… | - |
+| Save as Template… | - |
 | Flow Motion Between Selected Clips | - |
 | Replace Container Media… | - |
 | Convert to Container | - |

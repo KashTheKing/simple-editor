@@ -67,20 +67,14 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     .map(|m| m.name.clone())
                     .chain(app.settings.motion_presets.iter().map(|m| m.name.clone()))
                     .collect();
-                Ok(json!({"templates": templates, "motion_presets": motions}))
+                Ok(json!({"templates": templates, "builtin": crate::engine::templates::BUILTIN_NAMES, "motion_presets": motions}))
             }
             "templates.apply" => {
                 let name = req(arg_str(args, "name"), "name")?;
                 let at = req(arg_f64(args, "at"), "at")?;
-                let tpl = app
-                    .settings
-                    .templates
-                    .iter()
-                    .find(|t| t.name.eq_ignore_ascii_case(name))
-                    .cloned()
-                    .ok_or_else(|| format!("no template '{name}'"))?;
-                let (clips, assets) = crate::engine::presets::decode_template(&tpl).ok_or("template is corrupted")?;
-                let ids = app.project.place_clips(clips, assets, at);
+                // (place_clips, with the template's layers and transitions; slots: templates.use)
+                let d = super::template_ctl::find(app, name).ok_or_else(|| format!("no template '{name}'"))?;
+                let ids = crate::engine::templates::apply(&mut app.project, d, at, &[]);
                 Ok(json!({"ok": true, "clip_ids": ids}))
             }
             // ---------------- round 3 ----------------
@@ -264,11 +258,11 @@ pub const TOOLS: &[ToolDef] = &[
     row!("playback.seek", ToolKind::Read, "Move the playhead.", &["t:number:true:"]),
     row!("playback.play", ToolKind::Read, "Start playback. With Settings > Performance > \"Buffer before playing\" on (default) it first waits, at most 3 s, until the next second of frames and audio is ready, so it returns at once with `state` \"buffering\" or \"playing\": poll `playback.status` until `settled` is true.", &[]),
     row!("playback.pause", ToolKind::Read, "Pause playback.", &[]),
-    row!("templates.list", ToolKind::Read, "Saved clip templates and motion presets.", &[]),
+    row!("templates.list", ToolKind::Read, "Saved clip templates, the built-in animation templates and motion presets.", &[]),
     row!(
         "templates.apply",
         ToolKind::Mutate,
-        "Place a saved template at a time.",
+        "Place a template (saved or built-in) at a time, slots left as they are (templates.use fills them).",
         &["name:string:true:", "at:number:true:"]
     ),
     row!(

@@ -111,7 +111,7 @@ actions! {
     AutoCut => "auto_cut", "Auto-cut (silence) Panel", sc(CTRL_ALT, Key::A);
     NestSequence => "nest", "Nest Selection into a New Sequence", sc(ALT, Key::N);
     OpenParentSequence => "parent_sequence", "Back to Parent Timeline", sc(ALT, Key::ArrowUp);
-    SaveTemplate => "save_template", "Save Selection as Template…", None;
+    SaveTemplate => "save_template", "Save as Template…", None;
     ApplyFlow => "flow", "Flow Motion Between Selected Clips", None;
     // ---- round 3 ----
     AddLastTransition => "add_last_transition", "Add Last Used Transition", sc(CTRL, Key::T);

@@ -41,6 +41,9 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("unmake_container", "container.unmake"),
     ("add_cue", "subtitles.set"),
     ("place_clips", "templates.apply"),
+    // ---- ws:animator-templates ----
+    ("place_template", "templates.use"),
+    ("fill_slot", "templates.use"),
     ("add_transition", "timeline.add_transition"),
     ("add_edge_transition", "timeline.add_transition"),
     // trim/keyframe/effect/mask/graph/route ops reached through clip.*/audio.* live in

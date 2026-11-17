@@ -19,7 +19,7 @@ pub(super) fn drop_len(app: &App, p: &DragPayload) -> f64 {
         (b > a).then_some(b - a)
     };
     let found = match p {
-        DragPayload::Template(name) => app.settings.templates.iter().find(|t| &t.name == name).and_then(span),
+        DragPayload::Template(name) => template_ctl::find(app, name).map(|d| d.duration()).filter(|d| *d > 0.0),
         DragPayload::GalleryCard(GalleryTab::Titles, name) => crate::engine::presets::builtin_titles()
             .iter()
             .chain(app.settings.templates.iter())
@@ -138,19 +138,9 @@ pub(super) fn execute(app: &mut App, payload: DragPayload, aim: Option<Aim>) {
             library_ctl::click(app, &id, target); // installs first when it must, then does what a click does
         }
         (DragPayload::Template(name), Aim::Place { track, t }) => {
-            let Some(tpl) = app.settings.templates.iter().find(|x| x.name == name).cloned() else {
-                app.toast(format!("Template '{name}' not found"));
-                return;
-            };
-            let Some((clips, assets)) = crate::engine::presets::decode_template(&tpl) else {
-                app.toast(format!("Template '{name}' is corrupted"));
-                return;
-            };
-            app.push_undo();
-            let ids = app.project.place_clips(clips, assets, t);
-            pull_to_track(&mut app.project, &ids, track);
-            app.selection = ids;
-            app.after_edit();
+            // ws:animator-templates: with its layers, transitions and the library's selection in its slots
+            let fills = template_ctl::library_fills(app, &name);
+            template_ctl::place(app, &name, t, track, fills);
         }
         // Titles: the click's own post-step too (its Customize rows)
         (DragPayload::GalleryCard(GalleryTab::Titles, name), Aim::Place { track, t }) => {

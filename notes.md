@@ -689,3 +689,24 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   when Edge will not start ("no DevTools port after 20 s").
 - NOT verified: the compact list by eye (only its idle-repaint test), dragging blocks / handles by hand, Draw a motion path with a
   real pencil stroke, Link to layer through the menu, onion skin while scrubbing by eye, playback smoothness of ramps.
+
+## Animation templates (claude/animator-templates-5e186d, cut from feat/animator, 2026-11-17)
+- A template is still the Gallery `template` item (`{clips, assets}`); `engine::templates::TemplateData` adds optional `transitions`,
+  `layers` (track order), `slots` and `thumb_t`. Old templates decode with those empty and place exactly as `place_clips` did.
+- A slot IS a container clip (the existing `Clip.container`); `Slot` (name, clip id, wants, fit, card) lives in the template, not on
+  the clip. `Project::place_template` + `Project::fill_slot` (`model/ops/templates.rs`) do the placing; `templates::apply` is the one
+  entry (UI, drop, MCP all go through the `templates.use` tool = one undo).
+- Fit: Trim = slot keeps its length (longer footage cut, shorter slowed via `clip.speed`); Stretch = slot takes the footage length,
+  later template clips shift, keys / blocks in a clip's second half move with its end (a shrinking clip is scaled instead).
+- An empty slot of a built / built-in template has a colour card (a Shape clip one layer below, same blocks); `apply` removes the
+  card when the slot is filled, and a track that was added only for cards.
+- Built-ins (`templates::builtin(name, w, h)`) are generated for the project's frame size, not stored JSON.
+- Sharing: one `.setemplate` file = `SETEMPLATE1\n` + u64 header length + JSON header (name, files, data) + raw file bytes. Chosen over
+  a zip because the repo only has an UNzip (PowerShell); this is stdlib, streamed and unit-testable. Footage unpacks to
+  `gallery\templates\footage\<stamp>-<slug>\`. Asset paths in the header are file names; any other absolute-path string is scrubbed.
+- Legacy `capture_template` (clipboard, Save to Gallery > Template) is unchanged on purpose (no layers): paste behaviour stays.
+- A slot plays footage sound only if the clip it was made from had a linked sound half; built-in slots are picture only.
+- User templates are not rescaled when placed in a project of another frame size (built-ins are generated per size).
+- NOT verified on screen: every window and Gallery interaction (Use Template, Template Builder, drag media onto a slot row, card
+  pictures, Export / Import dialogs), and how the built-ins look when rendered. Only unit / headless tests ran.
+- D: ran out of space mid-session (0 bytes); this worktree's `target/` was moved to the session scratchpad on C: and deleted from D:.

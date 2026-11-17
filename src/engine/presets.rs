@@ -470,11 +470,8 @@ pub fn builtin_caption_styles() -> Vec<TextStyle> {
     ]
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
-struct TemplateData {
-    clips: Vec<Clip>,
-    assets: Vec<Asset>,
-}
+// ws:animator-templates: the payload (these two fields plus optional layers / transitions / slots)
+use super::templates::TemplateData;
 
 /// Serialise a group of clips (+ the assets they use) into a Template (times relative to the earliest start).
 pub fn capture_template(name: &str, project: &Project, clip_ids: &[crate::model::Id]) -> Template {
@@ -489,7 +486,7 @@ pub fn capture_template(name: &str, project: &Project, clip_ids: &[crate::model:
             }
         }
     }
-    let json = serde_json::to_string(&TemplateData { clips, assets }).unwrap_or_default();
+    let json = serde_json::to_string(&TemplateData { clips, assets, ..Default::default() }).unwrap_or_default();
     Template { name: name.into(), json }
 }
 
@@ -506,7 +503,7 @@ pub fn decode_template(t: &Template) -> Option<(Vec<Clip>, Vec<Asset>)> {
 /// non-empty `exposed` so Placing one always gives the Gallery's Customize panel something to show.
 pub fn builtin_titles() -> Vec<Template> {
     fn encode(clips: Vec<Clip>) -> String {
-        serde_json::to_string(&TemplateData { clips, assets: Vec::new() }).unwrap_or_default()
+        serde_json::to_string(&TemplateData { clips, ..Default::default() }).unwrap_or_default()
     }
     let lower_third = {
         let mut bar = Clip::new(0, ClipKind::Shape, "Bar", 0.0, 4.0);
@@ -567,14 +564,14 @@ pub fn builtin_titles() -> Vec<Template> {
 /// `None` if `t.json` doesn't decode, or any `clip_index` is out of range - no partial rewrite either
 /// way, matching `decode_template`'s own all-or-nothing shape.
 pub fn expose_fields(t: &Template, fields: &[(usize, String)]) -> Option<Template> {
-    let (mut clips, assets) = decode_template(t)?;
+    let mut d = TemplateData::decode(&t.json)?;
     for (i, field) in fields {
-        let c = clips.get_mut(*i)?;
+        let c = d.clips.get_mut(*i)?;
         if !c.exposed.iter().any(|e| e == field) {
             c.exposed.push(field.clone());
         }
     }
-    let json = serde_json::to_string(&TemplateData { clips, assets }).ok()?;
+    let json = serde_json::to_string(&d).ok()?;
     Some(Template { name: t.name.clone(), json })
 }
 
