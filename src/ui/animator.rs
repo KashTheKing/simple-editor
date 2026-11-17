@@ -61,6 +61,8 @@ pub struct AnimState {
     speed_sel: Option<usize>,
     /// Onion-skin ghosts each side (`onion`); `None` = the default, 3.
     pub ghosts: Option<u8>,
+    /// Width of the lanes' label column (the splitter between labels and lanes); `None` = `HEAD_W`.
+    pub head_w: Option<f32>,
 }
 
 #[derive(Default)]
@@ -168,8 +170,258 @@ fn ticks(t0: f64, t1: f64, px: f32) -> Vec<f64> {
     out
 }
 
+// ---------- the look (the approved preview's: dark cards, a colour per kind of block, pills) ----------
+
+/// Card, track, line and text greys of the Animator (the 1.3.0 Performance window's family).
+pub(crate) mod look {
+    use eframe::egui::Color32;
+    pub const CARD: Color32 = Color32::from_rgb(0x1B, 0x1D, 0x23);
+    pub const TRACK: Color32 = Color32::from_rgb(0x2C, 0x2F, 0x37);
+    pub const LINE: Color32 = Color32::from_rgb(0x26, 0x29, 0x31);
+    pub const DEEP: Color32 = Color32::from_rgb(0x10, 0x12, 0x16);
+    pub const TEXT: Color32 = Color32::from_gray(232);
+    pub const MUTED: Color32 = Color32::from_gray(140);
+    pub const DIM: Color32 = Color32::from_rgb(0x5F, 0x63, 0x6D);
+    pub const HANDLE: Color32 = Color32::from_rgb(0xF2, 0xC1, 0x4E);
+}
+
+/// The kind of a block and its colour: In teal, Out orange, Emphasis yellow, Camera blue, Physics purple,
+/// Sound green, Speed coral; a saved one keeps its name's colour.
+pub fn block_kind(b: &AppliedBlock) -> (&'static str, Color32) {
+    let gen = b.ctl.as_ref().and_then(|c| c.src.gen);
+    kind_of(&b.name, gen)
+}
+pub fn kind_of(name: &str, gen: Option<Gen>) -> (&'static str, Color32) {
+    let c = |r, g, b| Color32::from_rgb(r, g, b);
+    if let Some(g) = gen {
+        return if g == Gen::Shake { ("Camera", c(0x33, 0x66, 0xFF)) } else { ("Physics", c(0x9B, 0x5D, 0xE5)) };
+    }
+    let n = name.to_ascii_lowercase();
+    let has = |w: &str| n.contains(w);
+    if has("speed") || has("slow-mo") {
+        ("Speed", c(0xEF, 0x7A, 0x5A))
+    } else if has("sound") || has("duck") || has("pan ") || has("tremolo") {
+        ("Sound", c(0x4C, 0xC0, 0x6A))
+    } else if has(" in") || has("drop") || has("elastic") || has("typewriter") {
+        ("In", c(0x2B, 0xB3, 0xA3))
+    } else if has(" out") || has("whip") {
+        ("Out", c(0xE0, 0x60, 0x2A))
+    } else if has("ken burns") || has("drift") || has("zoom") || has("camera") {
+        ("Camera", c(0x33, 0x66, 0xFF))
+    } else if ["pulse", "shake", "wiggle", "bounce", "spin", "flash"].iter().any(|w| has(w)) {
+        ("Emphasis", c(0xF2, 0xC1, 0x4E))
+    } else {
+        let [r, g, bl] = block_color(name);
+        ("Mine", c(r, g, bl))
+    }
+}
+
+/// `text` on one line, cut with "…" to fit `max_w` (the list rule: a label fills its column and truncates).
+pub(crate) fn elided(ui: &Ui, text: &str, font: FontId, color: Color32, max_w: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(text.to_owned(), egui::TextFormat::simple(font, color));
+    job.wrap = egui::text::TextWrapping {
+        max_width: max_w.max(8.0),
+        max_rows: 1,
+        break_anywhere: true,
+        overflow_character: Some('…'),
+    };
+    ui.fonts_mut(|f| f.layout_job(job))
+}
+
+/// A pill: a chip that is on (accent tint + accent edge) or off (card + line).
 fn chip(ui: &mut Ui, on: bool, text: &str) -> egui::Response {
-    ui.add(egui::Button::new(egui::RichText::new(text).size(12.0)).selected(on).corner_radius(5.0))
+    let accent = ui.visuals().selection.stroke.color;
+    let b = egui::Button::new(egui::RichText::new(text).size(11.5).color(if on { Color32::WHITE } else { look::TEXT }))
+        .fill(if on { accent.gamma_multiply(0.28) } else { look::CARD })
+        .stroke(Stroke::new(1.0, if on { accent } else { look::LINE }))
+        .corner_radius(6.0);
+    ui.add(b)
+}
+
+/// The accent-filled main button (+ Block).
+fn primary(ui: &mut Ui, text: &str) -> egui::Response {
+    let accent = ui.visuals().selection.stroke.color;
+    ui.add(
+        egui::Button::new(egui::RichText::new(text).size(12.0).color(Color32::WHITE)).fill(accent).corner_radius(6.0),
+    )
+}
+
+/// The segmented control (the Performance window's): a track with the picked segment filled in accent.
+fn segmented<T: PartialEq + Copy>(ui: &mut Ui, cur: &mut T, items: &[(T, &str)]) -> bool {
+    let accent = ui.visuals().selection.stroke.color;
+    let mut changed = false;
+    egui::Frame::new().fill(look::TRACK).corner_radius(7.0).inner_margin(2.0).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for &(v, n) in items {
+            let on = *cur == v;
+            let t = egui::RichText::new(n).size(12.0).color(if on { Color32::WHITE } else { look::MUTED });
+            if ui
+                .add(
+                    egui::Button::new(t)
+                        .fill(if on { accent } else { Color32::TRANSPARENT })
+                        .stroke(Stroke::NONE)
+                        .corner_radius(5.0),
+                )
+                .clicked()
+            {
+                *cur = v;
+                changed = true;
+            }
+        }
+    });
+    changed
+}
+
+/// An ease's shape as a tiny curve in `r`.
+fn ease_icon(p: &egui::Painter, r: Rect, e: Ease, col: Color32) {
+    let pts: Vec<Pos2> = (0..=12)
+        .map(|i| {
+            let f = i as f64 / 12.0;
+            pos2(r.left() + f as f32 * r.width(), r.bottom() - e.apply(f) as f32 * r.height())
+        })
+        .collect();
+    p.add(egui::Shape::line(pts, Stroke::new(1.4, col)));
+}
+
+/// A pill with the ease's curve in front of its name.
+fn ease_chip(ui: &mut Ui, on: bool, name: &str, e: Ease) -> egui::Response {
+    let accent = ui.visuals().selection.stroke.color;
+    let font = FontId::proportional(11.5);
+    let tw = ui.fonts_mut(|f| f.layout_no_wrap(name.to_string(), font.clone(), Color32::WHITE).size().x);
+    let (r, resp) = ui.allocate_exact_size(vec2(tw + 34.0, 22.0), Sense::click());
+    let hover = resp.hovered();
+    let p = ui.painter();
+    p.rect(
+        r,
+        6.0,
+        if on { accent.gamma_multiply(0.28) } else { look::CARD },
+        Stroke::new(
+            1.0,
+            if on {
+                accent
+            } else if hover {
+                look::DIM
+            } else {
+                look::LINE
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    ease_icon(
+        p,
+        Rect::from_min_size(r.min + vec2(7.0, 5.0), vec2(13.0, 12.0)),
+        e,
+        if on { Color32::WHITE } else { look::TEXT },
+    );
+    p.text(
+        pos2(r.left() + 26.0, r.center().y),
+        Align2::LEFT_CENTER,
+        name,
+        font,
+        if on { Color32::WHITE } else { look::TEXT },
+    );
+    resp
+}
+
+/// "IN" / "CAMERA" … in its colour.
+fn kind_pill(ui: &mut Ui, kind: &str, col: Color32) {
+    let t = egui::RichText::new(kind.to_uppercase()).size(10.0).strong().color(col.lerp_to_gamma(Color32::WHITE, 0.35));
+    egui::Frame::new()
+        .fill(col.gamma_multiply(0.22))
+        .corner_radius(4.0)
+        .inner_margin(egui::Margin::symmetric(6, 2))
+        .show(ui, |ui| {
+            ui.label(t);
+        });
+}
+
+/// The four arrows; Some(side) when one was clicked.
+fn side_pad(ui: &mut Ui, cur: Option<Dir>, only_lr: bool) -> Option<Dir> {
+    let accent = ui.visuals().selection.stroke.color;
+    let mut out = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for (d, a) in [(Dir::Left, "←"), (Dir::Up, "↑"), (Dir::Down, "↓"), (Dir::Right, "→")] {
+            if only_lr && matches!(d, Dir::Up | Dir::Down) {
+                continue;
+            }
+            let on = cur == Some(d);
+            let b = egui::Button::new(egui::RichText::new(a).size(13.0).color(if on {
+                Color32::WHITE
+            } else {
+                look::TEXT
+            }))
+            .min_size(vec2(28.0, 24.0))
+            .fill(if on { accent.gamma_multiply(0.3) } else { look::CARD })
+            .stroke(Stroke::new(1.0, if on { accent } else { look::LINE }))
+            .corner_radius(5.0);
+            if ui.add(b).on_hover_text(d.name()).clicked() {
+                out = Some(d);
+            }
+        }
+    });
+    out
+}
+
+/// The ease shape: drag the two yellow handles; a dot runs along the curve while the pointer is over it (the
+/// live preview - it repaints only then, so an idle Inspector stays idle). Returns the new ease when dragged
+/// and whether a drag just started (one undo step).
+fn ease_editor(ui: &mut Ui, id: egui::Id, e: Ease) -> (Option<Ease>, bool) {
+    let accent = ui.visuals().selection.stroke.color;
+    let (r, resp) = ui.allocate_exact_size(vec2(170.0, 130.0), Sense::hover());
+    let p = ui.painter_at(r);
+    p.rect(r, 6.0, look::DEEP, Stroke::new(1.0, look::LINE), egui::StrokeKind::Inside);
+    let plot = Rect::from_min_max(r.min + vec2(12.0, 26.0), r.max - vec2(34.0, 24.0));
+    let at = |x: f32, y: f32| pos2(plot.left() + x * plot.width(), plot.bottom() - y * plot.height());
+    p.rect_stroke(plot, 0.0, Stroke::new(1.0, look::TRACK), egui::StrokeKind::Inside);
+    let (x1, y1, x2, y2) = e.handles();
+    p.line_segment([at(0.0, 0.0), at(x1, y1)], Stroke::new(1.0, look::MUTED));
+    p.line_segment([at(1.0, 1.0), at(x2, y2)], Stroke::new(1.0, look::MUTED));
+    let pts: Vec<Pos2> = (0..=40)
+        .map(|i| {
+            let f = i as f64 / 40.0;
+            at(f as f32, e.apply(f) as f32)
+        })
+        .collect();
+    p.add(egui::Shape::line(pts, Stroke::new(2.0, accent)));
+    let mut out = None;
+    let mut started = false;
+    for (k, hx, hy) in [(1, x1, y1), (2, x2, y2)] {
+        let c = at(hx, hy);
+        let hr = ui
+            .interact(Rect::from_center_size(c, vec2(14.0, 14.0)), id.with(k), Sense::drag())
+            .on_hover_cursor(CursorIcon::Grab);
+        started |= hr.drag_started();
+        if let Some(pp) = hr.interact_pointer_pos().filter(|_| hr.dragged()) {
+            let fx = ((pp.x - plot.left()) / plot.width()).clamp(0.0, 1.0);
+            let fy = ((plot.bottom() - pp.y) / plot.height()).clamp(-0.8, 1.8);
+            out = Some(if k == 1 {
+                Ease::Bezier { x1: fx, y1: fy, x2, y2 }
+            } else {
+                Ease::Bezier { x1, y1, x2: fx, y2: fy }
+            });
+        }
+        p.circle_filled(c, 5.5, look::HANDLE);
+    }
+    // the live preview: a dot running the curve, and a bar showing where the value is
+    if resp.hovered() || ui.rect_contains_pointer(r) {
+        let ph = ((ui.input(|i| i.time) % 1.6) / 1.2).min(1.0);
+        let v = e.apply(ph) as f32;
+        p.circle_filled(at(ph as f32, v), 4.0, Color32::WHITE);
+        let bar = Rect::from_min_max(pos2(r.right() - 20.0, plot.top()), pos2(r.right() - 10.0, plot.bottom()));
+        p.rect_filled(bar, 3.0, look::CARD);
+        let y = plot.bottom() - v.clamp(-0.2, 1.2) * plot.height();
+        p.rect_filled(Rect::from_center_size(pos2(bar.center().x, y), vec2(8.0, 6.0)), 2.0, accent);
+        ui.ctx().request_repaint();
+    }
+    p.text(
+        r.left_top() + vec2(10.0, 7.0),
+        Align2::LEFT_TOP,
+        "Drag the handles",
+        FontId::proportional(10.5),
+        look::MUTED,
+    );
+    (out, started)
 }
 
 /// The Animator. `undo` once per gesture, before the first change.
@@ -235,15 +487,21 @@ fn header(
 ) {
     ui.horizontal(|ui| {
         if !compact {
-            for (v, n) in [(View::Blocks, "Blocks"), (View::Curves, "Curves"), (View::Flow, "Flow"), (View::Speed, "Speed")] {
-                if chip(ui, st.view == v, n).clicked() {
-                    st.view = v;
-                }
-            }
-            ui.separator();
+            segmented(ui, &mut st.view, &[(View::Blocks, "Blocks"), (View::Curves, "Curves"), (View::Flow, "Flow"), (View::Speed, "Speed")]);
+            ui.add_space(6.0);
         }
         let target = st.sel.map(|s| s.0).or(ids.first().copied());
-        let r = menu::button(ui, "+ Block", |ui| {
+        // the accent-filled main button of the preview (a menu button wearing it)
+        let accent = ui.visuals().selection.stroke.color;
+        let saved = ui.visuals().widgets.clone();
+        let ws = &mut ui.visuals_mut().widgets;
+        for w in [&mut ws.inactive, &mut ws.hovered, &mut ws.open] {
+            w.weak_bg_fill = accent;
+            w.bg_fill = accent;
+            w.corner_radius = 6.into();
+            w.bg_stroke = Stroke::NONE;
+        }
+        let r = menu::button(ui, egui::RichText::new("+ Animation").color(Color32::WHITE), |ui| {
             let mut pick = None;
             let groups: [(&str, &[&str]); 7] = [
                 ("In", &["Fade In", "Pop In", "Slide In Left", "Drop In", "Swing In", "Elastic", "Spring In"]),
@@ -274,6 +532,7 @@ fn header(
             }
             pick
         });
+        ui.visuals_mut().widgets = saved;
         if let (Some(Some(name)), Some(id)) = (r.inner, target) {
             if let Some(b) = find_block(presets, &name) {
                 undo(project);
@@ -427,7 +686,8 @@ fn blocks(
     let seams = project.block_seams();
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         let full = ui.available_rect_before_wrap();
-        let body_x0 = full.left() + HEAD_W;
+        let head_w = st.head_w.unwrap_or(HEAD_W).clamp(80.0, (full.width() * 0.5).max(80.0));
+        let body_x0 = full.left() + head_w;
         let bw = (full.right() - body_x0).max(50.0);
         let x = |t: f64| body_x0 + ((t - t0) / (t1 - t0)) as f32 * bw;
         let tx = |px: f32| t0 + ((px - body_x0) / bw) as f64 * (t1 - t0);
@@ -445,43 +705,90 @@ fn blocks(
                 .allocate_exact_size(vec2(full.width(), LANE_H + (nrows - 1) as f32 * (LANE_H - 8.0)), Sense::hover());
             let p = ui.painter_at(row.expand(1.0));
             let on = st.sel.is_some_and(|s| s.0 == id);
-            p.rect_filled(row, 0.0, if on { pal.selection.gamma_multiply(0.18) } else { Color32::TRANSPARENT });
-            p.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0, pal.border.gamma_multiply(0.6)));
-            let head = Rect::from_min_size(row.min, vec2(HEAD_W, LANE_H));
-            p.circle_filled(pos2(head.left() + 10.0, head.center().y), 4.0, pal.clip_video);
-            p.text(
-                pos2(head.left() + 20.0, head.center().y),
-                Align2::LEFT_CENTER,
-                &c.name,
-                FontId::proportional(12.0),
-                pal.text,
+            let head = Rect::from_min_max(row.min, pos2(row.left() + head_w, row.bottom()));
+            if on {
+                p.rect_filled(head, 0.0, pal.accent.gamma_multiply(0.12));
+            }
+            p.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0, look::LINE));
+            p.line_segment([head.right_top(), head.right_bottom()], Stroke::new(1.0, look::LINE));
+            let dot = match c.kind {
+                ClipKind::Audio => pal.clip_audio,
+                ClipKind::Image => pal.clip_image,
+                ClipKind::Text => pal.clip_text,
+                ClipKind::Sequence => pal.clip_sequence,
+                _ => pal.clip_video,
+            };
+            let hy = row.top() + LANE_H / 2.0;
+            p.circle_filled(pos2(head.left() + 11.0, hy), 4.0, dot);
+            // [dot][name: fills, truncates with "…"][track tag: fixed, right-aligned] - nothing passes the column
+            let tag = project.track_of(id).map_or(String::new(), |t| project.tracks[t].name.clone());
+            let tag_g = elided(ui, &tag, FontId::proportional(10.0), look::DIM, 34.0);
+            let name_w = head.width() - 22.0 - tag_g.size().x - 14.0;
+            let name_g =
+                elided(ui, &c.name, FontId::proportional(12.0), if on { Color32::WHITE } else { look::TEXT }, name_w);
+            p.galley(pos2(head.left() + 22.0, hy - name_g.size().y / 2.0), name_g, look::TEXT);
+            p.galley(pos2(head.right() - 8.0 - tag_g.size().x, hy - tag_g.size().y / 2.0), tag_g, look::DIM);
+            ui.interact(head, ui.id().with(("lane-head", id)), Sense::hover()).on_hover_text(&c.name);
+            // the clip's own span: a faint dashed box the blocks live in
+            let span = Rect::from_min_max(
+                pos2(x(c.start).max(body_x0), row.top() + 4.0),
+                pos2(x(c.end()), row.bottom() - 4.0),
             );
-            // the clip's own span
-            let span = Rect::from_min_max(pos2(x(c.start), row.top() + 4.0), pos2(x(c.end()), row.bottom() - 4.0));
-            p.rect_stroke(span, 4.0, Stroke::new(1.0, pal.border), egui::StrokeKind::Inside);
+            p.rect_filled(span, 4.0, Color32::from_white_alpha(6));
+            let mut edge = vec![span.left_top(), span.right_top(), span.right_bottom(), span.left_bottom()];
+            edge.push(edge[0]);
+            p.extend(egui::Shape::dashed_line(&edge, Stroke::new(1.0, Color32::from_white_alpha(18)), 4.0, 3.0));
             for (i, b) in c.blocks.iter().enumerate() {
                 let top = row.top() + 5.0 + pack[i] as f32 * (LANE_H - 8.0);
                 let r =
                     Rect::from_min_max(pos2(x(c.start + b.t), top), pos2(x(c.start + b.end()), top + LANE_H - 10.0));
                 let sel = st.sel == Some((id, i));
-                let col = block_col(b);
-                p.rect_filled(r, 5.0, col.gamma_multiply(if sel { 0.75 } else { 0.4 }));
-                p.rect_stroke(
+                let (_, col) = block_kind(b);
+                p.rect(
                     r,
-                    5.0,
-                    Stroke::new(if sel { 1.5 } else { 1.0 }, if sel { Color32::WHITE } else { col }),
+                    6.0,
+                    look::CARD.lerp_to_gamma(col, if sel { 0.45 } else { 0.24 }),
+                    Stroke::new(1.0, if sel { Color32::WHITE } else { col.gamma_multiply(0.75) }),
                     egui::StrokeKind::Inside,
                 );
                 let open = st.open.contains(&(id, i));
                 let edited = b.ctl.as_ref().is_some_and(|c| c.edited) || b.ctl.is_none();
-                let label = format!("{} {}{}", if open { "▾" } else { "▸" }, b.name, if edited { " ·" } else { "" });
-                p.with_clip_rect(r.shrink(2.0)).text(
-                    pos2(r.left() + 5.0, r.center().y),
+                let inner = p.with_clip_rect(r.shrink(1.0));
+                inner.text(
+                    pos2(r.left() + 8.0, r.center().y),
+                    Align2::CENTER_CENTER,
+                    if open { "▾" } else { "▸" },
+                    FontId::proportional(10.0),
+                    look::TEXT,
+                );
+                let mut tx0 = r.left() + 16.0;
+                if r.width() > 70.0 {
+                    if let Some(a) = b.props.first().and_then(|pr| prop_ref(&c, pr)) {
+                        let vs: Vec<f64> = (0..=16).map(|k| a.at(b.t + b.dur * k as f64 / 16.0)).collect();
+                        let (lo, hi) = vs.iter().fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
+                        let g = Rect::from_min_size(pos2(tx0, r.center().y - 6.0), vec2(22.0, 12.0));
+                        let pts: Vec<Pos2> = vs
+                            .iter()
+                            .enumerate()
+                            .map(|(k, v)| {
+                                let fy = if hi - lo > 1e-9 { ((v - lo) / (hi - lo)) as f32 } else { 0.5 };
+                                pos2(g.left() + g.width() * k as f32 / 16.0, g.bottom() - fy * g.height())
+                            })
+                            .collect();
+                        inner.add(egui::Shape::line(pts, Stroke::new(1.3, Color32::WHITE.gamma_multiply(0.8))));
+                        tx0 += 26.0;
+                    }
+                }
+                inner.text(
+                    pos2(tx0, r.center().y),
                     Align2::LEFT_CENTER,
-                    label,
+                    &b.name,
                     FontId::proportional(11.0),
                     Color32::WHITE,
                 );
+                if edited && r.width() > 30.0 {
+                    inner.circle_filled(pos2(r.right() - 8.0, r.center().y), 3.0, look::HANDLE);
+                }
                 let resp = ui.interact(r, ui.id().with(("ablk", id, i)), Sense::click_and_drag());
                 let hp = resp.hover_pos().or(resp.interact_pointer_pos());
                 let edge = hp.map_or(0, |p| {
@@ -640,7 +947,7 @@ fn blocks(
                 for prop in &b.props {
                     let (sub, _) = ui.allocate_exact_size(vec2(full.width(), SUB_H), Sense::hover());
                     let p = ui.painter_at(sub);
-                    p.rect_filled(sub, 0.0, pal.bg.gamma_multiply(0.5));
+                    p.rect_filled(sub, 0.0, look::DEEP);
                     p.text(
                         pos2(sub.left() + 22.0, sub.center().y),
                         Align2::LEFT_CENTER,
@@ -693,7 +1000,16 @@ fn blocks(
             }
         }
         let bottom = ui.min_rect().bottom();
+        let split = Rect::from_min_max(pos2(body_x0 - 3.0, top), pos2(body_x0 + 3.0, bottom));
+        let sr =
+            ui.interact(split, ui.id().with("lane-split"), Sense::drag()).on_hover_cursor(CursorIcon::ResizeHorizontal);
+        if sr.dragged() {
+            st.head_w = Some((head_w + sr.drag_delta().x).clamp(80.0, (full.width() * 0.5).max(80.0)));
+        }
         let p = ui.painter();
+        if sr.hovered() || sr.dragged() {
+            p.line_segment([pos2(body_x0, top), pos2(body_x0, bottom)], Stroke::new(2.0, pal.accent));
+        }
         if (t0..=t1).contains(playhead) {
             p.line_segment(
                 [pos2(x(*playhead), top - 20.0), pos2(x(*playhead), bottom)],
@@ -1562,30 +1878,69 @@ fn compact_list(
 /// The Inspector's block section: the Animator's selected block's controls. True when it edited the project.
 pub fn block_section(ui: &mut Ui, project: &mut Project, pal: &Palette, undo: &mut dyn FnMut(&Project)) -> bool {
     let Some((id, i)) = selected_block() else { return false };
-    let Some((name, cname)) = project.clip(id).and_then(|c| c.blocks.get(i).map(|b| (b.name.clone(), c.name.clone())))
-    else {
+    let Some((b, cname)) = project.clip(id).and_then(|c| c.blocks.get(i).map(|b| (b.clone(), c.name.clone()))) else {
         return false;
     };
+    let (kind, col) = block_kind(&b);
     let mut edited = false;
-    egui::CollapsingHeader::new(egui::RichText::new(format!("Animation · {name}")).strong())
-        .id_salt("anim-block-section")
-        .default_open(true)
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(format!("on {cname}")).size(11.0).color(pal.text_dim));
-            let mut toast = None;
-            edited = block_controls(ui, project, (id, i), pal, undo, &mut toast);
-            if let Some(t) = toast {
-                ui.label(egui::RichText::new(t).size(11.0).color(GOOD));
-            }
+    // the preview's Inspector card: kind pill + name + Delete, "on <clip> · t - t", then the controls
+    egui::Frame::new().fill(look::CARD).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            kind_pill(ui, kind, col);
+            ui.label(egui::RichText::new(&b.name).size(15.0).strong().color(look::TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let del = egui::Button::new(egui::RichText::new("Delete").size(12.0).color(look::MUTED)).frame(false);
+                if ui.add(del).on_hover_text("Delete this block and its keys").clicked() {
+                    undo(project);
+                    project.remove_key_block(id, i);
+                    SEL.with(|s| s.set(None));
+                    edited = true;
+                }
+            });
         });
+        if edited {
+            return;
+        }
+        ui.label(
+            egui::RichText::new(format!("on {cname} · {:.2} – {:.2} s", b.t, b.end())).size(11.5).color(look::MUTED),
+        );
+        ui.add_space(6.0);
+        let mut toast = None;
+        edited = block_controls(ui, project, (id, i), pal, undo, &mut toast);
+        if let Some(t) = toast {
+            ui.label(egui::RichText::new(t).size(11.0).color(GOOD));
+        }
+    });
+    ui.add_space(6.0);
     edited
 }
 
+/// A label in the form's left column (muted, like the preview's).
+fn field(ui: &mut Ui, label: &str) {
+    ui.label(egui::RichText::new(label).size(12.0).color(look::MUTED));
+}
+
 fn slider(ui: &mut Ui, label: &str, v: &mut f64, lo: f64, hi: f64, suffix: &str) -> egui::Response {
-    ui.label(label);
-    let r = ui.add(egui::Slider::new(v, lo..=hi).suffix(suffix).max_decimals(2));
+    field(ui, label);
+    let r = ui.add(egui::Slider::new(v, lo..=hi).suffix(suffix).max_decimals(2).trailing_fill(true));
     ui.end_row();
     r
+}
+
+/// A section rule: "EASE SHAPE ─────".
+fn section(ui: &mut Ui, title: &str) {
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(title.to_uppercase()).size(10.5).color(look::MUTED));
+        let r = ui.available_rect_before_wrap();
+        ui.painter().hline(r.x_range(), r.center().y, Stroke::new(1.0, look::LINE));
+    });
+}
+
+/// The ease the block's main move has now: its control, else what the preset was designed with.
+fn current_ease(ctl: &BlockCtl) -> Ease {
+    ctl.ease.or_else(|| ctl.src.tracks.first().and_then(|t| t.keys.first()).map(|k| k.ease)).unwrap_or(Ease::Linear)
 }
 
 /// Side, strength, length, ease, physics and the block's hand-offs. True when it edited the project.
@@ -1608,42 +1963,40 @@ fn block_controls(
     };
     let mut edited = false;
     if ctl.edited {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Keys edited by hand: controls paused.")
-                    .size(11.0)
-                    .color(Color32::from_rgb(0xF2, 0xC1, 0x4E)),
-            );
-            if ui.button("Reset").clicked() {
-                undo(project);
-                project.set_block_ctl(id, i, ctl.clone());
-                edited = true;
-            }
-        });
+        egui::Frame::new()
+            .fill(look::HANDLE.gamma_multiply(0.08))
+            .stroke(Stroke::new(1.0, look::HANDLE.gamma_multiply(0.4)))
+            .corner_radius(8.0)
+            .inner_margin(8.0)
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new("Keys edited by hand, so these controls are paused.").size(12.0));
+                if chip(ui, false, &format!("Reset to {}", b.name)).clicked() {
+                    undo(project);
+                    project.set_block_ctl(id, i, ctl.clone());
+                    edited = true;
+                }
+            });
         return edited;
     }
     let mut dur = b.dur;
     let mut changed = false;
     let mut gesture = false;
-    egui::Grid::new(("anim-ctl", id, i)).num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+    egui::Grid::new(("anim-ctl", id, i)).num_columns(2).spacing([12.0, 9.0]).min_col_width(70.0).show(ui, |ui| {
         let moves_xy = ctl.src.gen.map_or(ctl.dir.is_some(), |g| g.has_dir());
         if moves_xy {
-            ui.label("Side");
-            ui.horizontal(|ui| {
-                for (d, a) in [(Dir::Left, "←"), (Dir::Up, "↑"), (Dir::Down, "↓"), (Dir::Right, "→")] {
-                    if chip(ui, ctl.dir == Some(d), a).on_hover_text(d.name()).clicked() {
-                        ctl.dir = Some(d);
-                        changed = true;
-                        gesture = true;
-                    }
-                }
-            });
+            field(ui, if b.name.contains("Out") || ctl.src.gen == Some(Gen::ThrowOut) { "Toward" } else { "From" });
+            let lr = ctl.src.gen.is_none() && b.name == "Spin";
+            if let Some(d) = side_pad(ui, ctl.dir, lr) {
+                ctl.dir = Some(d);
+                changed = true;
+                gesture = true;
+            }
             ui.end_row();
         }
         let r = slider(ui, "Strength", &mut ctl.strength, 0.0, 2.0, "×");
         changed |= r.changed();
         gesture |= r.drag_started() || (r.changed() && !r.dragged());
-        let r = slider(ui, "Length", &mut dur, 0.05, 10.0, " s");
+        let r = slider(ui, "Duration", &mut dur, 0.05, 10.0, " s");
         if r.changed() {
             gesture |= r.drag_started() || !r.dragged();
         }
@@ -1660,8 +2013,8 @@ fn block_controls(
                     "spin" => slider(ui, if g == Gen::Shake { "Tilt" } else { "Spin" }, &mut ph.spin, -1.0, 1.0, ""),
                     "freq" => slider(ui, "Jolts / s", &mut ph.freq, 1.0, 40.0, ""),
                     _ => {
-                        ui.label("Hide edges");
-                        let r = ui.checkbox(&mut ph.cover, "zoom in so the frame edges never show");
+                        field(ui, "Hide edges");
+                        let r = ui.checkbox(&mut ph.cover, "zoom so the frame edges never show");
                         ui.end_row();
                         r
                     }
@@ -1670,8 +2023,8 @@ fn block_controls(
                 gesture |= r.drag_started() || (r.changed() && !r.dragged());
             }
             if g == Gen::Shake {
-                ui.label("");
-                if ui.button("New shake pattern").clicked() {
+                field(ui, "");
+                if chip(ui, false, "New shake pattern").clicked() {
                     ctl.phys.seed = ctl.phys.seed.wrapping_add(1);
                     changed = true;
                     gesture = true;
@@ -1679,28 +2032,39 @@ fn block_controls(
                 ui.end_row();
             }
         } else {
-            ui.label("Ease");
+            field(ui, "Ease");
             ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
                 let cur = ctl.ease;
-                for (n, e) in [("As designed", None)]
+                let design = current_ease(&BlockCtl { ease: None, ..ctl.clone() });
+                for (n, e, shown) in [("As designed", None, design)]
                     .into_iter()
-                    .chain(Ease::PRESETS.into_iter().map(|(n, e)| (n, Some(e))))
-                    .chain([("Linear", Some(Ease::Linear))])
+                    .chain(Ease::PRESETS.into_iter().map(|(n, e)| (n, Some(e), e)))
+                    .chain([("Linear", Some(Ease::Linear), Ease::Linear)])
                 {
-                    if chip(ui, cur == e, n).clicked() {
+                    if ease_chip(ui, cur == e, n, shown).clicked() {
                         ctl.ease = e;
                         changed = true;
                         gesture = true;
                     }
                 }
-                // shaped by Flow or a tool: show that it is neither the design nor a preset
-                if cur.is_some_and(|e| e != Ease::Linear && !Ease::PRESETS.iter().any(|p| p.1 == e)) {
-                    let _ = chip(ui, true, "Custom");
+                // shaped by Flow or by hand: neither the design nor a preset
+                if let Some(e) = cur.filter(|e| *e != Ease::Linear && !Ease::PRESETS.iter().any(|p| p.1 == *e)) {
+                    let _ = ease_chip(ui, true, "Custom", e);
                 }
             });
             ui.end_row();
         }
     });
+    if ctl.src.gen.is_none() {
+        section(ui, "Ease shape");
+        let (new, started) = ease_editor(ui, egui::Id::new(("anim-ease", id, i)), current_ease(&ctl));
+        gesture |= started;
+        if let Some(e) = new {
+            ctl.ease = Some(e);
+            changed = true;
+        }
+    }
     if gesture {
         undo(project);
     }
@@ -1715,35 +2079,47 @@ fn block_controls(
     // hand-offs: the speeds where this block meets its neighbours
     let seams: Vec<Seam> =
         project.block_seams().into_iter().filter(|s| s.left == (id, i) || s.right == (id, i)).collect();
-    if !seams.is_empty() {
-        ui.add_space(4.0);
-        ui.label(egui::RichText::new("Flow").size(11.0).color(pal.text_dim));
+    section(ui, "Flow");
+    if seams.is_empty() {
+        ui.label(
+            egui::RichText::new(
+                "Put this move end to end with another one, or end it on a cut, to match their speeds.",
+            )
+            .size(11.5)
+            .color(look::MUTED),
+        );
     }
     for s in seams {
         let into = s.right == (id, i);
         let other = if into { s.left } else { s.right };
         let oname = project.clip(other.0).and_then(|c| c.blocks.get(other.1)).map_or(String::new(), |b| b.name.clone());
         ui.horizontal(|ui| {
-            ui.colored_label(if s.smooth { GOOD } else { BAD }, "●");
-            ui.label(format!(
-                "{} {oname}: {} → {}",
-                if into { "From" } else { "Into" },
-                speed_text(&s.prop, s.v_left),
-                speed_text(&s.prop, s.v_right)
-            ));
+            let (r, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+            ui.painter().circle_filled(r.center(), 4.5, if s.smooth { GOOD } else { BAD });
+            ui.label(
+                egui::RichText::new(format!("{} {oname}", if into { "Comes from" } else { "Hands over to" }))
+                    .size(12.0),
+            );
         });
+        ui.label(
+            egui::RichText::new(format!(
+                "ends {} → starts {}{}",
+                speed_text(&s.prop, s.v_left),
+                speed_text(&s.prop, s.v_right),
+                if s.smooth { " · smooth" } else { " · jump" }
+            ))
+            .size(11.0)
+            .monospace()
+            .color(look::MUTED),
+        );
         ui.horizontal(|ui| {
             let mut go = None;
-            if ui
-                .add(
-                    egui::Button::new(if into { "Match its speed" } else { "Match the next speed" })
-                        .selected(!s.smooth),
-                )
-                .clicked()
-            {
+            let label = if into { "Match its speed" } else { "Match the next speed" };
+            let r = if s.smooth { chip(ui, false, label) } else { primary(ui, label) };
+            if r.clicked() {
                 go = Some(if into { Match::Next } else { Match::Earlier });
             }
-            if !into && ui.small_button("ease the next move instead").clicked() {
+            if !into && chip(ui, false, "Ease the next move instead").clicked() {
                 go = Some(Match::Next);
             }
             if let Some(m) = go {
@@ -1847,6 +2223,30 @@ mod tests {
         p.place_key_block(1, &f("Speed Ramp Out"), 0.2, Some(0.5));
         let b = &p.clip(1).unwrap().blocks;
         assert_eq!(pack_rows(b), vec![0, 1, 0], "{b:?}");
+    }
+
+    #[test]
+    fn a_long_clip_name_is_cut_to_the_label_column() {
+        let ctx = egui::Context::default();
+        let long = "Rodev GTA 6 Gameswap - FINAL v2 1080p60.mp4";
+        let mut widths = Vec::new();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                for w in [40.0, 90.0, 140.0] {
+                    let g = elided(ui, long, FontId::proportional(12.0), Color32::WHITE, w);
+                    widths.push((w, g.size().x, g.rows.len(), g.text().to_string()));
+                }
+            });
+        });
+        for (w, got, rows, text) in widths {
+            assert!(got <= w + 0.5, "{got} > {w}: {text}");
+            assert_eq!(rows, 1, "one line");
+            assert!(text.ends_with('…') || text == long, "{text}");
+        }
+        // and in the pane: a lane whose clip has that name still draws (the column is the clamp)
+        let mut h = H::new(1100.0);
+        h.p.tracks[0].clips[0].name = long.into();
+        h.frame();
     }
 
     #[test]

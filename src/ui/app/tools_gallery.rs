@@ -200,7 +200,7 @@ fn apply_card(
             let mut n = 0;
             for &id in clip_ids {
                 if let Some(c) = app.project.clip_mut(id) {
-                    crate::engine::presets::apply_curve(&preset, &mut c.speed_curve, c.duration, false);
+                    crate::engine::presets::apply_speed_ramp(&preset, c); // ws:animator: as a block
                     n += 1;
                 }
             }

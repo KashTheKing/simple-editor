@@ -802,84 +802,8 @@ fn headless_volume_line_drag_keys_once_on_animated_clip() {
     assert!(v.keys[1].v < 1.0, "grabbed key lowered, got {:?}", v.keys);
 }
 
-#[test]
-fn headless_keyframe_drag_moves_key() {
-    let mut h = Harness::new();
-    let lanes = h.state.lanes_rect;
-    h.project.tracks[0].height = MIN_TRACK_H; // < KEY_LANE_MIN → bottom strip, time only
-    h.project.tracks[0].clips[0].opacity.toggle_key(2.0);
-    h.frame(vec![]);
-    let row_bottom = lanes.top() + h.project.tracks[0].height;
-    let kp = pos2(h.state.x_at(2.0), row_bottom - 1.0 - 5.0);
-    assert!(h.drag(kp, kp + vec2(40.0, 20.0)), "keyframe drag edits");
-    assert_eq!(h.undos, 1);
-    let keys = &h.project.tracks[0].clips[0].opacity.keys;
-    assert_eq!(keys.len(), 1);
-    assert!((keys[0].t - 3.0).abs() < 1.0 / 30.0 + 1e-6, "key moved to {}", keys[0].t);
-    assert_eq!(keys[0].v, 1.0, "short clip: vertical drag does not touch the value");
-    assert_eq!(h.project.tracks[0].clips[0].start, 0.0, "clip not moved");
-}
 
-#[test]
-fn headless_mini_graph_toggle_needs_keys_and_width() {
-    let mut h = Harness::new();
-    let lanes = h.state.lanes_rect;
-    let vid = h.video_clip().id;
-    // default zoom (40 px/s) makes the 10 s clip 400 px wide - well past MINI_GRAPH_MIN_W (120)
-    let btn_center = |h: &Harness| {
-        let right = h.state.x_at(h.video_clip().end());
-        let top = lanes.top() + 1.0;
-        pos2(right - MINI_GRAPH_PAD - MINI_GRAPH_BTN * 0.5, top + MINI_GRAPH_PAD + MINI_GRAPH_BTN * 0.5)
-    };
 
-    // no keyframes yet: a click where the icon would sit just selects the clip like anywhere else
-    // on its body - proves nothing is drawn/interactive there regardless of zoom
-    let p = btn_center(&h);
-    h.press(p);
-    h.release(p);
-    h.frame(vec![]);
-    assert!(h.state.mini_graph_open.is_empty(), "no icon without keyframes");
-    // the harness's default video clip is linked to an audio clip, so a plain click selects the
-    // whole link group (same as clicking anywhere else on its body) - not just `vid` alone.
-    assert!(h.selection.contains(&vid), "click without keys falls through to the clip body");
-    h.selection.clear();
-
-    // key it: the same spot now toggles the mini graph instead of selecting
-    h.project.tracks[0].clips[0].opacity.toggle_key(2.0);
-    h.project.tracks[0].clips[0].opacity.toggle_key(5.0);
-    h.frame(vec![]);
-    let p = btn_center(&h);
-    h.press(p);
-    h.release(p);
-    h.frame(vec![]);
-    assert_eq!(h.state.mini_graph_open, vec![vid], "click opened the mini graph");
-    assert!(h.selection.is_empty(), "the icon must win hit-testing over the clip body under it");
-
-    // click again: closes it
-    h.press(p);
-    h.release(p);
-    h.frame(vec![]);
-    assert!(h.state.mini_graph_open.is_empty(), "second click closed it");
-}
-
-#[test]
-fn headless_keyframe_value_lane_drag_changes_time_and_value() {
-    let mut h = Harness::new();
-    let lanes = h.state.lanes_rect;
-    h.project.tracks[0].clips[0].opacity.toggle_key(2.0);
-    h.frame(vec![]);
-    // 64 pt row → value lane. One key at 1.0 auto-ranges to 0.5..1.5, so it sits mid-lane.
-    let th = h.project.tracks[0].height;
-    let inner = th - 2.0 - 2.0 * KEY_PAD;
-    let kp = pos2(h.state.x_at(2.0), lanes.top() + th - 1.0 - KEY_PAD - 0.5 * inner);
-    assert!(h.drag(kp, kp + vec2(40.0, 0.25 * inner)), "value-lane drag edits");
-    assert_eq!(h.undos, 1, "one undo for the whole gesture");
-    let keys = &h.project.tracks[0].clips[0].opacity.keys;
-    assert_eq!(keys.len(), 1);
-    assert!((keys[0].t - 3.0).abs() < 1.0 / 30.0 + 1e-6, "time moved to {}", keys[0].t);
-    assert!((keys[0].v - 0.75).abs() < 0.05, "value dragged down to {}", keys[0].v);
-    assert_eq!(h.project.tracks[0].clips[0].start, 0.0, "clip not moved");
-}
 
 #[test]
 fn headless_rubber_band_selects_and_moves_together() {
@@ -1032,50 +956,7 @@ fn headless_track_gutters_arm_while_the_lanes_scroll() {
     assert_eq!(h.project.video_tracks().len(), 7, "a video track was created");
 }
 
-#[test]
-fn headless_value_lane_clamps_to_the_property_range() {
-    let mut h = Harness::new();
-    let lanes = h.state.lanes_rect;
-    h.project.tracks[0].clips[0].opacity.toggle_key(0.0);
-    h.project.tracks[0].clips[0].opacity.toggle_key(2.0);
-    h.project.tracks[0].clips[0].opacity.keys[1].v = 0.0;
-    h.frame(vec![]);
-    // keys at 1.0 and 0.0 auto-range to -0.5..1.5, so the low key sits a quarter up the lane and
-    // dragging it to the top of the lane asks for 1.5
-    let th = h.project.tracks[0].height;
-    let inner = th - 2.0 - 2.0 * KEY_PAD;
-    let kp = pos2(h.state.x_at(2.0), lanes.top() + th - 1.0 - KEY_PAD - 0.25 * inner);
-    assert!(h.drag(kp, pos2(kp.x, lanes.top() + 2.0)), "value-lane drag edits");
-    let keys = &h.project.tracks[0].clips[0].opacity.keys;
-    assert_eq!(keys[1].v, 1.0, "opacity clamped to its 0..1 range, got {keys:?}");
-    // effect params clamp to their ParamSpec
-    assert_eq!(prop_range(h.video_clip(), 2), Some((0.01, 20.0)), "Scale");
-    assert_eq!(prop_range(h.video_clip(), 0), None, "Position X is unbounded");
-    assert_eq!(prop_range(h.audio_clip(), 0), None, "Volume is dB-scaled");
-    assert_eq!(prop_range(h.audio_clip(), 1), Some((-1.0, 1.0)), "Pan");
-    assert_eq!(prop_range(h.video_clip(), 3), Some((0.01, 20.0)), "Scale X");
-    assert_eq!(prop_range(h.video_clip(), 7), Some((0.01, 100.0)), "Speed");
-    assert_eq!(prop_range(h.audio_clip(), 2), Some((0.01, 100.0)), "Speed (audio)");
-    h.project.tracks[0].clips[0].effects.push(Effect::new(EffectKind::Blur));
-    let spec = h.video_clip().effects[0].specs()[0];
-    assert_eq!(prop_range(h.video_clip(), 8), Some((spec.min, spec.max)), "first Blur param");
-}
 
-#[test]
-fn headless_audio_volume_keys_stay_in_the_bottom_strip() {
-    let mut h = Harness::new();
-    let lanes = h.state.lanes_rect;
-    h.project.tracks[1].clips[0].volume.toggle_key(2.0);
-    h.frame(vec![]);
-    // the volume line is dB-mapped, so its keys keep the time-only strip: dragging one is time-only
-    let row_bottom = lanes.top() + h.project.tracks[0].height + h.project.tracks[1].height;
-    let kp = pos2(h.state.x_at(2.0), row_bottom - 1.0 - 5.0);
-    assert!(h.drag(kp, kp + vec2(40.0, -20.0)), "keyframe drag edits");
-    let keys = &h.audio_clip().volume.keys;
-    assert_eq!(keys.len(), 1);
-    assert!((keys[0].t - 3.0).abs() < 1.0 / 30.0 + 1e-6, "key moved to {}", keys[0].t);
-    assert_eq!(keys[0].v, 1.0, "vertical drag does not touch a volume key's value");
-}
 
 #[test]
 fn headless_marker_click_seek_and_drag() {
@@ -3212,32 +3093,6 @@ fn toolbar_trim_tools_reuse_the_trim_gestures() {
     );
 }
 
-/// ws:keyframe-blocks: an applied block is a bar above the key strip - drag its body to move it (keys
-/// follow), drag its right end to stretch it; each drag is one undo.
-#[test]
-fn headless_key_block_bar_moves_and_stretches() {
-    let mut h = Harness::new();
-    let lanes = h.state.lanes_rect;
-    let id = h.project.tracks[0].clips[0].id;
-    let spin = crate::model::find_block(&[], "Spin").unwrap();
-    h.project.apply_key_block(id, &spin, Some(1.0), None);
-    h.frame(vec![]);
-    let bar_y = lanes.top() + h.project.tracks[0].height - 1.0 - 14.0;
-    let from = pos2(h.state.x_at(1.3), bar_y);
-    assert!(h.drag(from, from + vec2(40.0, 0.0)), "bar drag edits");
-    assert_eq!(h.undos, 1);
-    let c = &h.project.tracks[0].clips[0];
-    assert!((c.blocks[0].t - 2.0).abs() < 1.0 / 30.0 + 1e-6, "moved to {}", c.blocks[0].t);
-    assert!((c.rotation.keys[0].t - c.blocks[0].t).abs() < 1e-9, "keys ride along");
-    let end_t = c.blocks[0].end();
-    h.frame(vec![]);
-    let end = pos2(h.state.x_at(end_t) - 3.0, bar_y);
-    assert!(h.drag(end, end + vec2(40.0, 0.0)), "edge drag edits");
-    let c = &h.project.tracks[0].clips[0];
-    assert!((c.blocks[0].dur - 1.8).abs() < 1.0 / 30.0 + 1e-6, "stretched to {}", c.blocks[0].dur);
-    assert!((c.rotation.at(c.blocks[0].end()) - 360.0).abs() < 1e-6);
-    assert_eq!(h.undos, 2);
-}
 
 // ---- ws:ai-enhancer ----
 /// AI Upscale sits under Transform, and comes up to the top level, naming the zoom, on a clip zoomed
@@ -3258,4 +3113,27 @@ fn ai_upscale_is_offered_at_the_top_on_zoomed_clips() {
             assert!(probe.has("AI Upscale"), "{:?}", probe.texts());
         }
     }
+}
+
+/// ws:animator: keyframes are not drawn on clips any more (the Animator / curve editor show them): a drag
+/// where a diamond or a block bar used to sit moves the clip and leaves its keys alone, and no mini-graph
+/// button appears.
+#[test]
+fn headless_a_keyed_clip_has_nothing_to_grab_but_the_clip() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    h.project.tracks[0].height = MIN_TRACK_H;
+    h.project.tracks[0].clips[0].opacity.toggle_key(2.0);
+    h.project.tracks[0].clips[0].opacity.toggle_key(5.0);
+    let fade = crate::model::find_block(&[], "Fade In").unwrap();
+    let vid = h.video_clip().id;
+    h.project.apply_key_block(vid, &fade, Some(6.0), None).unwrap();
+    h.frame(vec![]);
+    let row_bottom = lanes.top() + h.project.tracks[0].height;
+    let at_key = pos2(h.state.x_at(2.0), row_bottom - 1.0 - 5.0);
+    assert!(h.drag(at_key, at_key + vec2(40.0, 0.0)), "the drag still does something: it moves the clip");
+    let c = &h.project.tracks[0].clips[0];
+    assert!((c.start - 1.0).abs() < 0.05, "the clip moved, got start {}", c.start);
+    assert_eq!(c.opacity.keys.iter().map(|k| k.t).collect::<Vec<_>>()[..2], [2.0, 5.0], "keys stay in clip time");
+    assert!(h.state.mini_graph_open.is_empty());
 }

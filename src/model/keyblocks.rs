@@ -156,6 +156,28 @@ impl KeyBlock {
 }
 
 impl Clip {
+    /// ws:animator: put `block` at clip-local `t0` as an applied block with its controls (`dur` defaults to the
+    /// block's own length, clamped to the clip). Blocks of the same properties wholly inside that span are
+    /// replaced (their keys were). `w` x `h` = the frame, for x / y offsets.
+    pub fn place_block(&mut self, block: &KeyBlock, t0: f64, dur: Option<f64>, w: f64, h: f64) -> Option<(f64, f64)> {
+        let t0 = t0.clamp(0.0, self.duration);
+        let dur = dur.unwrap_or(block.dur).min(self.duration - t0);
+        if dur < 0.01 {
+            return None;
+        }
+        let ctl = crate::model::BlockCtl::new(block.clone());
+        let made = ctl.resolve(dur);
+        let mine: Vec<&str> = made.tracks.iter().map(|t| t.prop.as_str()).collect();
+        self.blocks.retain(|b| !(b.t >= t0 - BK_EPS && b.end() <= t0 + dur + BK_EPS && b.props.iter().any(|p| mine.contains(&p.as_str()))));
+        let props = made.write(self, t0, dur, w, h);
+        if props.is_empty() {
+            return None;
+        }
+        self.blocks.push(AppliedBlock { name: block.name.clone(), t: t0, dur, props, ctl: Some(ctl) });
+        self.blocks.sort_by(|a, b| a.t.total_cmp(&b.t));
+        Some((t0, dur))
+    }
+
     /// The keys applied block `i` owns: (property, key, shared) - `shared` = the key also sits on an
     /// edge of another block of the same property (the seam of a chain), so removing block `i` keeps it.
     pub fn block_keys(&self, i: usize) -> Vec<(String, Keyframe, bool)> {

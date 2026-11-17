@@ -80,19 +80,11 @@ const DB_TOP: f32 = 12.0;
 const DB_BOT: f32 = -60.0;
 pub(crate) const MIN_TRACK_H: f32 = 24.0;
 const MAX_TRACK_H: f32 = 300.0;
-/// Clip height from which keyframe diamonds move into a value lane (y = value) instead of the bottom strip.
-const KEY_LANE_MIN: f32 = 28.0;
 /// Inset of the value lane inside the clip rect (points), top and bottom.
 const KEY_PAD: f32 = 3.0;
 /// ws:html-layer: the body colour of a clip made from HTML source (a label still wins).
 const HTML_CLIP: Color32 = Color32::from_rgb(104, 82, 184);
 
-/// On-screen clip width (same measure as `detailed` below) above which the keyframe mini-graph toggle
-/// appears: wide enough for the corner icon plus a graph worth looking at, not just barely visible.
-const MINI_GRAPH_MIN_W: f32 = 120.0;
-/// Mini-graph toggle: a square icon inset this far from the clip's top-right corner, this many px across.
-const MINI_GRAPH_PAD: f32 = 3.0;
-const MINI_GRAPH_BTN: f32 = 15.0;
 /// Height of the inline mini-graph panel dropped below a clip whose toggle is on.
 const MINI_GRAPH_H: f32 = 48.0;
 /// Insertion gutter shown when clips are dragged past the first/last row.
@@ -786,7 +778,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut start_fade: Option<(Id, bool)> = None;
     let mut start_key: Option<(Id, f64, Option<usize>)> = None;
     let mut start_block: Option<(Id, usize, bool)> = None;
-    let mut block_hits: Vec<(Id, usize, Rect)> = Vec::new();
+    let block_hits: Vec<(Id, usize, Rect)> = Vec::new(); // ws:animator: no bars on clips
     let mut start_trans: Option<(usize, Id)> = None;
     let mut start_marker: Option<(Id, Option<Id>)> = None;
     let mut resize: Option<(usize, f32)> = None;
@@ -797,7 +789,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     // track-resize handle rects, collected as they're laid out below so the rubber-band-start check
     // (near the end of this function) can tell a resize press from an empty-lane press
     let mut handle_rects: Vec<Rect> = Vec::new();
-    let mut key_hits: Vec<(Id, f64, Pos2, Option<usize>)> = Vec::new();
+    let key_hits: Vec<(Id, f64, Pos2, Option<usize>)> = Vec::new(); // ws:animator: no keys on clips
     let mut marker_hits: Vec<(Id, Id, Rect)> = Vec::new();
     let linked_sel = c.project.expand_links(c.selection);
     let thin = Stroke::new(1.0, pal.border);
@@ -1093,53 +1085,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     lp.rect_filled(Rect::from_center_size(pos2(hx, rect.top() + 3.0), vec2(6.0, 6.0)), 0, pal.text);
                 }
             }
-            // keyframe diamonds: on a tall clip in a value lane - 0 % at the bottom, 100 % at the top of the
-            // range of the first property keyed at that time (the curve editor's auto-range, so both panes
-            // agree) - otherwise in the bottom strip
-            // ws:keyframe-blocks: applied blocks as coloured bars just above the keyframe strip
-            if c.view.keys && !clip.blocks.is_empty() && rect.height() >= 24.0 {
-                for (bi, b) in clip.blocks.iter().enumerate() {
-                    let (x0, x1) = (state.x_at(clip.start + b.t), state.x_at(clip.start + b.end()));
-                    if x1 < lanes.left() || x0 > lanes.right() {
-                        continue;
-                    }
-                    let br =
-                        Rect::from_min_max(pos2(x0 + 1.0, rect.bottom() - 17.0), pos2(x1 - 1.0, rect.bottom() - 11.0));
-                    let [r, g, bl] = crate::model::block_color(&b.name);
-                    lp.rect_filled(br, 2, Color32::from_rgb(r, g, bl));
-                    block_hits.push((clip.id, bi, br));
+            // ws:animator: keyframes live in the Animator / curve editor, not on the clip. A clip that is animated
+            // shows one quiet 2 pt strip along its bottom: each block's span in its colour, loose keys as a faint
+            // line - nothing to grab, nothing to misclick.
+            if c.view.keys && (has_keys(clip) || !clip.blocks.is_empty()) && rect.height() >= 12.0 {
+                let y = rect.bottom() - 3.0;
+                let span = |a: f64, b: f64| (state.x_at(clip.start + a).max(rect.left() + 1.0), state.x_at(clip.start + b).min(rect.right() - 1.0));
+                if clip.blocks.is_empty() {
+                    let (x0, x1) = span(0.0, clip.duration);
+                    lp.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + 2.0)), 1, pal.keyframe.gamma_multiply(0.45));
                 }
-            }
-            if has_keys(clip) && c.view.keys {
-                let lane = rect.height() >= KEY_LANE_MIN;
-                let props = crate::ui::curves::prop_count(clip);
-                for t in clip.key_times() {
-                    let kx = state.x_at(clip.start + t);
-                    if kx < lanes.left() - 6.0 || kx > lanes.right() + 6.0 {
-                        continue;
+                for b in &clip.blocks {
+                    let (x0, x1) = span(b.t, b.end());
+                    if x1 > x0 {
+                        let [r, g, bl] = crate::model::block_color(&b.name);
+                        lp.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + 2.0)), 1, Color32::from_rgb(r, g, bl));
                     }
-                    // ponytail: the lane follows the curve editor's property list (transform + effect
-                    // params). Mask / graph / shape keys keep the bottom strip - extend curves::prop_ref
-                    // to them if they ever need a value lane too. Audio volume (prop 0) too: it is drawn
-                    // and dragged on the dB scale above, which the linear lane would contradict.
-                    let first = if clip.is_visual() { 0 } else { 1 };
-                    let prop = lane
-                        .then(|| {
-                            (first..props)
-                                .find(|&i| crate::ui::curves::prop_ref(clip, i).is_some_and(|a| a.has_key_at(t)))
-                        })
-                        .flatten();
-                    let ky = match prop.and_then(|i| crate::ui::curves::prop_ref(clip, i).map(|a| (i, a))) {
-                        Some((i, a)) => {
-                            let (lo, hi) = key_range(state, clip.id, i, a);
-                            let f = ((a.at(t) - lo) / (hi - lo).max(1e-9)).clamp(0.0, 1.0) as f32;
-                            rect.bottom() - KEY_PAD - f * (rect.height() - 2.0 * KEY_PAD)
-                        }
-                        None => rect.bottom() - 5.0,
-                    };
-                    let kp = pos2(kx, ky);
-                    lp.add(diamond(kp, 4.0, pal.keyframe));
-                    key_hits.push((clip.id, t, kp, prop));
                 }
             }
             // clip markers (clip-local time), drawn from the top of the clip down
@@ -1238,7 +1199,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 native_size: c.project.clip_native_size(clip).is_some(),
                 sequence: clip.kind == ClipKind::Sequence,
                 library_selected: c.library_selected,
-                graph_open: has_curve_keys(clip).then(|| state.mini_graph_open.contains(&clip.id)),
+                graph_open: None, // ws:animator: keys are shown in the Animator, not on the clip
                 labels,
                 buses,
                 shared_effects: &shared_effects,
@@ -1328,34 +1289,6 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             if rclick && !selected {
                 *c.selection = c.project.expand_links(&[clip.id]);
                 c.sel_transitions.clear();
-            }
-            // keyframe mini-graph: once the clip is wide enough on screen to be worth it (same measure
-            // as `detailed` above, just a higher bar), a small toggle icon sits in its top-right corner.
-            // Anchored to the VISIBLE right edge (`vis`), not the clip's own - a zoomed-in clip whose
-            // right edge is off-screen used to lose the button entirely, the opposite of "show it when
-            // zoomed in". Registered last so it wins hit-testing over the body underneath it.
-            if has_curve_keys(clip) && vis.width() >= MINI_GRAPH_MIN_W {
-                let btn = Rect::from_min_size(
-                    pos2(vis.right() - MINI_GRAPH_PAD - MINI_GRAPH_BTN, rect.top() + MINI_GRAPH_PAD),
-                    vec2(MINI_GRAPH_BTN, MINI_GRAPH_BTN),
-                )
-                .intersect(lanes);
-                if btn.is_positive() {
-                    let open = state.mini_graph_open.contains(&clip.id);
-                    let clicked =
-                        toggle_button(ui, &lp, btn, cid.with("mg"), Cap::Icon(Glyph::Diamond), open, &pal, &small)
-                            .clicked();
-                    if clicked {
-                        if open {
-                            state.mini_graph_open.retain(|&x| x != clip.id);
-                        } else {
-                            state.mini_graph_open.push(clip.id);
-                        }
-                    }
-                }
-                if state.mini_graph_open.contains(&clip.id) {
-                    draw_mini_graph(&lp, clip, rect, lanes, &pal);
-                }
             }
         }
 

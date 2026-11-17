@@ -142,22 +142,82 @@ fn motion_prop<'a>(clip: &'a mut Clip, label: &str) -> Option<&'a mut Animated> 
     clip.effects.iter_mut().find(|e| e.kind == kind).and_then(|e| e.params.get_mut(pi))
 }
 
-/// Apply a motion preset to a clip (properties it doesn't have are skipped; effect params create the
-/// effect when missing). `scaled` as in `apply_curve`.
+/// ws:animator: the block property a motion preset's label animates (None = an effect parameter, which a
+/// block can't hold).
+fn block_prop(label: &str) -> Option<&'static str> {
+    Some(match label {
+        "Position X" => "x",
+        "Position Y" => "y",
+        "Scale" => "scale",
+        "Rotation" => "rotation",
+        "Opacity" => "opacity",
+        "Volume" => "volume",
+        "Pan" => "pan",
+        "Speed" => "speed",
+        _ => return None,
+    })
+}
+
+/// ws:animator: curves as one animation block (absolute values; normalised times as they are, absolute ones
+/// over their own span). `dur` = the block's length when it has seconds of its own, else 0 (= the clip's).
+pub fn curves_block(name: &str, curves: &[(&str, &CurvePreset)]) -> crate::model::KeyBlock {
+    use crate::model::{BlockKey, BlockTrack, BlockVal, KeyBlock};
+    let span = curves
+        .iter()
+        .filter(|(_, c)| c.absolute)
+        .flat_map(|(_, c)| c.keys.iter().map(|k| k.t))
+        .fold(0.0, f64::max);
+    let tracks = curves
+        .iter()
+        .filter(|(_, c)| !c.keys.is_empty())
+        .map(|&(prop, c)| BlockTrack {
+            prop: prop.into(),
+            keys: c
+                .keys
+                .iter()
+                .map(|k| BlockKey {
+                    f: if c.absolute { k.t / span.max(1e-9) } else { k.t }.clamp(0.0, 1.0),
+                    v: BlockVal::Abs(k.v),
+                    ease: k.ease,
+                })
+                .collect(),
+        })
+        .collect();
+    KeyBlock { name: name.into(), dur: span, tracks, gen: None }
+}
+
+/// Apply a motion preset to a clip as one animation block over the whole clip (ws:animator: it shows in the
+/// Animator's lane with its controls); effect parameters, which a block can't hold, still get keys (and
+/// the effect when missing). `scaled` as in `apply_curve`.
 pub fn apply_motion(preset: &MotionPreset, clip: &mut Clip, scaled: bool) {
     let dur = clip.duration;
-    for (label, curve) in &preset.props {
+    let core: Vec<(&str, &CurvePreset)> = preset.props.iter().filter_map(|(l, c)| Some((block_prop(l)?, c))).collect();
+    if !core.is_empty() {
+        clip.place_block(&curves_block(&preset.name, &core), 0.0, Some(dur), 1.0, 1.0);
+    }
+    for (label, curve) in preset.props.iter().filter(|(l, _)| block_prop(l).is_none()) {
         if let Some(anim) = motion_prop(clip, label) {
             apply_curve(curve, anim, dur, scaled);
         }
     }
 }
 
+/// ws:animator: a speed-ramp preset onto a clip, as a block over the whole clip (Speed lane in the Animator).
+pub fn apply_speed_ramp(preset: &CurvePreset, clip: &mut Clip) {
+    let dur = clip.duration;
+    clip.place_block(&curves_block(&preset.name, &[("speed", preset)]), 0.0, Some(dur), 1.0, 1.0);
+}
+
 /// Layer a motion preset on top of the clip's existing keys, starting at clip-local `offset` and
 /// stretched over the time left in the clip (so "slide in left" then "slide in right" can be stacked).
 pub fn merge_motion(preset: &MotionPreset, clip: &mut Clip, offset: f64) {
     let span = (clip.duration - offset).max(MIN_CLIP);
-    for (label, curve) in &preset.props {
+    // ws:animator: as a block from `offset` to the end; effect parameters still merge as keys
+    let core: Vec<(&str, &CurvePreset)> = preset.props.iter().filter_map(|(l, c)| Some((block_prop(l)?, c))).collect();
+    if !core.is_empty() {
+        clip.place_block(&curves_block(&preset.name, &core), offset, Some(span), 1.0, 1.0);
+    }
+    for (label, curve) in preset.props.iter().filter(|(l, _)| block_prop(l).is_none()) {
         if let Some(anim) = motion_prop(clip, label) {
             merge_curve(curve, anim, span, offset);
         }
@@ -520,6 +580,39 @@ pub fn expose_fields(t: &Template, fields: &[(usize, String)]) -> Option<Templat
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// ws:animator: every preset that used to write bare keys lands as one block with its controls.
+    #[test]
+    fn motion_and_speed_presets_land_as_blocks() {
+        for m in builtin_motions() {
+            let mut c = Clip::new(1, crate::model::ClipKind::Video, "v", 0.0, 4.0);
+            apply_motion(&m, &mut c, true);
+            if m.props.iter().any(|(l, _)| block_prop(l).is_some()) {
+                assert_eq!(c.blocks.len(), 1, "{}", m.name);
+                let b = &c.blocks[0];
+                assert!(b.ctl.is_some() && (b.t, b.dur) == (0.0, 4.0), "{}: {b:?}", m.name);
+                assert!(!b.props.is_empty());
+            }
+            // applying again replaces it instead of piling a second block on top
+            apply_motion(&m, &mut c, true);
+            assert!(c.blocks.len() <= 1, "{}", m.name);
+        }
+        let mut c = Clip::new(1, crate::model::ClipKind::Video, "v", 0.0, 4.0);
+        apply_speed_ramp(&builtin_speed_ramps()[1], &mut c);
+        assert_eq!(c.blocks[0].props, vec!["speed".to_string()]);
+        assert!(c.speed_curve.is_animated() && (c.speed_curve.at(2.0) - 0.25).abs() < 1e-6, "Hero dips to 25 %");
+        // a gallery block drop (keyblocks.apply / apply_key_block) is a block with controls, and a second
+        // drop chains after it
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(9, crate::model::ClipKind::Video, "v", 0.0, 6.0));
+        let pop = crate::model::find_block(&[], "Pop In").unwrap();
+        p.apply_key_block(9, &pop, Some(1.0), None).unwrap();
+        let (t, _) = p.apply_key_block(9, &pop, Some(1.0), None).unwrap();
+        let bs = &p.clip(9).unwrap().blocks;
+        assert!(bs.iter().all(|b| b.ctl.is_some()) && bs.len() == 2 && (t - 1.4).abs() < 1e-9, "{bs:?}");
+    }
+
     use super::*;
     use crate::model::{AudioStreamInfo, ClipKind, Id, NodeKind};
     use crate::settings::Settings;
