@@ -895,7 +895,8 @@ fn render_thread(
     macro_rules! evict_spans {
         ($spans:expr, $fps:expr) => {
             for (a, b) in $spans {
-                let (lo, hi) = ((a * $fps).floor() as i64 - 1, (b * $fps).ceil() as i64 + 1);
+                // ponytail: an open-ended span (b = INFINITY) saturates to i64::MAX; plain +1 overflowed (debug panic, release wrap)
+                let (lo, hi) = (((a * $fps).floor() as i64).saturating_sub(1), ((b * $fps).ceil() as i64).saturating_add(1));
                 for old in fcache.evict_range(lo, hi) {
                     reclaim(old, &mut fpool);
                 }
