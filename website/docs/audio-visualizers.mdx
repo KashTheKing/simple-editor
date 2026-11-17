@@ -40,6 +40,27 @@ The style's own knobs are in the clip's **Effects** section like any effect. Vox
 The **Source** monitor shows a visualizer too, for audio files without cover art. Right-click it ▸ **Audio
 Visualizer** to pick the style or turn it off.
 
+## Tuning it to the song: the band mixer
+
+Every song hits differently: an EDM drop lives in the sub-bass, a rock song in its snare and guitars, a ballad
+in the voice. Under the style, the Visualizer section has a **band mixer**:
+
+- A small **spectrum** of the song under the clip: six bands from **Sub** (20-80 Hz) through **Bass**
+  (80-250), **Low-mid** (250-500), **Mid** (0.5-2 kHz) and **High-mid** (2-6 kHz) to **Air** (6-16 kHz). The
+  dim bars are what the song has, the bright ones what the visualizer will react to.
+- **Intensity** per band: 0 ignores the band, 1 is normal, up to 3 boosts it.
+- **Beat**: tick the bands the beat detection listens to - the kick lives in Sub / Bass (EDM, hip-hop), the
+  snare in Mid (rock). Nothing ticked = the whole sound.
+- **Sensitivity** scales everything; **Attack** is how fast it rises to a hit (0 = instantly), **Release** how
+  slowly it falls back (short = punchy, long = smooth).
+- **Listen like**: presets for EDM, Hip-hop, Rock, Vocal, Lo-fi and Classical as quick starting points, and
+  **Reset** for every band equal.
+
+Every change shows at once, playing or paused, and is one undo step. The song is analysed once and kept, so
+tuning never makes playback stutter. The built-in styles use it as they are: Neon Orb pulses with the mixed
+level, Spectrum Bars and Voxel Blocks raise each band by its own intensity. The mix is saved with the project
+and stays when you change the style.
+
 ## Making your own visualizer
 
 A visualizer style is a [shader effect](effects.mdx) (GLSL, the same format as the library's effects) that
@@ -47,9 +68,9 @@ declares any of these controls in its header. When a visualizer is made, they ar
 
 | Control | Header line | Value |
 |---|---|---|
-| `level` | `// @param level 0.3 0 1` | loudness, mapped onto the control's range |
-| `band1` .. `band6` | `// @param band1 0.5 0 1` | the spectrum, about 60 Hz (`band1`) to 8 kHz (`band6`), each mapped onto its range |
-| `beat` | `// @param beat 0 0 1` | 0 on each detected beat, rising to 1 just before the next |
+| `level` | `// @param level 0.3 0 1` | loudness as the band mixer hears it (the intensity-weighted sum of the bands, times the sensitivity), mapped onto the control's range |
+| `band1` .. `band6` | `// @param band1 0.5 0 1` | the six bands Sub, Bass, Low-mid, Mid, High-mid, Air, each times its intensity and the sensitivity, mapped onto its range |
+| `beat` | `// @param beat 0 0 1` | 0 on each beat the band mixer's beat bands hear, rising to 1 just before the next |
 | `beats` | `// @param beats 0 0 100000` | how many beats have passed: 0, then 1, 2, 3, ... |
 | `bpm` | `// @param bpm 120 0 300` | the song's tempo |
 
@@ -98,6 +119,6 @@ the monitors; it is not part of the export.
 
 | Tool | Does |
 |---|---|
-| `audio.visualizer {clip_id, style}` | adds a visualizer over an audio clip, or restyles a visualizer clip |
+| `audio.visualizer {clip_id, style, preset, gains, sensitivity, attack, release, beat_bands}` | adds a visualizer over an audio clip (or `asset_id`: a song with its visualizer), restyles a visualizer clip, or sets its band mixer |
 | `audio.visualizer_styles` | lists the styles, built-in and custom |
 | `audio.bake_keys {clip_id, target_id, effect, param}` | bakes a clip's loudness into any effect parameter |

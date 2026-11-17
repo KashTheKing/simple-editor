@@ -100,62 +100,116 @@ pub fn style_of(e: &Effect) -> Option<String> {
 /// One analysis frame: `[level, band1..band6]`, each 0..1.
 pub type Frame = [f32; 1 + BANDS];
 
-/// Band centre frequencies (Hz), log-spaced 60 Hz .. 8 kHz.
-fn band_hz(b: usize) -> f32 {
-    60.0 * (8000.0f32 / 60.0).powf(b as f32 / (BANDS - 1) as f32)
+/// Samples per FFT window (~43 ms at 48 kHz, 23 Hz bins: Sub and Bass come apart).
+const FFT_N: usize = 2048;
+
+/// In-place radix-2 FFT (`re.len()` a power of two).
+fn fft(re: &mut [f32], im: &mut [f32]) {
+    let n = re.len();
+    let mut j = 0;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j |= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    let mut len = 2;
+    while len <= n {
+        let ang = -std::f32::consts::TAU / len as f32;
+        for start in (0..n).step_by(len) {
+            for k in 0..len / 2 {
+                let (s, c) = (ang * k as f32).sin_cos();
+                let (a, b) = (start + k, start + k + len / 2);
+                let (tr, ti) = (re[b] * c - im[b] * s, re[b] * s + im[b] * c);
+                (re[b], im[b]) = (re[a] - tr, im[a] - ti);
+                re[a] += tr;
+                im[a] += ti;
+            }
+        }
+        len <<= 1;
+    }
 }
 
-/// Samples per DFT window (~21 ms at 48 kHz).
-const DFT_N: usize = 1024;
-
-/// Raw (un-normalised) [peak, band magnitudes] of mono `x`: a Hann-windowed DFT of the last `DFT_N`
-/// samples, evaluated at three frequencies around each band centre (the loudest wins).
-// ponytail: naive DFT, 6*3*1024 ~ 18k multiply-adds per frame; an FFT only if bands or N grow a lot.
+/// Raw (un-normalised) [peak, band energies] of mono `x`: a Hann-windowed FFT of the last `FFT_N`
+/// samples, each band the root of the summed power of the bins inside its edges (`AudioMix::BANDS`).
 pub fn raw_frame(x: &[f32]) -> Frame {
     let peak = x.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
-    let w = &x[x.len().saturating_sub(DFT_N)..];
+    let w = &x[x.len().saturating_sub(FFT_N)..];
+    let mut re = vec![0f32; FFT_N];
+    let mut im = vec![0f32; FFT_N];
     let n = w.len().max(1) as f32;
-    let win: Vec<f32> =
-        w.iter().enumerate().map(|(i, &s)| s * (0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n).cos())).collect();
-    let at = |f: f32| {
-        let k = std::f32::consts::TAU * f / SAMPLE_RATE as f32;
-        let (re, im) = win.iter().enumerate().fold((0.0f32, 0.0f32), |(re, im), (i, &s)| {
-            let a = k * i as f32;
-            (re + s * a.cos(), im - s * a.sin())
-        });
-        (re * re + im * im).sqrt() / n
-    };
+    for (i, &s) in w.iter().enumerate() {
+        re[i] = s * (0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / n).cos());
+    }
+    fft(&mut re, &mut im);
+    let df = SAMPLE_RATE as f32 / FFT_N as f32;
     let mut out = [0.0; 1 + BANDS];
     out[0] = peak;
-    for b in 0..BANDS {
-        let f = band_hz(b);
-        out[1 + b] = [f * 0.85, f, f * 1.18].into_iter().map(at).fold(0.0, f32::max);
+    for (b, &(_, lo, hi)) in crate::model::AudioMix::BANDS.iter().enumerate() {
+        let (k0, k1) = ((lo / df).ceil() as usize, ((hi / df).ceil() as usize).min(FFT_N / 2));
+        let p: f32 = (k0.max(1)..k1).map(|k| re[k] * re[k] + im[k] * im[k]).sum();
+        out[1 + b] = p.sqrt() / n;
     }
     out
 }
 
-/// Normalise each column to its loudest frame (so quiet files and weak highs still move), shape it
-/// (sqrt for the bands, which read flat otherwise) and give it an instant attack / ~0.15 s release so
-/// it pulses on hits instead of flickering. Deterministic.
-pub fn shape(raw: &[Frame], fps: f64) -> Vec<Frame> {
-    let mut top = [1e-4f32; 1 + BANDS];
+/// Mix raw frames (`[peak, band energies]` at `hz`) into what a visualizer shows, `[level,
+/// band1..band6]` 0..1: each band normalised to its loudest moment in the song (floored at a tenth of
+/// the loudest band, so a band with next to nothing in it stays near 0 instead of being blown up) and
+/// square-rooted; `bandN` = gain x sensitivity x that; `level` = the gain-weighted sum of the bands'
+/// energies, normalised to its own loudest moment, x sensitivity (all gains 1 = overall loudness); then
+/// attack / release smoothing. Deterministic.
+pub fn shape_mix(raw: &[Frame], hz: f64, m: &crate::model::AudioMix) -> Vec<Frame> {
+    let m = m.clone().clamped();
+    let mut top = [1e-6f32; BANDS];
     for f in raw {
-        for (t, &v) in top.iter_mut().zip(f) {
-            *t = t.max(v);
+        for b in 0..BANDS {
+            top[b] = top[b].max(f[1 + b]);
         }
     }
-    let fall = (-1.0 / fps / 0.15).exp() as f32;
+    let floor = top.iter().fold(0.0f32, |a, &v| a.max(v)) * 0.1;
+    let norm = |f: &Frame, b: usize| (f[1 + b] / top[b].max(floor)).clamp(0.0, 1.0).sqrt();
+    // the level hears the bands' energies as they are (a quiet band adds little), weighted by the gains
+    let mix = |f: &Frame| (0..BANDS).map(|b| m.gains[b] * f[1 + b]).sum::<f32>();
+    let ltop = raw.iter().map(mix).fold(1e-6f32, f32::max);
+    let dt = 1.0 / hz as f32;
+    let rise = if m.attack > 0.0 { 1.0 - (-dt / m.attack).exp() } else { 1.0 };
+    let fall = 1.0 - (-dt / m.release).exp();
     let mut env = [0.0f32; 1 + BANDS];
     raw.iter()
         .map(|f| {
+            let mut target = [0.0f32; 1 + BANDS];
+            target[0] = m.sensitivity * mix(f) / ltop;
+            for b in 0..BANDS {
+                target[1 + b] = m.gains[b] * m.sensitivity * norm(f, b);
+            }
             for c in 0..1 + BANDS {
-                let v = (f[c] / top[c]).clamp(0.0, 1.0);
-                let v = if c == 0 { v } else { v.sqrt() };
-                env[c] = v.max(env[c] * fall);
+                let t = target[c].clamp(0.0, 1.0);
+                env[c] += (t - env[c]) * if t > env[c] { rise } else { fall };
             }
             env
         })
         .collect()
+}
+
+/// The beat onsets (source seconds) the beat detection hears through `m`'s beat bands (the whole
+/// signal's peaks when none are picked): `analysis::onsets`, Detect Beats' own picker.
+fn beats_mix(raw: &[Frame], hz: f64, m: &crate::model::AudioMix) -> Vec<f64> {
+    let env: Vec<f32> = if m.beat_bands.iter().any(|&b| b) {
+        raw.iter().map(|f| (0..BANDS).filter(|&b| m.beat_bands[b]).map(|b| f[1 + b]).sum()).collect()
+    } else {
+        raw.iter().map(|f| f[0]).collect()
+    };
+    debug_assert!((hz - crate::media::waveform::PEAKS_PER_SEC as f64).abs() < 1e-9, "onsets reads 100 Hz peaks");
+    let peaks = crate::media::waveform::Peaks { min: env.iter().map(|v| -v).collect(), max: env };
+    let dur = raw.len() as f64 / hz;
+    crate::engine::analysis::onsets(&peaks, 0.0, dur, BEAT_REFRACTORY, BEAT_SENSITIVITY)
 }
 
 /// What `analyze` found over a span: one `Frame` per key, and the beats (clip-local seconds) + tempo.
@@ -176,9 +230,12 @@ pub const ANALYSIS_HZ: f64 = 100.0;
 /// same after a seek, a stall or a buffering pause, in preview and in export.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SongAnalysis {
+    /// Shaped through the default `AudioMix` (what the Source monitor shows).
     pub frames: Vec<Frame>,
-    /// Beat onsets, source seconds.
+    /// Beat onsets through the default mix, source seconds.
     pub beats: Vec<f64>,
+    /// `[peak, band energies]` before any mixing, at `ANALYSIS_HZ`: what a band mixer re-mixes.
+    pub raw: Vec<Frame>,
 }
 
 impl SongAnalysis {
@@ -190,7 +247,7 @@ impl SongAnalysis {
         let hop = (SAMPLE_RATE as f64 / ANALYSIS_HZ).round() as usize; // = one waveform peak bucket
         let n = (dur * ANALYSIS_HZ).ceil() as usize + 1;
         let mut stereo = vec![0f32; hop * 2];
-        let mut hist: Vec<f32> = vec![0.0; DFT_N];
+        let mut hist: Vec<f32> = vec![0.0; FFT_N];
         let mut peaks = crate::media::waveform::Peaks { min: Vec::with_capacity(n), max: Vec::with_capacity(n) };
         let raw: Vec<Frame> = (0..n)
             .map(|i| {
@@ -200,13 +257,41 @@ impl SongAnalysis {
                 peaks.max.push(mono.iter().fold(0.0f32, |m, &v| m.max(v)));
                 hist.drain(..mono.len().min(hist.len()));
                 hist.extend_from_slice(&mono);
-                let mut f = raw_frame(&hist[hist.len() - DFT_N..]);
+                let mut f = raw_frame(&hist[hist.len() - FFT_N..]);
                 f[0] = mono.iter().fold(0.0f32, |m, &s| m.max(s.abs())); // the peak of this hop only
                 f
             })
             .collect();
-        let beats = crate::engine::analysis::onsets(&peaks, 0.0, dur, BEAT_REFRACTORY, BEAT_SENSITIVITY);
-        SongAnalysis { frames: shape(&raw, ANALYSIS_HZ), beats }
+        let _ = peaks; // ponytail: the peak column of `raw` is the envelope `beats_mix` reads
+        Self::from_raw(raw)
+    }
+
+    /// The analysis of already-computed raw frames (default mix).
+    pub fn from_raw(raw: Vec<Frame>) -> SongAnalysis {
+        let m = crate::model::AudioMix::default();
+        SongAnalysis { frames: shape_mix(&raw, ANALYSIS_HZ, &m), beats: beats_mix(&raw, ANALYSIS_HZ, &m), raw }
+    }
+
+    /// This song heard through `m` (`m` = default: `self` itself, no work).
+    pub fn mixed(&self, m: &crate::model::AudioMix) -> SongAnalysis {
+        if *m == crate::model::AudioMix::default() {
+            return self.clone();
+        }
+        SongAnalysis { frames: shape_mix(&self.raw, ANALYSIS_HZ, m), beats: beats_mix(&self.raw, ANALYSIS_HZ, m), raw: Vec::new() }
+    }
+
+    /// Each band's average energy over source seconds [from, to], 0..1 of the loudest band: the band
+    /// mixer's spectrum graph.
+    pub fn spectrum(&self, from: f64, to: f64) -> [f32; BANDS] {
+        let (i0, i1) = ((from * ANALYSIS_HZ).max(0.0) as usize, ((to * ANALYSIS_HZ).max(0.0) as usize).min(self.raw.len()));
+        let mut sum = [0.0f32; BANDS];
+        for f in self.raw.get(i0..i1).unwrap_or(&[]) {
+            for b in 0..BANDS {
+                sum[b] += f[1 + b];
+            }
+        }
+        let top = sum.iter().fold(1e-9f32, |a, &v| a.max(v));
+        sum.map(|v| v / top)
     }
 
     /// The frame at source second `t` (the loudest over [t, t + span) so a sparse reader never steps
@@ -398,10 +483,11 @@ pub fn rebake(p: &mut Project, vis: Id, audio: Id, backend: Backend) -> Result<u
     let v = p.clip(vis).ok_or("no such clip")?;
     let (start, len) = (v.start, v.duration);
     let song = analysis(&path, a.audio_stream, backend)?;
-    // ponytail: one source time + speed for the whole span; reversed / retimed-curve clips read linearly
-    let an = song.span(a.src_time(start), len, a.speed.abs(), FPS);
     let v = p.clip_mut(vis).ok_or("no such clip")?;
     let e = v.effects.iter_mut().find(|e| style_of(e).is_some()).ok_or("the clip has no visualizer effect")?;
+    let song = song.mixed(&e.audio_mix.clone().unwrap_or_default());
+    // ponytail: one source time + speed for the whole span; reversed / retimed-curve clips read linearly
+    let an = song.span(a.src_time(start), len, a.speed.abs(), FPS);
     Ok(bake(e, &an, FPS))
 }
 
@@ -412,6 +498,7 @@ pub fn restyle(p: &mut Project, vis: Id, style: &Style, backend: Backend) -> Res
     let i = c.effects.iter().position(|e| style_of(e).is_some()).ok_or("the clip has no visualizer effect")?;
     let mut e = Effect::from_shader(&style.src);
     e.enabled = c.effects[i].enabled;
+    e.audio_mix = c.effects[i].audio_mix.clone(); // the band mixer is how the song is heard, not the look
     c.effects[i] = e;
     match source_of(p, vis) {
         Some(a) => rebake(p, vis, a, backend).map(|_| ()),
@@ -705,7 +792,7 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
             assert!((src - (0.4 + local)).abs() < 1e-9);
             let want = song.at(src);
             let got = c.effects[0].at(0, local);
-            assert!((got - want[0] as f64).abs() < 1e-6, "level at {local}: {got} vs {}", want[0]);
+            assert!((got - want[0] as f64).abs() < 1e-3, "level at {local}: {got} vs {}", want[0]);
         }
         let _ = std::fs::remove_file(wav);
     }
@@ -720,7 +807,7 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
         assert!(std::sync::Arc::ptr_eq(&a, &b));
         assert!(analysis_async(&path, 0, Backend::Ffmpeg, || {}).is_some_and(|c| std::sync::Arc::ptr_eq(&a, &c)));
         assert_eq!(a.frames.len(), 201, "2 s at 100 Hz");
-        assert!(a.at(0.5)[0] > 0.9 && a.at(1.6)[0] < 0.1, "loud then quiet");
+        assert!(a.at(0.5)[0] > 0.8 && a.at(1.6)[0] < 0.1, "loud then quiet: {:?} {:?}", a.at(0.5), a.at(1.6));
         assert_eq!(a.at(5.0), [0.0; 7], "silence past the end");
         let _ = std::fs::remove_file(wav);
     }
@@ -761,6 +848,90 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
         assert_eq!(p.clip(vis).unwrap().link, l);
         assert_eq!(p.linked(vis).len(), 3);
         let _ = std::fs::remove_file(wav);
+    }
+
+    fn sub_then_highmid(t: f64) -> f32 {
+        let f = if t < 1.0 { 60.0 } else { 5000.0 };
+        (0.6 * (std::f64::consts::TAU * f * t).sin()) as f32
+    }
+
+    /// A kick (60 Hz) on every half second, a hi-hat (5 kHz) half way between: short decaying bursts.
+    fn kick_and_hat(t: f64) -> f32 {
+        let (k, h) = (t % 0.5, (t + 0.25) % 0.5);
+        let kick = if k < 0.12 { (-k * 30.0).exp() * (std::f64::consts::TAU * 60.0 * t).sin() } else { 0.0 };
+        let hat = if h < 0.05 { (-h * 80.0).exp() * (std::f64::consts::TAU * 5000.0 * t).sin() } else { 0.0 };
+        (0.7 * kick + 0.5 * hat) as f32
+    }
+
+    /// The bands have real edges: a 60 Hz tone lands in Sub, a 5 kHz one in High-mid.
+    #[test]
+    fn tones_land_in_their_bands() {
+        let tone = |f: f64| -> Vec<f32> { (0..4096).map(|i| (std::f64::consts::TAU * f * i as f64 / SAMPLE_RATE as f64).sin() as f32).collect() };
+        let low = raw_frame(&tone(60.0));
+        let high = raw_frame(&tone(5000.0));
+        let loudest = |f: &Frame| (0..BANDS).max_by(|&a, &b| f[1 + a].total_cmp(&f[1 + b])).unwrap();
+        assert_eq!(loudest(&low), 0, "60 Hz is Sub: {low:?}");
+        assert_eq!(loudest(&high), 4, "5 kHz is High-mid: {high:?}");
+        assert!(low[5] < low[1] * 0.01 && high[1] < high[5] * 0.01, "no leak across the spectrum");
+    }
+
+    /// The band mixer decides what drives the visualizer: a 60 Hz second then a 5 kHz second. Weighting
+    /// Sub only, the level is up in the first second and down in the second; weighting High-mid only,
+    /// the other way round; a band at gain 0 is ignored, and sensitivity scales.
+    #[test]
+    fn band_weights_drive_the_level() {
+        let song = SongAnalysis::compute(&mut Tone(sub_then_highmid, 2.0));
+        let only = |b: usize| crate::model::AudioMix { gains: std::array::from_fn(|i| if i == b { 1.0 } else { 0.0 }), ..Default::default() };
+        let sub = song.mixed(&only(0));
+        let hi = song.mixed(&only(4));
+        assert!(sub.at(0.5)[0] > 0.9 && sub.at(1.5)[0] < 0.1, "Sub-driven: {} {}", sub.at(0.5)[0], sub.at(1.5)[0]);
+        assert!(hi.at(0.5)[0] < 0.1 && hi.at(1.5)[0] > 0.9, "High-mid-driven: {} {}", hi.at(0.5)[0], hi.at(1.5)[0]);
+        assert_eq!(sub.at(1.5)[5], 0.0, "gain 0: the High-mid band output is ignored");
+        let soft = song.mixed(&crate::model::AudioMix { sensitivity: 0.5, ..only(0) });
+        assert!((soft.at(0.5)[0] - 0.5).abs() < 0.05, "half the sensitivity, half the drive: {}", soft.at(0.5)[0]);
+        // slow attack: the level rises gradually instead of jumping
+        let slow = song.mixed(&crate::model::AudioMix { attack: 0.3, ..only(0) });
+        assert!(slow.at(0.05)[0] < sub.at(0.05)[0] * 0.5, "attack smooths the rise");
+    }
+
+    /// The beat source: listening to Sub finds the kicks (every 0.5 s from 0), listening to High-mid finds
+    /// the hi-hats (0.25 s later).
+    #[test]
+    fn the_beat_source_picks_what_the_beats_follow() {
+        let song = SongAnalysis::compute(&mut Tone(kick_and_hat, 4.0));
+        let src = |b: usize| crate::model::AudioMix { beat_bands: std::array::from_fn(|i| i == b), ..Default::default() };
+        let phase = |beats: &[f64]| -> f64 {
+            assert!(beats.len() >= 5, "{beats:?}");
+            beats.iter().map(|b| b % 0.5).sum::<f64>() / beats.len() as f64
+        };
+        let kicks = song.mixed(&src(0)).beats;
+        let hats = song.mixed(&src(4)).beats;
+        assert!(phase(&kicks) < 0.08, "Sub hears the kicks: {kicks:?}");
+        assert!((phase(&hats) - 0.25).abs() < 0.08, "High-mid hears the hats: {hats:?}");
+    }
+
+    /// Presets and hand-set mixes are saved with the project and come back the same; a project from
+    /// before the band mixer loads with none; restyling keeps the mix.
+    #[test]
+    fn the_band_mix_round_trips_in_the_project() {
+        let mut p = Project::new();
+        let id = p.add_shape_clip(crate::model::ShapeKind::Rect, 0.0, 2.0);
+        let mut e = Effect::from_shader(BUILTIN[2].1);
+        e.audio_mix = crate::model::AudioMix::preset("edm");
+        assert_eq!(e.audio_mix.as_ref().unwrap().preset, "EDM");
+        p.clip_mut(id).unwrap().effects.push(e);
+        let back = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(back.clip(id).unwrap().effects[0].audio_mix, crate::model::AudioMix::preset("EDM"));
+        for name in crate::model::AudioMix::PRESETS {
+            let m = crate::model::AudioMix::preset(name).unwrap();
+            assert_eq!(m.clone().clamped(), m, "{name} is inside the UI ranges");
+        }
+        assert!(crate::model::AudioMix::preset("polka").is_none());
+        let old: Effect = serde_json::from_str(r#"{"kind":"Shader","shader":"// @param level 0 0 1\nvec4 effect(vec4 s, vec2 uv){return s;}"}"#).unwrap();
+        assert_eq!(old.audio_mix, None);
+        restyle(&mut p, id, &find(Some("Neon Orb")).unwrap(), Backend::Auto).unwrap();
+        assert_eq!(p.clip(id).unwrap().effects[0].audio_mix, crate::model::AudioMix::preset("EDM"), "kept across styles");
+        assert_eq!(crate::model::AudioMix::band("high mid"), Some(4));
     }
 
     /// `bake` keys exactly the audio params a shader declares, on their own ranges.

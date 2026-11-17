@@ -8,6 +8,10 @@
   The two are linked like a video and its own audio: moving, trimming or deleting one takes the other along, and
   the export renders the visualizer with the song. **Add Audio Visualizer** on a timeline clip links too.
   `audio.visualizer {asset_id}` does the same for the Assistant.
+- **Band mixer**: tune which frequencies drive a visualizer and how strongly - six bands from Sub to Air with
+  their own intensity, sensitivity, attack / release, and which bands the beat follows (the kick or the snare),
+  with presets for EDM, Hip-hop, Rock, Vocal, Lo-fi and Classical. A spectrum of the song shows what it has.
+  Changes show at once and are saved with the project; custom shaders get the mixed values.
 - **Fixed: the Source monitor's visualizer lagging the music for seconds** (on a song's first play, and after a
   loud part or a seek). It waited for the waveform to finish computing and followed the speakers through a
   slow auto-gain; now every visualizer - Source monitor, timeline and export - shows the song's own analysis

@@ -375,17 +375,27 @@ pub const TOOLS: &[ToolDef] = &[
                the song so moving / trimming / deleting one does the other. Same as right-click > Audio > Add \
                Audio Visualizer. asset_id instead: places that audio file at `at` (default the playhead) with \
                its linked visualizer, as Library > Add with Audio Visualizer does. Given a visualizer clip, \
-               switches its style and bakes the audio again. style: a name from audio.visualizer_styles \
-               (default the last used, else Neon Orb).",
+               switches its style (when `style` is given) and bakes the audio again. style: a name from \
+               audio.visualizer_styles (default the last used, else Neon Orb). Band mixer (which frequencies \
+               drive it): preset EDM|Hip-hop|Rock|Vocal|Lo-fi|Classical|Reset, gains = 6 numbers 0..3 \
+               (Sub, Bass, Low-mid, Mid, High-mid, Air) or {band: gain}, sensitivity 0.25..4, attack / \
+               release seconds, beat_bands = band names the beat detection hears ([] = the whole sound).",
         args: &[
             "clip_id:integer:false:an audio clip (adds a visualizer) or a visualizer clip (restyles it)",
             "asset_id:integer:false:an audio file in the library: place it with a visualizer",
             "at:number:false:with asset_id: timeline seconds, default the playhead",
             "style:string:false:style name, default the last used",
+            "preset:string:false:band-mixer preset, or Reset",
+            "gains:object:false:6 gains 0..3 (array) or {band name: gain}",
+            "sensitivity:number:false:0.25..4",
+            "attack:number:false:seconds to rise",
+            "release:number:false:seconds to fall",
+            "beat_bands:array:false:band names the beats follow; [] = the whole sound",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
             let a = Args(args);
+            let mix = mix_args(args)?;
             let style = match a.str("style") {
                 Some(n) => visualizer::find(Some(n))?,
                 None => visualizer::last_used(&app.settings.visualizer_style),
@@ -398,15 +408,24 @@ pub const TOOLS: &[ToolDef] = &[
             if let Some(asset) = a.id("asset_id") {
                 let at = a.f64("at").unwrap_or(app.playhead);
                 let (song, vis) = visualizer::add_song(&mut app.project, asset, at, &style, backend)?;
+                apply_mix(app, vis, mix, backend)?;
                 return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": vis, "audio_clip_id": song, "style": style.name})));
             }
             let id = req(a.id("clip_id"), "clip_id or asset_id")?;
             let clip = app.project.clip(id).ok_or("no such clip_id")?;
-            if clip.effects.iter().any(|e| visualizer::style_of(e).is_some()) {
-                visualizer::restyle(&mut app.project, id, &style, backend)?;
-                return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": id, "style": style.name})));
+            if let Some(cur) = clip.effects.iter().find_map(visualizer::style_of) {
+                // a visualizer: restyle only when asked to (band settings alone keep the look)
+                let name = if a.str("style").is_some() {
+                    visualizer::restyle(&mut app.project, id, &style, backend)?;
+                    style.name
+                } else {
+                    cur
+                };
+                apply_mix(app, id, mix, backend)?;
+                return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": id, "style": name})));
             }
             let vid = visualizer::add(&mut app.project, id, &style, backend)?;
+            apply_mix(app, vid, mix, backend)?;
             Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": vid, "style": style.name})))
         },
     },
@@ -424,6 +443,88 @@ pub const TOOLS: &[ToolDef] = &[
         },
     },
 ];
+
+/// The band-mixer arguments of `audio.visualizer`, applied on top of a preset (or the clip's current mix
+/// when only some are given: `apply_mix` merges). None when no band argument was passed.
+type MixArgs = Option<Box<dyn Fn(crate::model::AudioMix) -> crate::model::AudioMix>>;
+
+fn mix_args(args: &Value) -> Result<MixArgs, String> {
+    use crate::model::AudioMix;
+    let keys = ["preset", "gains", "sensitivity", "attack", "release", "beat_bands"];
+    if !keys.iter().any(|k| args.get(*k).is_some_and(|v| !v.is_null())) {
+        return Ok(None);
+    }
+    let preset = match args.get("preset").and_then(Value::as_str) {
+        Some(p) if p.eq_ignore_ascii_case("reset") => Some(AudioMix::default()),
+        Some(p) => Some(AudioMix::preset(p).ok_or_else(|| format!("no preset '{p}' (have: {})", AudioMix::PRESETS.join(", ")))?),
+        None => None,
+    };
+    let mut gains: Vec<(usize, f32)> = Vec::new();
+    match args.get("gains") {
+        Some(Value::Array(v)) => {
+            if v.len() != 6 {
+                return Err("gains: give 6 numbers (Sub, Bass, Low-mid, Mid, High-mid, Air)".into());
+            }
+            for (i, g) in v.iter().enumerate() {
+                gains.push((i, g.as_f64().ok_or("gains: numbers")? as f32));
+            }
+        }
+        Some(Value::Object(o)) => {
+            for (k, g) in o {
+                let b = AudioMix::band(k).ok_or_else(|| format!("gains: no band '{k}'"))?;
+                gains.push((b, g.as_f64().ok_or("gains: numbers")? as f32));
+            }
+        }
+        Some(Value::Null) | None => {}
+        Some(_) => return Err("gains: an array of 6 numbers or {band: gain}".into()),
+    }
+    let beat_bands: Option<[bool; 6]> = match args.get("beat_bands") {
+        Some(Value::Array(v)) => {
+            let mut b = [false; 6];
+            for n in v {
+                let n = n.as_str().ok_or("beat_bands: band names")?;
+                b[AudioMix::band(n).ok_or_else(|| format!("beat_bands: no band '{n}'"))?] = true;
+            }
+            Some(b)
+        }
+        _ => None,
+    };
+    let num = |k: &str| args.get(k).and_then(Value::as_f64).map(|v| v as f32);
+    let (sens, att, rel) = (num("sensitivity"), num("attack"), num("release"));
+    Ok(Some(Box::new(move |cur: AudioMix| {
+        let mut m = preset.clone().unwrap_or(cur);
+        let hand = !gains.is_empty() || beat_bands.is_some() || sens.is_some() || att.is_some() || rel.is_some();
+        for &(b, g) in &gains {
+            m.gains[b] = g;
+        }
+        if let Some(b) = beat_bands {
+            m.beat_bands = b;
+        }
+        m.sensitivity = sens.unwrap_or(m.sensitivity);
+        m.attack = att.unwrap_or(m.attack);
+        m.release = rel.unwrap_or(m.release);
+        if hand {
+            m.preset.clear();
+        }
+        m.clamped()
+    })))
+}
+
+/// Set visualizer `vis`'s band mix from `audio.visualizer`'s arguments and bake again.
+fn apply_mix(app: &mut App, vis: Id, mix: MixArgs, backend: crate::media::Backend) -> Result<(), String> {
+    let Some(f) = mix else { return Ok(()) };
+    let e = app
+        .project
+        .clip_mut(vis)
+        .and_then(|c| c.effects.iter_mut().find(|e| visualizer::style_of(e).is_some()))
+        .ok_or("not a visualizer clip")?;
+    let m = f(e.audio_mix.clone().unwrap_or_default());
+    e.audio_mix = (m != crate::model::AudioMix::default()).then_some(m);
+    if let Some(a) = visualizer::source_of(&app.project, vis) {
+        visualizer::rebake(&mut app.project, vis, a, backend)?;
+    }
+    Ok(())
+}
 
 /// Bake audio clip `src`'s loudness into keyframes on `dst`'s effect `ei` (default: the last one),
 /// parameter `name`: one key per `1/fps` s over `dst`, 0..1 loudness mapped onto the parameter's range.
@@ -518,6 +619,30 @@ mod tests {
         for name in names {
             assert!(crate::mcp::tools::find(name).is_some(), "{name} missing from mcp::tools::all()");
         }
+    }
+
+    /// audio.visualizer's band-mixer arguments: a preset as the base, single fields on top (which makes it
+    /// hand-edited), names checked, nothing passed = no change.
+    #[test]
+    fn band_mixer_args_parse() {
+        use crate::model::AudioMix;
+        assert!(mix_args(&json!({"clip_id": 3})).unwrap().is_none());
+        let f = mix_args(&json!({"preset": "rock", "gains": {"sub": 2.5}, "beat_bands": ["mid"]})).unwrap().unwrap();
+        let m = f(AudioMix::default());
+        let rock = AudioMix::preset("Rock").unwrap();
+        assert_eq!(m.gains[0], 2.5);
+        assert_eq!(m.gains[1..], rock.gains[1..]);
+        assert_eq!(m.beat_bands, [false, false, false, true, false, false]);
+        assert_eq!(m.preset, "", "edited by hand");
+        let p = mix_args(&json!({"preset": "EDM"})).unwrap().unwrap()(AudioMix::default());
+        assert_eq!(p, AudioMix::preset("EDM").unwrap(), "a bare preset keeps its name");
+        let r = mix_args(&json!({"preset": "reset"})).unwrap().unwrap()(rock);
+        assert_eq!(r, AudioMix::default());
+        let s = mix_args(&json!({"sensitivity": 99, "gains": [0, 1, 1, 1, 1, 9]})).unwrap().unwrap()(AudioMix::default());
+        assert_eq!((s.sensitivity, s.gains[5]), (4.0, 3.0), "clamped to the UI ranges");
+        assert!(mix_args(&json!({"gains": [1, 2]})).is_err());
+        assert!(mix_args(&json!({"beat_bands": ["kick"]})).is_err());
+        assert!(mix_args(&json!({"preset": "polka"})).is_err());
     }
 
     /// Loud bursts give keys near 1 that fall off smoothly; silence stays at 0; deterministic.

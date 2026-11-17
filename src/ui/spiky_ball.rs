@@ -153,7 +153,7 @@ mod tests {
         for f in &mut frames[100..150] {
             *f = [1.0; 7];
         }
-        let song = visualizer::SongAnalysis { frames, beats: vec![0.5, 1.0, 1.5, 2.0] };
+        let song = visualizer::SongAnalysis { frames, beats: vec![0.5, 1.0, 1.5, 2.0], ..Default::default() };
         let mut o = Orb::default();
         o.show(Some(&song), 1.2);
         assert_eq!((o.level(), o.time), (1.0, 1.2));
