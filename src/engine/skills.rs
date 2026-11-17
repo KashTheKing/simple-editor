@@ -36,6 +36,23 @@ pub struct Skill {
     pub source: Source,
     /// The file it was read from (None for a built-in).
     pub path: Option<PathBuf>,
+    /// The header's optional `thumb:` picture for its Gallery card: absolute, or relative to the skill's
+    /// folder or the library root above it (`thumbs/x.jpg`). Empty: the card is drawn.
+    pub thumb: String,
+}
+
+/// The picture a skill's `thumb:` names, if that file exists (see `Skill::thumb`).
+pub fn thumb_path(s: &Skill) -> Option<PathBuf> {
+    let t = s.thumb.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let p = Path::new(t);
+    if p.is_absolute() {
+        return p.is_file().then(|| p.to_path_buf());
+    }
+    let dir = s.path.as_deref()?.parent()?;
+    [Some(dir), dir.parent()].into_iter().flatten().map(|d| d.join(p)).find(|f| f.is_file())
 }
 
 /// The skills compiled into the exe (the rest of `library/skills/` comes from the online library).
@@ -77,6 +94,7 @@ pub fn parse(stem: &str, text: &str, source: Source, path: Option<PathBuf>) -> S
         body: String::new(),
         source,
         path,
+        thumb: String::new(),
     };
     let mut body = text.as_str();
     if let Some(rest) = text.trim_start().strip_prefix("---") {
@@ -88,6 +106,7 @@ pub fn parse(stem: &str, text: &str, source: Source, path: Option<PathBuf>) -> S
                     "name" if valid_name(v) => s.name = v.to_string(),
                     "description" => s.description = v.to_string(),
                     "args" => s.args = v.to_string(),
+                    "thumb" => s.thumb = v.to_string(),
                     _ => {}
                 }
             }
@@ -453,6 +472,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A skill can name its own Gallery picture: `thumb:` next to the file, or under the library root.
+    #[test]
+    fn a_skill_header_names_its_thumbnail() {
+        let dir = temp("thumb");
+        std::fs::create_dir_all(dir.join("skills")).unwrap();
+        std::fs::create_dir_all(dir.join("thumbs")).unwrap();
+        std::fs::write(dir.join("thumbs").join("cut.jpg"), b"x").unwrap();
+        std::fs::write(dir.join("skills").join("near.png"), b"x").unwrap();
+        let at = |t: &str| {
+            let text = format!("---\nname: cut\ndescription: d\nthumb: {t}\n---\nbody");
+            parse("cut", &text, Source::Library, Some(dir.join("skills").join("cut.md")))
+        };
+        assert_eq!(at("thumbs/cut.jpg").thumb, "thumbs/cut.jpg");
+        assert_eq!(thumb_path(&at("thumbs/cut.jpg")), Some(dir.join("thumbs").join("cut.jpg")), "library root");
+        assert_eq!(thumb_path(&at("near.png")), Some(dir.join("skills").join("near.png")), "beside the file");
+        assert_eq!(thumb_path(&at("missing.png")), None);
+        assert_eq!(thumb_path(&parse("x", "---\nname: x\n---\nb", Source::User, None)), None, "no thumb: drawn");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn filter_orders_prefix_first() {
         let mk = |n: &str, d: &str| Skill {
@@ -462,6 +501,7 @@ mod tests {
             body: String::new(),
             source: Source::BuiltIn,
             path: None,
+            thumb: String::new(),
         };
         let all = [mk("b-roll", "cover cuts"), mk("captions", ""), mk("cut-silences", ""), mk("shorts", "make clips")];
         let names = |v: Vec<&Skill>| v.into_iter().map(|s| s.name.clone()).collect::<Vec<_>>();

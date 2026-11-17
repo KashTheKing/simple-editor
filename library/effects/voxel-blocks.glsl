@@ -1,5 +1,5 @@
 // @name Voxel Blocks
-// @desc Audio visualizer: a blocky voxel island with pixel-art grass, dirt, stone and ores. Columns rise with the music's spectrum, a block drops in and stacks on every beat while the oldest ones break away, and the camera slowly orbits. Background 0 is transparent for overlays.
+// @desc Audio visualizer: a blocky voxel island with pixel-art grass, dirt, stone and ores. Columns rise with the music's spectrum, a block drops in and stacks on every beat while the oldest ones break away, and the camera orbits - or fly it yourself (Inspector ▸ Camera, or drag in the Preview). Background 0 is transparent for overlays.
 // @tags visualizer, audio, music, beat, voxel, blocks, pixel art, 3d, game
 // @param level 0.4 0 1
 // @param band1 0.6 0 1
@@ -11,13 +11,13 @@
 // @param beat 0.5 0 1
 // @param beats 6 0 100000
 // @param palette 0 0 3
-// @param speed 1 0 3
-// @param camera 0.5 0 1
 // @param background 1 0 2
+// @camera
 // Procedural pixel art only: every 16x16 texture below is generated from hashes, no image files.
 // palette: 0 meadow (grass, dirt, stone, ores), 1 ember (netherrack-like red rock, glowing ore),
 // 2 snow (snow caps, ice), 3 desert (sand, sandstone). background: 0 transparent, 1 sky, 2 black.
-// camera: 0 low and close .. 1 high and wide. speed: orbit speed (0 = still).
+// The camera is the visualizer's (u_cam_pos / u_cam_target / u_fov / u_cam_roll, world origin = the
+// island's centre); without one (a library thumbnail) it orbits slowly, as the default camera does.
 
 const int N = 10;         // island is N x N columns
 const int HMAX = 16;      // tallest column
@@ -157,16 +157,27 @@ float boxHit(vec3 ro, vec3 rd, vec3 bmin, vec3 bmax, out vec3 nrm) {
 vec4 effect(vec4 src, vec2 uv) {
     float asp = u_res.x / u_res.y;
     vec2 sp = vec2((uv.x - 0.5) * asp, 0.5 - uv.y);
-    // orbiting camera around the island's centre
-    float ang = u_time * 0.12 * speed + 0.7;
-    float dist = mix(18.0, 27.0, camera);
-    float elev = mix(0.38, 0.85, camera);
-    vec3 target = vec3(float(N) * 0.5, 2.6, float(N) * 0.5);
-    vec3 ro = target + dist * vec3(cos(ang) * cos(elev), sin(elev), sin(ang) * cos(elev));
+    vec3 centre = vec3(float(N) * 0.5, 2.6, float(N) * 0.5);
+    vec3 ro, target;
+    float fov = u_fov, roll = u_cam_roll;
+    if (distance(u_cam_pos, u_cam_target) > 1e-4) {
+        ro = centre + u_cam_pos;
+        target = centre + u_cam_target;
+    } else {
+        // no camera given: the default slow orbit (VizCamera::default)
+        float ang = radians(40.0 + 6.9 * u_time), elev = radians(35.0);
+        target = centre;
+        ro = target + 22.5 * vec3(cos(ang) * cos(elev), sin(elev), sin(ang) * cos(elev));
+        fov = radians(35.0);
+        roll = 0.0;
+    }
+    float dist = distance(ro, target);
     vec3 fw = normalize(target - ro);
-    vec3 rt = normalize(cross(fw, vec3(0, 1, 0)));
-    vec3 up = cross(rt, fw);
-    vec3 rd = normalize(fw * 1.6 + rt * sp.x + up * sp.y);
+    vec3 rt0 = normalize(cross(fw, vec3(0, 1, 0)));
+    vec3 up0 = cross(rt0, fw);
+    vec3 rt = cos(roll) * rt0 + sin(roll) * up0;
+    vec3 up = cos(roll) * up0 - sin(roll) * rt0;
+    vec3 rd = normalize(fw * (0.5 / tan(max(fov, 0.05) * 0.5)) + rt * sp.x + up * sp.y);
 
     // DDA through the grid's box
     vec3 nrm0;

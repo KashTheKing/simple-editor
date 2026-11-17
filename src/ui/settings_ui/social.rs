@@ -169,7 +169,7 @@ pub(super) fn social_tab(ui: &mut egui::Ui, st: &mut SocialUi, s: &mut Settings)
         changed |= ui.checkbox(&mut p.verified, "").changed();
         ui.end_row();
         changed |= row(ui, if net == "youtube" { "Subscribers" } else { "Followers" }, &mut p.followers, "12.4K");
-        changed |= row(ui, "Hashtags", &mut p.tags, "#roblox #gaming");
+        changed |= row(ui, "Hashtags", &mut p.tags, "#gaming #challenge");
         changed |= row(ui, "Sound / music", &mut p.sound, "Original sound - yourchannel");
         changed |= row(ui, "Likes", &mut p.likes, "12K");
         changed |= row(ui, "Comments", &mut p.comments, "482");

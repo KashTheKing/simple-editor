@@ -922,6 +922,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             undo_len: app.undo.len(),
             top_at: app.undo.last().map(|e| e.at),
             last_call: Instant::now(),
+            idle: super::tools_context::GROUP_IDLE,
         });
         app.assistant_rt.split = true;
     }
@@ -1006,6 +1007,7 @@ pub(super) fn palette_row(text: &str) -> crate::ui::palette::Row {
         glyph: Some(crate::ui::tools::Glyph::Assistant),
         enabled: !text.is_empty(),
         reason: None,
+        ..Default::default()
     }
 }
 

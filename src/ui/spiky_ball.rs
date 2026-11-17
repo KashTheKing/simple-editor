@@ -1,37 +1,39 @@
 //! The audio visualizer drawn over the Source monitor whenever it's showing audio with no picture
-//! (and no cover art): any visualizer style (`engine::visualizer` - Neon Orb by default, the classic
-//! Spectrum Bars, or a custom library shader), drawn straight into egui's GL context with a paint
-//! callback. The same shader files are the effects a visualizer clip carries, so the monitor shows
-//! what the clip renders; here the audio params come live from what the speakers play instead of
-//! baked keys. (Module name kept from the visualizers it replaced.)
+//! (and no cover art): any visualizer style (`engine::visualizer` - Neon Orb by default, Spectrum
+//! Bars, Voxel Blocks or a custom library shader), drawn straight into egui's GL context with a paint
+//! callback. The same shader files are the effects a visualizer clip carries, and the audio params come
+//! from the same cached song analysis the clip's keys are baked from, read at the playhead's source
+//! time: the monitor shows exactly what the timeline and the export show at that moment of the song.
+//! (Module name kept from the visualizers it replaced.)
 
 use crate::engine::visualizer::{self, BANDS};
-use crate::media::waveform::Peaks;
 use eframe::egui;
 use eframe::egui_glow;
 use eframe::glow::{self, HasContext};
 use std::sync::{Arc, Mutex};
 
-/// What is audible right now: `[peak-ish loudness, band1..band6]` (unscaled) from `playback::SCOPE`
-/// when the speakers are playing anything, else the `Peaks` envelope at `t` in every slot (no device).
-pub fn live(peaks: &Peaks, t: f64) -> visualizer::Frame {
-    let scope: Vec<f32> = crate::playback::SCOPE.lock().map(|s| s.iter().copied().collect()).unwrap_or_default();
-    if scope.iter().any(|&x| x != 0.0) {
-        let mut f = visualizer::raw_frame(&scope);
-        let rms = (scope.iter().map(|x| x * x).sum::<f32>() / scope.len() as f32).sqrt();
-        f[0] = (rms * 1.4).clamp(0.0, 1.0); // ~ peak scale, like the envelope below
-        return f;
-    }
-    let (lo, hi) = peaks.range(t, t + 0.02);
-    [lo.abs().max(hi.abs()).clamp(0.0, 1.0); 1 + BANDS]
+/// The full-screen triangle for drawing STRAIGHT TO THE SCREEN: GL's framebuffer has row 0 at the
+/// bottom, so `v_uv` is flipped here to keep every style's `uv.y = 0` at the top - the renderer's
+/// convention (`shaders::VERT`, which draws into top-down textures). Without it a paint-callback
+/// style comes out upside down (the 1.3.0 Voxel Blocks / Spectrum Bars in the Source monitor).
+pub const SCREEN_VERT: &str = r#"#version 330 core
+out vec2 v_uv;
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    v_uv = vec2(p.x, 1.0 - p.y);
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
 }
+"#;
 
-/// The visualizer's animation state, carried between frames.
+/// What the monitor draws: the audio params and the shader clock for ONE moment of the song. No state
+/// carried between frames - set it from the source time every frame (`show`), so a seek, a stall or a
+/// buffering pause can never leave it behind.
 pub struct Orb {
-    /// Eased 0..1 `[level, band1..band6]`.
+    /// 0..1 `[level, band1..band6]` at `time`.
     level: visualizer::Frame,
-    /// Slowly falling loudest-recent value per slot: quiet files and weak highs still fill the range.
-    top: visualizer::Frame,
+    /// (`beat`, `beats`, `bpm`) at `time`.
+    beat: (f64, f64, Option<f64>),
+    /// The source time, which is also the shader's `u_time`.
     time: f32,
     /// (source the program was built from, program) - rebuilt when the style changes.
     gl: Arc<Mutex<Option<(String, Gl)>>>,
@@ -44,22 +46,16 @@ struct Gl {
 
 impl Default for Orb {
     fn default() -> Self {
-        Self { level: [0.0; 1 + BANDS], top: [0.05; 1 + BANDS], time: 0.0, gl: Arc::default() }
+        Self { level: [0.0; 1 + BANDS], beat: (0.0, 0.0, None), time: 0.0, gl: Arc::default() }
     }
 }
 
 impl Orb {
-    /// Ease toward this frame's audio (fast attack, slow release) and advance the shader clock.
-    pub fn update(&mut self, raw: visualizer::Frame, dt: f32) {
-        // ponytail: fixed attack/decay/auto-gain constants; promote to Settings only if someone asks.
-        for c in 0..1 + BANDS {
-            self.top[c] = raw[c].max(self.top[c] * (-dt / 4.0).exp()).max(if c == 0 { 0.05 } else { 1e-3 });
-            let target = (raw[c] / self.top[c]).clamp(0.0, 1.0);
-            let target = if c == 0 { target } else { target.sqrt() };
-            let rate = if target > self.level[c] { 25.0 } else { 5.0 };
-            self.level[c] += (target - self.level[c]) * (rate * dt).min(1.0);
-        }
-        self.time += dt;
+    /// Show the song at source second `t`: its analysis there (silence until the analysis exists).
+    pub fn show(&mut self, song: Option<&visualizer::SongAnalysis>, t: f64) {
+        self.level = song.map_or([0.0; 1 + BANDS], |a| a.at(t));
+        self.beat = song.map_or((0.0, 0.0, None), |a| a.beat_at(t));
+        self.time = t as f32;
     }
 
     pub fn level(&self) -> f32 {
@@ -79,9 +75,17 @@ impl Orb {
             .iter()
             .map(|p| match visualizer::AUDIO_PARAMS.iter().position(|a| *a == p.id) {
                 Some(c) => (p.min + (p.max - p.min) * self.level[c] as f64) as f32,
-                None => p.default as f32,
+                // the beat inputs as `bake` keys them: raw values, clamped to the range
+                None => match p.id.as_str() {
+                    "beat" => self.beat.0.clamp(p.min, p.max) as f32,
+                    "beats" => self.beat.1.clamp(p.min, p.max) as f32,
+                    "bpm" => self.beat.2.unwrap_or(p.default).clamp(p.min, p.max) as f32,
+                    _ => p.default as f32,
+                },
             })
             .collect();
+        // a `// @camera` style gets the default camera at this moment, as a clip with no camera set does
+        let camera = visualizer::camera_at(&crate::model::Effect::from_shader(src), self.time as f64);
         let (gl_state, time, src) = (self.gl.clone(), self.time, src.to_string());
         let cb = egui_glow::CallbackFn::new(move |info, painter| {
             let gl = painter.gl();
@@ -105,6 +109,13 @@ impl Orb {
                 for (i, v) in params.iter().enumerate() {
                     gl.uniform_1_f32(gl.get_uniform_location(prog, &format!("p{i}")).as_ref(), *v);
                 }
+                if let Some(c) = camera {
+                    let u = |n: &str| gl.get_uniform_location(prog, n);
+                    gl.uniform_3_f32(u("u_cam_pos").as_ref(), c.pos[0], c.pos[1], c.pos[2]);
+                    gl.uniform_3_f32(u("u_cam_target").as_ref(), c.target[0], c.target[1], c.target[2]);
+                    gl.uniform_1_f32(u("u_fov").as_ref(), c.fov);
+                    gl.uniform_1_f32(u("u_cam_roll").as_ref(), c.roll);
+                }
                 gl.bind_vertex_array(Some(vao));
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
             }
@@ -126,7 +137,7 @@ unsafe fn build(gl: &glow::Context, src: &str) -> Gl {
         })
     };
     let prog = (|| {
-        let v = stage(glow::VERTEX_SHADER, crate::engine::shaders::VERT)?;
+        let v = stage(glow::VERTEX_SHADER, SCREEN_VERT)?;
         let f = stage(glow::FRAGMENT_SHADER, &crate::engine::shaders::user_shader(src))?;
         let p = gl.create_program().ok()?;
         gl.attach_shader(p, v);
@@ -143,31 +154,32 @@ unsafe fn build(gl: &glow::Context, src: &str) -> Gl {
 mod tests {
     use super::*;
 
+    /// The monitor's value is the song analysis at the source time, nothing else: the same after any
+    /// history (a seek back, a long stall), and silent before the analysis exists.
     #[test]
-    fn orb_level_pulses_and_settles() {
+    fn the_monitor_shows_the_analysis_at_the_source_time() {
+        let mut frames = vec![[0.0; 7]; 300];
+        for f in &mut frames[100..150] {
+            *f = [1.0; 7];
+        }
+        let song = visualizer::SongAnalysis { frames, beats: vec![0.5, 1.0, 1.5, 2.0], ..Default::default() };
         let mut o = Orb::default();
-        for _ in 0..60 {
-            o.update([0.6; 7], 1.0 / 60.0);
-        }
-        assert!(o.level() > 0.95, "steady sound fills the range: {}", o.level());
-        o.update([0.0; 7], 1.0 / 60.0);
-        assert!(o.level() > 0.8, "releases slowly, no snap to zero");
-        for _ in 0..300 {
-            o.update([0.0; 7], 1.0 / 60.0);
-        }
-        assert!(o.level() < 0.01, "silence settles to 0");
-        // a quiet file still swings the orb fully (auto-gain)
-        let mut q = Orb::default();
-        for _ in 0..60 {
-            q.update([0.08; 7], 1.0 / 60.0);
-        }
-        assert!(q.level() > 0.95, "quiet file: {}", q.level());
-        assert!(o.level().is_finite() && (0.0..=1.0).contains(&q.level()));
+        o.show(Some(&song), 1.2);
+        assert_eq!((o.level(), o.time), (1.0, 1.2));
+        o.show(Some(&song), 2.7); // a seek
+        assert_eq!(o.level(), 0.0);
+        o.show(Some(&song), 1.2); // back again, e.g. after a stall: no leftover
+        assert_eq!(o.level(), 1.0);
+        assert_eq!(o.beat.1, 2.0, "two beats passed at 1.2 s");
+        assert!((o.beat.0 - 0.4).abs() < 1e-9, "40 % into the beat: {}", o.beat.0);
+        o.show(None, 1.2);
+        assert_eq!(o.level(), 0.0, "no analysis yet: silent, never stale");
     }
 
+    /// The screen-space triangle is the renderer's flipped exactly in y.
     #[test]
-    fn live_falls_back_to_peaks() {
-        let p = Peaks { min: vec![-0.5; 100], max: vec![0.25; 100] };
-        assert!(live(&p, 0.5).iter().all(|v| (0.0..=1.0).contains(v)));
+    fn screen_vert_flips_only_y() {
+        assert!(SCREEN_VERT.contains("v_uv = vec2(p.x, 1.0 - p.y);"));
+        assert!(crate::engine::shaders::VERT.contains("v_uv = p;"));
     }
 }

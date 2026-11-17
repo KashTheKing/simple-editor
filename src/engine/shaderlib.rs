@@ -25,6 +25,9 @@ pub struct ShaderMeta {
     /// halfway between it and the current frame.
     pub prev_gap: u32,
     pub credit: String,
+    /// `// @camera`: a 3D shader that takes the visualizer camera as uniforms (`u_cam_pos`,
+    /// `u_cam_target`, `u_fov`, `u_cam_roll`; `engine::visualizer::camera_at`).
+    pub camera: bool,
 }
 
 /// Names a `@param` may not take: they are already something in the assembled program.
@@ -73,6 +76,7 @@ pub fn parse_meta(src: &str) -> ShaderMeta {
                     m.prev_gap = n.trim().parse::<u32>().unwrap_or(1).clamp(1, 8);
                 }
             }
+            "camera" => m.camera = true,
             "param" => {
                 let w: Vec<&str> = val.split_whitespace().collect();
                 let n: Vec<f64> = w.iter().skip(1).filter_map(|v| v.parse().ok()).collect();

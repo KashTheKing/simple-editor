@@ -1,6 +1,6 @@
 //! ---- ws:html-layer ----
-//! Web pages saved from a browser, as HTML layers. A page saved as a single `.mhtml` file (Brave /
-//! Chrome / Edge: "Webpage, Single File") holds the HTML and every stylesheet, image and font in one
+//! Web pages saved from a browser, as HTML layers. A page saved as a single `.mhtml` file (Chromium-based
+//! browsers: "Webpage, Single File") holds the HTML and every stylesheet, image and font in one
 //! MIME archive; `mhtml_to_folder` unpacks it into `index.html` + `files/` with the links rewritten, so
 //! the page renders from disk like any linked HTML (`engine::html`: `<base>`, linked CSS and images, a
 //! full-page capture). Scripts are removed: the saved page is what the browser had drawn, not a program.

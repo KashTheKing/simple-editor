@@ -56,18 +56,30 @@ pub fn helper_exe() -> Option<PathBuf> {
 /// renders run the scan follows every still they write - two stats of a missing exe each time were most
 /// of the UI thread on a project with nine layers. An install clears it (`start_install`).
 pub fn available() -> bool {
-    let mut g = lock(&AVAILABLE);
-    if let Some((at, yes)) = *g {
-        if at.elapsed() < Duration::from_secs(2) {
-            return yes;
-        }
-    }
-    let yes = helper_exe().is_some();
-    *g = Some((Instant::now(), yes));
-    yes
+    installed_stamp().is_some()
 }
 
-static AVAILABLE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+/// Which helper is installed (its size and time, hashed; None = none), remembered for 2 s like `available`.
+/// A failure remembered for a page holds for that helper only: an update tries the page again.
+fn installed_stamp() -> Option<u64> {
+    let mut g = lock(&AVAILABLE);
+    if let Some((at, stamp)) = *g {
+        if at.elapsed() < Duration::from_secs(2) {
+            return stamp;
+        }
+    }
+    let stamp = helper_exe().map(|p| {
+        use std::hash::{Hash, Hasher};
+        let m = std::fs::metadata(&p).ok();
+        let mut h = std::hash::DefaultHasher::new();
+        (p, m.as_ref().map(|m| m.len()), m.and_then(|m| m.modified().ok())).hash(&mut h);
+        h.finish()
+    });
+    *g = Some((Instant::now(), stamp));
+    stamp
+}
+
+static AVAILABLE: Mutex<Option<(Instant, Option<u64>)>> = Mutex::new(None);
 
 // ---------------------------------------------------------------------------------------------------
 // the process
@@ -168,6 +180,9 @@ impl Helper {
     }
 
     pub fn load(&mut self, page: &str, base: &str, size: (u32, u32), scale: f64) -> Result<Loaded, String> {
+        // the page's CSS for its inline svgs' parts, written onto them (the helper's SVG engine never sees
+        // the stylesheet); what cannot be resolved Auto sends to Edge, an explicit Blitz gets it as it is
+        let page = html_lint::inline_svg_styles(page).unwrap_or_else(|_| page.to_string());
         let (h, _) = self.call(json!({"cmd": "load", "html": page, "base": base, "w": size.0, "h": size.1, "scale": scale}), LOAD_TIMEOUT)?;
         Ok(Loaded {
             id: h["id"].as_u64().unwrap_or(0),
@@ -389,7 +404,15 @@ pub struct Choice {
     pub reason: Option<String>,
 }
 
-static FAILED: Mutex<Option<HashMap<u64, String>>> = Mutex::new(None);
+/// A failure of the helper on a source: for which helper (`installed_stamp`), how often, the last message.
+/// Kept in memory only: a restart tries every page with the fast renderer again.
+struct Failure {
+    stamp: Option<u64>,
+    count: u32,
+    why: String,
+}
+
+static FAILED: Mutex<Option<HashMap<u64, Failure>>> = Mutex::new(None);
 
 pub fn source_key(src: &str) -> u64 {
     use std::hash::{Hash, Hasher};
@@ -398,17 +421,43 @@ pub fn source_key(src: &str) -> u64 {
     h.finish()
 }
 
-/// The helper failed (panic, timeout, crash, a page it could not load) on this source: Auto stops trying.
+/// The helper failed (panic, timeout, crash, a page it could not load) on this source. Auto draws it with
+/// Edge from then on when the failure is certain to come again (a panic: the helper cannot draw something
+/// in it), else after the second one (a timeout on a busy PC is tried once more) - for this helper, this run.
 pub fn remember_failure(src: &str, why: &str) {
     remember_failure_key(source_key(src), why);
 }
 
 pub fn remember_failure_key(key: u64, why: &str) {
-    lock(&FAILED).get_or_insert_with(HashMap::new).insert(key, why.to_string());
+    let stamp = installed_stamp();
+    let mut g = lock(&FAILED);
+    let f = g.get_or_insert_with(HashMap::new).entry(key).or_insert(Failure { stamp, count: 0, why: String::new() });
+    if f.stamp != stamp {
+        f.count = 0; // another helper since: its own count
+        f.stamp = stamp;
+    }
+    f.count += 1;
+    f.why = why.to_string();
+}
+
+/// Why Auto does not use the fast renderer for this source any more (None = it does).
+fn failed_key(key: u64) -> Option<String> {
+    let stamp = installed_stamp();
+    let g = lock(&FAILED);
+    let f = g.as_ref()?.get(&key)?;
+    (f.stamp == stamp && (f.count >= 2 || f.why.starts_with("panic"))).then(|| f.why.clone())
 }
 
 pub fn failure_of(src: &str) -> Option<String> {
-    lock(&FAILED).as_ref().and_then(|m| m.get(&source_key(src)).cloned())
+    failed_key(source_key(src))
+}
+
+/// Forget one source's failures (tests: `forget_failures` would race tests running beside them).
+#[cfg(test)]
+pub fn forget_failure(src: &str) {
+    if let Some(m) = lock(&FAILED).as_mut() {
+        m.remove(&source_key(src));
+    }
 }
 
 pub fn forget_failures() {
@@ -462,7 +511,7 @@ pub fn choose_with(setting: HtmlRenderer, src: &str, helper_installed: bool) -> 
             if let Some(b) = f.blocks.first() {
                 return Choice { engine: Engine::Edge, reason: Some(format!("uses {b}: rendering with Edge")) };
             }
-            if let Some(why) = lock(&FAILED).as_ref().and_then(|m| m.get(&key).cloned()) {
+            if let Some(why) = failed_key(key) {
                 return Choice { engine: Engine::Edge, reason: Some(format!("the fast renderer failed ({why}): rendering with Edge")) };
             }
             Choice { engine: Engine::Blitz, reason: f.notes.first().cloned() }
@@ -626,7 +675,7 @@ mod tests {
     #[test]
     fn auto_chooses_by_install_lint_and_failures() {
         let plain = "<style>p{color:red}</style><p>x</p>";
-        let filt = "<style>p{backdrop-filter:blur(4px)}</style><p>x</p>";
+        let filt = "<style>p{mix-blend-mode:screen}</style><p>x</p>";
         // not installed: Edge, whatever the setting says except an explicit Edge (no reason)
         assert_eq!(choose_with(HtmlRenderer::Auto, plain, false).engine, Engine::Edge);
         assert!(choose_with(HtmlRenderer::Auto, plain, false).reason.unwrap().contains("not installed"));
@@ -635,19 +684,40 @@ mod tests {
         assert_eq!(choose_with(HtmlRenderer::Auto, plain, true), Choice { engine: Engine::Blitz, reason: None });
         let c = choose_with(HtmlRenderer::Auto, filt, true);
         assert_eq!(c.engine, Engine::Edge);
-        assert_eq!(c.reason.as_deref(), Some("uses a backdrop filter: rendering with Edge"));
+        assert_eq!(c.reason.as_deref(), Some("uses a blend mode (mix-blend-mode): rendering with Edge"));
         // the user insists: Blitz, with a warning
         let c = choose_with(HtmlRenderer::Blitz, filt, true);
         assert_eq!(c.engine, Engine::Blitz);
         assert!(c.reason.is_some());
-        // a failure seen on this source sticks
+        // a panic on this source sticks (for this helper, this run)
         let bad = "<p>fails once</p>";
         assert_eq!(choose_with(HtmlRenderer::Auto, bad, true).engine, Engine::Blitz);
         remember_failure(bad, "panic: x");
         let c = choose_with(HtmlRenderer::Auto, bad, true);
         assert_eq!(c.engine, Engine::Edge);
         assert!(c.reason.unwrap().contains("panic: x"));
-        forget_failures();
+        forget_failure(bad);
+    }
+
+    /// Regression: one failure of the helper (a timeout on a busy PC) sent a page to Edge for good. A
+    /// timeout is tried once more; any failure counts for the helper it happened with only, and a restart
+    /// (an empty memory) tries again.
+    #[test]
+    fn a_blitz_failure_is_retried_and_belongs_to_one_helper() {
+        let page = "<p>timed out once</p>";
+        let key = source_key(page);
+        remember_failure(page, "se-html did not answer within 45 s: stopped");
+        assert_eq!(choose_with(HtmlRenderer::Auto, page, true).engine, Engine::Blitz, "one timeout: tried again");
+        remember_failure(page, "se-html did not answer within 45 s: stopped");
+        assert_eq!(choose_with(HtmlRenderer::Auto, page, true).engine, Engine::Edge, "twice: Edge");
+        // another helper version installed since: its own chance
+        if let Some(f) = lock(&FAILED).as_mut().and_then(|m| m.get_mut(&key)) {
+            f.stamp = Some(f.stamp.unwrap_or(0) ^ 1);
+        }
+        assert_eq!(choose_with(HtmlRenderer::Auto, page, true).engine, Engine::Blitz, "a new helper tries again");
+        // a restart: nothing remembered
+        forget_failure(page);
+        assert_eq!(failure_of(page), None);
     }
 
     #[test]

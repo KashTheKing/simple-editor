@@ -128,7 +128,7 @@ pub fn act(app: &mut App, a: Action) -> bool {
             };
             let before = app.project.to_json();
             let backend = app.backend();
-            let style = crate::engine::visualizer::find(None).expect("a built-in style");
+            let style = crate::engine::visualizer::last_used(&app.settings.visualizer_style);
             match crate::engine::visualizer::add(&mut app.project, src, &style, backend) {
                 Ok(id) => {
                     app.push_undo_labeled(before, "Add Audio Visualizer");
@@ -141,4 +141,29 @@ pub fn act(app: &mut App, a: Action) -> bool {
         }
         _ => false,
     }
+}
+
+/// Library ▸ Add with Audio Visualizer / `audio.visualizer {asset_id}`: each audio asset placed from
+/// `at` (one after another) with its linked visualizer in the last-used style, as ONE undo step.
+/// Returns the (song, visualizer) pairs; assets that fail are skipped and toasted.
+pub(super) fn add_songs_with_visualizer(app: &mut App, assets: &[Id], at: f64) -> Vec<(Id, Id)> {
+    let before = app.project.to_json();
+    let (backend, style) = (app.backend(), crate::engine::visualizer::last_used(&app.settings.visualizer_style));
+    let mut at = at;
+    let mut out = Vec::new();
+    for &a in assets {
+        match crate::engine::visualizer::add_song(&mut app.project, a, at, &style, backend) {
+            Ok(pair) => {
+                at += app.project.clip(pair.0).map_or(0.0, |c| c.duration);
+                out.push(pair);
+            }
+            Err(e) => app.toast(e),
+        }
+    }
+    if !out.is_empty() {
+        app.push_undo_labeled(before, "Add with Audio Visualizer");
+        app.selection = out.iter().flat_map(|&(s, v)| [v, s]).collect();
+        app.after_edit();
+    }
+    out
 }

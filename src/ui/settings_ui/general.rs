@@ -96,6 +96,15 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
             ui.weak(if s.cache_disk_gb == 0 { "unlimited" } else { "GB (HTML, pre-render, proxies, peaks; oldest first)" });
         });
         ui.end_row();
+
+        // ---- ws:neutral-web ----
+        ui.label("Cache folder");
+        cache_folder_row(ui, state, s);
+        ui.end_row();
+
+        ui.label("Web browser");
+        changed |= browser_row(ui, state, s);
+        ui.end_row();
     });
     ui.add_space(6.0);
     // ---- ws:pages ---- (was the Dynamic / Granular layout mode; same field)
@@ -232,4 +241,146 @@ fn enhancer_row(ui: &mut egui::Ui) {
             None => ui.weak("optional, about 45 MB"),
         };
     }
+}
+
+// ---- ws:neutral-web ----
+/// A cache folder picked in Settings, and how to get there.
+#[derive(Clone, Debug, Default)]
+pub struct CachePick {
+    /// The new folder ("" = the default).
+    pub path: String,
+    /// Move the existing cache there (else start fresh).
+    pub mv: bool,
+    /// Starting fresh: delete the old folder.
+    pub delete_old: bool,
+    /// The folder is the top of a drive and the user said that is fine.
+    pub root_ok: bool,
+}
+
+fn gb(b: u64) -> String {
+    if b >= 1_000_000_000 {
+        format!("{:.1} GB", b as f64 / 1e9)
+    } else {
+        format!("{:.0} MB", b as f64 / 1e6)
+    }
+}
+
+/// Cache folder: where it is, its size and the drive's free space, Browse… / Open folder / Reset, and
+/// (once a folder is picked) Move existing cache / Start fresh. The change itself is the app's
+/// (`caches::change_folder`, via `state.cache_change`).
+fn cache_folder_row(ui: &mut egui::Ui, state: &mut SettingsUi, s: &Settings) {
+    use crate::engine::cache_move;
+    let dir = Settings::cache_dir();
+    ui.vertical(|ui| {
+        ui.add(egui::Label::new(dir.to_string_lossy()).truncate()).on_hover_text(dir.to_string_lossy());
+        ui.horizontal(|ui| {
+            let moving = cache_move::running();
+            if let Some(p) = &moving {
+                ui.add(egui::ProgressBar::new(p.fraction()).desired_width(160.0).text("Moving the cache…"));
+                if ui.small_button("Cancel").on_hover_text("Stop the move: what is not moved yet stays in the old folder").clicked() {
+                    p.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+            }
+            let idle = moving.is_none() && state.cache_pick.is_none();
+            if ui.add_enabled(idle, egui::Button::new("Browse…")).clicked() {
+                if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                    state.cache_pick = Some(CachePick { path: p.to_string_lossy().into_owned(), ..Default::default() });
+                    state.cache_error = None;
+                }
+            }
+            if ui.button("Open folder").clicked() {
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+            }
+            if ui
+                .add_enabled(idle && !s.cache_folder.is_empty(), egui::Button::new("Reset to default"))
+                .on_hover_text(Settings::default_cache_dir().to_string_lossy())
+                .clicked()
+            {
+                state.cache_pick = Some(CachePick::default());
+                state.cache_error = None;
+            }
+        });
+        // size and free space: walking the folder is not free, so at most every 3 s
+        let id = egui::Id::new("cache_folder_stats");
+        let now = ui.input(|i| i.time);
+        let stats = ui.data(|d| d.get_temp::<(f64, u64, Option<u64>)>(id)).filter(|st| now - st.0 < 3.0);
+        let (_, used, free) = stats.unwrap_or_else(|| {
+            let st = (now, crate::ui::app::caches_bytes_for_ui(), crate::engine::cache_lru::free_bytes(&dir));
+            ui.data_mut(|d| d.insert_temp(id, st));
+            st
+        });
+        let drive = dir.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned()).unwrap_or_default();
+        ui.weak(match free {
+            Some(f) => format!("{} used · {} free on {drive}", gb(used), gb(f)),
+            None => format!("{} used", gb(used)),
+        });
+        let Some(pick) = state.cache_pick.as_mut() else { return };
+        let target = if pick.path.is_empty() { Settings::default_cache_dir() } else { std::path::PathBuf::from(&pick.path) };
+        let (mut choice, mut cancel) = (None, false);
+        ui.group(|ui| {
+            ui.label(format!("Use {} for the cache:", target.display()));
+            if cache_move::is_drive_root(&target) {
+                ui.checkbox(&mut pick.root_ok, "Use the top of the drive (the cache's files go straight in it)");
+            }
+            if let Some(e) = &state.cache_error {
+                ui.colored_label(ui.visuals().error_fg_color, e);
+            }
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Move existing cache")
+                    .on_hover_text("Moves the files in the background (Jobs), at low priority; files in use stay where they are")
+                    .clicked()
+                {
+                    choice = Some(true);
+                }
+                if ui.button("Start fresh").on_hover_text("Renders, proxies and peaks are made again in the new folder when needed").clicked() {
+                    choice = Some(false);
+                }
+                ui.checkbox(&mut pick.delete_old, "and delete the old folder");
+                cancel = ui.button("Cancel").clicked();
+            });
+        });
+        if cancel {
+            state.cache_pick = None;
+            state.cache_error = None;
+        } else if let Some(mv) = choice {
+            let mut c = state.cache_pick.take().unwrap_or_default();
+            c.mv = mv;
+            state.cache_change = Some(c);
+        }
+    });
+}
+
+/// Web browser: "Default (<name>)", every installed browser, or "Other…" (pick an exe). Used for links,
+/// the snapshot extension's steps and the folder its snapshots are taken from.
+fn browser_row(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings) -> bool {
+    use crate::engine::browsers::{self, Browser};
+    let (default, installed) = state.browsers.get_or_insert_with(|| (browsers::default_browser(), browsers::installed()));
+    let default_label = match default {
+        Some(b) => format!("Default ({})", b.name),
+        None => "Default (Windows)".into(),
+    };
+    let current = if s.web_browser.is_empty() {
+        default_label.clone()
+    } else {
+        Browser::from_exe(std::path::Path::new(&s.web_browser)).name
+    };
+    let (mut changed, mut other) = (false, false);
+    egui::ComboBox::from_id_salt("web_browser").selected_text(current).width(260.0).show_ui(ui, |ui| {
+        changed |= ui.selectable_value(&mut s.web_browser, String::new(), default_label).changed();
+        for b in installed.iter() {
+            let exe = b.exe.to_string_lossy().into_owned();
+            changed |= ui.selectable_value(&mut s.web_browser, exe.clone(), &b.name).on_hover_text(exe).changed();
+        }
+        other = ui.selectable_label(false, "Other…").clicked();
+    });
+    if other {
+        if let Some(p) = rfd::FileDialog::new().add_filter("Program", &["exe"]).pick_file() {
+            s.web_browser = p.to_string_lossy().into_owned();
+            changed = true;
+        }
+    }
+    changed
 }

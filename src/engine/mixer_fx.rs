@@ -300,7 +300,18 @@ enum Dsp {
         env: f32,
         gain: f32,
     },
+    // ---- ws:gallery-audio ----
+    /// Delay line read by two taps half a window apart whose delay sweeps at (1 - ratio) per frame,
+    /// crossfaded with sin² / cos² windows (sum 1).
+    Pitch {
+        ring: Vec<f32>,
+        pos: usize,
+        phase: f32,
+    },
 }
+
+/// The Pitch filter's window: long enough for low voices, short enough not to smear transients.
+const PITCH_WINDOW_S: f32 = 0.05;
 
 // ---- ws:audio-dsp-automation ----
 /// Notch width of each De-hum harmonic (Q, clamped to `coeffs`'s ceiling): a deep RBJ peaking cut's
@@ -344,6 +355,9 @@ impl FilterState {
                 pos: 0,
             },
             FilterKind::DeEsser => Dsp::DeEsser { hp: [Biquad::default(); 2], env: 0.0, gain: 1.0 },
+            FilterKind::Pitch => {
+                Dsp::Pitch { ring: vec![0.0; ((sr * PITCH_WINDOW_S) as usize + 4) * 2], pos: 0, phase: 0.0 }
+            }
         };
         Self { kind: f.kind, sr, dsp }
     }
@@ -557,6 +571,36 @@ impl FilterState {
                     fr[1] *= *gain;
                 }
             }
+            (Dsp::Pitch { ring, pos, phase }, _) => {
+                let semis = p(0).clamp(-12.0, 12.0);
+                let mix = p(1).clamp(0.0, 1.0);
+                let cap = ring.len() / 2;
+                let win = (sr * PITCH_WINDOW_S).min((cap - 3) as f32);
+                let step = (1.0 - 2f32.powf(semis / 12.0)) / win;
+                let read = |ring: &[f32], at: f32, ch: usize| {
+                    let i = at.floor();
+                    let f = at - i;
+                    let a = (i as usize) % cap;
+                    let b = (a + 1) % cap;
+                    ring[a * 2 + ch] + (ring[b * 2 + ch] - ring[a * 2 + ch]) * f
+                };
+                for fr in buf.chunks_exact_mut(2) {
+                    ring[*pos * 2] = fr[0];
+                    ring[*pos * 2 + 1] = fr[1];
+                    if semis.abs() > 1e-3 {
+                        let ph2 = (*phase + 0.5).fract();
+                        let w1 = (std::f32::consts::PI * *phase).sin().powi(2);
+                        // delay d frames back from the newest sample (+ cap keeps it positive)
+                        let at = |ph: f32| (*pos + cap) as f32 - ph * win;
+                        for (ch, s) in fr.iter_mut().enumerate() {
+                            let wet = read(ring, at(*phase), ch) * w1 + read(ring, at(ph2), ch) * (1.0 - w1);
+                            *s += (wet - *s) * mix;
+                        }
+                        *phase = (*phase + step).rem_euclid(1.0);
+                    }
+                    *pos = (*pos + 1) % cap;
+                }
+            }
             _ => {}
         }
     }
@@ -692,9 +736,113 @@ pub const REPAIR_PRESETS: &[(&str, &str, &[(FilterKind, &[(&str, f32)])])] = &[
     ),
 ];
 
+// ---- ws:gallery-audio ----
+/// Gallery ▸ Audio ▸ Effects: chains in the same shape as `REPAIR_PRESETS`, applied the same way (a named
+/// bus the clips are routed through, editable in the Mixer). The card shows the bus label.
+pub const AUDIO_FX: &[(&str, &str, &[(FilterKind, &[(&str, f32)])])] = &[
+    (
+        "small_room",
+        "Small Room",
+        &[(FilterKind::Reverb, &[("Room size", 0.3), ("Damping", 0.6), ("Mix", 0.2), ("Pre-delay ms", 5.0)])],
+    ),
+    ("hall", "Hall", &[(FilterKind::Reverb, &[("Room size", 0.92), ("Damping", 0.3), ("Mix", 0.35), ("Pre-delay ms", 40.0)])]),
+    ("echo", "Echo", &[(FilterKind::Echo, &[("Delay ms", 350.0), ("Feedback", 0.45), ("Mix", 0.35)])]),
+    ("slapback", "Slapback", &[(FilterKind::Echo, &[("Delay ms", 110.0), ("Feedback", 0.1), ("Mix", 0.3)])]),
+    (
+        "telephone",
+        "Telephone",
+        &[
+            (FilterKind::HighPass, &[("Frequency", 400.0)]),
+            (FilterKind::LowPass, &[("Frequency", 3400.0)]),
+            (FilterKind::Distortion, &[("Drive", 2.0), ("Mix", 0.3)]),
+            (FilterKind::Compressor, &[("Threshold dB", -24.0), ("Ratio", 6.0)]),
+        ],
+    ),
+    (
+        "radio",
+        "Radio",
+        &[
+            (FilterKind::HighPass, &[("Frequency", 250.0)]),
+            (FilterKind::LowPass, &[("Frequency", 5000.0)]),
+            (FilterKind::Eq, &[("Mid gain dB", 4.0), ("Mid freq", 1800.0)]),
+            (FilterKind::Compressor, &[("Threshold dB", -20.0), ("Ratio", 5.0), ("Makeup dB", 3.0)]),
+        ],
+    ),
+    (
+        "bass_boost",
+        "Bass Boost",
+        &[(FilterKind::Eq, &[("Low gain dB", 8.0), ("Low freq", 100.0)]), (FilterKind::Limiter, &[("Ceiling dB", -1.0)])],
+    ),
+    ("muffled", "Muffled", &[(FilterKind::LowPass, &[("Frequency", 700.0)])]),
+    ("de_ess", "De-ess", &[(FilterKind::DeEsser, &[("Threshold dB", -28.0)])]),
+    (
+        "compressor",
+        "Voice Compressor",
+        &[(FilterKind::Compressor, &[("Threshold dB", -20.0), ("Ratio", 4.0), ("Makeup dB", 4.0)])],
+    ),
+    ("limiter", "Limiter", &[(FilterKind::Limiter, &[("Ceiling dB", -1.0)])]),
+    ("noise_gate", "Noise Gate", &[(FilterKind::NoiseGate, &[("Threshold dB", -42.0)])]),
+    ("pitch_up", "Pitch Up", &[(FilterKind::Pitch, &[("Semitones", 5.0)])]),
+    ("pitch_down", "Pitch Down", &[(FilterKind::Pitch, &[("Semitones", -5.0)])]),
+];
+
+/// Filter sweeps: (id, label, filter, Frequency at the start, at the end) - keyed over the clips' span,
+/// so each application gets a bus of its own.
+pub const AUDIO_SWEEPS: &[(&str, &str, FilterKind, f32, f32)] = &[
+    ("lowpass_sweep", "Low-pass Sweep", FilterKind::LowPass, 18000.0, 300.0),
+    ("highpass_sweep", "High-pass Sweep", FilterKind::HighPass, 20.0, 2500.0),
+];
+
+/// Every audio effect card's (id, label), in Gallery order.
+pub fn audio_fx_cards() -> impl Iterator<Item = (&'static str, &'static str)> {
+    AUDIO_FX.iter().map(|(id, l, _)| (*id, *l)).chain(AUDIO_SWEEPS.iter().map(|(id, l, ..)| (*id, *l)))
+}
+
+/// A preset's id from its id or label (case-insensitive), across the repair presets and the Gallery's.
+pub fn fx_id(name: &str) -> Option<&'static str> {
+    REPAIR_PRESETS
+        .iter()
+        .map(|(id, l, _)| (*id, *l))
+        .chain(audio_fx_cards())
+        .find(|(id, l)| id.eq_ignore_ascii_case(name) || l.eq_ignore_ascii_case(name))
+        .map(|(id, _)| id)
+}
+
+/// Is `preset` a sweep (keyed over a time span, one bus per application)?
+pub fn is_sweep(preset: &str) -> bool {
+    AUDIO_SWEEPS.iter().any(|(id, ..)| *id == preset)
+}
+
+/// Any preset's chain (repair, Gallery effect or sweep), params applied. A sweep's Frequency is keyed from
+/// `span.0` to `span.1` (timeline seconds), geometric through the middle so it sounds even.
+pub fn fx_chain(preset: &str, span: (f64, f64)) -> Option<(&'static str, Vec<AudioFilter>)> {
+    if let Some(&(_, label, kind, a, b)) = AUDIO_SWEEPS.iter().find(|(id, ..)| *id == preset) {
+        let mut f = AudioFilter::new(kind);
+        let (t0, t1) = (span.0, span.1.max(span.0 + 0.01));
+        let mid = ((a as f64) * (b as f64)).sqrt();
+        f.params[0].keys = [(t0, a as f64), ((t0 + t1) / 2.0, mid), (t1, b as f64)]
+            .into_iter()
+            .map(|(t, v)| crate::model::Keyframe { t, v, ease: Default::default() })
+            .collect();
+        return Some((label, vec![f]));
+    }
+    repair_chain(preset)
+}
+
+/// Run `buf` (interleaved stereo at `sr`, starting at timeline second `t0`) through `chain` in place, in
+/// 512-frame blocks - an offline render (card pictures, hover auditions), never the playback path.
+pub fn run_chain(chain: &[AudioFilter], sr: u32, t0: f64, buf: &mut [f32]) {
+    for f in chain.iter().filter(|f| f.enabled) {
+        let mut st = FilterState::new(f, sr);
+        for (k, blk) in buf.chunks_mut(1024).enumerate() {
+            st.process(f, t0 + (k * 512) as f64 / sr as f64, blk);
+        }
+    }
+}
+
 /// One preset's filter chain, params applied.
 pub fn repair_chain(preset: &str) -> Option<(&'static str, Vec<AudioFilter>)> {
-    let (_, label, chain) = REPAIR_PRESETS.iter().find(|(id, ..)| *id == preset)?;
+    let (_, label, chain) = REPAIR_PRESETS.iter().chain(AUDIO_FX).find(|(id, ..)| *id == preset)?;
     let filters = chain
         .iter()
         .map(|(kind, over)| {

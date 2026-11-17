@@ -244,7 +244,7 @@ impl Source {
     }
 }
 
-/// `%LOCALAPPDATA%\SimpleEditor\cache\library`: the cached `index.json`, thumbnails and item files.
+/// `Settings::cache_dir()/library`: the cached `index.json`, thumbnails and item files.
 pub fn cache_root() -> PathBuf {
     crate::settings::Settings::cache_dir().join("library")
 }
@@ -460,7 +460,7 @@ pub fn meta_of(kind: Kind, text: &str) -> (String, String, Vec<String>, String) 
                     .map(|v| v.trim_matches('"').to_string())
                     .unwrap_or_default()
             };
-            (key("name"), key("description"), Vec::new(), String::new())
+            (key("name"), key("description"), tags(&key("tags")), key("credit"))
         }
     }
 }
@@ -468,6 +468,14 @@ pub fn meta_of(kind: Kind, text: &str) -> (String, String, Vec<String>, String) 
 /// The catalogue entry a file makes (what `scripts/library-index.ps1` writes into `index.json`).
 pub fn entry_of(kind: Kind, id: &str, text: &str, size: u64) -> Entry {
     let (name, desc, tags, credit) = meta_of(kind, text);
+    // a skill has no rendered thumbnail; its header may name one (`thumb: thumbs/x.jpg`, library-relative)
+    let thumb = match kind {
+        Kind::Skill => {
+            let t = crate::engine::skills::parse(id, text, crate::engine::skills::Source::Library, None).thumb;
+            if safe_rel(&t) { t } else { String::new() }
+        }
+        _ => thumb_of(kind, id),
+    };
     Entry {
         id: full_id(kind, id),
         kind: kind.name().into(),
@@ -477,7 +485,7 @@ pub fn entry_of(kind: Kind, id: &str, text: &str, size: u64) -> Entry {
         file: format!("{}/{id}.{}", kind.dir(), kind.ext()),
         size,
         credit,
-        thumb: thumb_of(kind, id),
+        thumb,
     }
 }
 
@@ -580,6 +588,9 @@ mod tests {
         let md = "---\nname: captions\ndescription: Add captions.\nargs: \"[x]\"\n---\nbody";
         assert_eq!(meta_of(Kind::Skill, md).0, "captions");
         assert_eq!(meta_of(Kind::Skill, md).1, "Add captions.");
+        let md = "---\nname: a\ndescription: d\ntags: Style, vlog\ncredit: cut-video (MIT)\n---\nbody";
+        assert_eq!(meta_of(Kind::Skill, md).2, vec!["style".to_string(), "vlog".into()]);
+        assert_eq!(meta_of(Kind::Skill, md).3, "cut-video (MIT)");
         let cube = "# @name Teal\n# @desc Warm skin.\n# @tags a, B\nTITLE \"Teal\"\nLUT_3D_SIZE 2\n";
         assert_eq!(
             meta_of(Kind::Lut, cube),

@@ -11,6 +11,8 @@ use crate::ui::palette;
 /// deliberately small (a stringly-typed round-trip through JSON scalars, no nested structures): this is
 /// a scripting convenience, not a settings-migration tool. Extend when a genuinely useful field shows up.
 const SCALAR_WHITELIST: &[&str] = &[
+    "export_guide",
+    "export_captions",
     "ui_scale",
     "keymap_preset",
     "theme",
@@ -33,6 +35,9 @@ const SCALAR_WHITELIST: &[&str] = &[
     "start_maximized",
     "buffer_before_play", // ws:play-gate
     "cache_disk_gb",      // ws:cache-budget
+    // ---- ws:neutral-web ----
+    "cache_folder", // get: the folder in use; set: a new one ("" = default), the old cache moves there
+    "web_browser",  // an exe path, "" = the Windows default browser
 ];
 
 fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
@@ -58,6 +63,10 @@ fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
         "start_maximized" => json!(s.start_maximized),
         "buffer_before_play" => json!(s.buffer_before_play),
         "cache_disk_gb" => json!(s.cache_disk_gb),
+        "cache_folder" => json!(Settings::cache_dir().to_string_lossy()),
+        "web_browser" => json!(s.web_browser),
+        "export_guide" => json!(s.export_guide),
+        "export_captions" => json!(s.export_captions.map_or("follow".to_string(), |b| b.to_string())),
         _ => return None,
     })
 }
@@ -105,9 +114,38 @@ fn set_scalar(s: &mut Settings, key: &str, value: &str) -> Result<(), String> {
         "cache_disk_gb" => {
             s.cache_disk_gb = value.parse().map_err(|_| "cache_disk_gb: expected an integer".to_string())?
         }
+        // changing it moves files: `settings.set` routes it to `caches::change_folder` before this
+        "cache_folder" => return Err("cache_folder: set through settings.set".into()),
+        "web_browser" => {
+            let v = value.trim();
+            if !v.is_empty() && !v.to_ascii_lowercase().ends_with(".exe") {
+                return Err("web_browser: an .exe path, or \"\" for the Windows default".into());
+            }
+            s.web_browser = v.to_string();
+            crate::engine::browsers::set_choice(v);
+        }
+        "export_guide" => s.export_guide = parse_bool(value)?,
+        // "follow" = burn captions in when the preview shows them (the old behaviour)
+        "export_captions" => s.export_captions = if value == "follow" { None } else { Some(parse_bool(value)?) },
         _ => return Err(format!("'{key}' is not a whitelisted setting")),
     }
     Ok(())
+}
+
+/// The on/off settings the palette's `>` mode lists: (key, label, current value).
+pub(super) fn bool_settings(s: &Settings) -> Vec<(&'static str, &'static str, bool)> {
+    const ROWS: &[(&str, &str)] = &[
+        ("snap", "Snapping"),
+        ("auto_close_gaps", "Close gaps automatically"),
+        ("gpu", "GPU preview"),
+        ("buffer_before_play", "Buffer before playing"),
+        ("export_guide", "Social guide in exports"),
+        ("mcp_enabled", "MCP server (live co-editing)"),
+        ("assistant_guard", "Ask before an agent exports or opens"),
+        ("voice_autosend", "Send voice requests automatically"),
+        ("start_maximized", "Start maximized"),
+    ];
+    ROWS.iter().filter_map(|&(k, l)| Some((k, l, get_scalar(s, k)?.as_bool()?))).collect()
 }
 
 fn command_kind(cmd: &palette::Command) -> &'static str {
@@ -116,23 +154,48 @@ fn command_kind(cmd: &palette::Command) -> &'static str {
         palette::Command::Pane(_) => "pane",
         palette::Command::Tool(_) => "tool",
         palette::Command::Script(_) => "script",
+        palette::Command::Setting(..) => "setting",
+        palette::Command::GoTo(t) => match t {
+            palette::Target::Clip { .. } => "clip",
+            palette::Target::Timeline(_) => "timeline",
+            palette::Target::Asset(_) => "asset",
+            palette::Target::Bin(_) => "bin",
+            palette::Target::Marker { .. } => "marker",
+            palette::Target::Page(_) => "page",
+            palette::Target::Gallery(..) => "gallery",
+        },
+        palette::Command::Ask(_) => "assistant",
+        palette::Command::Complete(_) => "complete",
     }
 }
 
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "ui.palette",
-        desc: "List palette rows (Actions, Panes, arg-free Tools, Scripts), optionally fuzzy-filtered by 'query'.",
-        args: &["query:string:false:filter text"],
-        kind: ToolKind::Read,
+        desc: "The Ctrl+P palette's rows for 'query', exactly as the window lists them. Plain text = go to (clips on every timeline, timelines, media, bins, markers / comments, pages, panels, Gallery cards); '>' = commands (Actions, panes, arg-free tools, scripts, on/off settings); '/' = the assistant ('/ask <message>', '/<skill> [args]'); ':' = any tool by name. 'pick' (a row index) does what Enter on that row does, 'alt' what Alt+Enter does (add media at the playhead, apply a Gallery card).",
+        args: &[
+            "query:string:false:the palette text, with its leading > / or :",
+            "pick:integer:false:run this row (0 = the first)",
+            "alt:boolean:false:with pick: the secondary action",
+        ],
+        kind: ToolKind::Ui,
         run: |app, args| {
             let rows = palette_ctl::palette_rows(app, arg_str(args, "query").unwrap_or(""));
+            if let Some(i) = arg_u64(args, "pick") {
+                let row = rows.get(i as usize).ok_or("no such row")?;
+                if !row.enabled {
+                    return Err(row.reason.unwrap_or("that row is disabled").into());
+                }
+                let label = row.label.clone();
+                palette_ctl::run(app, row.cmd.clone(), arg_bool(args, "alt").unwrap_or(false));
+                return Ok(ToolOutcome::Done(json!({"ok": true, "ran": label})));
+            }
             let list: Vec<Value> = rows
                 .iter()
                 .map(|r| {
                     json!({
-                        "label": r.label, "shortcut": r.shortcut, "enabled": r.enabled,
-                        "reason": r.reason, "kind": command_kind(&r.cmd),
+                        "label": r.label, "subtitle": r.sub, "group": r.group, "shortcut": r.shortcut,
+                        "enabled": r.enabled, "reason": r.reason, "kind": command_kind(&r.cmd), "alt": r.alt,
                     })
                 })
                 .collect();
@@ -273,12 +336,16 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "settings.set",
-        desc: "Set one whitelisted scalar setting ('value' is a stringified scalar).",
+        desc: "Set one whitelisted scalar setting ('value' is a stringified scalar). cache_folder: a new cache folder (\"\" = the default); the existing cache is moved there in the background (a job), files in use stay behind.",
         args: &["key:string:true:", "value:string:true:stringified scalar"],
         kind: ToolKind::Ui,
         run: |app, args| {
             let key = req(arg_str(args, "key"), "key")?;
             let value = req(arg_str(args, "value"), "value")?;
+            if key == "cache_folder" {
+                let msg = caches::change_folder(app, value, true, false, false)?;
+                return Ok(ToolOutcome::Done(json!({"ok": true, "message": msg})));
+            }
             set_scalar(&mut app.settings, key, value)?;
             app.settings.save();
             Ok(ToolOutcome::Done(json!({"ok": true})))
@@ -313,6 +380,8 @@ mod tests {
         assert!(set_scalar(&mut s, "mcp_port", "not-a-number").is_err());
         assert!(set_scalar(&mut s, "snap", "maybe").is_err());
         assert!(set_scalar(&mut s, "assistant_backend", "bash").is_err());
+        assert!(set_scalar(&mut s, "web_browser", "notes.txt").is_err());
+        assert!(set_scalar(&mut s, "cache_folder", r"D:\x").is_err(), "only through settings.set (it moves files)");
         set_scalar(&mut s, "voice_autosend", "true").unwrap();
         assert_eq!(get_scalar(&s, "voice_autosend"), Some(json!(true)));
         // the API key is never a setting

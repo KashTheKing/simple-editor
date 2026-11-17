@@ -193,7 +193,7 @@ fn auto_falls_back_to_edge_for_a_page_the_helper_cannot_draw() {
     let f = html::render_frame_in(bad, &[], 1.0, 0.0, &v).expect("drawn by Edge after the fast renderer failed");
     assert_eq!((f.width, f.height), (100, 100));
     assert!(blitz::failure_of(bad).is_some());
-    blitz::forget_failures();
+    blitz::forget_failure(bad);
 }
 
 #[test]
@@ -319,4 +319,135 @@ fn a_fractional_scale_lays_the_page_out_like_scale_one() {
     let mean = sum / (120.0 * 80.0 * 3.0);
     assert!(mean < 6.0, "scale 0.5 is the scale-1 layout, drawn smaller: mean diff {mean:.2}");
     h.close();
+}
+
+/// Each `html_lint` rule's sample drawn by the real helper and by Edge: prints how far the helper's
+/// picture is from Edge's, next to how far Edge's own picture moves when the property is taken out. A rule
+/// whose effect the helper draws (blitz ~ edge, far below the effect size) is over-conservative.
+/// `SE_HTML_HELPER=... cargo test lint_rules_against_the_real_helper -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn lint_rules_against_the_real_helper() {
+    need_helper!();
+    let box_ = "<div class=b>Ab</div>";
+    let base_css = "html,body{margin:0;background:transparent}body{width:240px;height:120px;position:relative;background:linear-gradient(90deg,#123 0 50%,#fc3 50%)}.b{position:absolute;left:40px;top:20px;width:150px;height:80px;background:#e33;color:#fff;font:bold 48px Arial}";
+    let rules: &[(&str, &str, &str)] = &[
+        ("filter hue-rotate", ".b{filter:hue-rotate(120deg)}", box_),
+        ("filter saturate+brightness", ".b{filter:saturate(.2) brightness(1.6)}", box_),
+        ("filter grayscale", ".b{filter:grayscale(1)}", box_),
+        ("filter invert", ".b{filter:invert(1)}", box_),
+        ("filter opacity()", ".b{filter:opacity(.3)}", box_),
+        ("backdrop-filter", ".b{background:rgba(255,255,255,.2);backdrop-filter:blur(8px)}", box_),
+        ("mix-blend-mode", ".b{mix-blend-mode:multiply}", box_),
+        ("background-blend-mode", ".b{background:linear-gradient(#0f0,#00f),#e33;background-blend-mode:multiply}", box_),
+        ("-webkit-text-stroke", ".b{background:none;color:#fff;-webkit-text-stroke:4px #e0f}", box_),
+        ("paint-order", ".b{background:none;-webkit-text-stroke:4px #e0f;paint-order:stroke fill}", box_),
+        ("position sticky", ".b{position:sticky;top:30px;margin-left:40px}", box_),
+        ("3D transform", "body{perspective:300px}.b{transform:rotateY(55deg)}", box_),
+        ("counter()", "body{counter-reset:n 6}.b::before{counter-increment:n;content:counter(n)}", "<div class=b></div>"),
+        ("@property", "@property --w{syntax:'<length>';inherits:false;initial-value:60px}.b{width:var(--w)}", box_),
+        ("writing-mode", ".b{writing-mode:vertical-rl;font-size:30px}", box_),
+        ("svg css fill (class)", ".p{fill:#2d2}", "<svg width=240 height=120 viewBox=\"0 0 240 120\"><rect class=p x=40 y=20 width=150 height=80 fill=#e33 /></svg>"),
+        ("svg css stroke (tag)", "svg rect{stroke:#2d2;stroke-width:12px}", "<svg width=240 height=120 viewBox=\"0 0 240 120\"><rect x=40 y=20 width=150 height=80 fill=#e33 /></svg>"),
+        ("svg var() attribute", ":root{--c:#2d2}", "<svg width=240 height=120 viewBox=\"0 0 240 120\"><rect x=40 y=20 width=150 height=80 fill=\"var(--c)\" /></svg>"),
+        ("text-shadow", ".b{background:none;text-shadow:6px 6px 0 #0f0}", box_),
+        ("ellipsis (note)", ".b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:90px}", "<div class=b>Abcdefgh</div>"),
+        ("text-wrap balance (note)", ".b{font-size:20px;width:200px;text-wrap:balance}", "<div class=b>one two three four five six seven</div>"),
+        ("justify (note)", ".b{font-size:16px;width:200px;text-align:justify}", "<div class=b>one two three four five six seven eight nine ten</div>"),
+    ];
+    let page = |css: &str, body: &str| {
+        format!("<html><head><meta name=\"se:size\" content=\"240x120\"><style>{base_css}{css}</style></head><body>{body}</body></html>")
+    };
+    // the helper itself (no fallback to Edge on a failure), and Edge
+    let draw = |html: &str, r: HtmlRenderer| match r {
+        HtmlRenderer::Blitz => blitz::png_still(html, "", (240, 120), 1.0, 0.0, &[], None, false)
+            .and_then(|p| html::decode_png(&p))
+            .map(|f| f.rgba),
+        _ => html::render_frame_in(html, &[], 1.0, 0.0, &View { renderer: r, ..Default::default() }).map(|f| f.rgba),
+    };
+    let diff = |a: &[u8], b: &[u8]| -> f64 {
+        if a.len() != b.len() {
+            return 255.0;
+        }
+        a.iter().zip(b).map(|(x, y)| (*x as f64 - *y as f64).abs()).sum::<f64>() / a.len() as f64
+    };
+    println!("{:<30} {:>8} {:>8} {:>8}  verdict", "rule", "fx size", "b vs e", "b vs e0");
+    for (name, css, body) in rules {
+        let with = page(css, body);
+        let without = page("", body);
+        let (Ok(e1), Ok(e0), Ok(b1)) =
+            (draw(&with, HtmlRenderer::Edge), draw(&without, HtmlRenderer::Edge), draw(&with, HtmlRenderer::Blitz))
+        else {
+            println!("{name:<30} render failed: blitz {:?}", draw(&with, HtmlRenderer::Blitz).err());
+            continue;
+        };
+        let (fx, be, b0) = (diff(&e1, &e0), diff(&b1, &e1), diff(&b1, &e0));
+        let verdict = if be < fx * 0.35 {
+            "DRAWS IT"
+        } else if b0 < be {
+            "ignores it"
+        } else {
+            "partly"
+        };
+        println!("{name:<30} {fx:>8.2} {be:>8.2} {b0:>8.2}  {verdict}");
+        let blocks = crate::engine::html_lint::scan(&with);
+        println!("{:<30} lint: blocks {:?} notes {:?}", "", blocks.blocks, blocks.notes);
+    }
+    html::shutdown();
+}
+
+/// Regression: the Sale Badge came out black with the fast renderer (its starburst is an inline SVG coloured
+/// through the page's CSS variable), and the Rating Stars' fill must match Edge. Both library templates, drawn
+/// by the real helper, against Edge.
+#[test]
+fn library_svg_templates_keep_their_colours() {
+    need_helper!();
+    let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("library").join("html");
+    let read = |n: &str| std::fs::read_to_string(lib.join(n)).unwrap().replace("\r\n", "\n");
+    let badge = read("sale-badge.html");
+    // the version installed by earlier libraries: the colour as var() in a presentation attribute
+    let old_badge = badge.replace("fill=\"{{accent}}\"", "fill=\"var(--accent)\"");
+    let stars = read("rating-stars.html");
+    for src in [&badge, &old_badge, &stars] {
+        assert_eq!(blitz::choose_with(HtmlRenderer::Auto, src, true).engine, Engine::Blitz, "Auto draws it fast");
+    }
+    let fast = |src: &str, t: f64| {
+        let (tpl, page) = html::prepare_in(src, &[], "");
+        html::decode_png(&blitz::png_still(&page, "", tpl.size, 1.0, t, &[], None, false).expect("drawn by the helper"))
+            .unwrap()
+    };
+    let red = |f: &crate::media::Frame| {
+        f.rgba.chunks(4).filter(|p| p[3] > 200 && p[0] > 200 && p[1] < 90 && p[2] < 90).count()
+    };
+    for (name, src) in [("current", &badge), ("old", &old_badge)] {
+        let f = fast(src, 3.9);
+        let n = red(&f);
+        assert!(
+            n * 10 > (f.width * f.height) as usize,
+            "{name} Sale Badge: red on {n} of {} pixels",
+            f.width * f.height
+        );
+    }
+    if html::edge_exe().is_none() {
+        eprintln!("no Edge: the comparison with Edge is skipped");
+        return;
+    }
+    // the stars, filled, against Edge's picture: the accent pixels and their mean colour
+    let edge =
+        html::render_frame_in(&stars, &[], 1.0, 3.9, &View { renderer: HtmlRenderer::Edge, ..Default::default() })
+            .unwrap();
+    let blitz_f = fast(&stars, 3.9);
+    let accent = |f: &crate::media::Frame| {
+        let px: Vec<&[u8]> =
+            f.rgba.chunks(4).filter(|p| p[3] > 240 && p[0] > 200 && p[1] > 140 && p[1] < 220 && p[2] < 80).collect();
+        let mean = |i: usize| px.iter().map(|p| p[i] as f64).sum::<f64>() / px.len().max(1) as f64;
+        (px.len(), [mean(0), mean(1), mean(2)])
+    };
+    let ((ne, ce), (nb, cb)) = (accent(&edge), accent(&blitz_f));
+    assert!(ne > 1000, "Edge drew the stars ({ne})");
+    assert!((nb as f64) > ne as f64 * 0.8 && (nb as f64) < ne as f64 * 1.25, "star area: fast {nb} vs Edge {ne}");
+    for i in 0..3 {
+        assert!((ce[i] - cb[i]).abs() < 6.0, "star colour: fast {cb:?} vs Edge {ce:?}");
+    }
+    html::shutdown();
 }

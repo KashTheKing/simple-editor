@@ -21,6 +21,7 @@ mod scripting;
 mod selftest;
 mod settings;
 mod theme;
+mod theme_import;
 mod ui;
 mod winpos;
 
@@ -94,6 +95,9 @@ fn main() {
         persist_window: false,
         ..Default::default()
     };
+    // the UI thread shows every frame the player publishes: above normal, so a busy PC (parallel builds)
+    // does not hold the picture back while the render thread keeps up (`bg::raise_thread`)
+    media::bg::inherit(i32::MAX);
     if let Err(e) = eframe::run_native(
         "Simple Editor",
         options,

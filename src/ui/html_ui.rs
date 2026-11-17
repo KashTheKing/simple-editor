@@ -283,7 +283,12 @@ impl LivePreview {
                 ptr: inp.mouse.map(|m| m.state(self.t)),
             };
             let ctx = ui.ctx().clone();
-            if let Some((f, current)) = html::live_show(self.slot, req, move || ctx.request_repaint()) {
+            let got = html::live_show(self.slot, req, move || ctx.request_repaint());
+            if got.is_none() {
+                // nothing of this page yet: blank, never the picture of the template shown before
+                (self.tex, self.shown, self.current) = (None, None, false);
+            }
+            if let Some((f, current)) = got {
                 self.current = current;
                 if !self.shown.as_ref().is_some_and(|s| std::sync::Arc::ptr_eq(s, &f)) {
                     let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
@@ -591,8 +596,8 @@ const BIG_SOURCE: usize = 250_000;
 // ---------------------------------------------------------------------------------------------------
 // the Web Page Snapshot window
 
-/// The window that brings a real web page in: from an address (Edge opens it as a visitor sees it), or
-/// from the user's own browser (an extension saves what is on screen into Downloads, and Simple Editor
+/// The window that brings a real web page in: from an address (the app's page renderer opens it as a
+/// visitor sees it), or from the user's own browser (an extension saves what is on screen into Downloads, and Simple Editor
 /// picks the file up).
 #[derive(Default)]
 pub struct WebUi {
@@ -604,6 +609,9 @@ pub struct WebUi {
     pub status: String,
     /// 0..1 while a snapshot is being taken.
     pub busy: Option<f32>,
+    /// The user's browser (Settings ▸ General ▸ Web browser), looked up when the window opens: its
+    /// extension steps and the download folders watched.
+    pub browser: Option<crate::engine::browsers::Browser>,
 }
 
 #[derive(Default)]
@@ -628,7 +636,7 @@ pub fn show_web(ctx: &egui::Context, st: &mut WebUi) -> WebResponse {
         ui.separator();
         if st.tab == 0 {
             ui.label("Simple Editor opens the page itself and keeps the real HTML and CSS (no scripts), as a visitor who is not signed in sees it.");
-            let r = ui.add(egui::TextEdit::singleline(&mut st.url).hint_text("roblox.com or https://www.youtube.com/…").desired_width(f32::INFINITY));
+            let r = ui.add(egui::TextEdit::singleline(&mut st.url).hint_text("example.com or https://www.example.com/page").desired_width(f32::INFINITY));
             let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             ui.horizontal(|ui| {
                 ui.label("Page width");
@@ -651,13 +659,27 @@ pub fn show_web(ctx: &egui::Context, st: &mut WebUi) -> WebResponse {
             });
         } else {
             ui.label("Snapshot the page exactly as it is on your screen (signed in, scrolled, menus open):");
-            ui.label("1. Install the extension once (it is a folder, 30 seconds).");
-            if ui.button("Save the extension to a folder…").on_hover_text("Writes the three extension files and opens the folder").clicked() {
-                resp.save_extension = true;
+            let steps = match &st.browser {
+                Some(b) => b.extension_steps(),
+                None => vec![
+                    "In your browser open its extensions page, turn on Developer mode, click Load unpacked and pick that folder.".into(),
+                    "On any page click the extension's button (or press Alt+Shift+S). The page appears here.".into(),
+                ],
+            };
+            let who = st.browser.as_ref().map_or("your browser".to_string(), |b| b.name.clone());
+            if st.browser.as_ref().is_some_and(|b| b.family() == crate::engine::browsers::Family::Firefox) {
+                steps.iter().for_each(|s| _ = ui.label(s)); // no extension there: the saved-page route below
+            } else {
+                ui.label("1. Install the extension once (it is a folder, 30 seconds).");
+                if ui.button("Save the extension to a folder…").on_hover_text("Writes the three extension files and opens the folder").clicked() {
+                    resp.save_extension = true;
+                }
+                for (i, step) in steps.iter().enumerate() {
+                    ui.label(format!("{}. {step}", i + 2));
+                }
+                ui.weak(format!("Waiting for a page from {who} (its download folder is watched)…"));
             }
-            ui.label("2. In your browser (Brave, Chrome, Edge) open brave://extensions, turn on Developer mode, Load unpacked, pick that folder.");
-            ui.label("3. On any page click the extension's button (or Alt+Shift+S). The page appears here.");
-            ui.weak("Waiting for a page from your browser (your Downloads folder is watched)…");
+            ui.weak(format!("Using {who}. Another browser: Settings ▸ General ▸ Web browser."));
             ui.separator();
             ui.label("Or save a page yourself (Ctrl+S: Webpage, Single File or Complete) and import the file:");
             if ui.button("Import a saved page…").clicked() {
@@ -864,7 +886,12 @@ fn renderer_row(ui: &mut egui::Ui, clip: Id, current: crate::model::HtmlRenderer
         if r != current {
             picked = Some(r);
         }
-        ui.weak(if c.engine == blitz::Engine::Blitz { "drawn by the fast renderer" } else { "drawn by Edge" });
+        ui.weak(match (c.engine, current) {
+            (blitz::Engine::Blitz, R::Auto) => "drawn by the fast renderer: nothing in it needs a browser",
+            (blitz::Engine::Blitz, _) => "drawn by the fast renderer",
+            (blitz::Engine::Edge, R::Edge) => "drawn by Edge, as set",
+            (blitz::Engine::Edge, _) => "drawn by Edge",
+        });
     });
     if let Some(why) = &c.reason {
         ui.colored_label(ui.visuals().warn_fg_color, why);
@@ -872,11 +899,15 @@ fn renderer_row(ui: &mut egui::Ui, clip: Id, current: crate::model::HtmlRenderer
     if !blitz::available() && current != R::Edge {
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label("Install the fast HTML renderer (about 11 MB)");
+                ui.strong("Draw HTML without a browser: install the fast renderer (about 11 MB, one click)");
                 if blitz::installing() {
                     ui.add(egui::Spinner::new());
                     ui.weak("installing, see Jobs");
-                } else if ui.button("Install").on_hover_text("Downloads it from the library once; until then layers are drawn with Edge").clicked() {
+                } else if ui
+                    .add(egui::Button::new(egui::RichText::new("Install").strong()).fill(ui.visuals().selection.bg_fill))
+                    .on_hover_text("Downloads it from the library once; until then layers are drawn with Edge, which starts slower and uses ~700 MB")
+                    .clicked()
+                {
                     blitz::start_install();
                 }
             });

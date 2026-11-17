@@ -405,6 +405,10 @@ uniform float u_frames;
 ");
     }
     push_knobs(&mut s, &meta);
+    if meta.camera {
+        // ws:audio-visualizer: the 3D camera (`visualizer::camera_at`)
+        s.push_str("uniform vec3 u_cam_pos;\nuniform vec3 u_cam_target;\nuniform float u_fov;\nuniform float u_cam_roll;\n");
+    }
     if toy {
         s.push_str(SHADERTOY);
     }

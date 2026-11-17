@@ -63,16 +63,29 @@ impl Project {
     /// Essential-Sound "Repair"/"Clarity": route `ids` through a bus carrying that preset's filter
     /// chain (`mixer_fx::REPAIR_PRESETS`), creating the bus on first use and reusing it (by label)
     /// after - the chain stays a plain, editable Mixer bus. Returns the bus id (0 = unknown preset,
-    /// nothing changed) so the inspector can pre-select it in the Mixer.
+    /// nothing changed) so the inspector can pre-select it in the Mixer. Also takes the Gallery's audio
+    /// effects (`mixer_fx::AUDIO_FX` / `AUDIO_SWEEPS`, by id or label).
     pub fn apply_repair(&mut self, ids: &[Id], preset: &str) -> Id {
-        let Some((label, chain)) = crate::engine::mixer_fx::repair_chain(preset) else { return 0 };
-        if ids.is_empty() {
-            return 0;
-        }
-        let bus = match self.buses.iter().find(|b| b.name == label).map(|b| b.id) {
+        use crate::engine::mixer_fx as fx;
+        // ws:gallery-audio: also the Gallery's audio effects (by id or label) and the keyed sweeps
+        let Some(preset) = fx::fx_id(preset) else { return 0 };
+        let span = ids.iter().filter_map(|&id| self.clip(id)).fold(None, |s: Option<(f64, f64)>, c| {
+            Some(s.map_or((c.start, c.end()), |(a, b)| (a.min(c.start), b.max(c.end()))))
+        });
+        let Some(span) = span else { return 0 };
+        let Some((label, chain)) = fx::fx_chain(preset, span) else { return 0 };
+        // a sweep is keyed to these clips' time: its own bus each time ("Low-pass Sweep 2", …)
+        let reuse = if fx::is_sweep(preset) { None } else { self.buses.iter().find(|b| b.name == label).map(|b| b.id) };
+        let bus = match reuse {
             Some(id) => id,
             None => {
-                let id = self.add_bus(label);
+                let mut name = label.to_string();
+                let mut n = 2;
+                while fx::is_sweep(preset) && self.buses.iter().any(|b| b.name == name) {
+                    name = format!("{label} {n}");
+                    n += 1;
+                }
+                let id = self.add_bus(name);
                 self.bus_mut(id).expect("just added").filters = chain;
                 id
             }

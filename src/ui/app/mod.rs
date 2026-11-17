@@ -62,6 +62,8 @@ mod folder_import;
 mod frame;
 // ---- ws:inspector-gallery ----
 mod gallery_ctl;
+mod gallery_audition; // ws:gallery-audio
+pub(crate) mod template_thumbs; // ws:gallery-audio
 mod gallery_drop_ctl;
 pub(crate) mod gallery_mine;
 mod gpu;
@@ -759,6 +761,9 @@ impl App {
             crate::winpos::place_on_cursor_monitor(cc);
         }
         let (mut settings, settings_bad) = Settings::load_reporting();
+        // ---- ws:neutral-web ---- (before anything builds a cache path or opens a link)
+        Settings::set_cache_folder(&settings.cache_folder);
+        crate::engine::browsers::set_choice(&settings.web_browser);
         // ---- ws:pages ---- (a pre-pages file keeps its old tree as the "Before update" profile)
         layout_ctl::migrate_to_pages(&mut settings);
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
@@ -1007,6 +1012,7 @@ impl App {
         app.detect_ytdlp(&cc.egui_ctx);
         app.refresh_presets();
         app.player.set_project(&app.project);
+        app.gallery = crate::ui::gallery::GalleryState::from_settings(&app.settings); // ws:gallery-audio
         if let Some(p) = open {
             app.open_path(&p);
             // launched from Explorer ("Open with"): behave like a player - full screen, rolling
@@ -1121,6 +1127,18 @@ impl App {
     }
 
     /// The project with any open sequence closed - exports always render the MAIN timeline.
+    /// A delivered export (the Export window, its queue, Quick Export, `export.video`): the Export
+    /// settings' "Burn in captions" and "Burn in social guide" applied to the clone and the options.
+    /// Overwrite Original and bakes never call this.
+    fn deliver(&self, project: &mut Project, opts: &mut crate::engine::export::ExportOptions, captions: Option<bool>, guide: Option<bool>) {
+        if let Some(b) = captions.or(self.settings.export_captions) {
+            project.show_subtitles = b;
+        }
+        if guide.unwrap_or(self.settings.export_guide) {
+            opts.overlay = crate::ui::social::raster::export_overlay(&self.settings, project, opts.range);
+        }
+    }
+
     fn export_project(&self) -> Project {
         let mut p = self.project.clone();
         if p.editing.is_some() {
@@ -2191,7 +2209,20 @@ impl App {
     /// regardless of entry point. See `fire_marker_added_for_each` for the plain, App-free half this
     /// delegates to (and that a test exercises directly).
     pub(crate) fn fire_markers_added(&mut self, ids: &[Id]) {
+        // made inside an agent's undo group (`edit.begin`): the agent's, not the user's
+        if let Some(author) = self.mcp_ctx.group.as_ref().and_then(|g| g.label.split_once(": ")).map(|(a, _)| a.to_string()) {
+            sign_markers(&mut self.project, ids, &author);
+        }
         fire_marker_added_for_each(ids, &mut |event, payload| self.fire_hook(event, payload));
+    }
+}
+
+/// Give every marker in `ids` that has no author yet `author` (an empty author means the user).
+pub(crate) fn sign_markers(project: &mut Project, ids: &[Id], author: &str) {
+    for &id in ids {
+        if let Some(m) = project.marker_mut(id).filter(|m| m.author.is_empty()) {
+            m.author = author.to_string();
+        }
     }
 }
 

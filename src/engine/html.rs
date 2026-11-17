@@ -1535,12 +1535,16 @@ impl Edge {
             .ok_or("Microsoft Edge not found - HTML layers are rendered with the Edge that ships with Windows")?;
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // ponytail: a profile left behind by a crash stays in %TEMP% - sweep `se-edge-*` if it ever matters
+        // a profile left behind by a crash or a killed run is swept at start-up (`sweep_stale_profiles`)
         let profile = std::env::temp_dir().join(format!("se-edge-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&profile);
         std::fs::create_dir_all(&profile).map_err(|e| format!("Edge profile: {e}"))?;
         let data = capture_profile(network).unwrap_or_else(|| profile.join("p")); // ws:browser-layer
-        let mut child = crate::media::bg::command(&exe)
+                                                                                  // NORMAL priority, not `media::bg::command`: 1.3.0 started Edge below normal, and with every core
+                                                                                  // busy (a build, proxies, an export) its start starved - no DevTools port within 20 s, "Edge failed
+                                                                                  // to start" (measured: 3 of 3 starts failed under full load below normal, 3 of 3 took < 1.1 s at
+                                                                                  // normal). Someone is waiting for this render; playback is protected by `bg::pause_point` instead.
+        let mut child = ffpipe::command(&exe)
             .args(["--headless", "--remote-debugging-port=0", "--no-first-run", "--no-default-browser-check"])
             .args(["--hide-scrollbars", "--mute-audio", "--disable-extensions", "--disable-background-networking"])
             .args(["--disable-sync", "--disable-component-update"])
@@ -1837,7 +1841,7 @@ fn with_edge<T>(short: bool, mut f: impl FnMut(&mut Edge) -> Result<T, String>) 
     };
     for attempt in 0..2 {
         if g.is_none() {
-            *g = Some(Edge::launch()?);
+            *g = Some(launch_retrying(Edge::launch)?);
             std::thread::Builder::new().name("edge-idle".into()).spawn(reap_when_idle).map_err(|e| e.to_string())?;
         }
         let e = g.as_mut().expect("just started");
@@ -1859,6 +1863,66 @@ fn with_edge<T>(short: bool, mut f: impl FnMut(&mut Edge) -> Result<T, String>) 
     unreachable!()
 }
 
+/// `launch` once more (a fresh profile: every launch has its own) when the first start fails, then an
+/// error that says what to do.
+fn launch_retrying(mut launch: impl FnMut() -> Result<Edge, String>) -> Result<Edge, String> {
+    launch().or_else(|first| {
+        eprintln!("html: Microsoft Edge did not start ({first}); trying once more with a fresh profile");
+        launch().map_err(|e| edge_start_failed(&e))
+    })
+}
+
+fn edge_start_failed(e: &str) -> String {
+    let fast = if blitz::available() {
+        "set the layer's Renderer to Fast (built-in) in the Inspector's HTML section"
+    } else {
+        "install the fast HTML renderer (Inspector > HTML > Install), which needs no browser"
+    };
+    format!(
+        "Microsoft Edge (used to draw this HTML layer) did not start twice: {e}. The PC may be very busy:          wait for builds / exports to finish and use Render again, or {fast}."
+    )
+}
+
+/// Remove the `%TEMP%\se-edge-<pid>-<n>` profiles whose app is no longer running (a crash, a killed test
+/// run, an Edge that would not let go). A live pid's folders are never touched, ours included.
+pub fn sweep_stale_profiles() {
+    sweep_stale_profiles_in(&std::env::temp_dir(), pid_alive);
+}
+
+fn sweep_stale_profiles_in(dir: &Path, alive: impl Fn(u32) -> bool) -> usize {
+    let mut n = 0;
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(pid) =
+            name.strip_prefix("se-edge-").and_then(|r| r.split('-').next()).and_then(|p| p.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        if pid != std::process::id() && !alive(pid) && e.path().is_dir() && std::fs::remove_dir_all(e.path()).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Is process `pid` running? (Unknown = yes: only a pid that is certainly gone loses its folders.)
+fn pid_alive(pid: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER, STILL_ACTIVE};
+    use windows::Win32::System::Threading::*;
+    // SAFETY: a query handle, closed below
+    unsafe {
+        match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(h) => {
+                let mut code = 0u32;
+                let ok = GetExitCodeProcess(h, &mut code).is_ok();
+                let _ = CloseHandle(h);
+                !ok || code == STILL_ACTIVE.0 as u32
+            }
+            Err(e) => e.code() != ERROR_INVALID_PARAMETER.to_hresult(), // no such process
+        }
+    }
+}
+
 /// A page from the web as an MHTML archive, the way a browser's own "save as single file" makes it: loaded
 /// in a private Edge (network and scripts on, nothing kept), scrolled once to wake lazy images, then
 /// snapshotted. It is what a visitor who is not signed in sees; the page you are signed in to comes from
@@ -1870,7 +1934,7 @@ pub fn capture_mhtml(url: &str, width: u32, height: u32, prog: &Progress) -> Res
         return Err("only http and https addresses can be snapshotted".into());
     }
     prog.set(0.05, "Starting Edge…");
-    let mut e = Edge::launch_with(true)?;
+    let mut e = launch_retrying(|| Edge::launch_with(true))?;
     let r = (|| -> Result<Vec<u8>, String> {
         let c = &mut e.cdp;
         c.call("Emulation.setScriptExecutionDisabled", json!({"value": false}))?;
@@ -1984,13 +2048,27 @@ struct LiveState {
     seen: Option<Instant>,
     /// The latest picture: (the `gen` it shows, the frame).
     frame: Option<(u64, std::sync::Arc<Frame>)>,
+    /// The `gen` from which `req` is another page (another template picked, its text edited): a picture
+    /// older than that is of something else and is not shown.
+    page_gen: u64,
+    /// The thread runs the fast renderer (else an Edge tab).
+    thread_fast: bool,
     wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     thread: bool,
     tx: Option<std::sync::mpsc::Sender<LiveEv>>,
 }
 
-const LIVE_EMPTY: LiveState =
-    LiveState { req: None, gen: 0, seen: None, frame: None, wake: None, thread: false, tx: None };
+const LIVE_EMPTY: LiveState = LiveState {
+    req: None,
+    gen: 0,
+    seen: None,
+    frame: None,
+    page_gen: 0,
+    thread_fast: false,
+    wake: None,
+    thread: false,
+    tx: None,
+};
 static LIVE: Mutex<[LiveState; LIVE_SLOTS]> = Mutex::new([LIVE_EMPTY; LIVE_SLOTS]);
 
 enum LiveEv {
@@ -2009,22 +2087,36 @@ pub fn live_show(slot: usize, req: LiveReq, wake: impl Fn() + Send + Sync + 'sta
     let g = &mut all[slot.min(LIVE_SLOTS - 1)];
     g.seen = Some(Instant::now());
     if g.req.as_ref() != Some(&req) {
+        let same_page = g.req.as_ref().is_some_and(|r| {
+            (&r.page, r.size, r.scale.to_bits(), &r.base) == (&req.page, req.size, req.scale.to_bits(), &req.base)
+        });
         g.req = Some(req);
         g.gen += 1;
+        if !same_page {
+            g.page_gen = g.gen;
+        }
         if let Some(tx) = &g.tx {
             let _ = tx.send(LiveEv::Req);
         }
     }
+    if g.wake.is_none() {
+        g.wake = Some(std::sync::Arc::new(wake));
+    }
     let fast = g.req.as_ref().is_some_and(|r| r.fast);
     if !g.thread && !cfg!(test) && (fast || edge_exe().is_some()) {
         // ponytail: no live Edge in unit tests (the idle-repaint tests draw the editor)
-        g.wake = Some(std::sync::Arc::new(wake));
         g.thread = true;
+        g.thread_fast = fast;
         let slot = slot.min(LIVE_SLOTS - 1);
         let _ = std::thread::Builder::new().name("html-live".into()).spawn(move || live_thread(slot, fast));
     }
-    let gen = g.gen;
-    g.frame.as_ref().map(|(fg, f)| (f.clone(), *fg == gen))
+    live_picture(g)
+}
+
+/// The latest picture of `g` and whether it shows its request - None while it is of another page (the
+/// template picked before this one must never stand in for it).
+fn live_picture(g: &LiveState) -> Option<(std::sync::Arc<Frame>, bool)> {
+    g.frame.as_ref().filter(|(fg, _)| *fg >= g.page_gen).map(|(fg, f)| (f.clone(), *fg == g.gen))
 }
 
 /// One DevTools connection of the live tab: commands from this thread, every message from the socket
@@ -2101,8 +2193,19 @@ impl LiveConn {
 fn live_thread(slot: usize, fast: bool) {
     let r = if fast { live_run_fast(slot) } else { live_run(slot) };
     let mut all = lock(&LIVE);
-    all[slot].thread = false;
-    all[slot].tx = None;
+    let g = &mut all[slot];
+    g.tx = None;
+    // the request now wants the other renderer (a template only Edge draws picked after one the fast renderer
+    // draws, or back): hand over at once - nothing else would start it, the preview only repaints on a picture
+    let other =
+        g.req.as_ref().is_some_and(|q| q.fast != fast) && g.seen.is_some_and(|s| s.elapsed() < Duration::from_secs(1));
+    if r.is_ok() && other && (!fast || edge_exe().is_some()) {
+        g.thread_fast = !fast;
+        drop(all);
+        let _ = std::thread::Builder::new().name("html-live".into()).spawn(move || live_thread(slot, !fast));
+        return;
+    }
+    g.thread = false;
     drop(all);
     if let Err(e) = r {
         eprintln!("html live preview: {e}");
@@ -2685,7 +2788,8 @@ fn out_base_for(spec: &Spec, fast: bool) -> (PathBuf, (u32, u32)) {
     ("html-v5", page, px, spec.fps.to_bits(), spec.duration.to_bits(), prep.deps_stamp(&spec.base), params, mouse)
         .hash(&mut h);
     if fast {
-        "blitz-1".hash(&mut h);
+        // blitz-2: inline svgs get the page's CSS (`html_lint::inline_svg_styles`): the black badges of before go
+        "blitz-2".hash(&mut h);
     }
     (dir().join(format!("{:016x}", h.finish())), px)
 }
@@ -3112,7 +3216,7 @@ impl WorkerSrc {
         if job.fast {
             return blitz::Shooter::open(job.page, job.base, job.vp, job.scale).map(WorkerSrc::Fast);
         }
-        let mut e = Edge::launch()?;
+        let mut e = launch_retrying(Edge::launch)?;
         e.load(job.page, job.vp, job.scale)?;
         Ok(WorkerSrc::Edge(e))
     }
@@ -4395,4 +4499,207 @@ mod tests {
         assert!(!one.is_empty() && one == three, "{} vs {} bytes", one.len(), three.len());
     }
 
+}
+
+#[cfg(test)]
+mod edge_start_tests {
+    use super::*;
+
+    /// A fake Edge for `Edge::connect`: a DevTools websocket on a local port that answers every call
+    /// (`sessionId` for `attachToTarget`), its address written to the profile's `DevToolsActivePort`
+    /// after `delay` - the way a slow-starting Edge does.
+    fn fake_edge(profile: &Path, delay: Duration) -> std::thread::JoinHandle<Vec<String>> {
+        let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let file = profile.join("DevToolsActivePort");
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            std::fs::write(&file, format!("{port}\n/devtools/browser/fake\n")).unwrap();
+            let (s, _) = l.accept().unwrap();
+            let mut r = BufReader::new(crate::mcp::clone_socket(&s).unwrap());
+            let mut w = s;
+            let mut line = String::new();
+            loop {
+                line.clear();
+                r.read_line(&mut line).unwrap();
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            w.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+                .unwrap();
+            let mut methods = Vec::new();
+            while let Ok((_, _, p)) = read_frame(&mut r) {
+                let v: Value = serde_json::from_slice(&p).unwrap();
+                let m = v["method"].as_str().unwrap_or("").to_string();
+                let result = match m.as_str() {
+                    "Target.createTarget" => json!({"targetId": "t1"}),
+                    "Target.attachToTarget" => json!({"sessionId": "s1"}),
+                    _ => json!({}),
+                };
+                methods.push(m);
+                if w.write_all(&encode_frame(1, json!({"id": v["id"], "result": result}).to_string().as_bytes()))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            methods
+        })
+    }
+
+    #[test]
+    fn devtools_connect_waits_for_a_slow_port_file_and_sets_up_the_tab() {
+        let profile = std::env::temp_dir().join(format!("se-test-fake-edge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&profile);
+        std::fs::create_dir_all(&profile).unwrap();
+        let server = fake_edge(&profile, Duration::from_millis(700));
+        // a "browser" that keeps running, as Edge does
+        let mut child = std::process::Command::new("cmd").args(["/c", "ping -n 20 127.0.0.1 >nul"]).spawn().unwrap();
+        let c = Edge::connect(&mut child, &profile);
+        let _ = child.kill();
+        let _ = child.wait();
+        let c = c.expect("connected to the fake Edge");
+        assert_eq!(c.session.as_deref(), Some("s1"));
+        drop(c); // the fake's read ends: it returns what it was asked
+        let methods = server.join().unwrap();
+        assert_eq!(
+            methods,
+            [
+                "Target.createTarget",
+                "Target.attachToTarget",
+                "Page.enable",
+                "Emulation.setScriptExecutionDisabled",
+                "Emulation.setDefaultBackgroundColorOverride"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&profile);
+    }
+
+    /// Regression (1.3.0: "Edge failed to start"): Edge was started below normal priority, and with every
+    /// core busy it wrote no DevTools port within 20 s. It must start promptly on a loaded machine.
+    #[test]
+    fn edge_starts_while_every_core_is_busy() {
+        if edge_exe().is_none() {
+            eprintln!("SKIPPED: Microsoft Edge not found");
+            return;
+        }
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let n = std::thread::available_parallelism().map_or(8, |n| n.get());
+        let busy: Vec<_> = (0..n)
+            .map(|_| {
+                let stop = stop.clone();
+                std::thread::spawn(move || {
+                    let mut x = 0u64;
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(7));
+                    }
+                })
+            })
+            .collect();
+        let t0 = Instant::now();
+        let e = Edge::launch();
+        let took = t0.elapsed();
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        busy.into_iter().for_each(|h| h.join().unwrap());
+        let e = e.expect("Edge starts under load");
+        e.close();
+        assert!(took < Duration::from_secs(12), "Edge took {took:?} to start under load");
+    }
+
+    #[test]
+    fn stale_profile_sweep_only_takes_dead_pids_folders() {
+        let root = std::env::temp_dir().join(format!("se-test-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let me = std::process::id();
+        let dirs = [
+            format!("se-edge-{me}-0"),
+            "se-edge-11-2".into(),
+            "se-edge-12-0".into(),
+            "se-edge-x-1".into(),
+            "other-12".into(),
+        ];
+        for d in &dirs {
+            std::fs::create_dir_all(root.join(d).join("p")).unwrap();
+        }
+        std::fs::write(root.join("se-edge-12-9"), "a file, not a profile").unwrap();
+        // 11 is alive, 12 is gone
+        let removed = sweep_stale_profiles_in(&root, |pid| pid == 11 || pid == me);
+        assert_eq!(removed, 1);
+        let left: std::collections::BTreeSet<String> =
+            std::fs::read_dir(&root).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        let want: std::collections::BTreeSet<String> = [
+            format!("se-edge-{me}-0"),
+            "se-edge-11-2".into(),
+            "se-edge-x-1".into(),
+            "other-12".into(),
+            "se-edge-12-9".into(),
+        ]
+        .into();
+        assert_eq!(left, want);
+        // and the real check: this process is alive, a pid nobody has is not
+        assert!(pid_alive(me));
+        assert!(!pid_alive(0xFFFF_FFF0));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_failed_start_is_tried_once_more_then_says_what_to_do() {
+        let mut n = 0;
+        let r = launch_retrying(|| {
+            n += 1;
+            Err("no DevTools port after 20 s".into())
+        });
+        assert_eq!(n, 2);
+        let e = r.err().unwrap();
+        assert!(e.contains("did not start twice") && e.contains("no DevTools port") && e.contains("enderer"), "{e}");
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    fn req(page: &str, at: f64) -> LiveReq {
+        LiveReq {
+            page: page.into(),
+            size: (100, 100),
+            scale: 1.0,
+            params: Vec::new(),
+            at,
+            playing: false,
+            looping: false,
+            epoch: 0,
+            duration: 4.0,
+            fast: true,
+            base: String::new(),
+            src_key: 1,
+            ptr: None,
+        }
+    }
+
+    /// Regression: picking Rating Stars right after Sale Badge kept showing a picture of the template drawn
+    /// before (the slot's last frame stood in until the new one came, and with a renderer switch it never
+    /// came). Another page shows nothing until its own picture is in; another moment of the same page keeps
+    /// the picture meanwhile.
+    #[test]
+    fn the_live_preview_never_shows_another_templates_picture() {
+        let slot = LIVE_EDITOR;
+        let pic = || std::sync::Arc::new(Frame::new(2, 2));
+        assert!(live_show(slot, req("<p>rating</p>", 1.0), || {}).is_none());
+        let gen = lock(&LIVE)[slot].gen;
+        lock(&LIVE)[slot].frame = Some((gen, pic()));
+        assert_eq!(live_show(slot, req("<p>rating</p>", 1.0), || {}).map(|(_, cur)| cur), Some(true));
+        // another moment of the same page: the picture stays while the new one is drawn
+        assert_eq!(live_show(slot, req("<p>rating</p>", 2.0), || {}).map(|(_, cur)| cur), Some(false));
+        // another template: nothing until its own picture is in
+        assert!(live_show(slot, req("<p>sale badge</p>", 1.0), || {}).is_none());
+        let gen = lock(&LIVE)[slot].gen;
+        lock(&LIVE)[slot].frame = Some((gen, pic()));
+        assert!(live_show(slot, req("<p>sale badge</p>", 1.0), || {}).is_some());
+        // and back: the old Rating Stars picture is not it either
+        assert!(live_show(slot, req("<p>rating</p>", 1.0), || {}).is_none());
+        let mut all = lock(&LIVE);
+        (all[slot].req, all[slot].frame) = (None, None);
+    }
 }

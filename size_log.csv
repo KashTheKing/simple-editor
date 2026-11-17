@@ -56,3 +56,4 @@ b05471e+wip,14074880,"social guides remade as data (guides.json 20 KB, device pr
 cad091b,11007488,"se-html: the fast HTML renderer helper 0.1.0 (separate exe, not linked into simple-editor.exe). integration/nov13 build (same source as feat/blitz-helper)"
 cad091b,16349184,"integration/nov13: 1.2.0 + html-load, blitz-helper client, play-preroll, folder-import, gallery-scroll, thread-viewers, browser-layer, social-guides merged: +2,890,240 B vs the 1.2.0 release exe (13,458,944 B); over the size gate, accepted for now (trim later)"
 ffcfad1,16457216,ai-enhancer: AI upscale add-on client (Real-ESRGAN itself is a separate download); base 667c42e = 16,361,472 B (target-integration release exe)
+3d1df8f,18054144,release 1.3.1

@@ -84,25 +84,52 @@ pub(super) fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
                 let _ = std::fs::write(&out, serde_json::to_string_pretty(&tf).unwrap_or_default());
             }
         }
-        if ui.button("Import theme…").clicked() {
-            if let Some(p) =
-                rfd::FileDialog::new().add_filter("Simple Editor theme", &["sedit-theme", "json"]).pick_file()
+        let msg_id = egui::Id::new("theme_import_msg");
+        if ui
+            .button("Import theme…")
+            .on_hover_text(
+                "Simple Editor .sedit-theme, or another editor's settings: Premiere Pro preferences (UI brightness +                  highlight colour only), CapCut preferences (dark/light only). DaVinci Resolve has no theme file.",
+            )
+            .clicked()
+        {
+            if let Some(p) = rfd::FileDialog::new()
+                .add_filter("Theme / editor preferences", &["sedit-theme", "json", "xml", "txt", "prefs", "*"])
+                .pick_file()
             {
-                if let Some(tf) = std::fs::read_to_string(&p)
-                    .ok()
-                    .and_then(|t| serde_json::from_str::<crate::settings::ThemeFile>(&t).ok())
-                {
-                    s.theme = tf.theme;
-                    s.ui_look = tf.ui_look;
-                    s.palette = tf.palette;
-                    s.bg_image = tf.bg_image;
-                    s.bg_tint = tf.bg_tint;
-                    s.bg_blur = tf.bg_blur;
-                    s.panel_opacity = tf.panel_opacity;
-                    s.save(); // belt and braces: persist right away, whatever happens to this frame's flow
-                    changed = true;
-                }
+                let msg = match std::fs::read_to_string(&p) {
+                    Err(_) => "Couldn't read that file as text.".to_string(),
+                    Ok(t) => {
+                        if let Ok(tf) = serde_json::from_str::<crate::settings::ThemeFile>(&t) {
+                            s.theme = tf.theme;
+                            s.ui_look = tf.ui_look;
+                            s.palette = tf.palette;
+                            s.bg_image = tf.bg_image;
+                            s.bg_tint = tf.bg_tint;
+                            s.bg_blur = tf.bg_blur;
+                            s.panel_opacity = tf.panel_opacity;
+                            s.save(); // belt and braces: persist right away, whatever happens to this frame's flow
+                            changed = true;
+                            "Imported theme.".to_string()
+                        } else {
+                            let fname = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                            match crate::theme_import::import(&fname, &t) {
+                                Ok(i) => {
+                                    s.theme = i.palette.mode.clone();
+                                    s.palette = i.palette;
+                                    s.save();
+                                    changed = true;
+                                    i.summary
+                                }
+                                Err(e) => e,
+                            }
+                        }
+                    }
+                };
+                ui.data_mut(|d| d.insert_temp(msg_id, msg));
             }
+        }
+        if let Some(m) = ui.data(|d| d.get_temp::<String>(msg_id)) {
+            ui.weak(m);
         }
     });
     ui.weak("Tweak any colour below to start a Custom theme from the one selected above.");

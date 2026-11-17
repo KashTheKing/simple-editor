@@ -135,7 +135,7 @@ were written per feature as it landed; if a row disagrees with `tools/list`, `to
 | `library.remove` | Ui | id | Remove an installed item. |
 | `guides.list` | Read | - | The social guides: every platform (id, network, aspect, verified date, source, zones as fractions of the frame, how each sheet moves the video), the devices and the current setting. |
 | `guides.set` | Ui | platform?, mode?, device?, profile?, worst_case?, keep_aspect?, draw_in_render?, state? | What the viewer's guide shows: platform (`off` hides it), `safe` / `ui` / `device`, device class, the active profile, and which sheet the device preview has open. View only: never the project or the export. |
-| `guides.preview` | Read (image) | platform?, device?, mode?, state?, profile?, t?, width? | A picture of the guide: the frame at `t` inside the device with the platform UI and the sheet open (`state`: `default`, `theatre`, `fullscreen` (desktop long form), `comments`, `desc`, `share`, `more`, `profile`, `sound`), or with the safe-zone / UI overlay. Deterministic. |
+| `guides.preview` | Read (image) | platform?, device?, mode?, state?, profile?, t?, playing?, width? | A picture of the guide: the frame at `t` inside the device with the platform UI and the sheet open (`state`: `default`, `theatre`, `fullscreen` (desktop long form), `comments`, `desc`, `share`, `more`, `profile`, `sound`), or with the safe-zone / UI overlay. Deterministic. |
 | `profile.get` | Read | id?, network? | The social profiles (fake accounts the guide shows) and which is active per network. |
 | `profile.set` | Ui | id? \| network?, fields?, avatar_path?, active?, delete? | Create or edit a profile: handle, display, verified, followers, caption, tags, sound, counts, link, `comment_list`; a picture file; make it active. No credentials exist anywhere. |
 | `profile.fetch` | Ui | id, url?, apply? | Fill a profile from its PUBLIC page (curl, no login, no cookies): name, picture, follower text. Returns what was found and from where. Held for the user's Allow like `export.*`: it is the only call that reads the web. |
@@ -169,7 +169,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `audio.add_bus` | Mutate | name | Create a bus (it feeds Main until routed elsewhere). |
 | `audio.add_filter` | Mutate | bus, kind, params | Add a filter to a bus with optional params {name: value}. |
-| `audio.analyze` | Read | clip_ids | Peak/RMS dBFS and onset count/BPM per clip (from cached waveform peaks); 'waveform still computing' if peaks aren't ready yet. |
+| `audio.analyze` | Read | clip_ids | Peak/RMS dBFS and onset count/BPM per clip (from cached waveform peaks of the source file), plus `gain_db` (the clip's own volume), `peak_db_out` / `rms_db_out` (levels after it) and `volume_keyed`; 'waveform still computing' if peaks aren't ready yet. |
 | `audio.beats` | Mutate | as_markers, clip_ids, refractory_s, split | Detect beats on audio clip(s). With neither flag: pure detection, returns onset times (source secs) + BPM, no mutation. as_markers adds a clip marker per onset (fires marker_added); split cuts each target clip's link group at every beat. |
 | `audio.buses` | Read | - | Mixer buses (id, name, gain, pan, mute/solo/mono, output, filters). |
 | `audio.duck` | Mutate | depth_db, dialogue_ids, dry_run, music_id, ramp_s | Duck the music clip's volume under every loud (speech) window found on the dialogue clips' peaks, with a ramp. dry_run returns the computed key count without writing. |
@@ -247,7 +247,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `edit.batch` | Ui | author, calls, label | Run several tool calls (calls: [{name, args}] in order) in one frame, as one undo step; returns each result. A failing call stops the batch and rolls the whole batch back (the error names the call). label default 'Batch edit', author default Claude. |
-| `edit.begin` | Ui | author, label | Start one undo step for a request: until edit.end every edit joins it, and the user can undo it all at once ('<author>: <label>' in History). Closes by itself after 30 s without calls. |
+| `edit.begin` | Ui | author, idle_s, label | Start one undo step for a request: until edit.end every edit joins it, and the user can undo it all at once ('<author>: <label>' in History). Closes by itself after `idle_s` (5..600, default 30) seconds without calls. |
 | `edit.end` | Ui | - | End the undo step edit.begin started: one History entry if anything changed, the changed clips glow, the user gets an Undo toast. |
 
 **`editor.*`** (1 tool)
@@ -270,7 +270,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `export.stabilize` | Job | clip_ids | Bake the clip(s) through ffmpeg deshake, then swap them onto the result. |
 | `export.status` | Read | - | Current export progress (fraction, status, ETA seconds) and the queue / bake counts. |
 | `export.xml` | Read | path | Write the main timeline as Final Cut Pro 7 XML (xmeml v5) for Premiere / Resolve: clips, audio level/pan, A/V links, cross dissolves and sequence + clip markers (track names are not part of xmeml). |
-| `export.video` | Job | audio, crf, encoder, height, path, scaler, stem_by, width | Export the timeline to a file (blocks until done, up to 30 min); encoder/crf/audio/stem_by default to settings. audio=streams adds one audio track per stem after the mix (mp4/mov/mkv/m4v, else one mix); audio=stems writes '<name> stems/NN <stem>.wav' beside the file. |
+| `export.video` | Job | audio, captions, crf, encoder, guide, height, path, scaler, stem_by, width | Export the timeline to a file (blocks until done, up to 30 min); encoder/crf/audio/stem_by default to settings. audio=streams adds one audio track per stem after the mix (mp4/mov/mkv/m4v, else one mix); audio=stems writes '<name> stems/NN <stem>.wav' beside the file. `guide` / `captions` burn in the social guide / subtitles (default: the Export settings). |
 
 **`frame.*`** (2 tools)
 
@@ -304,7 +304,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `history.list` | Read | limit | Undo-stack entries with their lazily-derived labels and categories, newest first. |
-| `history.restore` | Mutate | index | Restores the project to an undo-stack snapshot by index (0 = oldest); refuses Layout entries. |
+| `history.restore` | Mutate | index | Restores the project to the state BEFORE the given history entry (`index` from `history.list`, 0 = oldest): undoes that entry and everything after it, as a new undo step. Refuses Layout entries. |
 
 **`hotkeys.*`** (3 tools)
 
@@ -385,7 +385,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `media.import_sequence` | Job | fps, path | Detect the numbered still run `path` belongs to (3+ frames, same prefix/extension) and bake it to one video asset in the background; fires the `import` hook once when it lands. |
 | `media.list` | Read | - | Library assets (id, path, kind, duration, size, tags, label, folder, description, used). |
 | `media.relink` | Mutate | dir, ids | Relink offline assets: by file name, then by duration within one frame, inside dir (+ one level of subfolders); returns {relinked, still_missing}. |
-| `media.scene_cuts` | Mutate | as_markers, clip_id, split, threshold | ffmpeg select='gt(scene,T)' shot-change detection over the clip's source. Neither flag: pure detection, returns cut times (source secs). as_markers adds one point marker (duration 0) per cut and fires marker_added; split cuts the clip at each one. Synchronous (blocks the UI thread for the ffmpeg pass) — documented ceiling. |
+| `media.scene_cuts` | Mutate | as_markers, clip_id, split, threshold | ffmpeg select='gt(scene,T)' shot-change detection over the clip's source. Neither flag: pure detection, returns cut times (source secs). as_markers adds one point marker (duration 0) per cut and fires marker_added; split cuts the clip at each one. Synchronous (blocks the UI thread for the ffmpeg pass) — documented ceiling. A cut reported at the very first frame is dropped. |
 | `media.set` | Mutate | description, folder, id, label, tags | Edit asset metadata. |
 | `media.set_effects` | Mutate | asset_id, effects | Replace an Asset's master effects (applied to every clip using it, prepended before clip-local effects). Effects: [{kind:string,params:object}], same shape as clip.add_effect. |
 | `media.smart_bin` | Mutate | id, name, op | Manage Project.smart_bins: save the current library filter under a name, apply one (by index or name) to the library, list them, or delete one. |
@@ -478,7 +478,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
-| `render.contact_sheet` | Read | count, from, to, width | Tile `count` frames (1..36, default 9) evenly spread over [from, to] into one PNG image (left to right, top to bottom; `times` lists each tile's time). width: px per tile, default 320. |
+| `render.contact_sheet` | Read | count, from, to, width | Tile `count` frames (1..16, default 9; tiles past the last frame are clamped to it) evenly spread over [from, to] into one PNG image (left to right, top to bottom; `times` lists each tile's time). width: px per tile, default 320. |
 | `render.frame` | Read | t, width | Render the timeline at time t as a PNG image, max `width` px wide (default 640). MCP clients get an image content block; Luau gets {width, height, data_url}. |
 | `render.layers_async` | Ui | max_w, t | Queue a non-blocking one-shot layer decode; returns a request id. |
 | `render.poll_layers` | Read | id | Poll for the async layer-decode reply (not ready until it matches the given id, or it was superseded by a newer request). |
@@ -729,13 +729,16 @@ genuinely-differing diff per app was (`src/keymaps.rs`'s own doc comment):
 | Preset | Rebinds |
 |---|---|
 | Simple Editor (default) | — (this preset is exactly `Hotkeys::reset_all()`) |
-| Premiere | `split` → `Ctrl+K` (Premiere's own "Add Edit" muscle memory), `command_palette` → `Ctrl+Shift+P` (moved off Ctrl+K), `export` → `Ctrl+M` |
+| Premiere | `split` → `Ctrl+K` (Premiere's own "Add Edit" muscle memory), `export` → `Ctrl+M` |
 | Resolve | `split` → `B`, `command_palette` → `Ctrl+Space`, `toggle_transitions` → `Ctrl+Shift+T` |
 | Avid | `command_palette` → `Ctrl+Alt+K`, `split` → `Ctrl+Shift+B` |
 
-`Ctrl+K` opens the **command palette** over every `Action`, `Pane`, arg-free `ToolDef` (`:` opens a
-mini argument form built from the tool's own arg docs), Luau script and workspace — fuzzy-searchable,
-recency-ordered. `F1` opens the **cheat sheet** (a second palette entry point, listing every bound
+`Ctrl+P` (and `Ctrl+K` while nothing else is bound to it) opens the **palette**. Plain text goes to
+clips (every timeline, nested ones too), timelines, Library media and bins, markers / comments, pages,
+panels and Gallery cards; `>` lists every `Action`, `Pane`, arg-free `ToolDef`, Luau script and on/off
+setting; `/` is the assistant (`/ask <message>`, `/<skill> [args]`); `:` any tool by name, with a mini
+argument form built from the tool's own arg docs. `ui.palette {query, pick?, alt?}` lists (or runs) the
+same rows over MCP. `F1` opens the **cheat sheet** (a second palette entry point, listing every bound
 chord). See ARCHITECTURE.md's "Gesture model" table for the timeline's mouse+modifier chords — that
 table is the authoritative source; this doc doesn't duplicate it.
 

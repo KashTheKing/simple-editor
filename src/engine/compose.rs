@@ -177,6 +177,8 @@ pub fn covers(project: &Project, clip: &Clip, t: f64, w: u32, h: u32) -> bool {
     if clip.kind != ClipKind::Video
         || clip.is_empty_container()
         || !matches!(asset.codec.as_str(), "h264" | "mpeg4" | "mpeg2video" | "mjpeg")
+        // an HTML render with transparency is H.264 too, colour stacked over alpha: see-through
+        || crate::media::proxy::is_stacked(std::path::Path::new(&asset.path))
         || clip.blend != BlendMode::Normal
         || clip.mask.as_ref().is_some_and(|m| m.enabled)
         || clip.uses_graph()
@@ -1615,6 +1617,7 @@ mod tests {
             edge: Default::default(),
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_video("Z:\\nope\\fake.mp4", Box::new(FakeVideo([255, 0, 0, 255])));
@@ -1700,6 +1703,7 @@ mod tests {
             edge: crate::model::TransitionEdge::Out,
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         let mut comp = Compositor::new();
         let mut text = TextRasterizer::new();
@@ -1783,6 +1787,7 @@ mod tests {
             edge: Default::default(),
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         let mut comp = Compositor::new();

@@ -64,7 +64,7 @@ Every page remembers its own arrangement. Changing the Color page never touches 
   one you pick to that group.
 - Tick it in the **Window** menu. The less common ones are under **Window ▸ More**.
 - Press its shortcut, like <kbd>Ctrl+1</kbd> for the Library (see [shortcuts](shortcuts.md#panels--pages)).
-- Type its name into the command palette (<kbd>Ctrl+K</kbd>).
+- Type its name into the command palette (<kbd>Ctrl+P</kbd>).
 
 ![The + button lists hidden panels](/img/tutorial/add-panel-menu.png)
 
@@ -123,13 +123,24 @@ switched glows briefly instead.
 
 Every menu item shows its shortcut, and right-clicking one lets you give it a different icon.
 
-## Find any command: Ctrl+K
+## Go to anything: Ctrl+P
 
 ![The command palette](/img/tutorial/palette.png)
 
-Press <kbd>Ctrl+K</kbd> and start typing. The **command palette** searches every command, every panel
-("Show Mixer"), and your scripts. <kbd>Enter</kbd> runs the highlighted row; greyed-out rows say why
-they can't run right now. With nothing typed, your recent commands come first.
+Press <kbd>Ctrl+P</kbd> (<kbd>Ctrl+K</kbd> also works unless you gave it to something else) and start
+typing. What the box does depends on the first character:
+
+- **Plain text: go to.** Clips on any timeline (also inside nested sequences), timelines, media and bins
+  in the Library, markers and comments, pages, panels and Gallery cards, grouped by type with the track
+  and time, or the folder, in grey. <kbd>Enter</kbd> goes there: the playhead jumps to a clip and selects
+  it, a timeline opens, media is shown and selected in the Library. <kbd>Alt+Enter</kbd> adds media at
+  the playhead, or applies a Gallery card. With nothing typed, what you went to last comes first.
+- **`>`: commands.** Every command with its shortcut, every panel ("Show Mixer"), your scripts and the
+  on/off settings. Greyed-out rows say why they can't run right now.
+- **`/`: the assistant.** `/ask <message>` sends a message; `/<skill>` runs a skill (the list shows
+  every installed skill with its description as you type).
+
+<kbd>Tab</kbd> and the arrow keys move through the results, <kbd>Esc</kbd> closes it.
 
 Some commands live only here, for example **Restore Autosave…**, **Fast Review** and **Trim View in
 Preview**.
@@ -148,8 +159,19 @@ on the [keyboard shortcuts](shortcuts.md) page.
 
 **File ▸ Settings…** (<kbd>Ctrl+Comma</kbd>) has six tabs:
 
-- **General**: theme, where FFmpeg and yt-dlp are, autosave, snapping, the "follow the selection" and
+- **General**: theme, where FFmpeg and yt-dlp are, autosave, the cache budget and **Cache folder**, the
+  **Web browser** links and the page-snapshot steps use, snapping, the "follow the selection" and
   home-card switches, the Explorer right-click entry, fonts, and the MCP server for AI co-editing.
+
+  **Cache folder** shows where renders, pre-renders, proxies, waveform peaks and downloaded models are kept,
+  how much they use and the drive's free space. **Browse…** picks another folder (on a bigger or faster
+  drive, say), then **Move existing cache** moves the files there in the background (a row in Jobs; a file
+  still being written stays behind) or **Start fresh** leaves the old folder (tick *and delete the old
+  folder* to remove it). The new folder is used at once. **Reset to default** goes back to
+  `%LOCALAPPDATA%\SimpleEditor\cache`.
+
+  **Web browser** is **Default** (the Windows default browser) or any browser installed, or **Other…** for
+  a program of your own.
 - **Performance**: GPU preview, preview quality, the playback cache, proxies, movie mode.
 - **Capture**: screen recording and voiceover inputs.
 - **Export**: default encoder, quality and speed preset.
@@ -158,3 +180,9 @@ on the [keyboard shortcuts](shortcuts.md) page.
   and the keyboard map shows what's taken.
 - **Appearance**: Cozy (rounded) or Sharp look, 25+ built-in themes, your own colours, clip colours, a
   background image, and icons. Themes can be exported and imported as `.sedit-theme` files.
+  Built in: Premiere Pro, DaVinci Resolve and CapCut, each Dark and Light (their colours and feel only).
+  **Import theme** also accepts other editors' settings, mapped as closely as the file allows: Premiere Pro
+  preferences give only a UI brightness and a highlight colour (brightness sets the greys, the highlight becomes
+  the accent; clip colours and radii come from the built-in Premiere Pro theme); CapCut preferences give only
+  dark/light; DaVinci Resolve keeps no theme file, so pick its built-in theme. Unreadable files show a message
+  and change nothing. The key names are matched loosely because those formats are undocumented.
