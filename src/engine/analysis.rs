@@ -327,7 +327,13 @@ pub fn scene_cuts(path: &std::path::Path, thr: f32) -> Result<Vec<f64>, String> 
         .args(["-vf", &filter, "-f", "null", "-"])
         .output()
         .map_err(|e| e.to_string())?;
-    Ok(parse_showinfo_pts(&String::from_utf8_lossy(&out.stderr)))
+    Ok(drop_first_frame(parse_showinfo_pts(&String::from_utf8_lossy(&out.stderr))))
+}
+
+/// ffmpeg's scene score compares each frame with the one before, so the first frame (nothing before
+/// it) can score as a "cut" at ~0 s; `split` would then make a one-frame clip. Not a shot change.
+fn drop_first_frame(cuts: Vec<f64>) -> Vec<f64> {
+    cuts.into_iter().filter(|&t| t > 0.05).collect()
 }
 
 /// Pure detection: onsets on every clip in `targets` (SOURCE seconds, no mutation). Shared by the
@@ -658,6 +664,12 @@ mod tests {
         assert_eq!(parse_showinfo_pts(sample), vec![0.5, 1.25]);
         assert!(parse_showinfo_pts("").is_empty());
         assert!(parse_showinfo_pts("no matches here").is_empty());
+    }
+
+    /// Live skill run: scene_cuts reported a cut at the first frame, so split:true made a 1-frame clip.
+    #[test]
+    fn scene_cuts_ignore_the_first_frame() {
+        assert_eq!(drop_first_frame(vec![0.0, 0.033, 1.5, 3.25]), vec![1.5, 3.25]);
     }
 
     /// One audio clip (trimmed + retimed: src_in=1.0, speed=2.0, start=5.0) with clicks at source

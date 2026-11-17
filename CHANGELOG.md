@@ -82,6 +82,19 @@
   `/reframe`, `/audio-to-keyframes`, `/deliver`, `/apply-cdl`. Guide page: Editing skills and styles.
 - Skill headers can carry `tags` (searchable in the Gallery) and `credit` (kept in the library catalogue); a test fails the build when a library skill
   names a tool or argument that does not exist.
+### Fixed (found by live-testing the assistant skills)
+- **Duplicate** put the audio copy of a linked clip on a video track when a new video track had to be made for the
+  picture copy.
+- **Filler removal** no longer cuts into the words on either side of a filler (the padding stops at its neighbours).
+- **Scene-cut detection** no longer reports a cut at the very first frame (splitting there made a one-frame clip).
+- **Transcription status** says "Transcribing…" once the audio is extracted, instead of "Extracting audio…" for the
+  whole run.
+- Assistant tools: markers an agent creates inside its undo group are signed with its name, not shown as yours;
+  `edit.begin` takes `idle_s` (the group closed after 30 s without calls while an agent looked at renders);
+  `audio.analyze` also reports the clip's gain and the levels after it; `library.apply` takes `intensity` for
+  LUTs; `render.contact_sheet` keeps tiles on the last frame instead of a black one past the end; transcript files
+  are kept per editor process, so two open editors no longer overwrite each other's; `history.restore` and
+  `tracking.run` descriptions say what they really do.
 
 ## 1.3.0
 

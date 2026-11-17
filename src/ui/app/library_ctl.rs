@@ -29,6 +29,8 @@ pub(crate) struct Target {
     pub place: Option<String>,
     /// An HTML layer / icon only: Some(Some(track index)) = on that video track, Some(None) = on a new one.
     pub track: Option<Option<usize>>,
+    /// A LUT only: its strength 0..1 (None: full).
+    pub intensity: Option<f64>,
 }
 
 impl Target {
@@ -39,7 +41,8 @@ impl Target {
             Some(None) => json!(-1),
             None => Value::Null,
         };
-        json!({"id": id, "clips": self.clips, "at": self.at, "where": self.place, "track": track})
+        json!({"id": id, "clips": self.clips, "at": self.at, "where": self.place, "track": track,
+               "intensity": self.intensity})
     }
     /// Back from `library.apply`'s arguments (`clip`: one clip, as before; `clips`: several).
     pub(crate) fn from_args(args: &Value) -> Target {
@@ -59,6 +62,7 @@ impl Target {
             at: args.get("at").and_then(Value::as_f64),
             place: args.get("where").and_then(Value::as_str).map(String::from),
             track,
+            intensity: args.get("intensity").and_then(Value::as_f64).map(|v| v.clamp(0.0, 1.0)),
         }
     }
 }
@@ -384,7 +388,7 @@ pub(super) fn step(kind: Kind, text: &str, name: &str, path: &Path) -> Step {
 /// must `library.install` first, which downloads), then apply it to `clip` (None: the selection) /
 /// at `at` (None: the playhead). Returns the toast line. No undo here: the tool is `Mutate`.
 pub(super) fn apply(app: &mut App, id: &str, target: &Target) -> Result<String, String> {
-    let Target { clips, at, place, track } = target;
+    let Target { clips, at, place, track, intensity } = target;
     let (at, place, track) = (*at, place.as_deref(), *track);
     // (one clip, or - a drop on a multi-selection - several; empty = the selection)
     let one = (clips.len() == 1).then(|| clips[0]);
@@ -427,7 +431,11 @@ pub(super) fn apply(app: &mut App, id: &str, target: &Target) -> Result<String, 
                 return Err("Select a clip first".into());
             }
             for &c in &ids {
-                let r = super::tools_color::dispatch(app, "clip.add_lut", &json!({"clip_id": c, "path": p}));
+                let r = super::tools_color::dispatch(
+                    app,
+                    "clip.add_lut",
+                    &json!({"clip_id": c, "path": p, "intensity": intensity.unwrap_or(1.0)}),
+                );
                 r.unwrap_or_else(|| Err("clip.add_lut is missing".into()))?;
             }
             Ok(format!("Applied the {name} LUT to {} clip{}", ids.len(), if ids.len() == 1 { "" } else { "s" }))
@@ -547,9 +555,11 @@ mod tests {
     fn a_drop_target_survives_the_trip_through_library_apply() {
         for t in [
             Target::default(),
-            Target { clips: vec![5, 6], at: Some(2.5), place: Some("end".into()), track: None },
-            Target { clips: Vec::new(), at: Some(0.0), place: None, track: Some(Some(2)) },
-            Target { clips: Vec::new(), at: Some(9.0), place: None, track: Some(None) },
+            Target { clips: vec![5, 6], at: Some(2.5), place: Some("end".into()), ..Default::default() },
+            Target { clips: Vec::new(), at: Some(0.0), track: Some(Some(2)), ..Default::default() },
+            Target { clips: Vec::new(), at: Some(9.0), track: Some(None), ..Default::default() },
+            // live skill runs: a LUT could only go on at full strength through library.apply
+            Target { clips: vec![3], intensity: Some(0.6), ..Default::default() },
         ] {
             assert_eq!(Target::from_args(&t.args("transitions/x")), t);
         }

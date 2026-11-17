@@ -317,6 +317,9 @@ fn run(opts: &Options, prog: &Progress, sink: &Mutex<Vec<Segment>>) -> Result<()
             Err(e) => return Err(e),
         };
         let range = (done / total, dur.max(0.1) / total);
+        // whisper's piped output can arrive only at the end, so say so now: the status read
+        // "Extracting audio…" for the whole run and looked stuck
+        prog.set((0.01 + 0.98 * range.0) as f32, label.as_str());
         let r = whisper_once(&exe, &model, opts, &wav, start - opts.src_start, dur.max(0.1), range, &label, prog, sink);
         let _ = std::fs::remove_file(&wav);
         n += r?;
@@ -688,7 +691,8 @@ pub fn short_label(text: &str, max: usize) -> String {
 /// Default filler list (`Settings.filler_words` seeds from it; the Transcript section edits it).
 pub const FILLER_WORDS: &[&str] = &["um", "uh", "uhh", "like", "you know", "i mean", "sort of", "kind of"];
 
-/// Timeline ranges of every filler word/phrase in `words`, each padded by `pad_ms` on both sides and
+/// Timeline ranges of every filler word/phrase in `words`, each padded by `pad_ms` on both sides (but
+/// never into the word before or after it: a pad that reached a short neighbour cut it too) and
 /// merged across `MERGE_GAP` (two "um"s in a row are one cut). Matching is over `normalize()`'d
 /// tokens - case and punctuation do not count, and a multi-word filler ("you know") must appear as
 /// that many consecutive words. Feeds `Project::cut_word_ranges` via Mark-instead.
@@ -716,7 +720,10 @@ pub fn filler_ranges(words: &[(f64, f64, String)], fillers: &[&str], pad_ms: u32
             i += 1;
             continue;
         }
-        r.push(((words[i].0 - pad).max(0.0), words[i + best - 1].1 + pad));
+        let (a, b) = (words[i].0, words[i + best - 1].1);
+        let lo = if i > 0 { words[i - 1].1.min(a) } else { 0.0 };
+        let hi = words.get(i + best).map_or(f64::INFINITY, |w| w.0.max(b));
+        r.push(((a - pad).max(lo), (b + pad).min(hi)));
         i += best;
     }
     let mut out: Vec<(f64, f64)> = Vec::new();
@@ -1042,7 +1049,7 @@ mod tests {
     fn filler_ranges_pads_and_merges() {
         let w = words(&[
             (0.0, 0.3, "So,"),
-            (0.4, 0.6, "Um,"),   // hit: padded to (0.28, 0.72)
+            (0.4, 0.6, "Um,"),   // hit: padded to (0.28, 0.72), but not into "So," (ends 0.3)
             (0.7, 0.9, "uh"),    // hit within MERGE_GAP of the last: merged into one range
             (1.0, 1.4, "this"),
             (1.5, 1.8, "is"),
@@ -1053,8 +1060,9 @@ mod tests {
         ]);
         let r = filler_ranges(&w, FILLER_WORDS, 120);
         assert_eq!(r.len(), 3, "{r:?}");
-        assert!((r[0].0 - 0.28).abs() < 1e-9 && (r[0].1 - 1.02).abs() < 1e-9, "um+uh merged, padded: {:?}", r[0]);
-        assert!((r[1].0 - 2.88).abs() < 1e-9 && (r[1].1 - 3.62).abs() < 1e-9, "the phrase spans both words: {:?}", r[1]);
+        // live skill run: the 120 ms pad cut the words either side of a filler. Pads stop at neighbours.
+        assert!((r[0].0 - 0.3).abs() < 1e-9 && (r[0].1 - 1.0).abs() < 1e-9, "um+uh merged, padded up to So / this: {:?}", r[0]);
+        assert!((r[1].0 - 2.88).abs() < 1e-9 && (r[1].1 - 3.6).abs() < 1e-9, "the phrase spans both words, stops at great: {:?}", r[1]);
         assert!((r[2].0 - 8.88).abs() < 1e-9, "{:?}", r[2]);
         // a custom list overrides the default; nothing matches → nothing
         assert_eq!(filler_ranges(&w, &["great"], 0), vec![(3.6, 4.0)]);

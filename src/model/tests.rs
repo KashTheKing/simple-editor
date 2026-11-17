@@ -1431,6 +1431,30 @@ fn duplicate_places_on_free_track_with_new_ids() {
     assert!((dup.start).abs() < 1e-9 && (dup.duration - 3.0).abs() < 1e-9, "same extents, different track");
 }
 
+/// Live skill run: duplicating a linked video + audio pair put the audio copy on a VIDEO track,
+/// because the new video track shifted the audio track's index captured before the loop.
+#[test]
+fn duplicate_linked_pair_keeps_each_copy_on_its_kind() {
+    let mut p = Project::new();
+    let (v, a, link) = (p.new_id(), p.new_id(), p.new_id());
+    let vt = p.tracks.iter().position(|t| t.kind == TrackKind::Video).unwrap();
+    let at = p.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+    let mut cv = Clip::new(v, ClipKind::Video, "v", 0.0, 3.0);
+    cv.link = link;
+    let mut ca = Clip::new(a, ClipKind::Audio, "a", 0.0, 3.0);
+    ca.link = link;
+    p.tracks[vt].clips.push(cv);
+    p.tracks[at].clips.push(ca);
+    let new_ids = p.duplicate(&[v]);
+    assert_eq!(new_ids.len(), 2);
+    for id in new_ids {
+        let (ti, _) = p.find(id).unwrap();
+        let c = p.clip(id).unwrap();
+        let want = if c.kind == ClipKind::Video { TrackKind::Video } else { TrackKind::Audio };
+        assert_eq!(p.tracks[ti].kind, want, "{:?} copy landed on a {:?} track", c.kind, p.tracks[ti].kind);
+    }
+}
+
 #[test]
 fn unnest_is_inverse_of_nest_selection() {
     let mut p = Project::new();

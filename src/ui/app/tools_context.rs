@@ -20,7 +20,7 @@ use super::*;
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 
 /// An open group closes itself after this long without a tool call.
-const GROUP_IDLE: Duration = Duration::from_secs(30);
+pub(super) const GROUP_IDLE: Duration = Duration::from_secs(30);
 /// How long the changed clips stay outlined after a group ends.
 const FLASH_SECS: f32 = 1.5;
 /// A new comment goes to `assistant.wait` once its note has stopped changing for this long (so a
@@ -42,6 +42,8 @@ pub(super) struct UndoGroup {
     /// cap keeps the length unchanged (see `hand_edited`).
     pub(super) top_at: Option<f64>,
     pub(super) last_call: Instant,
+    /// Closes itself after this long without a tool call (`GROUP_IDLE`, or `edit.begin {idle_s}`).
+    pub(super) idle: Duration,
 }
 
 impl UndoGroup {
@@ -88,6 +90,7 @@ impl App {
             undo_len: self.undo.len(),
             top_at: self.undo.last().map(|e| e.at),
             last_call: Instant::now(),
+            idle: GROUP_IDLE,
         });
     }
 
@@ -311,9 +314,8 @@ fn contact_sheet(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
     let count = arg_u64(args, "count").unwrap_or(9).clamp(1, 16) as u32;
     let cols = ((count as f64).sqrt().ceil() as u32).max(1);
     let w = arg_u64(args, "width").map(|w| w as u32).unwrap_or(320).clamp(16, 3840 / cols);
-    let mut times: Vec<f64> = (0..count)
-        .map(|i| if count == 1 { from } else { from + (to - from) * i as f64 / (count - 1) as f64 })
-        .collect();
+    let last = app.project.duration() - 1.0 / app.project.fps.max(1.0);
+    let mut times = sheet_times(from, to, count, last);
     let started = Instant::now();
     let mut frames = Vec::with_capacity(times.len());
     for &t in &times {
@@ -329,6 +331,20 @@ fn contact_sheet(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
     let meta = json!({"times": times, "cols": cols, "rows": (frames.len() as u32).div_ceil(cols),
                       "width": sheet.width, "height": sheet.height, "truncated": truncated});
     Ok(png_outcome(&sheet, meta))
+}
+
+/// `edit.begin`'s `idle_s` (5..600 s), else `GROUP_IDLE`.
+fn group_idle(args: &Value) -> Duration {
+    arg_f64(args, "idle_s").map_or(GROUP_IDLE, |s| Duration::from_secs_f64(s.clamp(5.0, 600.0)))
+}
+
+/// `count` times evenly over [from, to], each kept at or before `last` (the last frame's time): a
+/// tile at the timeline's end itself rendered black and read as a black-frame problem.
+fn sheet_times(from: f64, to: f64, count: u32, last: f64) -> Vec<f64> {
+    (0..count)
+        .map(|i| if count == 1 { from } else { from + (to - from) * i as f64 / (count - 1) as f64 })
+        .map(|t| if last > 0.0 { t.min(last) } else { t })
+        .collect()
 }
 
 /// Frames on one opaque black sheet, `cols` per row, each cell the size of the first frame.
@@ -515,7 +531,7 @@ fn poll_waits(app: &mut App, now: Instant) {
 /// `assistant.wait`. Every wake goes through `App::animate_until`; with nothing open it schedules none.
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     let now = Instant::now();
-    let group = app.mcp_ctx.group.as_ref().map(|g| (g.hand_edited(&app.undo), g.last_call + GROUP_IDLE));
+    let group = app.mcp_ctx.group.as_ref().map(|g| (g.hand_edited(&app.undo), g.last_call + g.idle));
     if let Some((manual_edit, idle_at)) = group {
         if manual_edit || now >= idle_at {
             app.end_group();
@@ -582,11 +598,18 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "edit.begin",
         desc: "Start one undo step for a request: until edit.end every edit joins it, and the user can undo it \
-               all at once ('<author>: <label>' in History). Closes by itself after 30 s without calls.",
-        args: &["label:string:true:what the request does, e.g. 'Tighten the intro'", "author:string:false:default Assistant"],
+               all at once ('<author>: <label>' in History). Closes by itself after `idle_s` (default 30 s) without                calls: raise it when you will look at renders or wait for a job between edits.",
+        args: &[
+            "label:string:true:what the request does, e.g. 'Tighten the intro'",
+            "author:string:false:default Assistant",
+            "idle_s:number:false:close after this many seconds without a call (5..600, default 30)",
+        ],
         kind: ToolKind::Ui,
         run: |app, args| {
             app.begin_group(req(arg_str(args, "label"), "label")?, arg_str(args, "author").unwrap_or(""));
+            if let Some(g) = app.mcp_ctx.group.as_mut() {
+                g.idle = group_idle(args);
+            }
             Ok(ToolOutcome::Done(json!({"ok": true})))
         },
     },
@@ -673,7 +696,7 @@ mod tests {
     use super::*;
 
     fn group(label: &str, p: &Project, undo_len: usize) -> UndoGroup {
-        UndoGroup { label: label.into(), before: p.to_json(), undo_len, top_at: None, last_call: Instant::now() }
+        UndoGroup { label: label.into(), before: p.to_json(), undo_len, top_at: None, last_call: Instant::now(), idle: GROUP_IDLE }
     }
 
     /// N mutating calls inside a group push nothing of their own; closing it pushes ONE entry, labelled,
@@ -815,6 +838,24 @@ mod tests {
         assert_eq!(c["selected_clips"], json!([]), "an unknown clip id is dropped");
         assert_eq!(c["selected_markers"][0]["note"], "too loud");
         assert!(c["sequence"].is_null() && c["selected_words"].is_null());
+    }
+
+    /// Live skill runs: `to: <end>` put the last tile past the last frame (black).
+    #[test]
+    fn contact_sheet_times_stay_on_the_timeline() {
+        let t = sheet_times(0.0, 10.0, 3, 9.95);
+        assert_eq!(t, vec![0.0, 5.0, 9.95]);
+        assert_eq!(sheet_times(2.0, 4.0, 1, 9.0), vec![2.0]);
+    }
+
+    /// Live skill runs: looking at renders between edits outlasted the fixed 30 s and split one request
+    /// into two undo steps; `edit.begin {idle_s}` keeps the group open longer.
+    #[test]
+    fn edit_begin_idle_s_sets_the_group_timeout() {
+        assert_eq!(group_idle(&json!({"idle_s": 120})), Duration::from_secs(120));
+        assert_eq!(group_idle(&json!({"idle_s": 99999})), Duration::from_secs(600), "capped");
+        assert_eq!(group_idle(&json!({"idle_s": 0})), Duration::from_secs(5), "floored");
+        assert_eq!(group_idle(&json!({})), GROUP_IDLE);
     }
 
     #[test]
