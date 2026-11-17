@@ -1501,6 +1501,16 @@ fn swatch(p: &egui::Painter, tile: Rect, color: [u8; 4], outline: [u8; 4]) {
 /// Looks excludes any `Settings.effect_presets` entry with `is_graph()==true` (a saved node-graph
 /// preset is not a "Look"). `mut Settings` isn't needed here (read-only), but the caller already has
 /// `&Settings`, not `&mut`, for every other tab too - kept uniform.
+impl GalleryState {
+    /// Show card `name` on `tab` (already opened by the caller): the tab's search is set to it, kept
+    /// through the "new tab starts unfiltered" reset (the palette's go-to).
+    pub fn reveal(&mut self, tab: GalleryTab, name: &str) {
+        self.seen = Some((tab, None));
+        self.f.clear();
+        self.f.q = name.to_string();
+    }
+}
+
 pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
     match tab {
         GalleryTab::Looks => crate::engine::presets::builtin_looks()

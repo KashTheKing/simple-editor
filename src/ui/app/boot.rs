@@ -26,6 +26,9 @@ pub(crate) fn run(app: &mut App) {
 
 /// Arm the wizard, or apply the consented context-menu re-point - never both, never silently.
 fn first_run(app: &mut App) {
+    if crate::winpos::quiet() {
+        return; // agents / test instances: no wizard, and `onboarded` stays as it is
+    }
     let opened = app.project_path.is_some() || !app.project.is_empty() || !app.project.assets.is_empty();
     let forced = std::env::var("SE_FIRST_RUN").is_ok_and(|v| v == "1");
     if should_onboard(app.settings.onboarded, opened, app.screenshot.is_some(), forced) {

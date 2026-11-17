@@ -9,6 +9,13 @@
   player when done. For a video you opened directly (one clip, maybe with text or captions on top) the dialog lands
   on that file, and saving asks "Replace <name>?" first; the original stays as `<name>.bak` until the new file is in
   place. Other quick exports remember their folder and type per project.
+### Ctrl+P: go to anything
+- **The command palette is now Ctrl+P and goes to things by name**: clips on any timeline (nested sequences too),
+  timelines, Library media and bins, markers and comments, pages, panels and Gallery cards, grouped by type with
+  their track and time or folder. Enter goes there (jump and select, open, reveal); Alt+Enter adds media at the
+  playhead or applies a Gallery card. `>` runs commands and on/off settings, `/ask` and `/<skill>` talk to the
+  assistant (the only way to it from the palette). Ctrl+K still opens it while nothing else uses Ctrl+K, and a key
+  you bound to Ctrl+P yourself keeps it.
 
 ### Gallery cards
 - **Gallery: a Video | Audio switch with audio presets, and pictures for every title and template.** The Audio side
@@ -22,6 +29,20 @@
   a readable title under it; a skill header can name its own picture with `thumb:`.
 - Library items without a thumbnail (HTML, icons, effects, transitions, LUTs) show their type symbol, a sound shows
   a waveform symbol while its waveform loads, and card names stay on one line with an ellipsis.
+
+### Assistant chat
+- **The Assistant is a chat app now**: a collapsible sidebar of chats (New chat, search over every chat, pin, rename,
+  save, delete), user and reply bubbles with Markdown, code blocks with a Copy button, tool steps folded, and a composer
+  that grows with the text. Opening the pane starts a new chat with the cursor in the composer; the agent, Tasks, Skills
+  and import / export moved into the `⋯` menu, the model and effort pickers sit small beside Send.
+- **Copy gives clean text.** Right-click a message: Copy text (no markup), Copy as Markdown, Copy attachments, Retry,
+  Edit and resend, Delete. Ctrl+C on text selected in a message copies that text - it no longer also copied the
+  selected clips' JSON over it.
+- **Attach anything**: the paperclip, a drop on the pane, or Ctrl+V of a picture or of files copied in Explorer. Click a
+  thumbnail to preview it; right-click it to Copy (the picture itself) or Save as.
+- **Capture the editor into a message**: the camera menu takes the current frame, a screenshot of any panel, an area you
+  drag anywhere in the window, or the timeline range (a picture plus its clips and tracks); every pane tab's right-click
+  menu has Attach to Assistant. New tool: `assistant.capture`.
 
 ### AI enhancer
 - **AI Upscale is no longer starved on a busy PC**: the upscaler runs at normal priority and steps down only while

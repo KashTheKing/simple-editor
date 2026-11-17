@@ -145,6 +145,32 @@ pub fn context<R>(response: &egui::Response, add: impl FnOnce(&mut egui::Ui) -> 
     .1
 }
 
+/// A context menu for an area drawn as several widgets (a chat message: many selectable labels, which
+/// take the right-click themselves): a right-click anywhere in `rect` opens it at the pointer, unless a
+/// widget inside opened its own menu that frame. `Some` on the frames it is open.
+pub fn context_area<R>(ui: &egui::Ui, id: egui::Id, rect: egui::Rect, add: impl FnOnce(&mut egui::Ui) -> R) -> Option<R> {
+    erased(add, |add| context_area_dyn(ui, id, rect, add)).1
+}
+
+fn context_area_dyn(ui: &egui::Ui, id: egui::Id, rect: egui::Rect, add: &mut dyn FnMut(&mut egui::Ui)) {
+    let ctx = ui.ctx();
+    let at = id.with("at");
+    if ui.input(|i| i.pointer.secondary_clicked()) && ui.rect_contains_pointer(rect) && !egui::Popup::is_any_open(ctx) {
+        let p = ctx.pointer_interact_pos().unwrap_or(rect.min);
+        ctx.data_mut(|d| d.insert_temp(at, p));
+        egui::Popup::open_id(ctx, id);
+    }
+    if !egui::Popup::is_id_open(ctx, id) {
+        return;
+    }
+    let p = ctx.data(|d| d.get_temp::<egui::Pos2>(at)).unwrap_or(rect.min);
+    egui::Popup::new(id, ctx.clone(), egui::PopupAnchor::Position(p), ui.layer_id())
+        .kind(egui::PopupKind::Menu)
+        .layout(egui::Layout::top_down_justified(egui::Align::Min))
+        .open_memory(None)
+        .show(|ui| add(ui));
+}
+
 /// `ui.menu_button(atoms, add)`: a top-level menu button (a submenu when already inside a menu).
 pub fn button<'a, R>(
     ui: &mut egui::Ui,

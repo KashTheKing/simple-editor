@@ -1,17 +1,22 @@
 //! ---- ws:assistant-pane ----
-//! The Assistant pane widget (pure: no `App`). One header row (conversation menu, New chat, the agent
-//! and model pickers), then two tabs:
-//! - **Tasks**: describe a change, the agent writes it as a Luau script; each script is a card the user
-//!   runs, edits, saves to the Scripts folder or removes. "Handle my comments" lets the agent answer
-//!   timeline comments in the background.
-//! - **Chat**: user bubbles on the right, markdown replies on the left, each reply's tool calls folded
-//!   into one line, Undo / Copy under a finished reply; the composer (chips, prompt, `+`, mic, Send /
-//!   Stop) is pinned to the bottom.
+//! The Assistant pane widget (pure: no `App`), laid out like a chat app:
+//! - a **sidebar** of chats (New chat, search over every chat, the list with pinned ones first and a date
+//!   column; right-click or double-click to rename, pin, save or delete; collapsible);
+//! - the **message column**: user bubbles on the right, Markdown replies on the left with each reply's tool
+//!   calls folded into one "N steps" line; right-click a message to copy it (plain text or Markdown), copy
+//!   its attachments, retry, edit and resend, or delete it; text selected in a message copies with Ctrl+C;
+//! - the **composer** at the bottom: attachment thumbnails / chips (click to preview, right-click to copy or
+//!   save), a prompt box that grows with the text, the paperclip, the capture menu (current frame, a panel,
+//!   an area of the window, the timeline range), dictation, and Send / Stop with the model and effort
+//!   pickers kept small beside it. The agent, Tasks, Skills and import / export live in the `⋯` menu.
 //!
-//! It edits what is pure state (conversations, tasks, chips) itself and returns what needs the app
-//! (`Out`); `ui/app/assistant_ctl.rs` acts on it. The data model is `ui::assistant_data`.
+//! Opening the pane starts a new chat (an empty one is reused) with the cursor in the composer. It edits
+//! what is pure state (conversations, tasks, chips) itself and returns what needs the app (`Out`);
+//! `ui/app/assistant_ctl.rs` acts on it. The data model is `ui::assistant_data`.
 
 pub use super::assistant_data::*;
+use super::layout::Pane;
+use super::list_rows::{RowSpec, Rows};
 use super::menu;
 use super::tools::{draw_glyph, glyph_text_button, Glyph};
 use crate::engine::skills::{self, Skill, Source};
@@ -22,12 +27,16 @@ use std::collections::HashMap;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Tab {
     #[default]
-    Tasks,
     Chat,
-    /// Every saved conversation of this project.
-    History,
-    /// ws:skills: every skill, with Run / Edit / Duplicate / Delete and New skill.
+    /// Scripts the assistant wrote for the user to run (the `⋯` menu).
+    Tasks,
+    /// ws:skills: every skill, with Run / Edit / Duplicate / Delete and New skill (the `⋯` menu).
     Skills,
+}
+
+/// The composer's prompt box (fixed, so the app can tell when it has the keyboard: image paste).
+pub fn prompt_id() -> egui::Id {
+    egui::Id::new("assistant_prompt")
 }
 
 /// ws:skills: the New / Edit skill window's fields.
@@ -102,12 +111,14 @@ pub struct AssistantState {
     /// This project's conversations; `cur` is the one shown. Never empty once `conv_mut` ran.
     pub convs: Vec<Conversation>,
     pub cur: usize,
+    /// The conversation the running request writes to (the user may open another one meanwhile).
+    pub run_conv: Option<u64>,
     pub tab: Tab,
-    /// Context the user added on purpose ("Add to Assistant"); sent with the next message.
+    /// Context the user added on purpose ("Add to Assistant", a timeline range); sent with the next message.
     pub pinned: Vec<Chip>,
-    /// Images waiting in the composer.
+    /// Images and files waiting in the composer.
     pub images: Vec<Attachment>,
-    /// The Tasks tab's "Describe a task…" box.
+    /// The Tasks view's "Describe a task…" box.
     pub task_prompt: String,
     /// The task whose code is open for editing, and the edit buffer.
     pub editing: Option<(u64, String)>,
@@ -115,8 +126,21 @@ pub struct AssistantState {
     pub comments: bool,
     /// Focus the chat prompt on the next draw (a pinned chip was just added).
     pub focus_prompt: bool,
-    /// History tab's search box.
-    pub history_q: String,
+    /// The sidebar's search box.
+    pub search: String,
+    /// The sidebar: Some(shown) once the user toggled it, None = shown when the pane is wide enough.
+    pub sidebar: Option<bool>,
+    /// The chat being renamed in the sidebar, and the edit buffer.
+    pub renaming: Option<(u64, String)>,
+    /// The attachment open in the preview window.
+    pub preview: Option<Attachment>,
+    /// "Select an area": the overlay is up (`area_overlay`), and where the drag began.
+    pub area: bool,
+    area_from: Option<egui::Pos2>,
+    /// The frame the pane was last drawn: a gap means it was just opened (a new chat is made ready).
+    seen_frame: Option<u64>,
+    /// Set by a caller that already prepared the chat for this opening (`assistant_ctl::ask`).
+    pub keep_on_open: bool,
     /// The conversations changed: the app saves them (off the UI thread) and clears this.
     pub dirty: bool,
     /// The model picker's "Other…" text field is open.
@@ -127,8 +151,9 @@ pub struct AssistantState {
     pub cursor_end: bool,
     /// ws:skills: the New / Edit skill window (open while Some).
     pub skill_draft: Option<SkillDraft>,
-    /// Attachment thumbnails by file (None = unreadable), loaded once.
+    /// Attachment thumbnails by file (None = unreadable), loaded once; the preview's full image.
     thumbs: HashMap<std::path::PathBuf, Option<egui::TextureHandle>>,
+    preview_tex: Option<(std::path::PathBuf, Option<egui::TextureHandle>)>,
 }
 
 impl AssistantState {
@@ -144,12 +169,20 @@ impl AssistantState {
     pub fn conv(&self) -> Option<&Conversation> {
         self.convs.get(self.cur.min(self.convs.len().saturating_sub(1)))
     }
+    /// The conversation the running request belongs to (else the one shown).
+    pub fn target_mut(&mut self) -> &mut Conversation {
+        match self.run_conv.and_then(|id| self.convs.iter().position(|c| c.id == id)) {
+            Some(i) => &mut self.convs[i],
+            None => self.conv_mut(),
+        }
+    }
     /// The shown conversation's lines (what `assistant.status` reports).
     pub fn log(&self) -> &[Line] {
         self.conv().map_or(&[], |c| c.lines.as_slice())
     }
+    /// Add a line to the running request's conversation (the shown one when nothing runs).
     pub fn push(&mut self, line: Line) {
-        let c = self.conv_mut();
+        let c = self.target_mut();
         c.lines.push(line);
         c.updated = now_secs();
     }
@@ -163,11 +196,15 @@ impl AssistantState {
             self.cur = self.convs.len() - 1;
         }
         self.tab = Tab::Chat;
+        self.focus_prompt = true;
         self.dirty = true;
     }
     pub fn open(&mut self, id: u64) {
         if let Some(i) = self.convs.iter().position(|c| c.id == id) {
             self.cur = i;
+            // a chat that only has tasks opens on them
+            let chatty = !self.convs[i].lines.is_empty() || self.convs[i].tasks.is_empty();
+            self.tab = if chatty { Tab::Chat } else { Tab::Tasks };
         }
     }
     /// Delete a conversation (a fresh one takes its place when it was the last).
@@ -180,6 +217,40 @@ impl AssistantState {
         self.conv_mut();
         self.dirty = true;
         Some(gone)
+    }
+    pub fn rename(&mut self, id: u64, title: &str) {
+        if let Some(c) = self.convs.iter_mut().find(|c| c.id == id) {
+            c.title = short(title, 80);
+            self.dirty = true;
+        }
+    }
+    pub fn toggle_pin(&mut self, id: u64) {
+        if let Some(c) = self.convs.iter_mut().find(|c| c.id == id) {
+            c.pinned = !c.pinned;
+            self.dirty = true;
+        }
+    }
+    /// Remove one message (its lines) from the shown chat.
+    pub fn delete_msg(&mut self, m: &Msg) {
+        let c = self.conv_mut();
+        if m.lines.end <= c.lines.len() {
+            c.lines.drain(m.lines.clone());
+            self.dirty = true;
+        }
+    }
+    /// Edit and resend: the user message `m` goes back into the composer (text and attachments) and the
+    /// chat is cut back to before it.
+    /// ponytail: the agent's session still remembers the cut turns; start a new chat to forget them.
+    pub fn edit_msg(&mut self, m: &Msg) {
+        let c = self.conv_mut();
+        if !m.user || m.lines.end > c.lines.len() {
+            return;
+        }
+        let (text, images) = (msg_markdown(&c.lines, m), msg_attachments(&c.lines, m));
+        c.lines.truncate(m.lines.start);
+        self.prompt = text;
+        self.images = images;
+        (self.focus_prompt, self.cursor_end, self.dirty) = (true, true, true);
     }
     /// Add chats from an exported file as new conversations (fresh ids; their agent sessions are not ours).
     pub fn import(&mut self, chats: Vec<Conversation>) -> usize {
@@ -198,6 +269,15 @@ impl AssistantState {
         self.cur = self.convs.iter().enumerate().max_by(|a, b| a.1.updated.total_cmp(&b.1.updated)).map_or(0, |(i, _)| i);
         self.conv_mut();
         self.editing = None;
+    }
+    /// Called once per draw with the frame number: a gap since the last draw means the pane was just
+    /// opened - a new chat, the cursor in the composer.
+    fn seen(&mut self, frame: u64) {
+        if self.seen_frame.is_none_or(|f| frame > f + 1) && !std::mem::take(&mut self.keep_on_open) {
+            self.new_chat();
+        }
+        self.keep_on_open = false;
+        self.seen_frame = Some(frame);
     }
 }
 
@@ -219,6 +299,8 @@ pub struct View<'a> {
     pub effort: &'a str,
     /// Comments waiting for the agent ("Handle my comments").
     pub queued: usize,
+    /// The docked panes on screen (the capture menu's "Screenshot a panel").
+    pub panes: &'a [Pane],
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -229,6 +311,8 @@ pub enum Out {
     Stop,
     /// Undo a finished request (it is the top of the undo stack).
     Undo,
+    /// Send the user message starting at this line of the shown chat again.
+    Retry(usize),
     Backend(&'static str),
     Model(String),
     Effort(String),
@@ -248,8 +332,12 @@ pub enum Out {
 pub enum Attach {
     /// The timeline at the playhead, as an image.
     Frame,
-    /// A PNG / JPG from disk.
+    /// Files from disk (images are attached as pictures, anything else by path).
     File,
+    /// A screenshot of one pane.
+    Panel(Pane),
+    /// The timeline's In/Out (else the selected clips' span): a picture plus its clips and tracks.
+    Timeline,
     Pin(Pin),
 }
 
@@ -269,41 +357,35 @@ pub fn add_to_assistant_row(ui: &mut egui::Ui, pin: Pin) {
     }
 }
 
+/// The pane is wider than this: the sidebar shows unless the user hid it.
+const SIDEBAR_FROM: f32 = 460.0;
+const SIDEBAR_W: f32 = 190.0;
+
 pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
     let pal = crate::theme::palette(ui.ctx());
     let mut out = Out::None;
+    state.seen(ui.ctx().cumulative_frame_nr());
     state.conv_mut();
-    // a little air at the pane's edges: right-aligned controls (Send, the comments switch) sat on the
-    // pane border and lost their last pixels to its clip rect
-    egui::Frame::NONE.inner_margin(egui::Margin { left: 4, right: 8, top: 2, bottom: 2 }).show(ui, |ui| {
-        header(ui, state, v, &mut out);
-        // wraps: four tabs must not widen a narrow pane
-        ui.horizontal_wrapped(|ui| {
-            let n = state.conv().map_or(0, |c| c.tasks.len());
-            let tasks = if n > 0 { format!("Tasks ({n})") } else { "Tasks".into() };
-            let tip = "Scripts the assistant writes for you to run";
-            if ui.selectable_label(state.tab == Tab::Tasks, tasks).on_hover_text(tip).clicked() {
-                state.tab = Tab::Tasks;
-            }
-            if ui.selectable_label(state.tab == Tab::Chat, "Chat").clicked() {
-                state.tab = Tab::Chat;
-            }
-            let saved = state.convs.iter().filter(|c| !c.is_empty()).count();
-            let history = if saved > 0 { format!("History ({saved})") } else { "History".into() };
-            let tip = "Past chats in this project";
-            if ui.selectable_label(state.tab == Tab::History, history).on_hover_text(tip).clicked() {
-                state.tab = Tab::History;
-            }
-            let tip = "Saved instructions you run in chat as /name";
-            if ui.selectable_label(state.tab == Tab::Skills, "Skills").on_hover_text(tip).clicked() {
-                state.tab = Tab::Skills;
-            }
-        });
-        ui.separator();
+    // the composer has the cursor whenever the pane opens: a blinking caret would repaint twice a second
+    // forever (the palette does the same)
+    if ui.style().visuals.text_cursor.blink {
+        ui.ctx().style_mut(|s| s.visuals.text_cursor.blink = false);
+    }
+    let wide = ui.available_width() >= SIDEBAR_FROM;
+    if state.sidebar.unwrap_or(wide) {
+        egui::SidePanel::left(ui.id().with("assistant_sidebar"))
+            .exact_width(SIDEBAR_W.min(ui.available_width() * 0.5))
+            .resizable(false)
+            .frame(egui::Frame::NONE.fill(pal.panel).inner_margin(egui::Margin::symmetric(6, 6)))
+            .show_inside(ui, |ui| sidebar(ui, state, v));
+    }
+    // a little air at the pane's edges: right-aligned controls (Send) sat on the pane border and lost
+    // their last pixels to its clip rect
+    egui::Frame::NONE.inner_margin(egui::Margin { left: 6, right: 8, top: 2, bottom: 2 }).show(ui, |ui| {
+        top_bar(ui, state, v, wide, &mut out);
         match state.tab {
-            Tab::Tasks => tasks_tab(ui, state, v, &pal, &mut out),
             Tab::Chat => chat_tab(ui, state, v, &pal, &mut out),
-            Tab::History => history_tab(ui, state, v),
+            Tab::Tasks => tasks_tab(ui, state, v, &pal, &mut out),
             Tab::Skills => skills_tab(ui, state, v, &mut out),
         }
     });
@@ -311,73 +393,195 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
 }
 
 // ---------------------------------------------------------------------------------------------------
-// header
+// sidebar
 
-fn header(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        let title = short(state.conv().map_or("New chat", Conversation::title), 28);
-        ui.add_enabled_ui(!v.running, |ui| {
-            menu::button(ui, format!("{title} ▾"), |ui| {
-                if menu::row(ui, Some(Glyph::Letter('+')), "New chat", "").clicked() {
-                    state.new_chat();
+/// New chat, search, then the chats: pinned first, then the most recent, each with its date.
+fn sidebar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) {
+    let new = ui.add_sized([ui.available_width(), 24.0], egui::Button::new("+  New chat"));
+    if new.on_hover_text("Start a new chat").clicked() {
+        state.new_chat();
+    }
+    ui.add_space(4.0);
+    ui.add(egui::TextEdit::singleline(&mut state.search).hint_text("Search chats").desired_width(f32::INFINITY));
+    ui.add_space(4.0);
+    let order = sidebar_order(&state.convs, &state.search);
+    let shown = state.conv().map(|c| c.id);
+    let now = now_secs();
+    let (mut open, mut delete, mut save) = (None, None, None);
+    egui::ScrollArea::vertical().id_salt("assistant_chats").auto_shrink([false, false]).show(ui, |ui| {
+        if order.is_empty() {
+            ui.add_space(6.0);
+            ui.weak(if state.search.is_empty() { "No chats yet." } else { "No chat matches." });
+            return;
+        }
+        // a table: [label fills and truncates][date column]; no grip, the order is by date
+        let mut rows = Rows::new(ui, "assistant_chat_rows", &[], &[34.0], false).fixed_order();
+        let mut pinned_head = false;
+        for (n, &i) in order.iter().enumerate() {
+            let c = &state.convs[i];
+            if c.pinned != pinned_head || n == 0 {
+                pinned_head = c.pinned;
+                ui.label(egui::RichText::new(if c.pinned { "Pinned" } else { "Recent" }).small().weak());
+            }
+            let (id, date) = (c.id, short_date(c.updated, now));
+            let title = c.title().to_string();
+            let r = rows.row(ui, n, &RowSpec { key: id, label: &title, values: &[&date], ..Default::default() });
+            if shown == Some(id) {
+                ui.painter().rect_stroke(r.body.rect, 3.0, egui::Stroke::new(1.0, ui.visuals().selection.stroke.color), egui::StrokeKind::Inside);
+            }
+            if state.renaming.as_ref().is_some_and(|(r, _)| *r == id) {
+                rename_field(ui, state, r.label);
+                continue;
+            }
+            if r.body.double_clicked() {
+                state.renaming = Some((id, title.clone()));
+            } else if r.body.clicked() {
+                open = Some(id);
+            }
+            let r = r.body.on_hover_text(c.title());
+            menu::context(&r, |ui| {
+                if menu::row(ui, None, "Rename", "").clicked() {
+                    state.renaming = Some((id, title.clone()));
+                }
+                let pinned = state.convs.get(i).is_some_and(|c| c.pinned);
+                if menu::row(ui, Some(Glyph::Pin), if pinned { "Unpin" } else { "Pin" }, "").clicked() {
+                    state.toggle_pin(id);
+                }
+                if menu::row(ui, Some(Glyph::FloppyDisk), "Save chat…", "").clicked() {
+                    save = Some(id);
                 }
                 ui.separator();
-                let mut order: Vec<(f64, u64, String)> =
-                    state.convs.iter().filter(|c| !c.is_empty()).map(|c| (c.updated, c.id, short(c.title(), 40))).collect();
-                order.sort_by(|a, b| b.0.total_cmp(&a.0));
-                if order.is_empty() {
-                    ui.weak("No conversations yet");
+                let del = ui.add_enabled_ui(!(v.running && state.run_conv == Some(id)), |ui| menu::row(ui, Some(Glyph::Cross), "Delete", ""));
+                if del.inner.on_disabled_hover_text("Wait for the assistant to finish").clicked() {
+                    delete = Some(id);
                 }
-                let mut delete = None;
-                for (_, id, title) in order {
-                    ui.horizontal(|ui| {
-                        let shown = state.conv().is_some_and(|c| c.id == id);
-                        if menu::check(ui, shown, &title, "").clicked() {
-                            state.open(id);
-                        }
-                        if x_button(ui, ("del_conv", id)).on_hover_text("Delete this conversation").clicked() {
-                            delete = Some(id);
-                        }
-                    });
-                }
-                if let Some(id) = delete {
-                    state.delete(id);
-                }
-            })
-            .response
-            .on_hover_text("Conversations for this project");
-        })
-        .response
-        .on_disabled_hover_text("Wait for the assistant to finish");
-        if ui.add_enabled(!v.running, egui::Button::new("+").small()).on_hover_text("New chat").clicked() {
-            state.new_chat();
+            });
         }
+        let _ = rows.finish(ui);
     });
-    // agent, model and effort on a row of their own: three pickers do not fit beside the title
+    if let Some(id) = open {
+        state.open(id);
+    }
+    if let Some(id) = delete {
+        state.delete(id);
+    }
+    if let Some(c) = save.and_then(|id| state.convs.iter().find(|c| c.id == id)) {
+        save_chats_dialog(&c.title().replace(|ch: char| "/\\:*?\"<>|".contains(ch), "_"), &[c]);
+    }
+}
+
+/// The rename box over a chat row: Enter or a click away keeps it, Esc cancels.
+fn rename_field(ui: &mut egui::Ui, state: &mut AssistantState, at: egui::Rect) {
+    let Some((id, buf)) = state.renaming.as_mut() else { return };
+    let id = *id;
+    let fid = egui::Id::new(("assistant_rename", id));
+    let r = ui.put(at, egui::TextEdit::singleline(buf).id(fid).desired_width(at.width()));
+    if !r.has_focus() && !r.lost_focus() {
+        r.request_focus();
+    }
+    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        state.renaming = None;
+    } else if r.lost_focus() {
+        let title = buf.trim().to_string();
+        if !title.is_empty() {
+            state.rename(id, &title);
+        }
+        state.renaming = None;
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// top bar
+
+/// [sidebar toggle] the chat's title … [new chat] [⋯]: everything advanced is in the `⋯` menu.
+fn top_bar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, wide: bool, out: &mut Out) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        menu::button(ui, format!("{} ▾", agent_label(v.backend)), |ui| {
+        let open = state.sidebar.unwrap_or(wide);
+        let tip = if open { "Hide the chat list" } else { "Show the chat list" };
+        if glyph_text_button(ui, Glyph::ListIcon, "").on_hover_text(tip).clicked() {
+            state.sidebar = Some(!open);
+        }
+        if state.tab != Tab::Chat {
+            if ui.button("← Chat").clicked() {
+                state.tab = Tab::Chat;
+            }
+            ui.strong(if state.tab == Tab::Tasks { "Tasks" } else { "Skills" });
+        }
+        if state.tab == Tab::Chat {
+            // the title takes what the two buttons on the right leave, and truncates
+            let title = state.conv().map_or("New chat", Conversation::title).to_string();
+            let w = (ui.available_width() - 64.0).max(20.0);
+            ui.allocate_ui_with_layout(egui::vec2(w, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(title).strong()).truncate());
+            });
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            more_menu(ui, state, v, out);
+            if glyph_text_button(ui, Glyph::Letter('+'), "").on_hover_text("New chat").clicked() {
+                state.new_chat();
+            }
+        });
+    });
+    ui.add_space(2.0);
+}
+
+/// `⋯`: the agent, Tasks, Skills, "Handle my comments", import / export.
+fn more_menu(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out) {
+    menu::button(ui, " ⋯ ", |ui| {
+        menu::sub(ui, Some(Glyph::Assistant), &format!("Agent: {}", agent_label(v.backend)), |ui| {
             for &(value, label) in AGENTS {
                 if menu::check(ui, v.backend == value, label, "").clicked() && v.backend != value {
                     *out = Out::Backend(value);
                 }
             }
-        })
-        .response
-        .on_hover_text("Which agent runs the requests (Settings ▸ Assistant)");
-        model_picker(ui, state, v, out);
-        effort_picker(ui, v, out);
-    });
+        });
+        ui.separator();
+        let n = state.conv().map_or(0, |c| c.tasks.len());
+        let tasks = if n > 0 { format!("Tasks ({n})") } else { "Tasks".into() };
+        if menu::row(ui, Some(Glyph::Notepad), &tasks, "").on_hover_text("Scripts the assistant writes for you to run").clicked() {
+            state.tab = Tab::Tasks;
+        }
+        if menu::row(ui, Some(Glyph::Bolt), "Skills", "").on_hover_text("Saved instructions you run in chat as /name").clicked() {
+            state.tab = Tab::Skills;
+        }
+        let external = v.backend == "external";
+        let label = if v.queued > 0 { format!("Handle my comments ({} waiting)", v.queued) } else { "Handle my comments".into() };
+        let r = ui.add_enabled_ui(!external, |ui| menu::check(ui, state.comments, &label, "")).inner;
+        let r = r
+            .on_hover_text(
+                "Every comment you leave on the timeline goes to the assistant, which works on it in the background \
+                 and ticks it off when done. One at a time; later ones wait.",
+            )
+            .on_disabled_hover_text("An external agent gets comments through assistant.wait already");
+        if r.clicked() {
+            state.comments = !state.comments;
+            *out = Out::Comments(state.comments);
+        }
+        ui.separator();
+        if menu::row(ui, Some(Glyph::ImportArrow), "Import chats…", "").on_hover_text("Add chats from a file saved with Export").clicked() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("Chats", &["json"]).pick_file() {
+                if let Ok(chats) = std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| parse_import(&s)) {
+                    state.import(chats);
+                }
+            }
+        }
+        if menu::row(ui, Some(Glyph::ExportArrow), "Export chats…", "").on_hover_text("Save every chat of this project to a file").clicked() {
+            let all: Vec<&Conversation> = state.convs.iter().filter(|c| !c.is_empty()).collect();
+            save_chats_dialog("chats", &all);
+        }
+    })
+    .response
+    .on_hover_text("More: agent, tasks, skills, import and export");
 }
 
-/// How hard the model thinks, for agents that take it.
+/// How hard the model thinks, for agents that take it: a small picker beside Send.
 fn effort_picker(ui: &mut egui::Ui, v: &View, out: &mut Out) {
     if v.backend != "claude" {
         return;
     }
-    let shown = EFFORTS.iter().find(|(id, _)| *id == v.effort).map_or("Default effort", |(_, l)| l);
-    menu::button(ui, format!("{shown} ▾"), |ui| {
+    let shown = EFFORTS.iter().find(|(id, _)| *id == v.effort).map_or("Effort", |(_, l)| l);
+    menu::button(ui, egui::RichText::new(format!("{shown} ▾")).small().weak(), |ui| {
         if menu::check(ui, v.effort.is_empty(), "Default effort", "").clicked() {
             *out = Out::Effort(String::new());
         }
@@ -392,92 +596,6 @@ fn effort_picker(ui: &mut egui::Ui, v: &View, out: &mut Out) {
     .on_hover_text("Effort: how hard the model thinks. Higher is slower and more thorough.");
 }
 
-/// Past chats of this project, newest first: click one to open it.
-fn history_tab(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) {
-    let now = now_secs();
-    let current = state.conv().map(|c| c.id);
-    let mut rows: Vec<(f64, u64, String, String)> = state
-        .convs
-        .iter()
-        .filter(|c| !c.is_empty() && matches(c, &state.history_q))
-        .map(|c| {
-            let asked = c.lines.iter().filter(|l| matches!(l, Line::User(_))).count();
-            let mut sub = format!("{} · {asked} message{}", ago(c.updated, now), if asked == 1 { "" } else { "s" });
-            if !c.tasks.is_empty() {
-                sub += &format!(" · {} task{}", c.tasks.len(), if c.tasks.len() == 1 { "" } else { "s" });
-            }
-            (c.updated, c.id, short(c.title(), 60), sub)
-        })
-        .collect();
-    rows.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let (mut export_all, mut import, mut save_one) = (false, false, None);
-    ui.horizontal(|ui| {
-        ui.add(egui::TextEdit::singleline(&mut state.history_q).hint_text("Search chats…").desired_width(150.0));
-        if ui.button("Import…").on_hover_text("Add chats from a file saved with Export").clicked() {
-            import = true;
-        }
-        if ui.button("Export…").on_hover_text("Save every chat of this project to a file").clicked() {
-            export_all = true;
-        }
-    });
-    if export_all {
-        let all: Vec<&Conversation> = state.convs.iter().filter(|c| !c.is_empty()).collect();
-        save_chats_dialog("chats", &all);
-    }
-    if import {
-        if let Some(p) = rfd::FileDialog::new().add_filter("Chats", &["json"]).pick_file() {
-            if let Ok(chats) = std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| parse_import(&s)) {
-                state.import(chats);
-            }
-        }
-    }
-    egui::ScrollArea::vertical().id_salt("assistant_history").auto_shrink([false, false]).show(ui, |ui| {
-        if rows.is_empty() {
-            ui.add_space(8.0);
-            ui.weak(if state.history_q.is_empty() {
-                "No past chats in this project yet. Chats are saved with the project."
-            } else {
-                "No chat matches."
-            });
-            return;
-        }
-        let (mut open, mut delete) = (None, None);
-        ui.add_enabled_ui(!v.running, |ui| {
-            for (_, id, title, sub) in &rows {
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(current == Some(*id), title.as_str()).clicked() {
-                        open = Some(*id);
-                    }
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if x_button(ui, ("del_hist", *id)).on_hover_text("Delete this chat").clicked() {
-                            delete = Some(*id);
-                        }
-                        if ui.small_button("Save…").on_hover_text("Save this chat to a file").clicked() {
-                            save_one = Some(*id);
-                        }
-                    });
-                });
-                ui.label(egui::RichText::new(sub.as_str()).small().weak());
-                ui.add_space(4.0);
-            }
-        })
-        .response
-        .on_disabled_hover_text("Wait for the assistant to finish");
-        if let Some(c) = save_one.and_then(|id| state.convs.iter().find(|c| c.id == id)) {
-            save_chats_dialog(&c.title().replace(|ch: char| "/\\:*?\"<>|".contains(ch), "_"), &[c]);
-        }
-        if let Some(id) = delete {
-            state.delete(id);
-        }
-        if let Some(id) = open {
-            state.open(id);
-            // a chat that only has tasks opens on them
-            let chatty = state.conv().is_some_and(|c| !c.lines.is_empty());
-            state.tab = if chatty { Tab::Chat } else { Tab::Tasks };
-        }
-    });
-}
-
 /// Ask where, then write `chats` there (the download).
 fn save_chats_dialog(name: &str, chats: &[&Conversation]) {
     if let Some(p) = rfd::FileDialog::new().add_filter("Chats", &["json"]).set_file_name(format!("{name}.json")).save_file() {
@@ -490,7 +608,7 @@ fn model_picker(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &m
         "external" => {}
         "claude" if !state.model_other && (v.model.is_empty() || CLAUDE_MODELS.iter().any(|(id, _)| *id == v.model)) => {
             let shown = if v.model.is_empty() { "Default model" } else { model_label(v.model) };
-            menu::button(ui, format!("{shown} ▾"), |ui| {
+            menu::button(ui, egui::RichText::new(format!("{shown} ▾")).small().weak(), |ui| {
                 if menu::check(ui, v.model.is_empty(), "Default model", "").clicked() {
                     *out = Out::Model(String::new());
                 }
@@ -512,7 +630,7 @@ fn model_picker(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &m
         }
         _ => {
             let mut m = v.model.to_string();
-            let r = ui.add(egui::TextEdit::singleline(&mut m).hint_text("model id").desired_width(130.0));
+            let r = ui.add(egui::TextEdit::singleline(&mut m).hint_text("model").desired_width(80.0).font(egui::TextStyle::Small));
             if r.changed() {
                 *out = Out::Model(m.trim().to_string());
             }
@@ -716,36 +834,33 @@ fn chat_tab(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
             } else {
                 conversation(ui, state, v, pal, out);
             }
-            if v.running {
+            if v.running && state.run_conv.is_none_or(|id| state.conv().is_some_and(|c| c.id == id)) {
                 ui.weak("Working…");
             }
         });
 }
 
 fn empty_chat(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out) {
-    ui.add_space(16.0);
+    ui.add_space((ui.available_height() * 0.25).clamp(12.0, 120.0));
     ui.vertical_centered(|ui| {
+        ui.label(egui::RichText::new("What should we work on?").size(18.0).strong());
+        ui.add_space(4.0);
         ui.weak(match v.backend {
             "external" => "Requests wait for a connected agent (assistant.wait).",
             "custom" => "Requests run your custom command (Settings ▸ Assistant).",
-            _ => "Ask the assistant to edit. It sees what you attach - and, while it follows the selection, your \
-                  selection, In/Out and playhead - and works through the editor's own tools. Every request is \
-                  one undo step.",
+            _ => "Ask for an edit, attach a frame, a panel or a file. Every request is one undo step.",
         });
-        ui.add_space(8.0);
+        ui.add_space(10.0);
         // ws:skills: the skills the user ran last, then the first ones; each chip is one Button so the
         // row wraps instead of widening the pane
         ui.horizontal_wrapped(|ui| {
             for s in chip_skills(v.skills, v.recent, CHIPS) {
-                let r = ui.add_enabled(!v.running, egui::Button::new(format!("/{}", s.name)).small());
+                let r = ui.add_enabled(!v.running, egui::Button::new(format!("/{}", s.name)).small().corner_radius(8u8));
                 if r.on_hover_text(s.description.as_str()).clicked() {
                     run_skill(state, s, out);
                 }
             }
         });
-        if !v.skills.is_empty() {
-            ui.weak("Type / for every skill.");
-        }
     });
 }
 
@@ -938,46 +1053,146 @@ pub fn read_first_window(ctx: &egui::Context, s: &Skill) -> Option<bool> {
     answer
 }
 
+/// What a message's right-click menu asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MsgAct {
+    CopyText,
+    CopyMarkdown,
+    CopyAttachments,
+    Retry,
+    Edit,
+    Delete,
+}
+
+/// The rows of a message's right-click menu (shared with the tests): what each one is and whether it
+/// applies to `m` while `running`.
+pub fn msg_menu_rows(lines: &[Line], m: &Msg, running: bool) -> Vec<(MsgAct, &'static str, bool)> {
+    let atts = !msg_attachments(lines, m).is_empty();
+    let user = m.user || lines[..m.lines.start].iter().any(|l| matches!(l, Line::User(_)));
+    let mut rows = vec![(MsgAct::CopyText, "Copy text", true), (MsgAct::CopyMarkdown, "Copy as Markdown", true)];
+    if m.user {
+        rows.push((MsgAct::CopyAttachments, "Copy attachments", atts));
+        rows.push((MsgAct::Edit, "Edit and resend", !running));
+    }
+    rows.push((MsgAct::Retry, "Retry", !running && user));
+    rows.push((MsgAct::Delete, "Delete", !running));
+    rows
+}
+
+/// Carry out a message menu row (the copies go to the clipboard through `ctx`).
+pub fn msg_act(ctx: &egui::Context, state: &mut AssistantState, m: &Msg, act: MsgAct, out: &mut Out) {
+    let lines = state.log().to_vec();
+    match act {
+        MsgAct::CopyText => ctx.copy_text(msg_plain(&lines, m)),
+        MsgAct::CopyMarkdown => ctx.copy_text(msg_markdown(&lines, m)),
+        MsgAct::CopyAttachments => copy_attachments(ctx, &msg_attachments(&lines, m)),
+        MsgAct::Edit => state.edit_msg(m),
+        MsgAct::Delete => state.delete_msg(m),
+        MsgAct::Retry => {
+            // a reply retries the user message before it
+            let at = if m.user { Some(m.lines.start) } else { lines[..m.lines.start].iter().rposition(|l| matches!(l, Line::User(_))) };
+            if let Some(i) = at {
+                *out = Out::Retry(i);
+            }
+        }
+    }
+}
+
 fn conversation(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palette, out: &mut Out) {
     let lines = state.log().to_vec();
     let last_done = lines.iter().rposition(|l| matches!(l, Line::Done { .. }));
-    let mut reply_from = 0; // first line of the current reply (after the last user message)
-    let mut i = 0;
-    while i < lines.len() {
-        match &lines[i] {
-            Line::User(t) => {
-                if i > 0 {
-                    ui.add_space(8.0);
+    let conv = state.conv().map_or(0, |c| c.id);
+    let mut acted = None;
+    for (k, m) in messages(&lines).into_iter().enumerate() {
+        if k > 0 {
+            ui.add_space(10.0);
+        }
+        let r = ui.scope(|ui| {
+            if m.user {
+                user_msg(ui, state, &lines, &m, pal);
+            } else {
+                reply(ui, state, v, &lines, &m, last_done, conv, out);
+            }
+        });
+        let id = egui::Id::new(("assistant_msg", conv, m.lines.start));
+        menu::context_area(ui, id, r.response.rect, |ui| {
+            for (act, label, on) in msg_menu_rows(&lines, &m, v.running) {
+                if matches!(act, MsgAct::Edit | MsgAct::Delete) {
+                    ui.separator();
                 }
-                bubble(ui, t, pal);
-                reply_from = i + 1;
+                let glyph = match act {
+                    MsgAct::CopyText | MsgAct::CopyMarkdown | MsgAct::CopyAttachments => Some(Glyph::Copy),
+                    MsgAct::Retry => Some(Glyph::UndoArrow(super::tools::Dir::Right)),
+                    MsgAct::Delete => Some(Glyph::Cross),
+                    MsgAct::Edit => Some(Glyph::Pencil),
+                };
+                if ui.add_enabled_ui(on, |ui| menu::row(ui, glyph, label, "")).inner.clicked() {
+                    acted = Some((m.clone(), act));
+                }
             }
-            Line::Attached { chips, images } => {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for img in images {
-                            thumb(ui, state, img, 0.6);
-                        }
-                        for c in chips {
-                            ui.label(egui::RichText::new(c).small().weak());
-                        }
-                    });
-                });
+        });
+    }
+    if let Some((m, act)) = acted {
+        msg_act(ui.ctx(), state, &m, act, out);
+    }
+}
+
+/// The user's message: a right-aligned rounded bubble (at most ~85 % of the width), its attachments under it.
+fn user_msg(ui: &mut egui::Ui, state: &mut AssistantState, lines: &[Line], m: &Msg, pal: &Palette) {
+    let text = msg_markdown(lines, m);
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let natural = ui.painter().layout_no_wrap(text.clone(), font, pal.text).size().x;
+    let margin = egui::Margin::symmetric(12, 8);
+    let max = (ui.available_width() * 0.85).max(60.0);
+    let w = natural.min(max - margin.sum().x);
+    ui.horizontal(|ui| {
+        ui.add_space((ui.available_width() - w - margin.sum().x).max(0.0));
+        egui::Frame::new().fill(pal.header).corner_radius(14u8).inner_margin(margin).show(ui, |ui| {
+            ui.set_max_width(w);
+            ui.add(egui::Label::new(egui::RichText::new(&text).color(pal.text)).wrap());
+        });
+    });
+    let chips: Vec<String> = lines[m.lines.clone()]
+        .iter()
+        .flat_map(|l| match l {
+            Line::Attached { chips, .. } => chips.clone(),
+            _ => Vec::new(),
+        })
+        .collect();
+    let atts = msg_attachments(lines, m);
+    if atts.is_empty() && chips.is_empty() {
+        return;
+    }
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for (i, a) in atts.iter().enumerate() {
+                attachment(ui, state, a, 0.8, ("sent", m.lines.start, i), false);
             }
-            Line::Text(t) => crate::ui::markdown::show(ui, t, pal),
+            for c in &chips {
+                ui.label(egui::RichText::new(c).small().weak());
+            }
+        });
+    });
+}
+
+/// The assistant's reply: its text as Markdown, each run of tool calls folded into one "N steps" line,
+/// errors and notes, and Undo / Copy / Retry under it once it finished.
+#[allow(clippy::too_many_arguments)]
+fn reply(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, lines: &[Line], m: &Msg, last_done: Option<usize>, conv: u64, out: &mut Out) {
+    let mut i = m.lines.start;
+    while i < m.lines.end {
+        match &lines[i] {
+            Line::Text(t) => crate::ui::markdown::show(ui, t, &crate::theme::palette(ui.ctx())),
             Line::Tool(_) => {
-                let n = lines[i..].iter().take_while(|l| matches!(l, Line::Tool(_))).count();
-                let label = egui::RichText::new(format!("{n} action{}", if n == 1 { "" } else { "s" })).small().weak();
-                egui::CollapsingHeader::new(label).id_salt(("assistant_tools", state.conv().map_or(0, |c| c.id), i)).show(
-                    ui,
-                    |ui| {
-                        for l in &lines[i..i + n] {
-                            if let Line::Tool(t) = l {
-                                ui.label(egui::RichText::new(t).monospace().small().weak());
-                            }
+                let n = lines[i..m.lines.end].iter().take_while(|l| matches!(l, Line::Tool(_))).count();
+                let label = egui::RichText::new(format!("{n} step{}", if n == 1 { "" } else { "s" })).small().weak();
+                egui::CollapsingHeader::new(label).id_salt(("assistant_tools", conv, i)).default_open(false).show(ui, |ui| {
+                    for l in &lines[i..i + n] {
+                        if let Line::Tool(t) = l {
+                            ui.add(egui::Label::new(egui::RichText::new(short(t, 300)).monospace().small().weak()).wrap());
                         }
-                    },
-                );
+                    }
+                });
                 i += n;
                 continue;
             }
@@ -989,10 +1204,11 @@ fn conversation(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &P
             }
             Line::Done { undo } => {
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
                     let ok = undo_state(undo, v.undo_top);
                     // only the newest request can still be the top entry; older ones just show Copy
                     if Some(i) == last_done || ok.is_ok() {
-                        let r = ui.add_enabled(ok.is_ok() && !v.running, egui::Button::new("Undo").small());
+                        let r = ui.add_enabled(ok.is_ok() && !v.running, egui::Button::new(egui::RichText::new("Undo").small()).frame(false));
                         let r = match ok {
                             Ok(()) => r.on_hover_text("Undo everything this request did, in one step"),
                             Err(why) => r.on_disabled_hover_text(why),
@@ -1001,37 +1217,112 @@ fn conversation(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &P
                             *out = Out::Undo;
                         }
                     }
-                    let text: Vec<&str> = lines[reply_from..i]
-                        .iter()
-                        .filter_map(|l| if let Line::Text(t) = l { Some(t.as_str()) } else { None })
-                        .collect();
-                    if ui.add_enabled(!text.is_empty(), egui::Button::new("Copy").small()).clicked() {
-                        ui.ctx().copy_text(text.join("\n\n"));
+                    let text = msg_plain(lines, m);
+                    let copy = ui.add_enabled(!text.is_empty(), egui::Button::new(egui::RichText::new("Copy").small()).frame(false));
+                    if copy.on_hover_text("Copy the reply as plain text (right-click for Markdown)").clicked() {
+                        ui.ctx().copy_text(text);
+                    }
+                    if Some(i) == last_done {
+                        let retry = ui.add_enabled(!v.running, egui::Button::new(egui::RichText::new("Retry").small()).frame(false));
+                        if retry.on_hover_text("Send the request again").clicked() {
+                            msg_act(ui.ctx(), state, m, MsgAct::Retry, out);
+                        }
                     }
                 });
             }
+            Line::User(_) | Line::Attached { .. } => {}
         }
         i += 1;
     }
 }
 
-/// The user's message: a right-aligned rounded bubble, at most ~85 % of the width.
-fn bubble(ui: &mut egui::Ui, text: &str, pal: &Palette) {
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let natural = ui.painter().layout_no_wrap(text.to_owned(), font, pal.text).size().x;
-    let margin = egui::Margin::symmetric(10, 6);
-    let max = (ui.available_width() * 0.85).max(60.0);
-    let w = natural.min(max - margin.sum().x);
-    ui.horizontal(|ui| {
-        ui.add_space((ui.available_width() - w - margin.sum().x).max(0.0));
-        egui::Frame::new().fill(pal.header).corner_radius(10u8).inner_margin(margin).show(ui, |ui| {
-            ui.set_max_width(w);
-            ui.add(egui::Label::new(egui::RichText::new(text).color(pal.text)).wrap());
-        });
-    });
+// ---------------------------------------------------------------------------------------------------
+// attachments
+
+/// An image as egui pixels (None when the file is missing or not a PNG).
+pub fn load_color_image(png: &std::path::Path) -> Option<egui::ColorImage> {
+    let f = crate::engine::html::decode_png(&std::fs::read(png).ok()?).ok()?;
+    Some(egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba))
 }
 
-/// An attachment's thumbnail (loaded from its file once), `scale` of `THUMB`; hover shows it bigger.
+/// Copy one attachment: a picture as an image (it pastes into any app), any other file as its path.
+pub fn copy_attachment(ctx: &egui::Context, a: &Attachment) {
+    match a.is_image().then(|| load_color_image(&a.png)).flatten() {
+        Some(img) => ctx.copy_image(img),
+        None => ctx.copy_text(a.path().display().to_string()),
+    }
+}
+
+/// Copy a message's attachments: one picture as an image, else their paths, one per line.
+pub fn copy_attachments(ctx: &egui::Context, list: &[Attachment]) {
+    match list {
+        [a] => copy_attachment(ctx, a),
+        _ => ctx.copy_text(list.iter().map(|a| a.path().display().to_string()).collect::<Vec<_>>().join("\n")),
+    }
+}
+
+/// The file name "Save as…" suggests: the attachment's name, with `.png` for a picture.
+pub fn save_name(a: &Attachment) -> String {
+    let name: String = a.name.chars().map(|c| if "/\\:*?\"<>|".contains(c) { '_' } else { c }).collect();
+    if a.is_image() && !name.to_lowercase().ends_with(".png") {
+        format!("{name}.png")
+    } else {
+        name
+    }
+}
+
+/// Write the attachment (the picture's PNG, or the attached file) to `to`.
+pub fn save_attachment(a: &Attachment, to: &std::path::Path) -> Result<(), String> {
+    let from = if a.is_image() { a.png.as_path() } else { a.path() };
+    std::fs::copy(from, to).map(|_| ()).map_err(|e| format!("Couldn't save {}: {e}", a.name))
+}
+
+fn save_attachment_dialog(a: &Attachment) {
+    if let Some(to) = rfd::FileDialog::new().set_file_name(save_name(a)).save_file() {
+        let _ = save_attachment(a, &to);
+    }
+}
+
+/// An attachment: a picture's thumbnail (`scale` of `THUMB`) or a file chip. A click previews a picture
+/// (opens a file); right-click: Copy, Copy path, Save as… (and Remove in the composer). True = remove it.
+fn attachment(ui: &mut egui::Ui, state: &mut AssistantState, a: &Attachment, scale: f32, salt: impl std::hash::Hash, removable: bool) -> bool {
+    let r = if a.is_image() {
+        thumb(ui, state, a, scale)
+    } else {
+        let r = ui.add(egui::Button::new(egui::RichText::new(format!("▤ {}", short(&a.name, 28))).small()).corner_radius(6u8));
+        r.on_hover_text(a.path().display().to_string())
+    };
+    let r = ui.interact(r.rect, ui.id().with(("att", salt)), egui::Sense::click());
+    if r.clicked() {
+        if a.is_image() {
+            state.preview = Some(a.clone());
+        } else {
+            crate::engine::browsers::open_url(&a.path().display().to_string());
+        }
+    }
+    let mut remove = false;
+    menu::context(&r, |ui| {
+        let what = if a.is_image() { "Copy image" } else { "Copy path" };
+        if menu::row(ui, Some(Glyph::Copy), what, "").clicked() {
+            copy_attachment(ui.ctx(), a);
+        }
+        if a.is_image() && menu::row(ui, None, "Copy path", "").clicked() {
+            ui.ctx().copy_text(a.path().display().to_string());
+        }
+        if menu::row(ui, Some(Glyph::FloppyDisk), "Save as…", "").clicked() {
+            save_attachment_dialog(a);
+        }
+        if removable {
+            ui.separator();
+            if menu::row(ui, Some(Glyph::Cross), "Remove", "").clicked() {
+                remove = true;
+            }
+        }
+    });
+    remove
+}
+
+/// An attachment's thumbnail (loaded from its file once), `scale` of `THUMB`.
 fn thumb(ui: &mut egui::Ui, state: &mut AssistantState, a: &Attachment, scale: f32) -> egui::Response {
     let ctx = ui.ctx().clone();
     let tex = state
@@ -1045,15 +1336,115 @@ fn thumb(ui: &mut egui::Ui, state: &mut AssistantState, a: &Attachment, scale: f
         .clone();
     let size = egui::vec2(THUMB[0] as f32, THUMB[1] as f32) * scale;
     match tex {
-        Some(t) => {
-            let r = ui.add(egui::Image::new(egui::load::SizedTexture::new(t.id(), size)).corner_radius(3u8));
-            r.on_hover_ui(|ui| {
-                ui.add(egui::Image::new(egui::load::SizedTexture::new(t.id(), size * 3.0 / scale)));
-                ui.weak(format!("{} · {}×{}", a.name, a.width, a.height));
-            })
-        }
+        Some(t) => ui
+            .add(egui::Image::new(egui::load::SizedTexture::new(t.id(), size)).corner_radius(4u8))
+            .on_hover_text(format!("{} · {}×{} - click to preview, right-click to copy or save", a.name, a.width, a.height)),
         None => ui.weak(format!("[{}]", a.name)),
     }
+}
+
+/// The attachment preview (WINDOW_DRAWERS through `assistant_ctl`): the picture at up to its own size,
+/// with Copy and Save as…; closes with its ×.
+pub fn preview_window(ctx: &egui::Context, state: &mut AssistantState) {
+    let Some(a) = state.preview.clone() else { return };
+    if state.preview_tex.as_ref().is_none_or(|(p, _)| *p != a.png) {
+        let tex = load_color_image(&a.png).map(|img| ctx.load_texture(format!("assistant_preview {}", a.png.display()), img, egui::TextureOptions::LINEAR));
+        state.preview_tex = Some((a.png.clone(), tex));
+    }
+    let tex = state.preview_tex.as_ref().and_then(|(_, t)| t.clone());
+    let mut open = true;
+    egui::Window::new(short(&a.name, 60))
+        .id(egui::Id::new("assistant_preview"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_size([640.0, 420.0])
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.weak(format!("{}×{}", a.width, a.height));
+                if ui.small_button("Copy image").clicked() {
+                    copy_attachment(ui.ctx(), &a);
+                }
+                if ui.small_button("Save as…").clicked() {
+                    save_attachment_dialog(&a);
+                }
+            });
+            match tex {
+                Some(t) => {
+                    let s = t.size_vec2();
+                    let fit = (ui.available_width() / s.x).min(ui.available_height().max(120.0) / s.y).min(1.0);
+                    ui.add(egui::Image::new(egui::load::SizedTexture::new(t.id(), s * fit)));
+                }
+                None => {
+                    ui.weak("The picture's file is gone.");
+                }
+            }
+        });
+    if !open {
+        state.preview = None;
+        state.preview_tex = None;
+    }
+}
+
+/// "Select an area" (WINDOW_DRAWERS through `assistant_ctl`): while `state.area`, the window dims and a
+/// rectangle dragged anywhere is returned (points) for the app to capture; Esc or a right-click cancels.
+pub fn area_overlay(ctx: &egui::Context, state: &mut AssistantState) -> Option<egui::Rect> {
+    if !state.area {
+        return None;
+    }
+    let screen = ctx.content_rect();
+    let mut picked = None;
+    egui::Area::new(egui::Id::new("assistant_area_pick"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.min)
+        .show(ctx, |ui| {
+            let r = ui.allocate_rect(screen, egui::Sense::drag());
+            ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+            let p = ui.painter();
+            let dim = egui::Color32::from_black_alpha(110);
+            let sel = match (state.area_from, ctx.pointer_interact_pos()) {
+                (Some(a), Some(b)) => Some(egui::Rect::from_two_pos(a, b)),
+                _ => None,
+            };
+            match sel {
+                // dim everything but the selection
+                Some(s) => {
+                    for band in [
+                        egui::Rect::from_x_y_ranges(screen.x_range(), screen.top()..=s.top()),
+                        egui::Rect::from_x_y_ranges(screen.x_range(), s.bottom()..=screen.bottom()),
+                        egui::Rect::from_x_y_ranges(screen.left()..=s.left(), s.y_range()),
+                        egui::Rect::from_x_y_ranges(s.right()..=screen.right(), s.y_range()),
+                    ] {
+                        p.rect_filled(band, 0.0, dim);
+                    }
+                    p.rect_stroke(s, 0.0, egui::Stroke::new(1.5, egui::Color32::WHITE), egui::StrokeKind::Outside);
+                    let size = format!("{:.0} × {:.0}", s.width() * ctx.pixels_per_point(), s.height() * ctx.pixels_per_point());
+                    p.text(s.left_bottom() + egui::vec2(0.0, 4.0), egui::Align2::LEFT_TOP, size, egui::FontId::proportional(12.0), egui::Color32::WHITE);
+                }
+                None => {
+                    p.rect_filled(screen, 0.0, dim);
+                    p.text(
+                        screen.center_top() + egui::vec2(0.0, 40.0),
+                        egui::Align2::CENTER_TOP,
+                        "Drag to select the area to attach  ·  Esc cancels",
+                        egui::FontId::proportional(15.0),
+                        egui::Color32::WHITE,
+                    );
+                }
+            }
+            if r.drag_started() {
+                state.area_from = r.interact_pointer_pos();
+            }
+            if r.drag_stopped() {
+                picked = sel.filter(|s| s.width() >= 4.0 && s.height() >= 4.0);
+                state.area_from = None;
+                state.area = false;
+            }
+        });
+    if ctx.input(|i| i.key_pressed(egui::Key::Escape) || i.pointer.secondary_clicked()) {
+        (state.area, state.area_from) = (false, None);
+    }
+    picked
 }
 
 /// A chip: a label and an ×, one widget so a row of them wraps. True when it was clicked (= remove).
@@ -1072,13 +1463,16 @@ fn chip(ui: &mut egui::Ui, pal: &Palette, label: &str, pinned: bool) -> bool {
         .clicked()
 }
 
+/// The prompt box grows with the text up to this many rows, then scrolls.
+const PROMPT_ROWS: f32 = 8.0;
+
 fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palette, out: &mut Out) {
     ui.add_space(4.0);
     egui::Frame::new()
         .fill(pal.bg)
         .stroke(egui::Stroke::new(1.0, pal.border))
-        .corner_radius(10u8)
-        .inner_margin(egui::Margin::symmetric(8, 6))
+        .corner_radius(14u8)
+        .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             // a live chip that only repeats a pinned one is left out
@@ -1093,8 +1487,9 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
                     for (i, a) in state.images.clone().iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 1.0;
-                            thumb(ui, state, a, 0.5);
-                            if x_button(ui, ("img", i)).on_hover_text("Remove").clicked() {
+                            let mut gone = attachment(ui, state, a, 0.5, ("draft", i), true);
+                            gone |= x_button(ui, ("img", i)).on_hover_text("Remove").clicked();
+                            if gone {
                                 drop_img = Some(i);
                             }
                         });
@@ -1119,22 +1514,30 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
                 });
                 ui.add_space(2.0);
             }
-            let id = ui.id().with("assistant_prompt");
+            let id = prompt_id();
             let (slash, done) = slash_list(ui, &mut state.prompt, &mut state.slash_sel, v.skills, id);
             if done {
                 (state.cursor_end, state.focus_prompt) = (true, true);
             }
-            let r = ui.add(
-                egui::TextEdit::multiline(&mut state.prompt)
-                    .id(id)
-                    .frame(false)
-                    .desired_rows(2)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("Ask the assistant…  (Enter sends, Shift+Enter for a new line, / for skills)")
-                    .return_key(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))
-                    // while the `/` list is open Tab completes instead of moving the focus on
-                    .lock_focus(slash),
-            );
+            let row_h = ui.text_style_height(&egui::TextStyle::Body);
+            let r = egui::ScrollArea::vertical()
+                .id_salt("assistant_prompt_scroll")
+                .max_height(row_h * PROMPT_ROWS)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::TextEdit::multiline(&mut state.prompt)
+                            .id(id)
+                            .frame(false)
+                            .desired_rows(1)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("Ask anything…  (/ for skills)")
+                            .return_key(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))
+                            // while the `/` list is open Tab completes instead of moving the focus on
+                            .lock_focus(slash),
+                    )
+                })
+                .inner;
             if std::mem::take(&mut state.focus_prompt) {
                 r.request_focus();
             }
@@ -1145,24 +1548,14 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
             if r.has_focus() && can_send && ui.input(|i| i.key_pressed(egui::Key::Enter) && !i.modifiers.shift) {
                 *out = Out::Send;
             }
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                menu::button(ui, "+", |ui| {
-                    if menu::row(ui, Some(Glyph::Camera), "Current frame", "").clicked() {
-                        *out = Out::Attach(Attach::Frame);
-                    }
-                    if menu::row(ui, Some(Glyph::Cursor), "Selection", "").clicked() {
-                        *out = Out::Attach(Attach::Pin(Pin::Smart));
-                    }
-                    if menu::row(ui, None, "In/Out range", "").clicked() {
-                        *out = Out::Attach(Attach::Pin(Pin::Range));
-                    }
-                    if menu::row(ui, Some(Glyph::Folder), "Image file…", "").clicked() {
-                        *out = Out::Attach(Attach::File);
-                    }
-                })
-                .response
-                .on_hover_text("Attach a frame, an image or context");
+                let clip = glyph_text_button(ui, Glyph::Link, "").on_hover_text("Attach files (or drop them here, or paste a picture)");
+                if clip.clicked() {
+                    *out = Out::Attach(Attach::File);
+                }
+                capture_menu(ui, state, v, out);
                 let mic = glyph_text_button(ui, Glyph::Mic, if state.mic_wanted { "Stop" } else { "" });
                 let mic = mic.on_hover_text(if state.mic_wanted { "Stop dictating" } else { "Dictate the request" });
                 if mic.clicked() {
@@ -1176,13 +1569,53 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
                         if glyph_text_button(ui, Glyph::Stop, "Stop").on_hover_text("Stop the assistant").clicked() {
                             *out = Out::Stop;
                         }
-                    } else if ui.add_enabled(can_send, egui::Button::new("Send")).clicked() {
-                        *out = Out::Send;
+                    } else {
+                        let send = egui::Button::new(egui::RichText::new("↑").strong()).corner_radius(12u8).min_size(egui::vec2(28.0, 24.0));
+                        let r = ui.add_enabled(can_send, send).on_hover_text("Send (Enter)").on_disabled_hover_text("Type a request first");
+                        if r.clicked() {
+                            *out = Out::Send;
+                        }
                     }
+                    effort_picker(ui, v, out);
+                    model_picker(ui, state, v, out);
                 });
             });
         });
     ui.add_space(2.0);
+}
+
+/// The camera menu: the frame at the playhead, a screenshot of a panel, an area of the window, the
+/// timeline range, and the selection / In-Out as context.
+fn capture_menu(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out) {
+    let r = menu::button(ui, (egui::Atom::custom(ui.id().with("cam_glyph"), egui::vec2(16.0, 16.0)), "▾"), |ui| {
+        if menu::row(ui, Some(Glyph::FilmStrip), "Current frame", "").clicked() {
+            *out = Out::Attach(Attach::Frame);
+        }
+        menu::sub(ui, Some(Glyph::GridIcon), "Screenshot a panel", |ui| {
+            for &p in v.panes {
+                if menu::row(ui, None, p.title(), "").clicked() {
+                    *out = Out::Attach(Attach::Panel(p));
+                }
+            }
+        });
+        if menu::row(ui, Some(Glyph::Crop), "Select an area", "").on_hover_text("Drag a rectangle anywhere in the window").clicked() {
+            state.area = true;
+        }
+        if menu::row(ui, Some(Glyph::Clock), "Timeline range", "").on_hover_text("In/Out (else the selected clips): a picture plus its clips and tracks").clicked() {
+            *out = Out::Attach(Attach::Timeline);
+        }
+        ui.separator();
+        if menu::row(ui, Some(Glyph::Cursor), "Selection", "").clicked() {
+            *out = Out::Attach(Attach::Pin(Pin::Smart));
+        }
+        if menu::row(ui, None, "In/Out range", "").clicked() {
+            *out = Out::Attach(Attach::Pin(Pin::Range));
+        }
+    });
+    let rect = r.response.rect;
+    let at = egui::Rect::from_min_size(egui::pos2(rect.left() + 6.0, rect.center().y - 8.0), egui::vec2(16.0, 16.0));
+    draw_glyph(ui.painter(), at, Glyph::Camera, ui.style().interact(&r.response).text_color());
+    r.response.on_hover_text("Capture the editor: the frame, a panel, an area, the timeline range");
 }
 
 /// ws:skills: the `/` list above a prompt box (`text`, widget `id`) while a skill name is typed:
@@ -1266,7 +1699,7 @@ mod tests {
     fn assert_no_idle_repaint_assistant() {
         let ctx = egui::Context::default();
         ctx.set_fonts(crate::theme::test_fonts());
-        let mut state = AssistantState::default();
+        let mut state = AssistantState { keep_on_open: true, ..Default::default() };
         state.push(Line::User("Tighten the intro".into()));
         state.push(Line::Attached { chips: vec!["2 clips".into()], images: vec![] });
         state.push(Line::Tool("editor.context".into()));
@@ -1288,12 +1721,19 @@ mod tests {
             model: "sonnet",
             effort: "high",
             queued: 0,
+            panes: &[],
         };
-        for tab in [Tab::Tasks, Tab::Chat] {
+        state.images.push(Attachment::file(std::path::Path::new("C:\\notes.txt")));
+        for tab in [Tab::Tasks, Tab::Chat, Tab::Skills] {
             state.tab = tab;
             run_frames(&ctx, &mut state, &v, 30);
             assert!(!ctx.has_requested_repaint(), "an idle Assistant pane ({tab:?}) must request no repaint");
         }
+        // the sidebar hidden, and shown in a wide pane
+        state.sidebar = Some(false);
+        run_frames(&ctx, &mut state, &v, 30);
+        assert!(!ctx.has_requested_repaint(), "an idle Assistant pane without its sidebar must request no repaint");
+        state.sidebar = Some(true);
         // an empty conversation (the centred hint and quick prompts) and a free-text model field too
         state.new_chat();
         let v = View { backend: "codex", model: "", ..v };
@@ -1365,6 +1805,7 @@ mod tests {
             model: "",
             effort: "",
             queued: 0,
+            panes: &[],
         }
     }
 
@@ -1433,7 +1874,7 @@ mod tests {
         ctx.set_fonts(crate::theme::test_fonts());
         let all = test_skills();
         let v = view(&all);
-        let mut state = AssistantState { tab: Tab::Skills, ..Default::default() };
+        let mut state = AssistantState { tab: Tab::Skills, keep_on_open: true, ..Default::default() };
         run_frames(&ctx, &mut state, &v, 30);
         assert!(!ctx.has_requested_repaint(), "an idle Skills tab must request no repaint");
         // the `/` list open in the chat composer
@@ -1501,6 +1942,283 @@ mod tests {
         recent.updated = 9.0;
         s.load(vec![recent.clone(), old]);
         assert_eq!(s.conv().unwrap().id, 2);
+    }
+
+
+    /// Frames with a fixed screen size (the sidebar shows from `SIDEBAR_FROM` wide).
+    fn frame_at(ctx: &egui::Context, state: &mut AssistantState, v: &View, w: f32, events: Vec<egui::Event>) -> Out {
+        let mut out = Out::None;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w, 600.0))),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| out = draw(ui, state, v));
+        });
+        out
+    }
+
+    /// Opening the pane makes a new chat ready (an empty one is reused) with the cursor in the composer;
+    /// staying open keeps the chat; a caller that prepared the chat (`keep_on_open`) keeps its own.
+    #[test]
+    fn a_new_chat_is_ready_when_the_pane_opens() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let all = test_skills();
+        let v = view(&all);
+        let mut old = Conversation::new(1);
+        old.lines.push(Line::User("earlier".into()));
+        let mut state = AssistantState::default();
+        state.load(vec![old]);
+        frame_at(&ctx, &mut state, &v, 400.0, vec![]);
+        assert_eq!(state.convs.len(), 2, "a new chat next to the old one");
+        assert!(state.conv().unwrap().is_empty(), "the new, empty chat is shown");
+        frame_at(&ctx, &mut state, &v, 400.0, vec![]);
+        assert!(ctx.memory(|m| m.has_focus(prompt_id())), "the cursor is in the composer");
+        // still open: typing and the next frames keep this chat
+        state.push(Line::User("now".into()));
+        frame_at(&ctx, &mut state, &v, 400.0, vec![]);
+        assert_eq!(state.log().len(), 1);
+        // closed for a while (frames without a draw), opened again: a fresh chat
+        for _ in 0..3 {
+            let _ = ctx.run(egui::RawInput::default(), |_| {});
+        }
+        frame_at(&ctx, &mut state, &v, 400.0, vec![]);
+        assert_eq!((state.convs.len(), state.log().len()), (3, 0));
+        // reopened while the shown chat is still empty: it is reused, not doubled
+        for _ in 0..3 {
+            let _ = ctx.run(egui::RawInput::default(), |_| {});
+        }
+        frame_at(&ctx, &mut state, &v, 400.0, vec![]);
+        assert_eq!(state.convs.len(), 3);
+        // a caller that already opened a chat for its request keeps it
+        state.push(Line::User("from the palette".into()));
+        state.keep_on_open = true;
+        for _ in 0..3 {
+            let _ = ctx.run(egui::RawInput::default(), |_| {});
+        }
+        frame_at(&ctx, &mut state, &v, 400.0, vec![]);
+        assert_eq!(state.log(), &[Line::User("from the palette".into())]);
+    }
+
+    fn chat(id: u64, title: &str, updated: f64, text: &str) -> Conversation {
+        let mut c = Conversation::new(id);
+        (c.title, c.updated) = (title.into(), updated);
+        c.lines.push(Line::User(text.into()));
+        c
+    }
+
+    /// The sidebar lists the chats (pinned first, then newest), searches their titles and messages, and
+    /// renames one in place: Enter keeps the new name.
+    #[test]
+    fn sidebar_lists_searches_and_renames() {
+        let mut convs = vec![chat(1, "Old intro", 10.0, "cut the intro"), chat(2, "Music", 30.0, "louder music"), chat(3, "Colour", 20.0, "warmer")];
+        convs.push(Conversation::new(4)); // empty: never listed
+        let ids = |order: Vec<usize>, convs: &[Conversation]| order.into_iter().map(|i| convs[i].id).collect::<Vec<_>>();
+        assert_eq!(ids(sidebar_order(&convs, ""), &convs), vec![2, 3, 1], "newest first");
+        convs[0].pinned = true;
+        assert_eq!(ids(sidebar_order(&convs, ""), &convs), vec![1, 2, 3], "pinned on top");
+        assert_eq!(ids(sidebar_order(&convs, "LOUDER"), &convs), vec![2], "messages are searched");
+        assert_eq!(ids(sidebar_order(&convs, "colour"), &convs), vec![3], "titles are searched");
+        assert!(sidebar_order(&convs, "zebra").is_empty());
+        assert_eq!(short_date(1000.0, 1030.0), "now");
+        assert_eq!(short_date(0.0, 7200.0), "2h");
+        assert_eq!(short_date(1_763_337_600.0, 1_763_337_600.0 + 30.0 * 86_400.0), "Nov 17", "2025-11-17 UTC");
+
+        // drawn: a wide pane shows the sidebar; a search narrows it; rename through the in-place box
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let all = test_skills();
+        let v = view(&all);
+        let mut state = AssistantState { keep_on_open: true, ..Default::default() };
+        state.load(convs);
+        frame_at(&ctx, &mut state, &v, 900.0, vec![]);
+        state.search = "music".into();
+        frame_at(&ctx, &mut state, &v, 900.0, vec![]);
+        state.renaming = Some((2, String::new()));
+        frame_at(&ctx, &mut state, &v, 900.0, vec![]); // the box takes the focus
+        frame_at(&ctx, &mut state, &v, 900.0, vec![egui::Event::Text("Soundtrack".into())]);
+        let enter = egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        frame_at(&ctx, &mut state, &v, 900.0, vec![enter]);
+        assert_eq!(state.renaming, None);
+        assert_eq!(state.convs.iter().find(|c| c.id == 2).unwrap().title, "Soundtrack");
+        assert!(state.dirty);
+        state.toggle_pin(2);
+        assert!(state.convs.iter().find(|c| c.id == 2).unwrap().pinned);
+    }
+
+    /// The text a clipboard command carries, from one frame's output.
+    fn copied(out: &egui::FullOutput) -> Vec<String> {
+        out.platform_output
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                egui::OutputCommand::CopyText(t) => Some(t.clone()),
+                egui::OutputCommand::CopyImage(i) => Some(format!("image {}x{}", i.size[0], i.size[1])),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A reply full of markup and tool calls (an HTML layer's source among them).
+    fn marked_up_chat() -> Vec<Line> {
+        vec![
+            Line::User("Add a **title**".into()),
+            Line::Attached { chips: vec!["2 clips".into()], images: vec![Attachment::file(std::path::Path::new("C:\\brief.txt"))] },
+            Line::Tool("html.add {\"html\":\"<div class='title'><h1>Hi</h1></div>\"}".into()),
+            Line::Text("Added the title:\n\n- **font**: `Montserrat`\n- size _72_\n\n```\n<h1>Hi</h1>\n```".into()),
+            Line::Done { undo: None },
+        ]
+    }
+
+    /// Copy text gives plain words: no Markdown, no tool calls, no HTML from the agent's tool arguments;
+    /// Copy as Markdown keeps the Markdown; both come from the message alone.
+    #[test]
+    fn copy_gives_plain_text_without_markup() {
+        let lines = marked_up_chat();
+        let msgs = messages(&lines);
+        assert_eq!(msgs, vec![Msg { user: true, lines: 0..2 }, Msg { user: false, lines: 2..5 }]);
+        assert_eq!(msg_plain(&lines, &msgs[0]), "Add a title");
+        let reply = msg_plain(&lines, &msgs[1]);
+        assert_eq!(reply, "Added the title:\n\n- font: Montserrat\n- size 72\n\n<h1>Hi</h1>");
+        assert!(!reply.contains("html.add") && !reply.contains("class=") && !reply.contains("**"), "{reply}");
+        assert_eq!(msg_markdown(&lines, &msgs[1]), "Added the title:\n\n- **font**: `Montserrat`\n- size _72_\n\n```\n<h1>Hi</h1>\n```");
+        // the reply's Copy button and its menu row put exactly that on the clipboard
+        let ctx = egui::Context::default();
+        let mut state = AssistantState { keep_on_open: true, ..Default::default() };
+        state.conv_mut().lines = lines;
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            let mut o = Out::None;
+            msg_act(ctx, &mut state, &msgs[1], MsgAct::CopyText, &mut o);
+        });
+        assert_eq!(copied(&out), vec![reply]);
+    }
+
+    /// Every row of a message's right-click menu does what it says.
+    #[test]
+    fn message_menu_actions() {
+        let lines = marked_up_chat();
+        let msgs = messages(&lines);
+        let names = |rows: Vec<(MsgAct, &str, bool)>| rows.into_iter().map(|r| (r.0, r.2)).collect::<Vec<_>>();
+        use MsgAct::*;
+        assert_eq!(
+            names(msg_menu_rows(&lines, &msgs[0], false)),
+            vec![(CopyText, true), (CopyMarkdown, true), (CopyAttachments, true), (Edit, true), (Retry, true), (Delete, true)]
+        );
+        assert_eq!(names(msg_menu_rows(&lines, &msgs[1], false)), vec![(CopyText, true), (CopyMarkdown, true), (Retry, true), (Delete, true)]);
+        assert!(msg_menu_rows(&lines, &msgs[0], true).iter().filter(|r| matches!(r.0, Edit | Retry | Delete)).all(|r| !r.2), "not while running");
+
+        let ctx = egui::Context::default();
+        let fresh = || {
+            let mut s = AssistantState { keep_on_open: true, ..Default::default() };
+            s.conv_mut().lines = marked_up_chat();
+            s
+        };
+        let act = |state: &mut AssistantState, m: &Msg, a: MsgAct| {
+            let mut o = Out::None;
+            let full = ctx.run(egui::RawInput::default(), |ctx| msg_act(ctx, state, m, a, &mut o));
+            (o, copied(&full))
+        };
+        let mut s = fresh();
+        assert_eq!(act(&mut s, &msgs[0], CopyMarkdown).1, vec!["Add a **title**".to_string()]);
+        assert_eq!(act(&mut s, &msgs[0], CopyAttachments).1, vec!["C:\\brief.txt".to_string()], "a file copies as its path");
+        assert_eq!(act(&mut s, &msgs[0], Retry).0, Out::Retry(0));
+        assert_eq!(act(&mut s, &msgs[1], Retry).0, Out::Retry(0), "a reply retries the message it answered");
+        act(&mut s, &msgs[1], Delete);
+        assert_eq!(s.log().len(), 2, "the reply is gone, the question stays");
+        let mut s = fresh();
+        act(&mut s, &msgs[0], Edit);
+        assert_eq!((s.prompt.as_str(), s.images.len(), s.log().len()), ("Add a **title**", 1, 0), "back in the composer, the chat cut before it");
+
+        // the menu opens on a right-click anywhere in the message's area (over many labels), at the pointer
+        let rect = egui::Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(200.0, 80.0));
+        let at = egui::pos2(60.0, 40.0);
+        let mut rows = 0;
+        let mut frame = |events: Vec<egui::Event>| {
+            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.label("selectable text inside the message");
+                    if menu::context_area(ui, egui::Id::new("t_msg"), rect, |ui| menu::row(ui, None, "Copy text", "")).is_some() {
+                        rows += 1;
+                    }
+                });
+            });
+        };
+        frame(vec![egui::Event::PointerMoved(at)]);
+        let b = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE };
+        frame(vec![b(true)]);
+        frame(vec![b(false)]);
+        frame(vec![]);
+        assert!(rows > 0, "the message menu opened");
+    }
+
+    /// Attachments: a picture (PNG + thumbnail) and a file by path; Copy puts the picture on the clipboard
+    /// as an image (a file as its path), several go as their paths; Save as writes the same bytes.
+    #[test]
+    fn attachments_add_copy_and_save() {
+        let dir = std::env::temp_dir().join(format!("se-assistant-att-ui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let rgba: Vec<u8> = (0..64 * 32).flat_map(|i| [(i % 200) as u8, 40, 90, 255]).collect();
+        let pic = write_attachment(&dir, "Frame at 1.00s", &rgba, 64, 32).unwrap();
+        assert!(pic.is_image() && pic.width == 64);
+        let doc = dir.join("notes.txt");
+        std::fs::write(&doc, "hello").unwrap();
+        let file = Attachment::file(&doc);
+        assert!(!file.is_image() && file.name == "notes.txt" && file.path() == doc);
+
+        let ctx = egui::Context::default();
+        let run = |f: &dyn Fn(&egui::Context)| copied(&ctx.run(egui::RawInput::default(), |ctx| f(ctx)));
+        assert_eq!(run(&|ctx| copy_attachment(ctx, &pic)), vec!["image 64x32".to_string()]);
+        assert_eq!(run(&|ctx| copy_attachment(ctx, &file)), vec![doc.display().to_string()]);
+        let both = [pic.clone(), file.clone()];
+        assert_eq!(run(&|ctx| copy_attachments(ctx, &both)), vec![format!("{}\n{}", pic.png.display(), doc.display())]);
+
+        assert_eq!(save_name(&pic), "Frame at 1.00s.png");
+        assert_eq!(save_name(&file), "notes.txt");
+        let to = dir.join("saved.png");
+        save_attachment(&pic, &to).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), std::fs::read(&pic.png).unwrap());
+        save_attachment(&file, &dir.join("copy.txt")).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("copy.txt")).unwrap(), "hello");
+        // old chats (no `file` field) still load
+        let old: Attachment = serde_json::from_str(r#"{"name":"f","png":"a.png","thumb":"a.thumb","width":2,"height":1}"#).unwrap();
+        assert!(old.is_image() && old.file.is_none());
+        let old: Conversation = serde_json::from_str(r#"{"id":1,"title":"t","created":0,"updated":0,"session":null,"lines":[],"tasks":[]}"#).unwrap();
+        assert!(!old.pinned);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn assert_no_idle_repaint_assistant_preview_and_area() {
+        let dir = std::env::temp_dir().join(format!("se-assistant-preview-{}", std::process::id()));
+        let rgba = vec![200u8; 32 * 16 * 4];
+        let pic = write_attachment(&dir, "shot", &rgba, 32, 16).unwrap();
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let mut state = AssistantState { preview: Some(pic), ..Default::default() };
+        for _ in 0..30 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| preview_window(ctx, &mut state));
+        }
+        assert!(state.preview.is_some(), "it stays open");
+        assert!(!ctx.has_requested_repaint(), "an idle attachment preview must request no repaint");
+        state.area = true;
+        for _ in 0..30 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| assert_eq!(area_overlay(ctx, &mut state), None));
+        }
+        assert!(state.area, "waits for a drag");
+        assert!(!ctx.has_requested_repaint(), "an idle area picker must request no repaint");
+        // a drag picks the rectangle and closes it
+        let p = |x, y| egui::Event::PointerMoved(egui::pos2(x, y));
+        let b = |x, y, pressed| egui::Event::PointerButton { pos: egui::pos2(x, y), button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        let mut got = None;
+        for events in [vec![p(10.0, 20.0)], vec![b(10.0, 20.0, true)], vec![p(60.0, 50.0)], vec![p(110.0, 70.0)], vec![b(110.0, 70.0, false)]] {
+            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| got = got.or(area_overlay(ctx, &mut state)));
+        }
+        let r = got.expect("a rectangle");
+        assert!((r.width() - 100.0).abs() < 8.0 && (r.height() - 50.0).abs() < 8.0, "{r:?}");
+        assert!(!state.area);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The product's own wording never names a vendor: every string literal in the Assistant's files,
