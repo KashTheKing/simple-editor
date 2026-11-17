@@ -69,6 +69,9 @@ fn spawn_prune(budget: Option<u64>, protect: Protect) {
             use windows::Win32::System::Threading::*;
             let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
         }
+        // once per run: Edge profiles in %TEMP% left by an app that is gone (crash, killed test run)
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        SWEPT.call_once(crate::engine::html::sweep_stale_profiles);
         let (dir, now) = (Settings::cache_dir(), std::time::SystemTime::now());
         cache_lru::prune_html(&dir, cache_lru::HTML_CAP, &protect, now);
         if let Some(b) = budget {

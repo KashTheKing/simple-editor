@@ -283,7 +283,12 @@ impl LivePreview {
                 ptr: inp.mouse.map(|m| m.state(self.t)),
             };
             let ctx = ui.ctx().clone();
-            if let Some((f, current)) = html::live_show(self.slot, req, move || ctx.request_repaint()) {
+            let got = html::live_show(self.slot, req, move || ctx.request_repaint());
+            if got.is_none() {
+                // nothing of this page yet: blank, never the picture of the template shown before
+                (self.tex, self.shown, self.current) = (None, None, false);
+            }
+            if let Some((f, current)) = got {
                 self.current = current;
                 if !self.shown.as_ref().is_some_and(|s| std::sync::Arc::ptr_eq(s, &f)) {
                     let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
@@ -864,7 +869,12 @@ fn renderer_row(ui: &mut egui::Ui, clip: Id, current: crate::model::HtmlRenderer
         if r != current {
             picked = Some(r);
         }
-        ui.weak(if c.engine == blitz::Engine::Blitz { "drawn by the fast renderer" } else { "drawn by Edge" });
+        ui.weak(match (c.engine, current) {
+            (blitz::Engine::Blitz, R::Auto) => "drawn by the fast renderer: nothing in it needs a browser",
+            (blitz::Engine::Blitz, _) => "drawn by the fast renderer",
+            (blitz::Engine::Edge, R::Edge) => "drawn by Edge, as set",
+            (blitz::Engine::Edge, _) => "drawn by Edge",
+        });
     });
     if let Some(why) = &c.reason {
         ui.colored_label(ui.visuals().warn_fg_color, why);
@@ -872,11 +882,15 @@ fn renderer_row(ui: &mut egui::Ui, clip: Id, current: crate::model::HtmlRenderer
     if !blitz::available() && current != R::Edge {
         egui::Frame::group(ui.style()).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label("Install the fast HTML renderer (about 11 MB)");
+                ui.strong("Draw HTML without a browser: install the fast renderer (about 11 MB, one click)");
                 if blitz::installing() {
                     ui.add(egui::Spinner::new());
                     ui.weak("installing, see Jobs");
-                } else if ui.button("Install").on_hover_text("Downloads it from the library once; until then layers are drawn with Edge").clicked() {
+                } else if ui
+                    .add(egui::Button::new(egui::RichText::new("Install").strong()).fill(ui.visuals().selection.bg_fill))
+                    .on_hover_text("Downloads it from the library once; until then layers are drawn with Edge, which starts slower and uses ~700 MB")
+                    .clicked()
+                {
                     blitz::start_install();
                 }
             });

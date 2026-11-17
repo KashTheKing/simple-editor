@@ -96,20 +96,21 @@ Edge's 700 MB, draws a frame in milliseconds, and never opens a browser.
 Inspector > HTML > **Renderer**:
 
 - **Auto** (default): the fast renderer when it is installed and the layer only uses CSS it can draw,
-  otherwise Edge. The line under the setting says why Edge was chosen, for example "uses a backdrop
-  filter: rendering with Edge".
+  otherwise Edge. The line under the setting says which one drew the layer and, when it is Edge, why,
+  for example "uses a blend mode (mix-blend-mode): rendering with Edge".
 - **Fast (built-in)**: always the fast renderer, even for a layer Auto would send to Edge (it may then
   look different).
 - **Edge**: always Edge.
 
 What it cannot draw (Auto uses Edge for these): colour filters (`hue-rotate`, `saturate`, `brightness`,
-`contrast`, `grayscale`, `sepia`, `invert`), `backdrop-filter`, `mix-blend-mode`, `-webkit-text-stroke`,
-`position: sticky`, 3D transforms, CSS counters and `@property`, vertical writing, and an inline SVG
-that is styled by the page's own CSS (use attributes on the SVG elements instead; an SVG cannot be
-animated from the inside). Drawn, with a small difference: `text-shadow` (not drawn: put a copy of the
-text behind it instead), `text-overflow: ellipsis` and `-webkit-line-clamp` (the text is cut),
-`text-wrap: balance`. If the renderer fails on a layer (a crash, a hang) the layer is drawn by Edge
-instead and Auto remembers.
+`contrast`, `grayscale`, `sepia`, `invert`, `opacity()`), `mix-blend-mode` and `background-blend-mode`,
+`position: sticky`, 3D transforms, CSS counters, vertical writing, and an inline SVG whose parts are
+animated by the page's CSS or styled with a selector it cannot match (`:hover`, `[attr]`, `+`, `~`).
+Everything else is drawn as in Edge, including `backdrop-filter`, `-webkit-text-stroke`, `@property`,
+`text-shadow`, `text-overflow: ellipsis`, `text-wrap: balance`, justified text, and an inline SVG styled by
+the page's own CSS (`.icon path { fill: var(--accent) }`: the rules are written onto the SVG's parts before it
+is drawn). If the renderer fails on a layer (a crash, a hang) the layer is drawn by Edge instead; a crash
+keeps it on Edge until the renderer is updated or the app restarts, a hang is tried once more first.
 
 Two things stay with Edge: **Web Page Snapshot** (the page runs its scripts once, in a private Edge,
 before it is saved) and any layer you set to Edge. Everything after the snapshot is drawn by the fast

@@ -127,9 +127,18 @@ impl OnlineState {
         e.map(|e| e.name.clone()).unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id).replace('-', " "))
     }
     /// The thumbnail file of `id` once it is on this PC; asking for one that is not queues its download.
+    /// An installed HTML layer / icon with no picture of its own (yours, or the catalogue's is not here) gets
+    /// one drawn from its source (`rendered_thumb`).
     pub fn thumb_path(&mut self, id: &str) -> Option<PathBuf> {
-        let (rel, path) = self.thumbs.get(id)?;
-        if self.connected && path.is_none() && !rel.is_empty() && self.thumb_tried.insert(id.to_string()) {
+        let drawable =
+            self.installed.contains(id) && matches!(library::split_id(id), Some((Kind::Html | Kind::Icon, _)));
+        let (rel, path) = match self.thumbs.get(id) {
+            Some(t) => t,
+            None if drawable => self.thumbs.entry(id.to_string()).or_insert((String::new(), None)),
+            None => return None,
+        };
+        let fetch = self.connected && !rel.is_empty();
+        if path.is_none() && (fetch || drawable) && self.thumb_tried.insert(id.to_string()) {
             self.thumb_wait.push(id.to_string());
         }
         path.clone()
@@ -325,6 +334,31 @@ fn finish(app: &mut App, id: &str, then: Then) {
     }
 }
 
+/// A picture of installed HTML layer / icon `id` at its thumbnail moment, drawn once from its source (the fast
+/// renderer when it can, else Edge) into the library cache under a name made from the page itself: drawn
+/// again only when the source changes. Background threads only.
+pub(super) fn rendered_thumb(id: &str, name: &str) -> Result<PathBuf, String> {
+    use std::hash::{Hash, Hasher};
+    let (kind, short) = library::split_id(id).ok_or("not a library id")?;
+    let text = library::read(kind, &short)?;
+    let page = if kind == Kind::Icon { crate::engine::html::icon_page(name, &text) } else { text };
+    let tpl = crate::engine::html::parse(&page);
+    let mut h = std::hash::DefaultHasher::new();
+    ("thumb-v1", &page).hash(&mut h);
+    let out = library::cache_root().join("thumbs").join(format!("drawn-{:016x}.png", h.finish()));
+    if out.is_file() {
+        return Ok(out);
+    }
+    // 2x the 54 px card height, never bigger than the page
+    let scale = (108.0 / tpl.size.1.max(1) as f64).min(1.0);
+    let png = crate::engine::html::render_png(&page, &[], scale, tpl.thumb_at())?;
+    std::fs::create_dir_all(out.parent().unwrap_or(&out)).map_err(|e| e.to_string())?;
+    let part = out.with_extension("part");
+    std::fs::write(&part, png).map_err(|e| e.to_string())?;
+    std::fs::rename(&part, &out).map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
 /// What applying an item of `kind` does (pure, so the dispatch is testable without an App).
 #[derive(Debug, PartialEq)]
 pub(super) enum Step {
@@ -444,11 +478,16 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     while st.thumb_running < THUMB_FETCHES && !st.thumb_wait.is_empty() {
         let id = st.thumb_wait.remove(0);
         let Some(rel) = st.thumbs.get(&id).map(|t| t.0.clone()) else { continue };
-        let Some(src) = st.loaded_for.clone() else { break };
+        // the catalogue's picture when connected; else (or when it cannot be had) one drawn from the source
+        let src = st.loaded_for.clone().filter(|_| st.connected && !rel.is_empty());
+        let name = st.name_of(&id);
         let tx = st.thumb_rx.get_or_insert_with(std::sync::mpsc::channel).0.clone();
         st.thumb_running += 1;
         let _ = std::thread::Builder::new().name("library-thumb".into()).spawn(move || {
-            let _ = tx.send((id, library::fetch_thumb(&src, &rel).ok()));
+            crate::media::bg::lower_thread();
+            let got =
+                src.and_then(|src| library::fetch_thumb(&src, &rel).ok()).or_else(|| rendered_thumb(&id, &name).ok());
+            let _ = tx.send((id, got));
         });
     }
     // downloads
@@ -599,6 +638,13 @@ mod tests {
         st.thumbs.insert("effects/glow".into(), ("thumbs/x.jpg".into(), None));
         assert_eq!(st.thumb_path("effects/glow"), None);
         assert!(st.thumb_wait.is_empty(), "not connected: no thumbnail is asked for");
+        // an installed HTML layer without a picture here gets one drawn from its source (no network)
+        st.installed.insert("html/mine".into());
+        assert_eq!(st.thumb_path("html/mine"), None);
+        assert_eq!(st.thumb_path("html/mine"), None);
+        assert_eq!(st.thumb_wait, ["html/mine"], "queued once, to be drawn");
+        assert_eq!(st.thumb_path("html/not-installed"), None);
+        assert_eq!(st.thumb_wait.len(), 1, "nothing for what is not here");
     }
 
     /// Connecting turns the catalogue on once (a folder is the offline stand-in for the network): it loads,

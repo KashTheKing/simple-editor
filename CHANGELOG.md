@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Fixes: HTML layers
+- **"Edge failed to start" on a busy PC**: 1.3.0 started Edge at below-normal priority, so while a build, an
+  export or proxies kept every core busy it wrote no DevTools port within 20 s and the HTML layer failed (3 of 3
+  starts under full load; at normal priority they take under 1.1 s). Edge starts at normal priority again, a failed
+  start is tried once more with a fresh profile, and a second failure says what to do. Edge profiles left in
+  `%TEMP%` by an app that is gone (`se-edge-<pid>-<n>`) are cleaned up at start-up.
+- **The fast renderer draws far more on its own**: measured against the installed helper, `backdrop-filter`,
+  `-webkit-text-stroke`, `@property`, `text-shadow`, ellipsis, `text-wrap: balance` and justified text all draw as
+  in Edge, so Auto no longer sends them to Edge or warns about them. Edge stays for colour filters (the helper
+  crashes on them), blend modes, `position: sticky`, 3D transforms, CSS counters and vertical writing.
+- **Inline SVG coloured by the page's CSS** (the Sale Badge's red, star fills, `fill: var(--accent)`): the rules
+  are written onto the SVG's parts before the fast renderer draws them, instead of coming out black. Only an SVG
+  animated by CSS, or styled with a selector that cannot be resolved, goes to Edge.
+- **A fast-renderer failure is no longer forever**: a crash keeps that layer on Edge for the running helper only (a
+  restart or a helper update tries again), a hang is tried once more first.
+- **The HTML preview always shows the template you picked**: picking Rating Stars right after Sale Badge could keep
+  showing an old picture (the last frame stood in for the new page, and a switch between Edge and the fast
+  renderer left it there).
+- **Gallery HTML cards appear at once**: their pictures were decoded by one ffmpeg.exe each, one at a time
+  (a blank project: 6-9 s for the HTML tab, over 2 minutes while a build kept the PC busy); now in-process on a thread that is not starved (1.6 s with every core busy). Installed HTML
+  layers and icons without a picture of their own get one drawn by the fast renderer and cached.
+- The Inspector says which renderer drew a layer and why, and offers the one-click fast-renderer install more
+  plainly.
+
 ## 1.3.0
 
 ### Performance: peak playback
