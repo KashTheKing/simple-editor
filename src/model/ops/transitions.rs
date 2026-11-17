@@ -39,6 +39,7 @@ impl Project {
             edge,
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         // mirror on linked clips (audio crossfade / fade)
         if r.link != 0 {
@@ -66,6 +67,7 @@ impl Project {
                     edge,
                     shader: String::new(),
                     params: Vec::new(),
+                    curve: Default::default(),
                 });
             }
         }

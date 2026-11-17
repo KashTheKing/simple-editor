@@ -407,6 +407,12 @@ pub struct Settings {
     /// Last open Gallery tab (`GalleryTab`'s name), remembered across restarts.
     #[serde(default)]
     pub gallery_tab: String,
+    // ---- ws:gallery-audio ----
+    /// The Gallery shows its Audio side (the Video | Audio switch), and the last Audio tab.
+    #[serde(default)]
+    pub gallery_audio: bool,
+    #[serde(default)]
+    pub gallery_audio_tab: String,
     /// "Apply to All" (Gallery ▸ Transitions) leaves a clip that already has a transition at that spot
     /// alone instead of replacing it. Off by default: the new transition replaces the old one.
     #[serde(default)]
@@ -753,6 +759,8 @@ impl Default for Settings {
             inspector_folds: BTreeMap::new(),
             caption_presets: Vec::new(),
             gallery_tab: "Looks".into(),
+            gallery_audio: false,
+            gallery_audio_tab: String::new(),
             transition_skip_existing: false,
             // ---- ws:layout-modes-onboarding ----
             workspace: "Edit".into(),

@@ -697,3 +697,21 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   when Edge will not start ("no DevTools port after 20 s").
 - NOT verified: the compact list by eye (only its idle-repaint test), dragging blocks / handles by hand, Draw a motion path with a
   real pencil stroke, Link to layer through the menu, onion skin while scrubbing by eye, playback smoothness of ramps.
+
+## Gallery Video | Audio + title / template pictures (2026-11-17, feat/gallery-audio-video)
+- Audio side tabs are `GalleryTab::AudioAnimate | AudioTransitions | AudioEffects` + `Sounds`; `GalleryTab::VIDEO` /
+  `AUDIO` are the strips. Side + last tab per side live in `Settings.gallery_audio` / `gallery_tab` / `gallery_audio_tab`
+  (restored by `GalleryState::from_settings`, saved by `gallery_ctl` on change). A NEW selection pre-picks the side
+  (`auto_side`) only when the pointer is not over the pane; a video clip with linked sound leaves it alone.
+- Audio effects are Mixer buses: `mixer_fx::AUDIO_FX` / `AUDIO_SWEEPS` through `Project::apply_repair` (also by
+  `audio.repair`). Sweeps key the cutoff over the clips and get a bus each. New `FilterKind::Pitch` (two-tap delay line).
+- Audio transitions: `Transition.curve` (`XfadeCurve`, skipped when Linear so old files are unchanged); FadeToColor on
+  an audio track = a dip to silence (`audio_side_gain`, used by `mixer::gains`). J / L-cut = `roll_edit` on the sound only.
+  An audio card leaves linked video transitions exactly as they were (snapshot + restore around `add_transition`).
+- Hover audition (`gallery_audition.rs`): 4 s of the selected audio clip rendered off-thread to a WAV in
+  `<cache>/gallery-audition`, played by the Sounds preview (PlaySound). NOT heard live (would play on the user's speakers).
+- Title / Template pictures (`template_thumbs.rs`): HTML via `html::render_frame` (Blitz first), else a scratch project
+  through the CPU compositor at 4x, the first of 9 moments with >= 80 % of the peak "ink", framed around the content;
+  `<cache>/gallery-thumbs/<key>.rgba` keyed by the template JSON. A failed render retries once, then the type icon.
+- In a fresh worktree `core.autocrlf=true` checks `library/` out as CRLF, so `library_index_matches_files` and
+  `connecting_loads_the_index_once` fail there (sizes); not a code problem.

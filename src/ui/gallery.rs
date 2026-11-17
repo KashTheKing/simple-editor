@@ -71,10 +71,25 @@ pub enum GalleryTab {
     Animate,
     /// Your own sound effects: audio files in the gallery's `sounds` folder.
     Sounds,
+    // ---- ws:gallery-audio ---- (the Audio side of the Video | Audio switch)
+    /// Keyframe blocks that move only volume / pan (fades, swell, duck, tremolo, pan sweeps).
+    AudioAnimate,
+    /// Crossfade curves, a dip to silence, and J / L-cut helpers (`AUDIO_TRANSITIONS`).
+    AudioTransitions,
+    /// Bus chains (`mixer_fx::AUDIO_FX` / `AUDIO_SWEEPS`): reverb, echo, EQ looks, dynamics, pitch, sweeps.
+    AudioEffects,
+}
+
+/// The Audio ▸ Transitions cards, in order.
+pub const AUDIO_TRANSITIONS: [&str; 6] = ["Equal Power", "Linear", "Exponential", "Dip", "J-Cut", "L-Cut"];
+
+/// A block that only moves sound (volume / pan): it belongs on the Audio side.
+pub fn is_audio_block(b: &crate::model::KeyBlock) -> bool {
+    !b.tracks.is_empty() && b.tracks.iter().all(|t| t.prop == "volume" || t.prop == "pan")
 }
 
 impl GalleryTab {
-    pub const ALL: [GalleryTab; 10] = [
+    pub const ALL: [GalleryTab; 13] = [
         Self::Animate,
         Self::Looks,
         Self::Luts,
@@ -85,7 +100,27 @@ impl GalleryTab {
         Self::Templates,
         Self::Titles,
         Self::Sounds,
+        Self::AudioAnimate,
+        Self::AudioTransitions,
+        Self::AudioEffects,
     ];
+    /// The tab strip of each side of the Video | Audio switch.
+    pub const VIDEO: [GalleryTab; 9] = [
+        Self::Animate,
+        Self::Looks,
+        Self::Luts,
+        Self::Captions,
+        Self::SpeedRamps,
+        Self::Effects,
+        Self::Transitions,
+        Self::Templates,
+        Self::Titles,
+    ];
+    pub const AUDIO: [GalleryTab; 4] = [Self::AudioAnimate, Self::AudioTransitions, Self::AudioEffects, Self::Sounds];
+    /// On the Audio side of the switch.
+    pub fn is_audio(self) -> bool {
+        Self::AUDIO.contains(&self)
+    }
     pub fn name(self) -> &'static str {
         match self {
             Self::Looks => "Looks",
@@ -98,6 +133,9 @@ impl GalleryTab {
             Self::Titles => "Titles",
             Self::Animate => "Animate",
             Self::Sounds => "Sounds",
+            Self::AudioAnimate => "AudioAnimate",
+            Self::AudioTransitions => "AudioTransitions",
+            Self::AudioEffects => "AudioEffects",
         }
     }
     pub fn from_name(s: &str) -> Option<Self> {
@@ -106,6 +144,9 @@ impl GalleryTab {
     fn label(self) -> &'static str {
         match self {
             Self::SpeedRamps => "Speed", // short, so every tab fits a ~350 pt pane
+            Self::AudioAnimate => "Animate",
+            Self::AudioTransitions => "Transitions",
+            Self::AudioEffects => "Effects",
             other => other.name(),
         }
     }
@@ -230,7 +271,7 @@ fn sources(tab: GalleryTab, lib_tab: bool) -> &'static [Src] {
         GalleryTab::Effects | GalleryTab::Transitions => {
             &[Src::All, Src::BuiltIn, Src::Mine, Src::Installed, Src::Online]
         }
-        GalleryTab::Sounds => &[],
+        GalleryTab::Sounds | GalleryTab::AudioTransitions | GalleryTab::AudioEffects => &[],
         _ => &[Src::All, Src::BuiltIn, Src::Mine],
     }
 }
@@ -767,7 +808,11 @@ fn effects_tab(
     state.count_acc.0 += all.len();
     state.count_acc.1 += total;
     if all.is_empty() {
-        ui.weak(if audio == Some(true) && total == 0 { "No audio effects yet" } else { "No effect matches" });
+        ui.weak(if audio == Some(true) && total == 0 {
+            "Sound effects are on the Audio side (Audio ▸ Effects)"
+        } else {
+            "No effect matches"
+        });
     }
     gf::grid(ui, |ui| {
         for e in all {
@@ -1021,6 +1066,9 @@ pub struct GalleryState {
     count_acc: (usize, usize),
     /// The Sounds tab does not preview a sound while the pointer rests on it.
     pub no_hover_preview: bool,
+    // ---- ws:gallery-audio ----
+    /// The selection last seen: a NEW selection may pre-pick the matching side (`auto_side`).
+    last_sel: Vec<Id>,
     // ---- ws:text-titles ----
     /// (clip id, exposed field name) rows for the Customize panel below the Titles grid, set by the
     /// caller (`ui::app::gallery_ctl::draw`) right after a Titles card is placed - a plain state field
@@ -1065,6 +1113,8 @@ pub struct GalleryResponse {
     pub save_dialog: bool,
     /// A sound card was clicked: add it at the playhead.
     pub sound: Option<String>,
+    /// ws:gallery-audio: an Audio card rested under the pointer: hear it on the selected clip.
+    pub audition: Option<(GalleryTab, String)>,
 }
 
 // ---- your own Gallery ("Mine") ----
@@ -1119,6 +1169,10 @@ pub(crate) fn take_sound_wants() -> Vec<std::path::PathBuf> {
 }
 
 /// The sound whose preview should be playing now (None = silence); reset each time it is read.
+/// ws:gallery-audio: play `path` as this frame's hover preview (an Audio card's audition).
+pub(crate) fn wish_sound(path: std::path::PathBuf) {
+    SOUND_WISH.with(|w| *w.borrow_mut() = Some(path));
+}
 pub(crate) fn take_sound_wish() -> Option<std::path::PathBuf> {
     SOUND_WISH.with(|w| w.borrow_mut().take())
 }
@@ -1132,9 +1186,9 @@ pub fn mine_kind(tab: GalleryTab) -> Option<GKind> {
         GalleryTab::Effects => GKind::Effect,
         GalleryTab::Transitions => GKind::Transition,
         GalleryTab::Templates | GalleryTab::Titles => GKind::Template,
-        GalleryTab::Animate => GKind::Animate,
+        GalleryTab::Animate | GalleryTab::AudioAnimate => GKind::Animate,
         GalleryTab::Sounds => GKind::Sound,
-        GalleryTab::Luts => return None,
+        GalleryTab::Luts | GalleryTab::AudioTransitions | GalleryTab::AudioEffects => return None,
     })
 }
 
@@ -1217,12 +1271,12 @@ pub fn is_mine(tab: GalleryTab, name: &str, settings: &Settings, now: f64) -> bo
     match tab {
         GalleryTab::Looks => settings.effect_presets.iter().any(|p| p.name == name),
         GalleryTab::Captions => settings.caption_presets.iter().any(|s| s.text == name),
-        GalleryTab::Animate => settings.key_blocks.iter().any(|b| b.name == name),
+        GalleryTab::Animate | GalleryTab::AudioAnimate => settings.key_blocks.iter().any(|b| b.name == name),
         GalleryTab::Templates | GalleryTab::Titles => settings.templates.iter().any(|t| t.name == name),
         GalleryTab::SpeedRamps | GalleryTab::Effects | GalleryTab::Transitions | GalleryTab::Sounds => {
             mine_kind(tab).is_some_and(|k| mine_items(k, now).iter().any(|i| i.name == name))
         }
-        GalleryTab::Luts => false,
+        GalleryTab::Luts | GalleryTab::AudioTransitions | GalleryTab::AudioEffects => false,
     }
 }
 
@@ -1490,11 +1544,14 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
                     .map(|t| t.name.clone()),
             )
             .collect(),
-        GalleryTab::Animate => crate::model::builtin_blocks()
+        GalleryTab::Animate | GalleryTab::AudioAnimate => crate::model::builtin_blocks()
             .into_iter()
+            .chain(settings.key_blocks.iter().cloned())
+            .filter(|b| is_audio_block(b) == (tab == GalleryTab::AudioAnimate))
             .map(|b| b.name)
-            .chain(settings.key_blocks.iter().map(|b| b.name.clone()))
             .collect(),
+        GalleryTab::AudioTransitions => AUDIO_TRANSITIONS.iter().map(|s| s.to_string()).collect(),
+        GalleryTab::AudioEffects => crate::engine::mixer_fx::audio_fx_cards().map(|(_, l)| l.to_string()).collect(),
     }
 }
 
@@ -1515,9 +1572,9 @@ fn block_picture(p: &egui::Painter, tile: Rect, b: &crate::model::KeyBlock) {
     b.write(&mut c, 0.0, 1.0, 1.0, 1.0);
     let area = tile.shrink(8.0);
     for tr in &b.tracks {
-        // volume blocks skip a video clip - preview them on an audio one
+        // volume / pan blocks skip a video clip - preview them on an audio one
         let mut ca;
-        let src = if tr.prop == "volume" {
+        let src = if tr.prop == "volume" || tr.prop == "pan" {
             ca = Clip::new(0, crate::model::ClipKind::Audio, "", 0.0, 1.0);
             b.write(&mut ca, 0.0, 1.0, 1.0, 1.0);
             &ca
@@ -1574,6 +1631,177 @@ fn bg_menu(bg: &Response, out: &mut GalleryResponse) {
 /// own (built-in and library items in one grid, one search) - the old Effects / Transitions panes are
 /// gone. Every card except a skill can also be dragged onto the timeline (see `card`).
 #[allow(clippy::too_many_arguments)]
+// ---- ws:gallery-audio ----
+/// Remember `tab` as the last one of its side.
+fn remember_tab(settings: &mut Settings, tab: GalleryTab) {
+    if tab.is_audio() {
+        settings.gallery_audio_tab = tab.name().to_string();
+    } else {
+        settings.gallery_tab = tab.name().to_string();
+    }
+}
+
+/// Show the Video (`audio` false) or Audio side, on the tab last used there.
+pub fn set_side(state: &mut GalleryState, settings: &Settings, audio: bool) {
+    let last = if audio { &settings.gallery_audio_tab } else { &settings.gallery_tab };
+    let first = if audio { GalleryTab::AudioEffects } else { GalleryTab::Looks };
+    state.tab = GalleryTab::from_name(last).filter(|t| t.is_audio() == audio).unwrap_or(first);
+    state.lib = None;
+}
+
+impl GalleryState {
+    /// The side and tab of the last session (the App's starting state).
+    pub fn from_settings(settings: &Settings) -> Self {
+        let mut st = Self::default();
+        set_side(&mut st, settings, settings.gallery_audio);
+        st
+    }
+}
+
+/// A NEW selection pre-picks the matching side: an audio clip shows Audio, a picture-only clip Video (a
+/// video clip with linked sound could want either: it leaves the side alone). Never while the pointer is
+/// over the Gallery (the user is browsing), never for the same selection twice, and never remembered as
+/// the user's choice.
+fn auto_side(
+    state: &mut GalleryState,
+    settings: &Settings,
+    project: &crate::model::Project,
+    selection: &[Id],
+    over: bool,
+) {
+    if state.last_sel == selection {
+        return;
+    }
+    state.last_sel = selection.to_vec();
+    let Some(c) = selection.first().and_then(|&id| project.clip(id)) else { return };
+    let want = match c.kind {
+        crate::model::ClipKind::Audio => true,
+        crate::model::ClipKind::Video if c.link != 0 => return,
+        _ => false,
+    };
+    let audio = state.lib.is_none() && state.tab.is_audio();
+    if !over && want != audio {
+        set_side(state, settings, want);
+    }
+}
+
+/// A Titles / Templates card: its rendered picture, else (still rendering, or nothing to show) its type
+/// icon - a title "Aa", an HTML template "</>", any other template the template symbol. Never blank.
+fn template_picture(p: &egui::Painter, t: Rect, pic: (Option<(egui::TextureId, [u32; 2])>, bool), title: bool) {
+    match pic {
+        (Some(_), _) => thumb_or_blank(p, t, pic.0),
+        (None, true) => type_tile(p, t, Color32::from_rgb(230, 120, 60), None, "</>"),
+        (None, false) if title => type_tile(p, t, Color32::from_rgb(90, 190, 140), None, "Aa"),
+        (None, false) => type_tile(p, t, Color32::from_rgb(120, 160, 240), Some(crate::ui::tools::Glyph::Template), ""),
+    }
+}
+
+/// An Audio ▸ Transitions card: the outgoing (faint) and incoming (accent) gains across the card; J / L-cut
+/// draw the two clips with the sound's cut moved before / after the picture's.
+fn audio_transition_picture(p: &egui::Painter, tile: Rect, name: &str, accent: Color32) {
+    let a = tile.shrink2(egui::vec2(8.0, 8.0));
+    let faint = accent.gamma_multiply(0.45);
+    let j = match name {
+        "J-Cut" => Some(true),
+        "L-Cut" => Some(false),
+        _ => None,
+    };
+    if let Some(j) = j {
+        let (h, mid) = (a.height() * 0.38, a.center().x);
+        let cut = mid + if j { -a.width() * 0.22 } else { a.width() * 0.22 };
+        let row = |y: f32, x: f32, c1: Color32, c2: Color32| {
+            p.rect_filled(Rect::from_min_max(egui::pos2(a.left(), y), egui::pos2(x - 1.0, y + h)), 2.0, c1);
+            p.rect_filled(Rect::from_min_max(egui::pos2(x + 1.0, y), egui::pos2(a.right(), y + h)), 2.0, c2);
+        };
+        row(a.top(), mid, faint, accent);
+        row(a.bottom() - h, cut, faint.gamma_multiply(0.7), accent.gamma_multiply(0.7));
+        return;
+    }
+    let (dip, curve) = match name {
+        "Dip" => (true, crate::model::XfadeCurve::Linear),
+        "Equal Power" => (false, crate::model::XfadeCurve::EqualPower),
+        "Exponential" => (false, crate::model::XfadeCurve::Exponential),
+        _ => (false, crate::model::XfadeCurve::Linear),
+    };
+    let pts = |incoming: bool| -> Vec<egui::Pos2> {
+        (0..=24)
+            .map(|i| {
+                let f = i as f64 / 24.0;
+                let (o, n) = crate::model::audio_curve_gains(dip, curve, f);
+                let g = if incoming { n } else { o };
+                egui::pos2(a.left() + f as f32 * a.width(), a.bottom() - g as f32 * a.height())
+            })
+            .collect()
+    };
+    p.add(egui::Shape::line(pts(false), Stroke::new(2.0, faint)));
+    p.add(egui::Shape::line(pts(true), Stroke::new(2.0, accent)));
+}
+
+thread_local! {
+    /// Audio ▸ Effects card pictures by card name: (dry, wet) envelopes of the test signal.
+    static FX_WAVES: RefCell<HashMap<String, Rc<(Vec<f32>, Vec<f32>)>>> = RefCell::default();
+}
+
+/// Columns in an effect card's waveform.
+const FX_COLS: usize = 48;
+
+/// The test signal the effect cards are drawn from: a low, a mid and a high tone burst, then a quiet hiss
+/// and silence (interleaved stereo at `sr`, one second).
+pub(crate) fn fx_test_signal(sr: u32) -> Vec<f32> {
+    let mut rng = 0x2545_f491u32;
+    (0..sr as usize)
+        .flat_map(|i| {
+            let t = i as f32 / sr as f32;
+            let tone = |hz: f32| (std::f32::consts::TAU * hz * t).sin() * 0.7;
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            let s = match t {
+                t if t < 0.14 => tone(150.0),
+                t if (0.18..0.32).contains(&t) => tone(1000.0),
+                t if (0.36..0.5).contains(&t) => tone(5000.0),
+                t if (0.54..0.62).contains(&t) => (rng as f32 / u32::MAX as f32 - 0.5) * 0.06,
+                _ => 0.0,
+            };
+            [s, s]
+        })
+        .collect()
+}
+
+/// (dry, wet) envelopes (max |x| per column) of `fx_test_signal` through the preset's chain at 16 kHz:
+/// a filter thins or swells a burst, a reverb / echo leaves a tail, a gate cuts the hiss. Once per name.
+pub(crate) fn fx_wave(name: &str) -> Option<Rc<(Vec<f32>, Vec<f32>)>> {
+    use crate::engine::mixer_fx as fx;
+    if let Some(w) = FX_WAVES.with(|m| m.borrow().get(name).cloned()) {
+        return Some(w);
+    }
+    const SR: u32 = 16_000;
+    let (_, chain) = fx::fx_chain(fx::fx_id(name)?, (0.0, 1.0))?;
+    let mut buf = fx_test_signal(SR);
+    let env = |b: &[f32]| -> Vec<f32> {
+        b.chunks(b.len().div_ceil(FX_COLS)).map(|c| c.iter().fold(0f32, |m, x| m.max(x.abs()))).collect()
+    };
+    let dry = env(&buf);
+    fx::run_chain(&chain, SR, 0.0, &mut buf);
+    let w = Rc::new((dry, env(&buf)));
+    FX_WAVES.with(|m| m.borrow_mut().insert(name.to_string(), w.clone()));
+    Some(w)
+}
+
+/// An Audio ▸ Effects card: the dry test signal faint, the processed one in the accent colour.
+fn audio_fx_picture(p: &egui::Painter, tile: Rect, name: &str, accent: Color32) {
+    let Some(w) = fx_wave(name) else { return };
+    let a = tile.shrink(6.0);
+    let dx = a.width() / FX_COLS as f32;
+    for (vals, col, wd) in [(&w.0, accent.gamma_multiply(0.25), dx * 0.8), (&w.1, accent, dx * 0.45)] {
+        for (i, v) in vals.iter().enumerate() {
+            let h = v.min(1.0) * a.height() * 0.5;
+            let x = a.left() + (i as f32 + 0.5) * dx;
+            p.line_segment([egui::pos2(x, a.center().y - h), egui::pos2(x, a.center().y + h)], Stroke::new(wd, col));
+        }
+    }
+}
+
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut GalleryState,
@@ -1587,20 +1815,33 @@ pub fn show(
     use crate::ui::DragPayload;
     let mut out = GalleryResponse::default();
     let bg = crate::ui::markers_ui::menu_area(ui);
+    // ---- ws:gallery-audio ---- Video | Audio: a new selection may pre-pick the side, never while browsing
+    let over = ui.rect_contains_pointer(ui.max_rect());
+    auto_side(state, settings, project, selection, over);
+    let mut audio = state.lib.is_none() && state.tab.is_audio();
+    ui.horizontal(|ui| {
+        if crate::ui::animator::segmented(ui, &mut audio, &[(false, "Video"), (true, "Audio")]) {
+            set_side(state, settings, audio);
+            settings.gallery_audio = audio; // the user's own pick is remembered; an auto-pick is not
+        }
+    });
     // the tabs wrap onto a second row in a narrow pane (a sideways-scrolling row hid the library tabs)
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        for tab in GalleryTab::ALL {
+        let tabs: &[GalleryTab] = if audio { &GalleryTab::AUDIO } else { &GalleryTab::VIDEO };
+        for &tab in tabs {
             if ui.selectable_label(state.lib.is_none() && state.tab == tab, tab.label()).clicked() {
                 state.tab = tab;
                 state.lib = None;
-                settings.gallery_tab = tab.name().to_string();
+                remember_tab(settings, tab);
             }
         }
         // ---- ws:online-library ----
-        for (kind, label) in LIB_TABS {
-            if ui.selectable_label(state.lib == Some(kind), label).clicked() {
-                state.lib = Some(kind);
+        if !audio {
+            for (kind, label) in LIB_TABS {
+                if ui.selectable_label(state.lib == Some(kind), label).clicked() {
+                    state.lib = Some(kind);
+                }
             }
         }
     });
@@ -1628,7 +1869,7 @@ pub fn show(
         state.f.cat.clear();
     }
     let folder = if lib_tab { None } else { mine_kind(state.tab) };
-    header(ui, state, &srcs, &cats, lib.as_ref(), folder, state.tab == GalleryTab::Sounds && !lib_tab, &mut out);
+    header(ui, state, &srcs, &cats, lib.as_ref(), folder, state.tab.is_audio() && !lib_tab, &mut out);
     ui.separator();
     state.count_acc = (0, 0);
     // ---- ws:online-library ---- a library tab, or the library's LUTs among the Luts tab's cards
@@ -1701,6 +1942,20 @@ pub fn show(
                 lut_thumb = Some(&mut **thumb);
             }
         }
+        // ws:gallery-audio: Titles / Templates pictures by card name (thumbnail, has an HTML page)
+        let tpl_pics: HashMap<String, (Option<(egui::TextureId, [u32; 2])>, bool)> =
+            if matches!(tab, GalleryTab::Titles | GalleryTab::Templates) {
+                crate::ui::app::template_thumbs::templates(settings)
+                    .into_iter()
+                    .map(|t| {
+                        let html = t.json.contains("\"html\":{");
+                        let k = crate::ui::app::template_thumbs::key(&t);
+                        (t.name, (thumbnail(&ThumbSource::Template(k)), html))
+                    })
+                    .collect()
+            } else {
+                HashMap::new()
+            };
         if names.is_empty() && lut_cells.is_empty() && !matches!(tab, GalleryTab::Sounds) {
             ui.weak(if total_names == 0 && state.count_acc.1 == 0 {
                 match tab {
@@ -1755,7 +2010,7 @@ pub fn show(
                             }
                         })
                     }
-                    GalleryTab::Animate => {
+                    GalleryTab::Animate | GalleryTab::AudioAnimate => {
                         let b = crate::model::find_block(&settings.key_blocks, name);
                         let drag = DragPayload::KeyBlock(name.clone());
                         card(ui, ("blk", name), name, Some(drag), false, |p, t| {
@@ -1766,7 +2021,26 @@ pub fn show(
                         .on_hover_text(format!("{name} - click: at the playhead · drag onto a clip"))
                     }
                     GalleryTab::Templates => {
-                        card(ui, ("tpl", name), name, Some(DragPayload::Template(name.clone())), false, |_, _| {})
+                        let pic = tpl_pics.get(name.as_str()).copied().unwrap_or_default();
+                        card(ui, ("tpl", name), name, Some(DragPayload::Template(name.clone())), false, |p, t| {
+                            template_picture(p, t, pic, false)
+                        })
+                    }
+                    GalleryTab::Titles => {
+                        let pic = tpl_pics.get(name.as_str()).copied().unwrap_or_default();
+                        let drag = DragPayload::GalleryCard(tab, name.clone());
+                        card(ui, ("card", tab.name(), name), name, Some(drag), false, |p, t| template_picture(p, t, pic, true))
+                    }
+                    // ---- ws:gallery-audio ----
+                    GalleryTab::AudioTransitions => {
+                        let drag = DragPayload::GalleryCard(tab, name.clone());
+                        card(ui, ("atr", name), name, Some(drag), false, |p, t| {
+                            audio_transition_picture(p, t, name, palette.accent)
+                        })
+                    }
+                    GalleryTab::AudioEffects => {
+                        let drag = DragPayload::GalleryCard(tab, name.clone());
+                        card(ui, ("afx", name), name, Some(drag), false, |p, t| audio_fx_picture(p, t, name, palette.accent))
                     }
                     _ => {
                         let drag = DragPayload::GalleryCard(tab, name.clone());
@@ -1781,7 +2055,12 @@ pub fn show(
                         palette.accent,
                     );
                 }
-                if tab != GalleryTab::Animate && crate::ui::hover_after(ui, r.id, &r, 150.0) {
+                if tab.is_audio() {
+                    // hear it on the selected clip (`gallery_audition`), unless previews are off
+                    if !state.no_hover_preview && crate::ui::hover_after(ui, r.id, &r, 300.0) {
+                        out.audition = Some((tab, name.clone()));
+                    }
+                } else if tab != GalleryTab::Animate && crate::ui::hover_after(ui, r.id, &r, 150.0) {
                     out.hover = Some((tab, name.clone()));
                 }
                 let mut go = r.clicked();
@@ -1799,7 +2078,10 @@ pub fn show(
                     }
                 });
                 // Preview: the viewer shows the card for as long as its menu is open (hover does the same)
-                if menu.is_some() && !matches!(tab, GalleryTab::Templates | GalleryTab::Titles | GalleryTab::Animate) {
+                if menu.is_some()
+                    && !tab.is_audio()
+                    && !matches!(tab, GalleryTab::Templates | GalleryTab::Titles | GalleryTab::Animate)
+                {
                     out.hover = Some((tab, name.clone()));
                 }
                 if go {
@@ -2307,6 +2589,7 @@ mod tests {
                     got.place_title = got.place_title.take().or(o.place_title);
                     got.mine = got.mine.take().or(o.mine);
                     got.sound = got.sound.take().or(o.sound);
+                    got.audition = got.audition.take().or(o.audition);
                     got.import = got.import.or(o.import);
                     got.open_folder = got.open_folder.or(o.open_folder);
                     got.save_dialog |= o.save_dialog;
@@ -2473,7 +2756,14 @@ mod tests {
         g.project.tracks[1].clips.push(Clip::new(301, ClipKind::Audio, "a", 0.0, 3.0));
         g.selection = vec![301];
         g.frame(vec![]);
-        assert!(g.has_text("No audio effects yet"));
+        // ws:gallery-audio: the new audio selection pre-picks the Audio side, whose Effects are sound effects
+        assert_eq!(g.state.tab, GalleryTab::AudioEffects);
+        assert!(g.has_text("Telephone") && !g.has_text("Blur"));
+        // back on Video ▸ Effects by hand: no pixel effect is offered for the sound, and it says where to look
+        g.click_text("Video");
+        g.click_text("Effects");
+        assert_eq!(g.state.tab, GalleryTab::Effects);
+        assert!(g.has_text("Sound effects are on the Audio side (Audio ▸ Effects)"));
         assert!(!g.has_text("Blur"));
     }
 
@@ -2900,7 +3190,8 @@ mod tests {
     #[test]
     fn animate_tab_lists_builtin_blocks_then_saved_ones() {
         let mut settings = Settings::default();
-        let n = crate::model::builtin_blocks().len();
+        // (sound-only blocks are on the Audio side: `is_audio_block`)
+        let n = crate::model::builtin_blocks().iter().filter(|b| !is_audio_block(b)).count();
         settings.key_blocks.push(crate::model::KeyBlock { name: "Mine".into(), dur: 1.0, ..Default::default() });
         let names = card_names(GalleryTab::Animate, &settings);
         assert_eq!(names.len(), n + 1);
@@ -3192,5 +3483,108 @@ mod tests {
         assert_eq!(names(GalleryTab::Effects, &by_name), ["Rain"]);
         let info = card_infos(GalleryTab::Effects, &settings, &rows, &f(Src::Online), 0.0);
         assert_eq!(info[0].id.as_deref(), Some("effects/rain"));
+    }
+
+    // ---- ws:gallery-audio ----
+    #[test]
+    fn the_video_audio_switch_swaps_the_tabs_and_is_remembered() {
+        let mut g = Gx::new(GalleryTab::Looks);
+        g.frame(vec![]);
+        assert!(g.has_text("Video") && g.has_text("Audio"));
+        assert!(g.has_text("Looks") && g.has_text("Titles") && g.has_text("HTML") && !g.has_text("Sounds"));
+        g.click_text("Audio");
+        assert!(g.state.tab.is_audio() && g.settings.gallery_audio);
+        assert!(g.has_text("Sounds") && !g.has_text("Looks") && !g.has_text("HTML"), "{:?}", g.texts);
+        g.click_text("Transitions");
+        assert_eq!(g.state.tab, GalleryTab::AudioTransitions);
+        assert!(g.has_text("Equal Power") && g.has_text("J-Cut"));
+        g.click_text("Effects");
+        assert_eq!(g.state.tab, GalleryTab::AudioEffects);
+        assert!(g.has_text("Telephone") && g.has_text("Low-pass Sweep"));
+        // each side reopens on its own last tab
+        g.click_text("Video");
+        assert_eq!(g.state.tab, GalleryTab::Looks);
+        assert!(!g.settings.gallery_audio);
+        g.click_text("Audio");
+        assert_eq!(g.state.tab, GalleryTab::AudioEffects);
+        // a restart (through the saved JSON) comes back on the same side and tab
+        let saved: Settings = serde_json::from_str(&serde_json::to_string(&g.settings).unwrap()).unwrap();
+        assert_eq!(GalleryState::from_settings(&saved).tab, GalleryTab::AudioEffects);
+        assert_eq!(GalleryState::from_settings(&Settings::default()).tab, GalleryTab::Looks, "a fresh install: Video");
+    }
+
+    #[test]
+    fn a_new_audio_selection_picks_the_audio_side_but_never_while_browsing() {
+        let mut g = Gx::new(GalleryTab::Looks);
+        let ai = g.project.audio_tracks()[0];
+        g.project.tracks[ai].clips.push(Clip::new(201, ClipKind::Audio, "a", 0.0, 4.0));
+        g.frame(vec![]);
+        // the pointer is over the Gallery: the user is browsing, nothing flips
+        g.selection = vec![201];
+        g.frame(vec![Event::PointerMoved(Pos2::new(200.0, 300.0))]);
+        assert_eq!(g.state.tab, GalleryTab::Looks);
+        // the same selection later, pointer elsewhere: still nothing (only a NEW selection pre-picks)
+        g.frame(vec![Event::PointerGone]);
+        assert_eq!(g.state.tab, GalleryTab::Looks);
+        // a new selection made elsewhere (the timeline): Audio, and that is not remembered as the user's pick
+        g.selection = vec![];
+        g.frame(vec![Event::PointerGone]);
+        g.selection = vec![201];
+        g.frame(vec![Event::PointerGone]);
+        assert!(g.state.tab.is_audio());
+        assert!(!g.settings.gallery_audio, "an auto-pick is not saved");
+        // a picture clip: back to Video
+        g.selection = vec![101];
+        g.frame(vec![Event::PointerGone]);
+        assert!(!g.state.tab.is_audio());
+    }
+
+    #[test]
+    fn assert_no_idle_repaint_gallery_audio_side() {
+        for tab in [GalleryTab::AudioAnimate, GalleryTab::AudioTransitions, GalleryTab::AudioEffects] {
+            let mut g = Gx::new(tab);
+            for _ in 0..30 {
+                g.frame(vec![]);
+            }
+            assert!(!g.ctx.has_requested_repaint(), "an idle {tab:?} tab requested a repaint");
+        }
+    }
+
+    #[test]
+    fn audio_cards_have_pictures_and_hovering_one_asks_to_hear_it() {
+        let mut g = Gx::new(GalleryTab::AudioEffects);
+        g.frame(vec![]);
+        // a reverb leaves a tail where the dry signal is silent; a gate cuts the hiss; a low-pass thins the 5 kHz burst
+        let tail = |n: &str| fx_wave(n).unwrap().1[FX_COLS - 4];
+        assert!(tail("Hall") > 1e-3 && tail("Muffled") < 1e-4);
+        let (dry, wet) = &*fx_wave("Muffled").unwrap();
+        let hi = (0.43 * FX_COLS as f32) as usize;
+        assert!(wet[hi] < dry[hi] * 0.3, "the low-pass thins the high burst");
+        for name in card_names(GalleryTab::AudioEffects, &g.settings) {
+            let w = fx_wave(&name).unwrap_or_else(|| panic!("{name}"));
+            assert!(w.1.iter().any(|v| *v > 0.01), "{name}: a flat picture");
+        }
+        let at = g.rect("Telephone").center();
+        for _ in 0..12 {
+            g.frame(vec![Event::PointerMoved(at)]);
+        }
+        assert_eq!(g.take().audition, Some((GalleryTab::AudioEffects, "Telephone".to_string())));
+        g.state.no_hover_preview = true;
+        for _ in 0..12 {
+            g.frame(vec![Event::PointerMoved(at)]);
+        }
+        assert_eq!(g.take().audition, None, "previews off");
+    }
+
+    #[test]
+    fn title_and_template_cards_are_never_blank() {
+        for (pic, title) in [((None, false), true), ((None, false), false), ((None, true), false)] {
+            let ctx = ctx();
+            let out = ctx.run(egui::RawInput::default(), |ctx| {
+                let p = ctx.layer_painter(egui::LayerId::background());
+                template_picture(&p, Rect::from_min_size(Pos2::ZERO, egui::vec2(96.0, 54.0)), pic, title);
+            });
+            assert!(!out.shapes.is_empty(), "{pic:?} {title}: drew nothing");
+        }
     }
 }

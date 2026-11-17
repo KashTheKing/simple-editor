@@ -304,8 +304,8 @@ fn gains(clip: &Clip, ext: &Ext, tt: f64) -> (f32, f32) {
     for e in ext.iter().flatten() {
         let (cut, h, tr, is_right) = *e;
         if tt >= cut - h && tt < cut + h {
-            let p = crate::engine::compose::trans_progress_at(tr, cut, h, tt) as f32;
-            g *= if is_right { p } else { 1.0 - p };
+            let p = crate::engine::compose::trans_progress_at(tr, cut, h, tt);
+            g *= crate::model::audio_side_gain(tr, p, is_right) as f32;
         }
     }
     let pan = clip.pan.at(lt).clamp(-1.0, 1.0) as f32;
@@ -874,6 +874,7 @@ mod tests {
             edge: Default::default(),
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_audio("Z:\\nope\\a.wav", 0, Box::new(Const(0.8)));
@@ -909,6 +910,7 @@ mod tests {
             edge: Default::default(),
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
     }
 

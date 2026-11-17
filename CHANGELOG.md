@@ -3,6 +3,12 @@
 ## 1.3.1
 
 ### Gallery cards
+- **Gallery: a Video | Audio switch with audio presets, and pictures for every title and template.** The Audio side
+  has Animate (fades, swell, duck, tremolo, pan sweeps), Transitions (equal-power / linear / exponential crossfades,
+  a dip, J- and L-cuts that roll only the sound), Effects (rooms, echoes, telephone, radio, bass boost, de-ess,
+  compressor, limiter, gate, pitch up / down, filter sweeps, each a Mixer bus you can edit) and Sounds; cards show
+  their curve or waveform, and resting on one plays it on the selected clip. The side is remembered, and selecting
+  an audio clip on the timeline opens it. Titles and Templates show a rendered picture (cached), else a type symbol.
 - **Skill cards are no longer empty tiles**: each skill is a document card (a .md page tinted by its category, with
   the category's symbol: cut, captions, audio, colour, export, style, converter) with its description beside it and
   a readable title under it; a skill header can name its own picture with `thumb:`.

@@ -2986,6 +2986,7 @@ mod tests {
             edge: Default::default(),
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         let wend = spans_using_source(&tp, &path).iter().fold(f64::MIN, |m, &(_, b)| m.max(b));
         assert!((wend - end - 1.5).abs() < 1e-6, "widened by the longest transition: {wend} vs {end}");
@@ -3538,6 +3539,7 @@ mod tests {
             edge: Default::default(),
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         let (mut pool, mut spare) = (DecoderPool::new(Backend::Ffmpeg), Vec::new());
         let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());

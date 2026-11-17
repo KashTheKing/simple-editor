@@ -95,8 +95,10 @@ pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "audio.repair",
         desc: "Route clips through a one-click DSP chain (a named bus + filters), left fully editable \
-               in the Mixer; re-applying reuses the bus. Returns the bus id.",
-        args: &["clip_ids:array:true:", "preset:string:true:repair|clarity"],
+               in the Mixer; re-applying reuses the bus (a sweep gets its own, keyed over the clips). \
+               Presets: repair, clarity and every Gallery audio effect (gallery.list tab=AudioEffects). \
+               Returns the bus id.",
+        args: &["clip_ids:array:true:", "preset:string:true:repair|clarity|telephone|radio|hall|… (id or name)"],
         kind: ToolKind::Mutate,
         run: |app, args| {
             let a = Args(args);
@@ -104,7 +106,7 @@ pub const TOOLS: &[ToolDef] = &[
             let preset = req(a.str("preset"), "preset")?;
             let bus = app.project.apply_repair(&ids, preset);
             if bus == 0 {
-                return Err(format!("unknown preset '{preset}' (repair | clarity)"));
+                return Err(format!("unknown preset '{preset}' (repair, clarity or a Gallery audio effect), or no such clip"));
             }
             Ok(ToolOutcome::Done(json!({"ok": true, "bus_id": bus})))
         },
