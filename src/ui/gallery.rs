@@ -442,14 +442,15 @@ fn lib_cell(
 ) -> Response {
     let drag = (!c.skill).then(|| crate::ui::DragPayload::LibItem(c.id.clone()));
     let short = crate::engine::library::split_id(&c.id).map(|(_, s)| s).unwrap_or_default();
-    let r = card(ui, ("lib", c.id.as_str()), &c.name, drag, false, |p, t| {
+    let label = if c.skill { title_of(&c.name) } else { c.name.clone() };
+    let r = card(ui, ("lib", c.id.as_str()), &label, drag, false, |p, t| {
         if p.clip_rect().intersects(t) {
             // an installed shader effect shows what it does (rendered by the GPU), else the catalogue picture
             let own = (c.kind == crate::engine::library::Kind::Effect && c.installed)
                 .then(|| crate::ui::effects_ui::library_thumbnail(&short))
                 .flatten()
                 .map(|tex| (tex, [0, 0]));
-            thumb_or_blank(p, t, own.or_else(|| thumb(&c.id)));
+            lib_picture(p, t, c, own.or_else(|| thumb(&c.id)));
         }
         if !c.installed {
             cloud(p, t);
@@ -486,6 +487,145 @@ fn lib_cell(
         }
     });
     r
+}
+
+/// A library card's picture: its thumbnail when there is one, else never a blank tile - a skill is drawn
+/// as a document card (a `.md` page tinted by its category, the category's symbol, title and the first
+/// line of its description), every other kind as its type symbol (HTML `</>`, an icon outline...).
+fn lib_picture(p: &egui::Painter, t: Rect, c: &LibCell, thumb: Option<(egui::TextureId, [u32; 2])>) {
+    use crate::engine::library::Kind;
+    use crate::ui::tools::Glyph;
+    if thumb.is_some() {
+        return thumb_or_blank(p, t, thumb);
+    }
+    let (g, tint): (Option<Glyph>, Color32) = match c.kind {
+        Kind::Skill => return skill_card(p, t, c),
+        Kind::Html => (None, Color32::from_rgb(230, 120, 60)),
+        Kind::Icon => (Some(Glyph::Star), Color32::from_rgb(240, 200, 70)),
+        Kind::Effect => (Some(Glyph::Sliders), Color32::from_rgb(120, 160, 240)),
+        Kind::Transition => (Some(Glyph::Transition), Color32::from_rgb(150, 120, 230)),
+        Kind::Lut => (Some(Glyph::CurveIcon), Color32::from_rgb(220, 90, 170)),
+    };
+    type_tile(p, t, tint, g, "</>");
+}
+
+/// A tile tinted `tint` with one big symbol in the middle: `g`, or `text` (monospace) without one.
+fn type_tile(p: &egui::Painter, t: Rect, tint: Color32, g: Option<crate::ui::tools::Glyph>, text: &str) {
+    p.rect_filled(t, 2.0, tint.gamma_multiply(0.22));
+    let px = (t.height() * 0.42).clamp(12.0, 40.0);
+    match g {
+        Some(g) => big_glyph(p, t.center(), g, px, tint),
+        None => {
+            p.text(t.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::monospace(px * 0.8), tint);
+        }
+    }
+}
+
+/// `g` from Windows' icon font at `px` (the font `tools::draw_glyph` uses, at any size); the few
+/// vector-only glyphs fall back to `draw_glyph`'s own size.
+fn big_glyph(p: &egui::Painter, at: egui::Pos2, g: crate::ui::tools::Glyph, px: f32, col: Color32) {
+    let Some(ch) = g.icon() else {
+        return crate::ui::tools::draw_glyph(p, Rect::from_center_size(at, egui::vec2(px, px)), g, col);
+    };
+    let icons = crate::theme::icons();
+    let family = match p.fonts(|f| f.definitions().families.contains_key(&icons)) {
+        true => icons,
+        false => egui::FontFamily::Proportional,
+    };
+    p.text(at, egui::Align2::CENTER_CENTER, ch, egui::FontId::new(px, family), col);
+}
+
+/// A skill's category from its id, name and tags: (symbol, tint). Nothing matched: a plain note.
+fn skill_category(c: &LibCell) -> (crate::ui::tools::Glyph, Color32) {
+    use crate::ui::tools::Glyph;
+    let hay = format!("{} {} {}", c.id, c.name, c.tags.join(" ")).to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|w| hay.contains(w));
+    if has(&["convert", "premiere", "resolve", "after effects", "avid"]) {
+        (Glyph::Wrench, Color32::from_rgb(70, 190, 180))
+    } else if has(&["style", "preset", "trailer", "vlog", "montage", "recap", "highlight"]) {
+        (Glyph::Clapperboard, Color32::from_rgb(235, 90, 110))
+    } else if has(&["caption", "subtitle", "translate", "transcript"]) {
+        (Glyph::Subtitles, Color32::from_rgb(240, 200, 70))
+    } else if has(&["color", "colour", "grade", "lut", "cdl", "look"]) {
+        (Glyph::Eyedropper, Color32::from_rgb(200, 110, 230))
+    } else if has(&["audio", "loud", "sfx", "music", "beat", "duck", "voice", "sound"]) {
+        (Glyph::Waveform, Color32::from_rgb(90, 200, 120))
+    } else if has(&["export", "deliver", "chapter", "description", "thumbnail", "render"]) {
+        (Glyph::ExportArrow, Color32::from_rgb(90, 150, 240))
+    } else if has(&["cut", "silence", "filler", "pacing", "trim", "j-cut", "split", "reframe", "b-roll"]) {
+        (Glyph::Razor, Color32::from_rgb(240, 140, 60))
+    } else {
+        (Glyph::Notepad, Color32::from_rgb(150, 160, 175))
+    }
+}
+
+/// `text` laid out in at most `rows` lines of width `w`, the rest cut with an ellipsis.
+fn clipped(p: &egui::Painter, text: &str, font: egui::FontId, col: Color32, w: f32, rows: usize) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple(text.to_string(), font, col, w.max(1.0));
+    job.wrap = egui::text::TextWrapping {
+        max_width: w.max(1.0),
+        max_rows: rows.max(1),
+        break_anywhere: rows <= 1,
+        overflow_character: Some('\u{2026}'),
+    };
+    p.layout_job(job)
+}
+
+/// A skill's name as a title: `cut-silences` -> "Cut silences" (a name with capitals is kept).
+fn title_of(name: &str) -> String {
+    if name.chars().any(|c| c.is_uppercase()) {
+        return name.to_string();
+    }
+    let t = name.replace(['-', '_'], " ");
+    let mut cs = t.chars();
+    cs.next().map(|f| f.to_uppercase().chain(cs).collect()).unwrap_or_default()
+}
+
+/// The document card: a `.md` page with a folded corner, tinted by the skill's category, the category
+/// symbol on it, and beside it the title and the description (as many lines as the card size allows).
+fn skill_card(p: &egui::Painter, t: Rect, c: &LibCell) {
+    let (g, tint) = skill_category(c);
+    p.rect_filled(t, 2.0, tint.gamma_multiply(0.16));
+    let m = (t.height() * 0.12).clamp(3.0, 8.0);
+    let ph = t.height() - 2.0 * m;
+    let pw = (ph * 0.78).min(t.width() * 0.42);
+    let page = Rect::from_min_size(t.min + egui::vec2(m, m), egui::vec2(pw, ph));
+    let f = pw * 0.32;
+    let paper = Color32::from_rgb(238, 240, 244);
+    let (tl, tr, tr2) = (page.left_top(), egui::pos2(page.right() - f, page.top()), egui::pos2(page.right(), page.top() + f));
+    p.add(egui::Shape::convex_polygon(vec![tl, tr, tr2, page.right_bottom(), page.left_bottom()], paper, Stroke::new(1.0, tint)));
+    p.add(egui::Shape::convex_polygon(vec![tr, egui::pos2(tr.x, tr2.y), tr2], tint, Stroke::NONE));
+    big_glyph(p, page.center() - egui::vec2(0.0, ph * 0.08), g, (pw * 0.5).clamp(9.0, 30.0), tint);
+    if ph >= 30.0 {
+        let fs = (ph * 0.16).clamp(7.0, 11.0);
+        let at = egui::pos2(page.center().x, page.bottom() - 2.0);
+        p.text(at, egui::Align2::CENTER_BOTTOM, ".md", egui::FontId::monospace(fs), tint);
+    }
+    let x = page.right() + m;
+    let w = t.right() - m - x;
+    if w < 18.0 {
+        return;
+    }
+    // beside the page: the description (the title is the label under the card); a wide card also
+    // repeats the title on the card. The cloud badge of an online card keeps the top-right corner free.
+    let px = (t.height() * 0.17).clamp(8.0, 12.0);
+    let mut y = t.top() + m;
+    if !c.installed {
+        y += 12.0_f32.min(t.height() * 0.2);
+    }
+    if w >= 60.0 {
+        let title = clipped(p, &title_of(&c.name), egui::FontId::proportional(px + 2.0), Color32::WHITE, w, 1);
+        let h = title.size().y;
+        p.galley(egui::pos2(x, y), title, Color32::WHITE);
+        y += h + 1.0;
+    }
+    let room = t.bottom() - m - y;
+    let text = if c.desc.is_empty() { title_of(&c.name) } else { c.desc.clone() };
+    if room >= px {
+        let rows = ((room / (px * 1.25)).floor() as usize).max(1);
+        let dim = Color32::from_gray(205);
+        p.galley(egui::pos2(x, y), clipped(p, &text, egui::FontId::proportional(px), dim, w, rows), dim);
+    }
 }
 
 /// The cells that pass the filters, in the chosen order (counted into the header's "shown / total").
@@ -1173,6 +1313,9 @@ fn sounds_tab(
                         );
                     }
                     _ => {
+                        // peaks still loading (or none): the sound symbol, never a blank tile
+                        let px = (t.height() * 0.42).clamp(12.0, 40.0);
+                        big_glyph(p, t.center(), crate::ui::tools::Glyph::Waveform, px, palette.clip_audio);
                         SOUND_WANT.with(|w| {
                             let mut w = w.borrow_mut();
                             if !w.contains(&file) {
@@ -1272,7 +1415,7 @@ fn card(
     let accent = ui.visuals().selection.stroke.color;
     let border = if r.hovered() || selected { accent } else { ui.visuals().widgets.noninteractive.bg_stroke.color };
     p.rect_stroke(tile, 2.0, Stroke::new(if r.hovered() || selected { 2.0 } else { 1.0 }, border), StrokeKind::Inside);
-    let g = p.layout(name.to_string(), font, ui.visuals().text_color(), cw - 4.0);
+    let g = clipped(&p, name, font, ui.visuals().text_color(), cw - 4.0, 1);
     let tx = (rect.left() + (cw - g.size().x) / 2.0).max(rect.left());
     p.galley(egui::pos2(tx, tile.bottom() + 2.0), g, ui.visuals().text_color());
     if let (true, Some(payload)) = (lifted, drag) {
@@ -1744,6 +1887,117 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_fonts(crate::theme::test_fonts());
         ctx
+    }
+
+    /// Paint one library card picture into a tile of the S / M / L size and return its shapes
+    /// (flattened), minus nothing: the caller decides what counts as "blank".
+    fn picture_shapes(c: &LibCell, size: Size, thumb: Option<(egui::TextureId, [u32; 2])>) -> Vec<egui::Shape> {
+        let ctx = ctx();
+        let w = size.base_w();
+        let tile = Rect::from_min_size(egui::pos2(10.0, 10.0), egui::vec2(w, (w * 9.0 / 16.0).round()));
+        let out = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| lib_picture(ui.painter(), tile, c, thumb));
+        });
+        fn flat(s: &egui::Shape, out: &mut Vec<egui::Shape>) {
+            match s {
+                egui::Shape::Vec(v) => v.iter().for_each(|s| flat(s, out)),
+                s => out.push(s.clone()),
+            }
+        }
+        let mut v = Vec::new();
+        out.shapes.iter().for_each(|c| flat(&c.shape, &mut v));
+        v
+    }
+
+    fn cell(kind: Kind, id: &str, name: &str, desc: &str, tags: &[&str]) -> LibCell {
+        LibCell {
+            id: id.into(),
+            kind,
+            name: name.into(),
+            desc: desc.into(),
+            installed: false,
+            busy: None,
+            skill: kind == Kind::Skill,
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            yours: false,
+        }
+    }
+
+    /// User report (screenshot): every Skills card was an empty dark tile with only the cloud and the
+    /// name. Without a thumbnail no library kind draws a blank tile, at any card size: a skill gets its
+    /// document card (page + symbol + title), every other kind its type symbol.
+    #[test]
+    fn library_cards_without_a_thumbnail_are_never_blank() {
+        for kind in Kind::ALL {
+            let c = cell(kind, &format!("{}/x", kind.dir()), "Cut Silences", "Remove pauses from talk.", &["cut"]);
+            for size in [Size::S, Size::M, Size::L] {
+                let shapes = picture_shapes(&c, size, None);
+                let marks = shapes.iter().filter(|s| matches!(s, egui::Shape::Text(_) | egui::Shape::Path(_))).count();
+                assert!(marks >= 1, "{kind:?} at {size:?} drew only a background: {shapes:?}");
+                if kind == Kind::Skill {
+                    let page = shapes.iter().any(|s| matches!(s, egui::Shape::Path(p) if p.closed && p.points.len() == 5));
+                    assert!(page, "a skill card has its folded page at {size:?}");
+                    let texts: Vec<String> = shapes
+                        .iter()
+                        .filter_map(|s| if let egui::Shape::Text(t) = s { Some(t.galley.text().to_string()) } else { None })
+                        .collect();
+                    assert!(texts.iter().any(|t| t.contains("Remove")), "the description is on the card at {size:?}: {texts:?}");
+                    if size == Size::L {
+                        assert!(texts.iter().any(|t| t.starts_with("Cut")), "a wide card shows the title too: {texts:?}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A skill that names a picture (`thumb:`) shows it instead of the drawn card.
+    #[test]
+    fn a_skill_with_a_thumbnail_shows_it() {
+        let c = cell(Kind::Skill, "skills/x", "X", "d", &[]);
+        let tex = egui::TextureId::User(7);
+        let shapes = picture_shapes(&c, Size::M, Some((tex, [16, 9])));
+        assert!(shapes.iter().any(|s| matches!(s, egui::Shape::Mesh(m) if m.texture_id == tex)), "{shapes:?}");
+        assert!(!shapes.iter().any(|s| matches!(s, egui::Shape::Path(_))), "no drawn page over the picture");
+    }
+
+    /// Skills sort into categories by tags / name, each with its own symbol (no two categories alike).
+    #[test]
+    fn skill_categories_from_tags() {
+        let g = |id: &str, tags: &[&str]| skill_category(&cell(Kind::Skill, id, id, "", tags)).0;
+        use crate::ui::tools::Glyph;
+        assert_eq!(g("skills/convert-from-editor", &[]), Glyph::Wrench);
+        assert_eq!(g("skills/style-vlog", &["style"]), Glyph::Clapperboard);
+        assert_eq!(g("skills/captions", &[]), Glyph::Subtitles);
+        assert_eq!(g("skills/color-grade", &[]), Glyph::Eyedropper);
+        assert_eq!(g("skills/loudness", &["audio"]), Glyph::Waveform);
+        assert_eq!(g("skills/deliver", &["export"]), Glyph::ExportArrow);
+        assert_eq!(g("skills/cut-silences", &[]), Glyph::Razor);
+        assert_eq!(g("skills/mystery", &[]), Glyph::Notepad);
+    }
+
+    #[test]
+    fn skill_titles_read_like_titles() {
+        assert_eq!(title_of("cut-silences"), "Cut silences");
+        assert_eq!(title_of("style-vlog"), "Style vlog");
+        assert_eq!(title_of("My Skill"), "My Skill");
+        assert_eq!(title_of(""), "");
+    }
+
+    /// Long names stay on one line, cut with an ellipsis, at the smallest card width.
+    #[test]
+    fn long_card_names_truncate_with_an_ellipsis() {
+        let ctx = ctx();
+        let mut g = None;
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let font = egui::FontId::proportional(10.0);
+                g = Some(clipped(ui.painter(), "A very long skill name that never fits", font, Color32::WHITE, 66.0, 1));
+            });
+        });
+        let g = g.unwrap();
+        assert_eq!(g.rows.len(), 1);
+        let last = g.rows[0].row.glyphs.last().map(|gl| gl.chr);
+        assert!(last == Some('\u{2026}') && g.size().x <= 66.5, "{last:?} {}", g.size().x);
     }
 
     fn run(ctx: &egui::Context, state: &mut GalleryState, settings: &mut Settings) -> GalleryResponse {

@@ -109,7 +109,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         let (note, loading, connected) = (online.note.clone(), online.loading(), online.connected);
         let ctx = ui.ctx().clone();
         let mut thumb = |id: &str| {
-            let p = online.thumb_path(id)?;
+            let p = online.thumb_path(id).or_else(|| {
+                // a skill's own `thumb:` (installed or yours); none: the Gallery draws its card
+                let (_, name) = crate::engine::library::split_id(id).filter(|(k, _)| *k == Kind::Skill)?;
+                crate::engine::skills::get(&name).and_then(|s| crate::engine::skills::thumb_path(&s))
+            })?;
             thumbs.texture(&ctx, &p.to_string_lossy(), 0.0, 54)
         };
         let lib = lib_kind.map(|_| gallery::LibView {

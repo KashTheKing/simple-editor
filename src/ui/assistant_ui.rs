@@ -1341,6 +1341,7 @@ mod tests {
             body: "Do it. $ARGS".into(),
             source,
             path: None,
+            thumb: String::new(),
         }
     }
 
