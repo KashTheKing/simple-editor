@@ -24,10 +24,13 @@ pub enum FilterKind {
     Limiter,
     /// Sibilance compressor keyed from a high-passed sidechain.
     DeEsser,
+    // ---- ws:gallery-audio ----
+    /// Pitch shift in semitones, length kept (two crossfaded delay-line taps).
+    Pitch,
 }
 
 impl FilterKind {
-    pub const ALL: [FilterKind; 13] = [
+    pub const ALL: [FilterKind; 14] = [
         FilterKind::Eq,
         FilterKind::HighPass,
         FilterKind::LowPass,
@@ -42,6 +45,7 @@ impl FilterKind {
         FilterKind::DeHum,
         FilterKind::Limiter,
         FilterKind::DeEsser,
+        FilterKind::Pitch,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -59,6 +63,7 @@ impl FilterKind {
             FilterKind::DeHum => "De-hum",
             FilterKind::Limiter => "Limiter",
             FilterKind::DeEsser => "De-esser",
+            FilterKind::Pitch => "Pitch",
         }
     }
     pub fn params(self) -> &'static [ParamSpec] {
@@ -76,6 +81,7 @@ impl FilterKind {
             FilterKind::DeHum => F_DEHUM,
             FilterKind::Limiter => F_LIMITER,
             FilterKind::DeEsser => F_DEESSER,
+            FilterKind::Pitch => F_PITCH,
         }
     }
 }
@@ -153,6 +159,8 @@ const F_LIMITER: &[ParamSpec] =
     &[ps("Ceiling dB", -1.0, -24.0, 0.0), ps("Lookahead ms", 5.0, 0.0, 20.0), ps("Release ms", 100.0, 5.0, 1000.0)];
 const F_DEESSER: &[ParamSpec] =
     &[ps("Freq Hz", 5000.0, 2000.0, 12000.0), ps("Threshold dB", -24.0, -60.0, 0.0), ps("Ratio", 4.0, 1.0, 20.0)];
+
+const F_PITCH: &[ParamSpec] = &[ps("Semitones", 0.0, -12.0, 12.0), ps("Mix", 1.0, 0.0, 1.0)];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AudioFilter {
@@ -240,7 +248,7 @@ mod tests {
 
     #[test]
     fn filterkind_all_covers_new_variants() {
-        assert_eq!(FilterKind::ALL.len(), 13);
+        assert_eq!(FilterKind::ALL.len(), 14);
         for k in FilterKind::ALL {
             assert!(!k.name().is_empty(), "{k:?}");
             assert!(!k.params().is_empty(), "{k:?}");

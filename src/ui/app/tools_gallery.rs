@@ -258,30 +258,143 @@ fn apply_card(
             Ok(json!({"ok": true, "count": n}))
         }
         GalleryTab::Sounds => Err("Sounds are placed by gallery.apply with `at` (handled before this)".into()),
+        GalleryTab::AudioEffects => apply_audio_fx(&mut app.project, name, clip_ids),
+        GalleryTab::AudioTransitions => {
+            let skip = skip_existing.unwrap_or(app.settings.transition_skip_existing);
+            apply_audio_transition(&mut app.project, &mut app.transitions_ui, skip, name, clip_ids, place)
+        }
         GalleryTab::Templates => Err("gallery.apply doesn't place Templates - use templates.apply".into()),
         // ws:text-titles: Titles places positionally too (and needs the exposed-field zip) - use
         // titles.place, not gallery.apply.
         GalleryTab::Titles => Err("gallery.apply doesn't place Titles - use titles.place".into()),
         // ws:keyframe-blocks: at the playhead, like keyblocks.apply
-        GalleryTab::Animate => {
+        GalleryTab::Animate | GalleryTab::AudioAnimate => {
             let n = super::tools_keyblocks::apply_block(app, name, clip_ids, Some(app.playhead), None)?;
             Ok(json!({"ok": true, "count": n}))
         }
     }
 }
 
+// ---- ws:gallery-audio ----
+/// The audio clips `ids` mean: an audio clip itself, a video clip's linked sound. In order, no repeats.
+pub(super) fn audio_targets(project: &Project, ids: &[Id]) -> Vec<Id> {
+    let mut out: Vec<Id> = Vec::new();
+    for &id in ids {
+        let Some(c) = project.clip(id) else { continue };
+        let ids = if c.kind == ClipKind::Audio { vec![id] } else { project.linked(id) };
+        for a in ids {
+            if project.clip(a).is_some_and(|c| c.kind == ClipKind::Audio) && !out.contains(&a) {
+                out.push(a);
+            }
+        }
+    }
+    out
+}
+
+/// Gallery ▸ Audio ▸ Effects: route the audio clips through the preset's bus (`Project::apply_repair`).
+fn apply_audio_fx(project: &mut Project, name: &str, clip_ids: &[Id]) -> Result<Value, String> {
+    let ids = audio_targets(project, clip_ids);
+    if ids.is_empty() {
+        return Err("Select an audio clip first".into());
+    }
+    let id = crate::engine::mixer_fx::fx_id(name).ok_or_else(|| format!("unknown audio effect '{name}'"))?;
+    let bus = project.apply_repair(&ids, id);
+    if bus == 0 {
+        return Err(format!("couldn't apply '{name}'"));
+    }
+    Ok(json!({"ok": true, "count": ids.len(), "bus_id": bus}))
+}
+
+/// Gallery ▸ Audio ▸ Transitions: a crossfade with a curve or a dip at the spots `place` names (like the
+/// Transitions tab) on the AUDIO clips only - a linked picture is left exactly as it was - or a J / L-cut:
+/// the sound's cut rolled earlier / later than the picture's by the Transitions tab's duration.
+fn apply_audio_transition(
+    project: &mut Project,
+    st: &mut crate::ui::transitions_ui::TransitionsState,
+    skip_existing: bool,
+    name: &str,
+    clip_ids: &[Id],
+    place: Option<&str>,
+) -> Result<Value, String> {
+    use crate::model::{TrackKind, TransitionKind, XfadeCurve};
+    let ids = audio_targets(&project, clip_ids);
+    if ids.is_empty() {
+        return Err("Select an audio clip first".into());
+    }
+    let dur = st.duration;
+    let card = super::super::gallery::AUDIO_TRANSITIONS
+        .iter()
+        .find(|c| c.eq_ignore_ascii_case(name))
+        .ok_or_else(|| format!("unknown audio transition '{name}'"))?;
+    if let Some(j) = match *card {
+        "J-Cut" => Some(true),
+        "L-Cut" => Some(false),
+        _ => None,
+    } {
+        let mut n = 0;
+        for id in ids {
+            let Some(start) = project.clip(id).map(|c| c.start) else { continue };
+            n += project.roll_edit(id, if j { start - dur } else { start + dur }) as usize;
+        }
+        if n == 0 {
+            return Err(format!("{card} needs an audio clip with another one right before it, long enough to roll"));
+        }
+        return Ok(json!({"ok": true, "count": n}));
+    }
+    let (kind, curve) = match *card {
+        "Dip" => (TransitionKind::FadeToColor, XfadeCurve::Linear),
+        "Equal Power" => (TransitionKind::CrossFade, XfadeCurve::EqualPower),
+        "Exponential" => (TransitionKind::CrossFade, XfadeCurve::Exponential),
+        _ => (TransitionKind::CrossFade, XfadeCurve::Linear),
+    };
+    // the picture keeps its own transitions: `add_transition` mirrors onto linked clips
+    let before: Vec<(usize, Vec<crate::model::Transition>)> = project
+        .tracks
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.kind != TrackKind::Audio)
+        .map(|(i, t)| (i, t.transitions.clone()))
+        .collect();
+    let old: std::collections::HashSet<Id> =
+        project.tracks.iter().flat_map(|t| t.transitions.iter().map(|x| x.id)).collect();
+    let n = match place {
+        None => crate::ui::transitions_ui::add_transitions(project, &ids, st, kind, dur, false),
+        Some(w) => {
+            let w = crate::ui::transitions_ui::Where::from_name(w)
+                .ok_or_else(|| format!("where must be start|end|connection|all, not '{w}'"))?;
+            crate::ui::transitions_ui::apply_where(project, st, &ids, kind, dur, w, skip_existing)
+        }
+    };
+    for (i, trs) in before {
+        project.tracks[i].transitions = trs;
+    }
+    for t in project.tracks.iter_mut().flat_map(|t| t.transitions.iter_mut()) {
+        if !old.contains(&t.id) {
+            t.curve = curve;
+        }
+    }
+    if n == 0 {
+        return Err("no transition could go there (the clip is too short)".into());
+    }
+    Ok(json!({"ok": true, "count": n}))
+}
+
 /// Show the Gallery pane on `tab` (also what the Effects / Transitions shortcuts do now).
 pub(super) fn open_tab(app: &mut App, tab: GalleryTab) {
     app.gallery.tab = tab;
     app.gallery.lib = None;
-    app.settings.gallery_tab = tab.name().to_string();
+    if tab.is_audio() {
+        app.settings.gallery_audio_tab = tab.name().to_string();
+    } else {
+        app.settings.gallery_tab = tab.name().to_string();
+    }
     app.surface(Pane::Presets);
 }
 
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "gallery.list",
-        desc: "Card names in one Gallery tab (Looks|Luts|Captions|SpeedRamps|Effects|Transitions|Templates|Titles|Animate|Sounds), or every tab when omitted. Looks excludes saved node-graph presets and reuses color-engine's builtin_looks() - the sole tool surface for Looks. With `source`, `query`, `category` or `sort` (the Gallery header's chips, search box, category menu and sort order) the list is filtered the same way and also holds the library's items for Effects / Transitions / Luts (installed ones always; online ones once the online library is connected: see gallery.connect). `detail` returns {name, source (Built-in|Mine|Installed|Online), id, categories, uses} per card.",
+        desc: "Card names in one Gallery tab (Video side: Looks|Luts|Captions|SpeedRamps|Effects|Transitions|Templates|Titles|Animate; Audio side: AudioAnimate|AudioTransitions|AudioEffects|Sounds), or every tab when omitted. Looks excludes saved node-graph presets and reuses color-engine's builtin_looks() - the sole tool surface for Looks. With `source`, `query`, `category` or `sort` (the Gallery header's chips, search box, category menu and sort order) the list is filtered the same way and also holds the library's items for Effects / Transitions / Luts (installed ones always; online ones once the online library is connected: see gallery.connect). `detail` returns {name, source (Built-in|Mine|Installed|Online), id, categories, uses} per card.",
         args: &[
             "tab:string:false:omit=all tabs",
             "mine:boolean:false:only the items you saved to the Gallery (= source mine)",
@@ -354,7 +467,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "gallery.apply",
-        desc: "Apply a Gallery card (Look/LUT/Caption/SpeedRamp/Effect/Transition) to clip_ids (default selection); Captions is project-wide. Effects: name = an effect's display name or a library id (effects/glow), where=track adds it to every clip on the selection's track. Transitions: name = Cross Fade|Fade to Color|Push|Wipe or a library id (transitions/x); where = start|end (an edge transition on that side of each clip), connection (the cut at its start/end where a clip abuts), connection_start|connection_end, all (the cut at each clip's start, else a fade-in) - omit for the old default (= all, unclamped). Duration is the Transitions tab's, clamped to half the shorter clip. Templates place at the playhead instead - use templates.apply.",
+        desc: "Apply a Gallery card (Look/LUT/Caption/SpeedRamp/Effect/Transition) to clip_ids (default selection); Captions is project-wide. Effects: name = an effect's display name or a library id (effects/glow), where=track adds it to every clip on the selection's track. Transitions: name = Cross Fade|Fade to Color|Push|Wipe or a library id (transitions/x); where = start|end (an edge transition on that side of each clip), connection (the cut at its start/end where a clip abuts), connection_start|connection_end, all (the cut at each clip's start, else a fade-in) - omit for the old default (= all, unclamped). Duration is the Transitions tab's, clamped to half the shorter clip. Audio side (audio clips, or a video clip's linked sound): AudioAnimate = a volume/pan block at the playhead; AudioEffects = route through the preset's Mixer bus (Telephone, Radio, Hall, Pitch Up, Low-pass Sweep…); AudioTransitions = Equal Power|Linear|Exponential crossfade or Dip (with where, as Transitions; the picture is left alone) or J-Cut|L-Cut (roll the sound's cut earlier / later by the transition duration). Templates place at the playhead instead - use templates.apply.",
         args: &[
             "tab:string:true:",
             "name:string:true:",
@@ -509,7 +622,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "gallery.tab",
-        desc: "Open the Gallery pane on a tab (Looks|Luts|Captions|SpeedRamps|Effects|Transitions|Templates|Titles|Animate, or the library tabs HTML|Icons|Skills), the same as clicking it; the pane is shown if it was hidden. What Ctrl+3 (Effects) and Ctrl+4 (Transitions) do. UI-only, no undo.",
+        desc: "Open the Gallery pane on a tab (Video side: Looks|Luts|Captions|SpeedRamps|Effects|Transitions|Templates|Titles|Animate, or the library tabs HTML|Icons|Skills; Audio side: AudioAnimate|AudioTransitions|AudioEffects|Sounds), the same as clicking it; the pane is shown if it was hidden. What Ctrl+3 (Effects) and Ctrl+4 (Transitions) do. UI-only, no undo.",
         args: &["tab:string:true:a tab name from gallery.list"],
         kind: ToolKind::Ui,
         run: |app, args| {
@@ -735,5 +848,151 @@ mod tests {
         assert!(crate::mcp::tools::find("gallery.list").unwrap().args.iter().any(|a| a.starts_with("mine:")));
         assert!(GalleryTab::from_name("Sounds").is_some());
         assert!(GalleryTab::from_name("effects").is_some() && GalleryTab::from_name("Transitions").is_some());
+    }
+
+    // ---- ws:gallery-audio ----
+    /// Video 101 [0,4) + 102 [4,8) linked to audio 201 [0,4) + 202 [4,8) (sound with room to roll).
+    fn av() -> (Project, usize) {
+        let mut p = Project::new();
+        let ai = p.audio_tracks()[0];
+        for (v, a, start, link) in [(101, 201, 0.0, 900), (102, 202, 4.0, 901)] {
+            let mut vc = Clip::new(v, ClipKind::Video, "v", start, 4.0);
+            let mut ac = Clip::new(a, ClipKind::Audio, "a", start, 4.0);
+            vc.link = link;
+            ac.link = link;
+            ac.src_in = 2.0;
+            p.tracks[0].clips.push(vc);
+            p.tracks[ai].clips.push(ac);
+        }
+        (p, ai)
+    }
+
+    /// Every Audio card is ONE `gallery.apply` call, and that tool snapshots once for its undo.
+    #[test]
+    fn audio_cards_apply_through_one_undoable_tool() {
+        let def = crate::mcp::tools::find("gallery.apply").unwrap();
+        assert_eq!(def.kind, ToolKind::Mutate, "gallery.apply = one undo step per card");
+        assert_eq!(crate::mcp::tools::find("audio.repair").unwrap().kind, ToolKind::Mutate);
+        for t in ["AudioAnimate", "AudioTransitions", "AudioEffects", "Sounds"] {
+            assert!(GalleryTab::from_name(t).is_some_and(|t| t.is_audio()), "{t}");
+        }
+    }
+
+    #[test]
+    fn every_audio_effect_routes_the_clip_through_its_chain() {
+        use crate::engine::mixer_fx as fx;
+        for (id, label) in fx::audio_fx_cards() {
+            let (mut p, _) = av();
+            // the linked video selected: its sound gets the effect, the picture nothing
+            let r = apply_audio_fx(&mut p, label, &[101]).unwrap_or_else(|e| panic!("{label}: {e}"));
+            assert_eq!(r["count"], 1, "{label}");
+            let bus = r["bus_id"].as_u64().unwrap();
+            assert_eq!(p.clip(201).unwrap().bus, bus, "{label}: the sound is routed");
+            assert_eq!(p.clip(101).unwrap().bus, 0, "{label}: the picture is not");
+            let b = p.bus(bus).unwrap();
+            assert!(b.name.starts_with(label), "{label}: bus '{}'", b.name);
+            let (_, want) = fx::fx_chain(id, (0.0, 4.0)).unwrap();
+            let kinds = |v: &[crate::model::AudioFilter]| v.iter().map(|f| f.kind).collect::<Vec<_>>();
+            assert_eq!(kinds(&b.filters), kinds(&want), "{label}");
+            for (got, want) in b.filters.iter().zip(&want) {
+                for (i, w) in want.params.iter().enumerate() {
+                    assert!((got.params[i].value - w.value).abs() < 1e-9, "{label}: param {i}");
+                }
+            }
+        }
+        // the parameters a card promises
+        let (mut p, _) = av();
+        let bus = apply_audio_fx(&mut p, "Telephone", &[201]).unwrap()["bus_id"].as_u64().unwrap();
+        let f = &p.bus(bus).unwrap().filters;
+        assert_eq!((f[0].kind, f[0].params[0].value), (crate::model::FilterKind::HighPass, 400.0));
+        assert_eq!((f[1].kind, f[1].params[0].value), (crate::model::FilterKind::LowPass, 3400.0));
+        let bus = apply_audio_fx(&mut p, "pitch_up", &[201]).unwrap()["bus_id"].as_u64().unwrap();
+        assert_eq!(p.bus(bus).unwrap().filters[0].params[0].value, 5.0, "an id works as well as a name");
+        // a sweep is keyed across the clip, and each use gets its own bus
+        let s1 = apply_audio_fx(&mut p, "Low-pass Sweep", &[201]).unwrap()["bus_id"].as_u64().unwrap();
+        let s2 = apply_audio_fx(&mut p, "Low-pass Sweep", &[202]).unwrap()["bus_id"].as_u64().unwrap();
+        assert_ne!(s1, s2);
+        let a = &p.bus(s2).unwrap().filters[0].params[0];
+        assert_eq!(a.keys.len(), 3);
+        assert_eq!((a.keys[0].t, a.keys[2].t), (4.0, 8.0));
+        assert!(a.at(4.0) > 10_000.0 && a.at(8.0) < 400.0);
+        // nothing audio to take it
+        let mut q = Project::new();
+        q.tracks[0].clips.push(Clip::new(5, ClipKind::Video, "v", 0.0, 2.0));
+        assert!(apply_audio_fx(&mut q, "Hall", &[5]).is_err());
+        assert!(apply_audio_fx(&mut p, "No Such Effect", &[201]).is_err());
+    }
+
+    #[test]
+    fn audio_crossfades_set_their_curve_and_leave_the_picture_alone() {
+        use crate::model::{TransitionKind as K, XfadeCurve as C};
+        for (card, kind, curve) in [
+            ("Equal Power", K::CrossFade, C::EqualPower),
+            ("Linear", K::CrossFade, C::Linear),
+            ("Exponential", K::CrossFade, C::Exponential),
+            ("Dip", K::FadeToColor, C::Linear),
+        ] {
+            let (mut p, ai) = av();
+            let mut st = crate::ui::transitions_ui::TransitionsState::default();
+            let r = apply_audio_transition(&mut p, &mut st, false, card, &[202], None).unwrap();
+            assert_eq!(r["count"], 1, "{card}");
+            let trs = &p.tracks[ai].transitions;
+            assert_eq!(trs.len(), 1, "{card}");
+            assert_eq!((trs[0].right, trs[0].kind, trs[0].curve), (202, kind, curve), "{card}");
+            assert!(p.tracks[0].transitions.is_empty(), "{card}: the linked picture got no transition");
+        }
+        // the gains the mixer uses
+        let (o, i) = crate::model::audio_curve_gains(false, C::EqualPower, 0.5);
+        assert!((o - 0.7071).abs() < 1e-3 && (i - 0.7071).abs() < 1e-3);
+        assert_eq!(crate::model::audio_curve_gains(true, C::Linear, 0.5), (0.0, 0.0), "a dip is silent mid-way");
+        assert_eq!(crate::model::audio_curve_gains(false, C::Exponential, 0.5), (0.25, 0.25));
+        // an existing picture transition at that cut survives an audio card
+        let (mut p, _) = av();
+        let vt = p.add_transition(102, K::Wipe, 1.0).unwrap();
+        let mut st = crate::ui::transitions_ui::TransitionsState::default();
+        apply_audio_transition(&mut p, &mut st, false, "Dip", &[202], None).unwrap();
+        assert_eq!(p.tracks[0].transitions.iter().map(|t| (t.id, t.kind)).collect::<Vec<_>>(), [(vt, K::Wipe)]);
+    }
+
+    #[test]
+    fn j_and_l_cuts_roll_only_the_sound() {
+        for (card, cut) in [("J-Cut", 3.0), ("L-Cut", 5.0)] {
+            let (mut p, _) = av();
+            let mut st = crate::ui::transitions_ui::TransitionsState { duration: 1.0, ..Default::default() };
+            apply_audio_transition(&mut p, &mut st, false, card, &[102], None).unwrap_or_else(|e| panic!("{card}: {e}"));
+            assert_eq!(p.clip(201).unwrap().end(), cut, "{card}");
+            assert_eq!(p.clip(202).unwrap().start, cut, "{card}");
+            assert_eq!((p.clip(101).unwrap().end(), p.clip(102).unwrap().start), (4.0, 4.0), "{card}: picture kept");
+        }
+        // the first clip has nothing before it to roll into
+        let (mut p, _) = av();
+        let mut st = crate::ui::transitions_ui::TransitionsState::default();
+        assert!(apply_audio_transition(&mut p, &mut st, false, "J-Cut", &[201], None).is_err());
+    }
+
+    #[test]
+    fn audio_animate_cards_key_volume_and_pan() {
+        let s = Settings::default();
+        let audio = crate::ui::gallery::card_names(GalleryTab::AudioAnimate, &s);
+        let video = crate::ui::gallery::card_names(GalleryTab::Animate, &s);
+        for n in ["Sound Swell", "Sound Fade", "Duck", "Tremolo", "Pan Sweep", "Pan Swing"] {
+            assert!(audio.iter().any(|a| a == n) && !video.iter().any(|v| v == n), "{n} is on the Audio side only");
+        }
+        assert!(video.iter().any(|v| v == "Pop In") && !audio.iter().any(|a| a == "Pop In"));
+        for name in &audio {
+            let (mut p, _) = av();
+            let b = crate::model::find_block(&[], name).unwrap();
+            assert!(p.apply_key_block(201, &b, Some(0.0), None).is_some(), "{name}");
+            let c = p.clip(201).unwrap();
+            assert!(c.volume.keys.len() + c.pan.keys.len() >= 2, "{name} keyed nothing");
+            assert!(p.clip(101).unwrap().opacity.keys.is_empty(), "{name}");
+        }
+        let (mut p, _) = av();
+        p.apply_key_block(201, &crate::model::find_block(&[], "Duck").unwrap(), Some(0.0), None).unwrap();
+        assert!((p.clip(201).unwrap().volume.at(1.0) - 0.3).abs() < 1e-6, "ducked to 30 % mid-block");
+        let (mut p, _) = av();
+        p.apply_key_block(201, &crate::model::find_block(&[], "Pan Sweep").unwrap(), Some(0.0), None).unwrap();
+        let pan = &p.clip(201).unwrap().pan;
+        assert_eq!((pan.at(0.0), pan.at(2.0)), (-1.0, 1.0), "left to right");
     }
 }

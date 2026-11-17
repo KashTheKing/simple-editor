@@ -62,6 +62,8 @@ mod folder_import;
 mod frame;
 // ---- ws:inspector-gallery ----
 mod gallery_ctl;
+mod gallery_audition; // ws:gallery-audio
+pub(crate) mod template_thumbs; // ws:gallery-audio
 mod gallery_drop_ctl;
 pub(crate) mod gallery_mine;
 mod gpu;
@@ -1010,6 +1012,7 @@ impl App {
         app.detect_ytdlp(&cc.egui_ctx);
         app.refresh_presets();
         app.player.set_project(&app.project);
+        app.gallery = crate::ui::gallery::GalleryState::from_settings(&app.settings); // ws:gallery-audio
         if let Some(p) = open {
             app.open_path(&p);
             // launched from Explorer ("Open with"): behave like a player - full screen, rolling

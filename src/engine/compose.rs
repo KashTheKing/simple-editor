@@ -1617,6 +1617,7 @@ mod tests {
             edge: Default::default(),
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_video("Z:\\nope\\fake.mp4", Box::new(FakeVideo([255, 0, 0, 255])));
@@ -1702,6 +1703,7 @@ mod tests {
             edge: crate::model::TransitionEdge::Out,
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         let mut comp = Compositor::new();
         let mut text = TextRasterizer::new();
@@ -1785,6 +1787,7 @@ mod tests {
             edge: Default::default(),
             shader: String::new(),
             params: Vec::new(),
+            curve: Default::default(),
         });
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         let mut comp = Compositor::new();

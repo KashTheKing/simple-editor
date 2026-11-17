@@ -282,6 +282,8 @@ pub(crate) enum ThumbSource {
     Lut(std::path::PathBuf),
     #[allow(dead_code)] // Captions draw a name tile, never a GPU thumbnail - see doc comment above
     Caption(usize),
+    /// ws:gallery-audio: a Titles / Templates card, by its content key (`template_thumbs::key`).
+    Template(u64),
 }
 
 #[cfg(test)]
