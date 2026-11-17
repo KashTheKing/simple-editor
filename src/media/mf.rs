@@ -57,7 +57,15 @@ fn init() -> Result<(), String> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
     }
-    MF.get_or_init(|| unsafe { MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET).map_err(err) }).clone()
+    MF.get_or_init(|| unsafe {
+        MFStartup(MF_VERSION, MFSTARTUP_NOSOCKET).map_err(err)?;
+        // MF's own work queues (file reads, async decoders) under MMCSS "Playback" too, like the render
+        // and audio threads (`bg::raise_thread`); best effort
+        let mut task = 0u32;
+        let _ = MFRegisterPlatformWithMMCSS(windows::core::w!("Playback"), &mut task, 0);
+        Ok(())
+    })
+    .clone()
 }
 
 /// COM on the calling thread, before a reader that another thread opens is handed to it (the

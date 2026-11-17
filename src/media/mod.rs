@@ -483,7 +483,9 @@ impl DecoderPool {
     fn spawn_open(&self, path: &str, first: Option<f64>, size: Option<(u32, u32)>) -> Opening {
         mf::init_thread(); // COM must stay up on the thread that will use the reader
         let (b, p, still, gpu) = (self.backend, path.to_string(), self.stills.get(path).copied(), self.gpu_frames);
+        let prio = bg::priority();
         std::thread::spawn(move || {
+            bg::inherit(prio);
             let mut v = open_known(&p, b, still, gpu).ok()?;
             if let Some(t) = first.filter(|_| !v.is_still()) {
                 let (w, h) = size.unwrap_or(v.size());
@@ -797,12 +799,14 @@ impl DecoderPool {
             }
             done
         };
+        let prio = bg::priority(); // the helpers decode at the caller's priority
         let results: Vec<Done> = std::thread::scope(|s| {
             let mut work = groups.iter_mut().zip(spares.iter_mut());
             let first = work.next();
             let handles: Vec<_> = work
                 .map(|((_, dec, idx), sp)| {
                     s.spawn(move || {
+                        bg::inherit(prio);
                         mf::init_thread(); // MF readers live in the multithreaded apartment
                         run(dec, &idx[..], sp)
                     })
