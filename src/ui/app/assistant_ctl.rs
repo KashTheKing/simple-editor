@@ -1007,6 +1007,7 @@ pub(super) fn palette_row(text: &str) -> crate::ui::palette::Row {
         glyph: Some(crate::ui::tools::Glyph::Assistant),
         enabled: !text.is_empty(),
         reason: None,
+        ..Default::default()
     }
 }
 

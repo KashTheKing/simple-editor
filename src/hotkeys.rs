@@ -171,7 +171,8 @@ actions! {
     ColorMatch => "color_match", "Colour Match to Reference", None;
     BypassGrade => "bypass_grade", "Bypass Grade", None;
     // ---- ws:command-palette ----
-    CommandPalette => "command_palette", "Command Palette", sc(CTRL, Key::K);
+    // Ctrl+P since 1.3.1 (was Ctrl+K, still an alias while nothing else holds it: `palette_ctl::tick`)
+    CommandPalette => "command_palette", "Command Palette", sc(CTRL, Key::P);
     CheatSheet => "cheat_sheet", "Keyboard Shortcuts overlay", sc(NONE, Key::F1);
     // Owned exclusively by this workstream (see plans/ui-overhaul/issues/command-palette.md's
     // "Actions and hotkeys" table): ws:layout-modes-onboarding (wave 2) consumes these two variants
@@ -442,6 +443,20 @@ impl Hotkeys {
             if let Some(a) = Action::from_id(id) {
                 h.map.insert(a, Self::parse(text));
             }
+        }
+        // A default the user never touched yields to a chord they bound themselves: a newer version's
+        // default (the palette moving to Ctrl+P) must not share a key the user already picked.
+        let own: Vec<KeyboardShortcut> =
+            Action::ALL.iter().filter(|a| s.hotkeys.contains_key(a.id())).filter_map(|&a| h.get(a)).collect();
+        for &a in Action::ALL.iter().filter(|a| !s.hotkeys.contains_key(a.id())) {
+            if own.iter().any(|&k| same(a.default_shortcut(), Some(k))) {
+                h.map.insert(a, None);
+            }
+        }
+        // ...and the palette then keeps its old Ctrl+K, when that is free
+        let ctrl_k = KeyboardShortcut::new(CTRL, Key::K);
+        if h.get(Action::CommandPalette).is_none() && !s.hotkeys.contains_key("command_palette") && h.conflict(ctrl_k).is_none() {
+            h.map.insert(Action::CommandPalette, Some(ctrl_k));
         }
         h
     }

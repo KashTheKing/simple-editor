@@ -132,29 +132,70 @@ fn set_scalar(s: &mut Settings, key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The on/off settings the palette's `>` mode lists: (key, label, current value).
+pub(super) fn bool_settings(s: &Settings) -> Vec<(&'static str, &'static str, bool)> {
+    const ROWS: &[(&str, &str)] = &[
+        ("snap", "Snapping"),
+        ("auto_close_gaps", "Close gaps automatically"),
+        ("gpu", "GPU preview"),
+        ("buffer_before_play", "Buffer before playing"),
+        ("export_guide", "Social guide in exports"),
+        ("mcp_enabled", "MCP server (live co-editing)"),
+        ("assistant_guard", "Ask before an agent exports or opens"),
+        ("voice_autosend", "Send voice requests automatically"),
+        ("start_maximized", "Start maximized"),
+    ];
+    ROWS.iter().filter_map(|&(k, l)| Some((k, l, get_scalar(s, k)?.as_bool()?))).collect()
+}
+
 fn command_kind(cmd: &palette::Command) -> &'static str {
     match cmd {
         palette::Command::Action(_) => "action",
         palette::Command::Pane(_) => "pane",
         palette::Command::Tool(_) => "tool",
         palette::Command::Script(_) => "script",
+        palette::Command::Setting(..) => "setting",
+        palette::Command::GoTo(t) => match t {
+            palette::Target::Clip { .. } => "clip",
+            palette::Target::Timeline(_) => "timeline",
+            palette::Target::Asset(_) => "asset",
+            palette::Target::Bin(_) => "bin",
+            palette::Target::Marker { .. } => "marker",
+            palette::Target::Page(_) => "page",
+            palette::Target::Gallery(..) => "gallery",
+        },
+        palette::Command::Ask(_) => "assistant",
+        palette::Command::Complete(_) => "complete",
     }
 }
 
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "ui.palette",
-        desc: "List palette rows (Actions, Panes, arg-free Tools, Scripts), optionally fuzzy-filtered by 'query'.",
-        args: &["query:string:false:filter text"],
-        kind: ToolKind::Read,
+        desc: "The Ctrl+P palette's rows for 'query', exactly as the window lists them. Plain text = go to (clips on every timeline, timelines, media, bins, markers / comments, pages, panels, Gallery cards); '>' = commands (Actions, panes, arg-free tools, scripts, on/off settings); '/' = the assistant ('/ask <message>', '/<skill> [args]'); ':' = any tool by name. 'pick' (a row index) does what Enter on that row does, 'alt' what Alt+Enter does (add media at the playhead, apply a Gallery card).",
+        args: &[
+            "query:string:false:the palette text, with its leading > / or :",
+            "pick:integer:false:run this row (0 = the first)",
+            "alt:boolean:false:with pick: the secondary action",
+        ],
+        kind: ToolKind::Ui,
         run: |app, args| {
             let rows = palette_ctl::palette_rows(app, arg_str(args, "query").unwrap_or(""));
+            if let Some(i) = arg_u64(args, "pick") {
+                let row = rows.get(i as usize).ok_or("no such row")?;
+                if !row.enabled {
+                    return Err(row.reason.unwrap_or("that row is disabled").into());
+                }
+                let label = row.label.clone();
+                palette_ctl::run(app, row.cmd.clone(), arg_bool(args, "alt").unwrap_or(false));
+                return Ok(ToolOutcome::Done(json!({"ok": true, "ran": label})));
+            }
             let list: Vec<Value> = rows
                 .iter()
                 .map(|r| {
                     json!({
-                        "label": r.label, "shortcut": r.shortcut, "enabled": r.enabled,
-                        "reason": r.reason, "kind": command_kind(&r.cmd),
+                        "label": r.label, "subtitle": r.sub, "group": r.group, "shortcut": r.shortcut,
+                        "enabled": r.enabled, "reason": r.reason, "kind": command_kind(&r.cmd), "alt": r.alt,
                     })
                 })
                 .collect();

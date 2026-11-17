@@ -729,13 +729,16 @@ genuinely-differing diff per app was (`src/keymaps.rs`'s own doc comment):
 | Preset | Rebinds |
 |---|---|
 | Simple Editor (default) | — (this preset is exactly `Hotkeys::reset_all()`) |
-| Premiere | `split` → `Ctrl+K` (Premiere's own "Add Edit" muscle memory), `command_palette` → `Ctrl+Shift+P` (moved off Ctrl+K), `export` → `Ctrl+M` |
+| Premiere | `split` → `Ctrl+K` (Premiere's own "Add Edit" muscle memory), `export` → `Ctrl+M` |
 | Resolve | `split` → `B`, `command_palette` → `Ctrl+Space`, `toggle_transitions` → `Ctrl+Shift+T` |
 | Avid | `command_palette` → `Ctrl+Alt+K`, `split` → `Ctrl+Shift+B` |
 
-`Ctrl+K` opens the **command palette** over every `Action`, `Pane`, arg-free `ToolDef` (`:` opens a
-mini argument form built from the tool's own arg docs), Luau script and workspace — fuzzy-searchable,
-recency-ordered. `F1` opens the **cheat sheet** (a second palette entry point, listing every bound
+`Ctrl+P` (and `Ctrl+K` while nothing else is bound to it) opens the **palette**. Plain text goes to
+clips (every timeline, nested ones too), timelines, Library media and bins, markers / comments, pages,
+panels and Gallery cards; `>` lists every `Action`, `Pane`, arg-free `ToolDef`, Luau script and on/off
+setting; `/` is the assistant (`/ask <message>`, `/<skill> [args]`); `:` any tool by name, with a mini
+argument form built from the tool's own arg docs. `ui.palette {query, pick?, alt?}` lists (or runs) the
+same rows over MCP. `F1` opens the **cheat sheet** (a second palette entry point, listing every bound
 chord). See ARCHITECTURE.md's "Gesture model" table for the timeline's mouse+modifier chords — that
 table is the authoritative source; this doc doesn't duplicate it.
 
