@@ -33,8 +33,8 @@ to work on it*, not what it does.
    worst gap > 50 ms, or any metric is >10% worse than the previous `perf_log.csv` row with the same label.
    `-Project <file.sedit> -Label x` benches a COPY of a real project (no gate). `playback.trace {secs}` (MCP)
    dumps a Chrome-trace JSON of the instrumented spans (`src/perf.rs`).
-6. Check the release binary size against the goal in goals.md when a change adds code/deps — see
-   "Size gate" below for the exact command and thresholds.
+6. No size check here: **release builds and the size gate happen only in the release step** (see "Size
+   gate" and "Releasing"), once, after every branch for that release is merged together.
 7. Structural parity, enforced by the build itself but worth checking by eye before you push: every
    new `Action`/`Gesture`/`Pane`/`pub fn ...(&mut self)` on `Project` has a matching `ToolDef` row;
    every new pane/overlay/window has its own `assert_no_idle_repaint_<context>` test; every new Luau
@@ -56,10 +56,11 @@ and plain `cargo build` never hit this: they use the dev profile (no LTO, many c
 are fast/incremental. Consequences for how you verify:
 
 - Default to `cargo test` / `cargo build` (dev) for iteration and for step 1-3 of Verification
-  above. Only reach for `--release` for the shipped exe and the size gate. **Never benchmark a release
-  build**: benches and the perf gate run the dev exe (its deps are opt-level 3, playback work is MF/GPU;
-  a release build costs minutes per try and changes nothing a bench is looking for). Never use
-  `--release` as a generic "does it build" check either.
+  above. **Debug (dev) builds only, for every agent and session**: no `--release`, no `release-fast`,
+  no size check during feature work, fixes, reviews or benchmarks. Benches and the perf gate run the dev
+  exe (its deps are opt-level 3, playback work is MF/GPU; a release build costs minutes per try and
+  changes nothing a bench is looking for). `--release` exists only in the release step (see
+  "Releasing"): one build of the merged release, the size gate, the shipped exe.
 - Make worktrees with `scripts/worktree.sh <name> <branch>`: each worktree gets its OWN `target/`,
   pre-seeded with hard links to the main tree's compiled dependencies. A change then rebuilds only
   the `simple-editor` crate, incrementally (~20 s + ~20 s for the whole test suite), with no lock
@@ -70,19 +71,18 @@ are fast/incremental. Consequences for how you verify:
 - Test per PR, not batched across a group — `cargo test` is cheap/incremental so there's no real
   time saved by batching, and batching only delays feedback and makes bisecting harder.
 
-For a local build to try out (the user's taskbar exe), use `cargo build --profile release-fast`
-(thin LTO, all cores: minutes, a few MB bigger) and copy `target/release-fast/simple-editor.exe` over
-`target/release/simple-editor.exe`. Keep `--release` for shipped builds and the size gate.
+To try a change out, run the dev exe (`target/debug/simple-editor.exe`, in a scratch profile). The user's
+taskbar exe (`target/release/simple-editor.exe`) is replaced only by the release step.
 
 ### Size gate
 
 `scripts/size.ps1 [-Note "<reason>"]`: builds `--release`, appends `<git-sha>,<bytes>,<note>` to
-`size_log.csv` (repo root), and prints the delta against the previous row. Run it whenever a change
-adds code or a dependency. `/se-verify` (and a reviewer, manually, until that command runs it) treats
-the result as a soft/hard gate:
+`size_log.csv` (repo root), and prints the delta against the previous row. **Run it only in the release
+step**, once, on the merged release branch (never per feature branch or per PR); the release PR body
+carries the `size:` line. The thresholds, measured release against release:
 
 - **≤ +64 KB**: fine, no explanation needed.
-- **> +64 KB**: needs a `size: +N KB — <reason>` line in the PR body explaining why.
+- **> +64 KB**: needs a `size: +N KB — <reason>` line in the release PR body explaining why.
 - **> +300 KB**: needs a *named* offset (what got smaller elsewhere, or an explicit size-budget
   decision recorded in goals.md) — not just a bigger reason string.
 
@@ -294,9 +294,8 @@ row; `tools_registry_tests::every_edit_op_has_a_tool` fails the build if a new
 **Rules for every future PR:** edit only your own marker line/section in each shared table —
 never another workstream's line, never a file this wave's plan names as another workstream's
 exclusive owner. A PR that adds an `Action` variant, a `Gesture` kind, a `Pane`, or a
-`pub fn(&mut self)` on `Project` must add a matching `ToolDef` row in the same PR. Run
-`scripts/size.ps1 -Note <ws>` and put `size: ±N KB` in the PR body (see "Size gate" above for the
-exact thresholds — this landed with size-diet/#18 and every wave-1-3 workstream used it).
+`pub fn(&mut self)` on `Project` must add a matching `ToolDef` row in the same PR. No per-PR size
+check: the size gate runs once in the release step (see "Size gate" above).
 
 All 23 workstreams (waves 0-4) are now merged into `main`; this section stays as the reference for
 the next multi-workstream plan that reuses the same mechanism — see "Concurrent worktree protocol"

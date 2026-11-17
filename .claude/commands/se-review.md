@@ -27,9 +27,9 @@ priorities:
    `assert_no_idle_repaint_<context>` test, and a documented `-- @on <event>` with no `fire_hook(...)`
    call site anywhere in the diff (a plan or doc that *names* an event isn't the same as a PR that
    *wires* it — see ARCHITECTURE.md's "Registries" section for what "real" means here).
-6. **Size gate** — flag a diff that grows compiled code (new `.rs` lines, a new dependency) without
-   a `size: +N KB` / `size: -N KB` note in the PR body (see agents.md's "Size gate" for the exact
-   thresholds: >64 KB needs a reason, >300 KB needs a named offset).
+6. **Size gate** — only on a `release: X.Y.Z` PR: it must carry the `size: ±N KB` line from
+   `scripts/size.ps1` on the merged release (>64 KB needs a reason, >300 KB a named offset). Feature and
+   fix PRs are never size-checked and never need a release build (agents.md "Size gate").
 7. **Wave ordering** — flag a plan whose `depends_on` includes a workstream in the *same* wave —
    it must move to the next wave instead (see agents.md's "Concurrent worktree protocol").
 

@@ -8,10 +8,10 @@ Read [goals.md](../../goals.md) for the current budgets/targets first.
 2. `cargo run -- --selftest` — every step PASS (or an accepted SKIP), including the `idle_repaint`
    line: idle-CPU-0% gate for timed-repaint code added from wave 0 onward (size-diet). A FAIL there
    fails this verify pass.
-3. `scripts/size.ps1` instead of a manual `cargo build --release` + eyeball: it builds release, appends
-   `<sha>,<bytes>,<note>` to `size_log.csv`, and prints the delta vs the previous row. Fail this verify
-   pass when that delta exceeds +65536 bytes and the PR body has no `size: +N KB — reason` line; a
-   delta over +300 KB needs a named offset regardless.
+3. Size: **only when verifying a release** (the merged `release: X.Y.Z` branch): `scripts/size.ps1`
+   builds release, appends `<sha>,<bytes>,<note>` to `size_log.csv` and prints the delta; fail when it
+   exceeds +65536 bytes with no `size: +N KB — reason` line, or +300 KB with no named offset. For any
+   other branch, skip this step entirely: dev builds only, no `--release`.
 4. Playback-affecting change: `cargo build`, then `scripts/perf-bench.ps1 -Synthetic` (dev exe - never benchmark a release build). Fail this verify
    pass when it exits non-zero: dropped frames > 0, worst gap > 50 ms, or any metric >10% worse than the
    previous `perf_log.csv` row with the same label. Surface the summary line.
