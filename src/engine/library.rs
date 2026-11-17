@@ -468,6 +468,14 @@ pub fn meta_of(kind: Kind, text: &str) -> (String, String, Vec<String>, String) 
 /// The catalogue entry a file makes (what `scripts/library-index.ps1` writes into `index.json`).
 pub fn entry_of(kind: Kind, id: &str, text: &str, size: u64) -> Entry {
     let (name, desc, tags, credit) = meta_of(kind, text);
+    // a skill has no rendered thumbnail; its header may name one (`thumb: thumbs/x.jpg`, library-relative)
+    let thumb = match kind {
+        Kind::Skill => {
+            let t = crate::engine::skills::parse(id, text, crate::engine::skills::Source::Library, None).thumb;
+            if safe_rel(&t) { t } else { String::new() }
+        }
+        _ => thumb_of(kind, id),
+    };
     Entry {
         id: full_id(kind, id),
         kind: kind.name().into(),
@@ -477,7 +485,7 @@ pub fn entry_of(kind: Kind, id: &str, text: &str, size: u64) -> Entry {
         file: format!("{}/{id}.{}", kind.dir(), kind.ext()),
         size,
         credit,
-        thumb: thumb_of(kind, id),
+        thumb,
     }
 }
 

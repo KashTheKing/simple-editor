@@ -2,6 +2,13 @@
 
 ## 1.3.1
 
+### Gallery cards
+- **Skill cards are no longer empty tiles**: each skill is a document card (a .md page tinted by its category, with
+  the category's symbol: cut, captions, audio, colour, export, style, converter) with its description beside it and
+  a readable title under it; a skill header can name its own picture with `thumb:`.
+- Library items without a thumbnail (HTML, icons, effects, transitions, LUTs) show their type symbol, a sound shows
+  a waveform symbol while its waveform loads, and card names stay on one line with an ellipsis.
+
 ### AI enhancer
 - **AI Upscale is no longer starved on a busy PC**: the upscaler runs at normal priority and steps down only while
   the timeline or Source monitor plays; the result is encoded on the graphics card (NVENC / QSV / AMF, x264 fallback).
