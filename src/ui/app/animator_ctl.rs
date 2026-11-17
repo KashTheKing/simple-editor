@@ -12,6 +12,11 @@ pub(super) fn frame(app: &mut App, ctx: &egui::Context) {
         crate::ui::animator::set_onion(0);
         app.animator.here = false;
     }
+    // the Animator's loop ends with it: Loop switched off, or a press back on the timeline / Viewer
+    if app.animator.looping && !(app.animator.here && app.animator.loop_play) {
+        app.player.set_loop(None);
+        app.animator.looping = false;
+    }
     // Delete / Backspace / Split belong to the Animator's block or keys after a press in it, and to the
     // timeline's clips again after a press on the timeline or the Viewer
     if ctx.input(|i| i.pointer.any_pressed()) {
@@ -208,6 +213,22 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             Action::ToolSelect => app.animator.tool = AnimTool::Select,
             Action::ToolCut => app.animator.tool = AnimTool::Cut,
             Action::ToggleSnap => app.animator.no_snap = !app.animator.no_snap,
+            // Play runs the range the Animator shows and stops at its end (or repeats it with Loop on)
+            Action::PlayPause
+                if !app.player.is_playing() && !app.play_gate.buffering() && app.animator.range.1 > app.animator.range.0 =>
+            {
+                let (t0, t1) = app.animator.range;
+                if app.playhead < t0 - 1e-6 || app.playhead >= t1 - 1e-3 {
+                    app.seek(t0);
+                }
+                app.play_gated(1.0);
+                if app.animator.loop_play {
+                    app.player.set_loop(Some((t0, t1)));
+                    app.animator.looping = true;
+                } else {
+                    app.play_stop_at = Some(t1);
+                }
+            }
             _ => return false,
         }
         return true;
@@ -251,7 +272,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "keyblocks.set",
-        desc: "Set an applied block's controls and rewrite its keys: strength (0..2, 1 = as designed), dir (left/up/down/right), ease (a preset name or 'design' for the block's own), dur seconds, physics fields (stiffness, damping, bounce, gravity, spin -1..1, freq jolts/s, seed, cover). Resets a hand-edited block.",
+        desc: "Set an applied block's controls and rewrite its keys: strength (0..2, 1 = as designed), dir (left/up/down/right), ease (a preset name or 'design' for the block's own), dur seconds, physics fields (stiffness, damping, bounce, gravity, spin -1..1, freq jolts/s, seed, cover; rigid body - Gravity Fall, Throw & Bounce, Collide: mass 0.1..10, gravity, gravity_dir Left/Up/Down/Right, bounce = elasticity, friction, drag, throw = initial velocity along dir, spin). On a Collide block it runs that drop again with the new body. Resets a hand-edited block.",
         args: &[
             "clip_id:integer:true:",
             "index:integer:true:",
@@ -259,7 +280,7 @@ pub const TOOLS: &[ToolDef] = &[
             "dir:string:false:left/up/down/right",
             "ease:string:false:",
             "dur:number:false:seconds",
-            "physics:object:false:{stiffness, damping, bounce, gravity, spin, freq, seed, cover}",
+            "physics:object:false:{stiffness, damping, bounce, gravity, spin, freq, seed, cover, throw, mass, friction, drag, gravity_dir}",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
@@ -282,11 +303,89 @@ pub const TOOLS: &[ToolDef] = &[
                 }
                 ctl.phys = serde_json::from_value(cur).map_err(|e| format!("physics: {e}"))?;
             }
+            // a Collide block has no keys of its own to rewrite: its rigid-body controls run the drop again
+            if b.name == "Collide" {
+                let n = app.project.recollide(id, i, ctl.phys, ctl.dir);
+                return done(json!({"ok": true, "clips": n}));
+            }
             if let Some(d) = arg_f64(args, "dur") {
                 app.project.retime_key_block(id, i, b.t, d);
             }
             app.project.set_block_ctl(id, i, ctl);
             done(json!({"ok": true}))
+        },
+    },
+    ToolDef {
+        name: "keyblocks.loop",
+        desc: "Loop an applied block: it plays count times (1 = once, up to 50) and grows to count times one cycle's length (as far as the clip lasts). pingpong: every other cycle runs backwards (back and forth). A block of plain or hand-edited keys loops the keys it has.",
+        args: &["clip_id:integer:true:", "index:integer:true:", "count:integer:true:1..50", "pingpong:boolean:false:back and forth"],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let (id, i) = clip_block(args)?;
+            let count = req(arg_u64(args, "count"), "count")? as u32;
+            let pingpong = args.get("pingpong").and_then(|v| v.as_bool()).unwrap_or(false);
+            if !app.project.loop_key_block(id, i, count, pingpong) {
+                return Err("no such block".into());
+            }
+            let b = &app.project.clip(id).ok_or("no such clip")?.blocks[i];
+            done(json!({"ok": true, "t": b.t, "dur": b.dur}))
+        },
+    },
+    ToolDef {
+        name: "keyblocks.loop_keys",
+        desc: "Repeat keyframes: the keys of props in clip-local [from, to] are copied count more times right after to (keys already there are replaced, copies past the clip's end are dropped). Where the span ends on another value than it starts from, the jump back takes one frame. Returns how many keys it added.",
+        args: &[
+            "clip_id:integer:true:",
+            "from:number:true:clip-local s",
+            "to:number:true:clip-local s",
+            "count:integer:true:1..50 more times",
+            "props:array:false:default = every keyed property (x, y, scale, scale_x, scale_y, rotation, opacity, volume, pan, speed)",
+        ],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let id = req(arg_u64(args, "clip_id"), "clip_id")?;
+            let (from, to) = (req(arg_f64(args, "from"), "from")?, req(arg_f64(args, "to"), "to")?);
+            let count = req(arg_u64(args, "count"), "count")?.clamp(1, 50) as u32;
+            let props: Vec<String> = match args.get("props").and_then(|v| v.as_array()) {
+                Some(a) => a.iter().filter_map(|v| v.as_str()).map(String::from).collect(),
+                None => crate::model::BLOCK_PROPS.iter().map(|p| p.to_string()).collect(),
+            };
+            match app.project.loop_keys(id, &props, from, to, count) {
+                0 => Err("no keys to repeat: from..to must hold two or more keys of a property".into()),
+                n => done(json!({"ok": true, "keys_added": n})),
+            }
+        },
+    },
+    ToolDef {
+        name: "animate.collide",
+        desc: "Drop with collisions: the given clips' pictures fall from where they are at timeline t under gravity, land on the frame's bottom edge, stay inside its sides and push each other apart (boxes sized from each clip's media or shape x scale). One simulation run now; each clip gets its Position X / Y (and Rotation when it spins) as one 'Collide' block of plain keys. Every clip is a rigid body: physics = {mass 0.1..10, gravity 0..1, gravity_dir Left/Up/Down/Right, bounce (elasticity) 0..1, friction 0..1, drag 0..1, throw (initial velocity) 0..1, spin -1..1}; heavier bodies are pushed less and slowed less by drag. keyblocks.set on a Collide block changes one clip's body and runs the drop again. Returns how many clips it animated.",
+        args: &[
+            "clip_ids:array:false:defaults to selection (two or more pictures under t)",
+            "t:number:false:timeline s, default = the playhead",
+            "dur:number:false:seconds, default 4 (at most until the first clip ends)",
+            "bounce:number:false:0..1, default 0.45 (same as physics.bounce)",
+            "gravity:number:false:0..1, default 0.55 (same as physics.gravity)",
+            "physics:object:false:{mass, gravity, gravity_dir, bounce, friction, drag, throw, spin} for every clip",
+        ],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let ids = arg_ids(args, "clip_ids").unwrap_or_else(|| app.selection.clone());
+            let t = arg_f64(args, "t").unwrap_or(app.playhead);
+            // a plain drop: no throw, no spin
+            let mut phys = crate::model::Phys { throw: 0.0, spin: 0.0, ..Default::default() };
+            if let Some(p) = args.get("physics").filter(|p| p.is_object()) {
+                let mut cur = serde_json::to_value(phys).map_err(|e| e.to_string())?;
+                for (k, v) in p.as_object().unwrap() {
+                    cur[k] = v.clone();
+                }
+                phys = serde_json::from_value(cur).map_err(|e| format!("physics: {e}"))?;
+            }
+            phys.bounce = arg_f64(args, "bounce").unwrap_or(phys.bounce);
+            phys.gravity = arg_f64(args, "gravity").unwrap_or(phys.gravity);
+            match app.project.collide_drop(&ids, t, arg_f64(args, "dur"), &phys) {
+                0 => Err("need two or more picture clips that are on screen at t, with at least 0.2 s left".into()),
+                n => done(json!({"ok": true, "clips": n})),
+            }
         },
     },
     ToolDef {

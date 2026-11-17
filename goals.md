@@ -268,6 +268,9 @@ and "powerful."
   layout.
 
 **Lists and forms**
+- UI labels are just the name: a label, header, menu row or section title never carries an explanation after it ("Transitions", not "Transitions - how it arrives or leaves"). No dash or colon tails, no asides. If something needs explaining, that goes in the tooltip.
+- Anything in the UI that points at something else is a button that takes you there: text never just names another tab, pane, tool or setting ("pick one in the Gallery's Effects tab"). Put a button beside it that opens that place and brings it to the front.
+- Labels avoid absolutes and lead with what the thing is, then the item: "Properties - Ellipse", not "Ellipse - every key". No "every", "all", "whole", "always" in a title or header to describe scope (standard command names like Select All are fine).
 - UI list/row layout: any vertical list of rows is laid out as a table with fixed, aligned columns [drag handle][arrow][label, fills and truncates][fixed value columns][fixed right-aligned controls]; controls never float after variable-length text; form fields use two aligned columns (labels at one x, inputs at one x); reorder = drag handle + up/down + Alt+Up/Down, one undo step; use the shared helper (`ui::list_rows`).
 
 **Direct manipulation**

@@ -403,12 +403,6 @@ pub fn builtin_blocks() -> Vec<KeyBlock> {
     .collect()
 }
 
-/// Deterministic bar/card colour for a block name.
-pub fn block_color(name: &str) -> [u8; 3] {
-    let h = name.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-    crate::model::LABEL_COLORS[h as usize % crate::model::LABEL_COLORS.len()].1
-}
-
 /// A block by name (case-insensitive): the user's saved ones first (so a save can shadow a builtin),
 /// then the builtins.
 pub fn find_block(user: &[KeyBlock], name: &str) -> Option<KeyBlock> {

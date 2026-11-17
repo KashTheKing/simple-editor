@@ -61,9 +61,26 @@ fn prop_row(
     paths: &[(Id, String)],
     chain: Option<&mut bool>,
 ) {
-    ui.label(label);
+    // [colour bar][name] | [value: fixed width][key controls]: nothing moves when a number gets longer
+    ui.horizontal(|ui| {
+        let short = match label {
+            "Position X" => "x",
+            "Position Y" => "y",
+            "Scale" => "scale",
+            "Scale X" => "scale_x",
+            "Scale Y" => "scale_y",
+            "Rotation" => "rotation",
+            "Opacity" => "opacity",
+            "Pan" => "pan",
+            _ => "volume",
+        };
+        let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 12.0), egui::Sense::hover());
+        ui.painter().rect_filled(bar, 1.0, crate::ui::animator::prop_color(short));
+        ui.label(label);
+    });
     let linked = !a.link.is_none();
     ui.horizontal(|ui| {
+        const VAL_W: f32 = 72.0; // the number box: one width on every row
         let mut v = a.at(lt);
         let r = ui
             .add_enabled_ui(!linked, |ui| match label {
@@ -84,7 +101,8 @@ fn prop_row(
                 // (the range limits what is typed or dragged, not what is shown: a Pop In starts at scale 0, and
                 // clamping that on sight counted as an edit - written to every selected clip)
                 "Scale" | "Scale X" | "Scale Y" => {
-                    ui.add(DragValue::new(&mut v).speed(0.01).range(0.01..=20.0).clamp_existing_to_range(false))
+                    let d = DragValue::new(&mut v).speed(0.01).range(0.01..=20.0).clamp_existing_to_range(false);
+                    ui.add_sized([VAL_W, 18.0], d)
                 }
                 "Opacity" => {
                     let mut pct = v * 100.0;
@@ -96,7 +114,7 @@ fn prop_row(
                     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("test_opacity_slider"), r.id));
                     r
                 }
-                _ => ui.add(DragValue::new(&mut v).speed(1.0)),
+                _ => ui.add_sized([VAL_W, 18.0], DragValue::new(&mut v).speed(1.0)),
             })
             .inner;
         if r.changed() {
