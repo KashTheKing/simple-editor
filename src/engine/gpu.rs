@@ -2876,6 +2876,8 @@ mod browser_tests; // ws:browser-layer: the browser clip and polygon masks on th
 mod library_tests; // ws:shader-library: every library shader on the real driver
 #[cfg(test)]
 mod nested_tests; // ws:nested-gpu: nested sequences as layer trees vs the CPU compositor
+#[cfg(test)]
+mod export_tests; // a see-through HTML render never blacks out an export
 
 #[cfg(test)]
 mod driver_tests {
