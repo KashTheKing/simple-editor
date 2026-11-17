@@ -30,6 +30,10 @@ pub enum Block {
     Paragraph(Vec<Span>),
     /// One entry (already inline-parsed) per bullet.
     BulletList(Vec<Vec<Span>>),
+    /// `1. item` lines: (the number as written, the item).
+    Numbered(Vec<(String, Vec<Span>)>),
+    /// `| a | b |` lines, verbatim (shown monospaced, so the columns line up).
+    Table(String),
     /// Fenced code block, verbatim - no inline spans inside it.
     Code(String),
     /// `---` / `***` / `___` on a line by itself.
@@ -64,6 +68,21 @@ pub fn parse(src: &str) -> Vec<Block> {
             let text = trimmed[level as usize + 1..].trim();
             blocks.push(Block::Heading(level, parse_spans(text)));
             i += 1;
+        } else if trimmed.starts_with('|') {
+            let mut rows = Vec::new();
+            while i < lines.len() && lines[i].trim().starts_with('|') {
+                rows.push(lines[i].trim());
+                i += 1;
+            }
+            blocks.push(Block::Table(rows.join("
+")));
+        } else if numbered(trimmed).is_some() {
+            let mut items = Vec::new();
+            while let Some((n, text)) = lines.get(i).and_then(|l| numbered(l.trim())) {
+                items.push((n.to_string(), parse_spans(text)));
+                i += 1;
+            }
+            blocks.push(Block::Numbered(items));
         } else if is_bullet(trimmed) {
             let mut items = Vec::new();
             while i < lines.len() && is_bullet(lines[i].trim()) {
@@ -77,8 +96,13 @@ pub fn parse(src: &str) -> Vec<Block> {
             i += 1;
             while i < lines.len() {
                 let t = lines[i].trim();
-                let is_special =
-                    t.is_empty() || t.starts_with("```") || t == "---" || heading_level(t).is_some() || is_bullet(t);
+                let is_special = t.is_empty()
+                    || t.starts_with("```")
+                    || t == "---"
+                    || heading_level(t).is_some()
+                    || is_bullet(t)
+                    || numbered(t).is_some()
+                    || t.starts_with('|');
                 if is_special {
                     break;
                 }
@@ -106,6 +130,13 @@ fn is_bullet(line: &str) -> bool {
     line.starts_with("- ") || line.starts_with("* ")
 }
 
+/// "12. text" -> ("12", "text").
+fn numbered(line: &str) -> Option<(&str, &str)> {
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    let rest = line[digits..].strip_prefix(". ")?;
+    (digits > 0 && digits < 4).then(|| (&line[..digits], rest.trim()))
+}
+
 fn bullet_text(line: &str) -> &str {
     line[2..].trim()
 }
@@ -126,8 +157,10 @@ fn parse_spans(text: &str) -> Vec<Span> {
                 continue;
             }
         }
-        if chars[i] == '_' && chars.get(i + 1).is_some_and(|c| !c.is_whitespace()) {
-            if let Some(end) = find(&chars, i + 1, "_") {
+        // `_italic_` only at a word's edge: snake_case_names stay as they are
+        let at_edge = i == 0 || !chars[i - 1].is_alphanumeric();
+        if chars[i] == '_' && at_edge && chars.get(i + 1).is_some_and(|c| !c.is_whitespace()) {
+            if let Some(end) = find(&chars, i + 1, "_").filter(|&e| chars.get(e + 1).is_none_or(|c| !c.is_alphanumeric())) {
                 flush_plain(&mut spans, &mut plain);
                 spans.push(Span::Italic(chars[i + 1..end].iter().collect()));
                 i = end + 1;
@@ -178,6 +211,36 @@ fn find(chars: &[char], from: usize, needle: &str) -> Option<usize> {
     (from..=chars.len() - needle.len()).find(|&i| chars[i..i + needle.len()] == needle[..])
 }
 
+/// `src` as plain text: the Markdown's markup taken out (what "Copy text" copies). Bullets keep a
+/// "- ", numbered items their number, code blocks and tables stay verbatim, a link keeps its address.
+pub fn plain(src: &str) -> String {
+    fn spans(s: &[Span]) -> String {
+        s.iter()
+            .map(|s| match s {
+                Span::Plain(t) | Span::Bold(t) | Span::Italic(t) | Span::Code(t) => t.clone(),
+                Span::Link(t, url) if t == url || url.is_empty() => t.clone(),
+                Span::Link(t, url) => format!("{t} ({url})"),
+            })
+            .collect()
+    }
+    let blocks: Vec<String> = parse(src)
+        .iter()
+        .map(|b| match b {
+            Block::Heading(_, s) | Block::Paragraph(s) => spans(s),
+            Block::BulletList(items) => items.iter().map(|i| format!("- {}", spans(i))).collect::<Vec<_>>().join("
+"),
+            Block::Numbered(items) => items.iter().map(|(n, i)| format!("{n}. {}", spans(i))).collect::<Vec<_>>().join("
+"),
+            Block::Code(t) | Block::Table(t) => t.clone(),
+            Block::Rule => String::new(),
+        })
+        .filter(|s| !s.is_empty())
+        .collect();
+    blocks.join("
+
+")
+}
+
 /// Paint `src` as rendered markdown into `ui`. `palette` colours the bullet dot and code-block
 /// background to match the surrounding custom-painted chrome; everything else follows egui's own
 /// (already palette-derived) visuals, same as a plain `ui.label`.
@@ -199,14 +262,31 @@ pub fn show(ui: &mut egui::Ui, src: &str, palette: &Palette) {
             Block::BulletList(items) => {
                 for item in &items {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new("•").color(palette.text_dim));
+                        ui.label(RichText::new("•  ").color(palette.text_dim));
                         show_spans(ui, item, 14.0, false);
                     });
                 }
             }
+            Block::Numbered(items) => {
+                for (n, item) in &items {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(RichText::new(format!("{n}.  ")).color(palette.text_dim));
+                        show_spans(ui, item, 14.0, false);
+                    });
+                }
+            }
+            Block::Table(rows) => {
+                ui.add(egui::Label::new(RichText::new(rows).monospace()));
+            }
             Block::Code(body) => {
                 egui::Frame::group(ui.style()).fill(palette.panel).show(ui, |ui| {
-                    ui.add(egui::Label::new(RichText::new(body).monospace()));
+                    ui.set_width(ui.available_width());
+                    // a Copy button in the block's top right corner: the code alone, verbatim
+                    let r = ui.add(egui::Label::new(RichText::new(&body).monospace()).wrap_mode(egui::TextWrapMode::Wrap));
+                    let at = egui::Rect::from_min_size(egui::pos2(ui.max_rect().right() - 44.0, r.rect.top() - 2.0), egui::vec2(44.0, 18.0));
+                    if ui.put(at, egui::Button::new(RichText::new("Copy").small()).small()).on_hover_text("Copy the code").clicked() {
+                        ui.ctx().copy_text(body.clone());
+                    }
                 });
             }
             Block::Rule => {
@@ -217,6 +297,26 @@ pub fn show(ui: &mut egui::Ui, src: &str, palette: &Palette) {
 }
 
 fn show_spans(ui: &mut egui::Ui, spans: &[Span], size: f32, heading: bool) {
+    // no links: one label, so a selection copies exactly what was selected and words keep their own
+    // spacing (one label per span left a gap around every bold or code word)
+    if !spans.iter().any(|s| matches!(s, Span::Link(..))) {
+        let mut job = egui::text::LayoutJob::default();
+        let style = ui.style().clone();
+        for span in spans {
+            let r = match span {
+                Span::Plain(t) => RichText::new(t),
+                Span::Bold(t) => RichText::new(t).strong(),
+                Span::Italic(t) => RichText::new(t).italics(),
+                Span::Code(t) => RichText::new(t).monospace().background_color(ui.visuals().extreme_bg_color),
+                Span::Link(..) => unreachable!(),
+            };
+            let r = if heading { r.size(size).strong() } else { r.size(size) };
+            r.append_to(&mut job, &style, egui::FontSelection::Default, egui::Align::Center);
+        }
+        ui.add(egui::Label::new(job).wrap());
+        return;
+    }
+    ui.spacing_mut().item_spacing.x = 0.0;
     for span in spans {
         let base = |t: &str| {
             let r = RichText::new(t).size(size);
@@ -303,6 +403,45 @@ mod tests {
             Block::Rule,
             Block::Paragraph(vec![Span::Plain("below".into())]),
         ]);
+    }
+
+    /// "Copy text" gives the words without the markup; code, numbers and bullets survive.
+    #[test]
+    fn plain_text_has_no_markup() {
+        let src = "## Done
+
+Trimmed **3** pauses in `intro_clip_v2` - see [docs](https://x.y).
+
+1. one
+2. _two_
+
+- a
+
+```
+let a = **1**;
+```
+
+| a | b |
+|---|---|";
+        let p = plain(src);
+        assert_eq!(
+            p,
+            "Done
+
+Trimmed 3 pauses in intro_clip_v2 - see docs (https://x.y).
+
+1. one
+2. two
+
+- a
+
+let a = **1**;
+
+| a | b |
+|---|---|"
+        );
+        assert!(!plain("<b>x</b> **y**").contains("**"));
+        assert_eq!(plain("snake_case_name and _it_"), "snake_case_name and it");
     }
 
     #[test]

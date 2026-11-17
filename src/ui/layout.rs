@@ -1213,6 +1213,14 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
             if menu::row(ui, Some(Glyph::PopOut), "Undock", "").on_hover_text("Into a window of its own").clicked() {
                 self.pop.push(pane);
             }
+            // ---- ws:assistant-chat ----
+            if pane != Pane::Assistant {
+                let r = menu::row(ui, Some(Glyph::Assistant), "Attach to Assistant", "");
+                if r.on_hover_text("A screenshot of this panel, into the Assistant's next message").clicked() {
+                    crate::ui::assistant_data::request_capture(pane);
+                    ui.ctx().request_repaint();
+                }
+            }
             let close = menu::row(ui, Some(Glyph::Cross), "Close", "").on_hover_text("The Window menu brings it back");
             if close.clicked() {
                 self.hide.push(pane);

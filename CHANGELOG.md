@@ -15,6 +15,20 @@
 - Library items without a thumbnail (HTML, icons, effects, transitions, LUTs) show their type symbol, a sound shows
   a waveform symbol while its waveform loads, and card names stay on one line with an ellipsis.
 
+### Assistant chat
+- **The Assistant is a chat app now**: a collapsible sidebar of chats (New chat, search over every chat, pin, rename,
+  save, delete), user and reply bubbles with Markdown, code blocks with a Copy button, tool steps folded, and a composer
+  that grows with the text. Opening the pane starts a new chat with the cursor in the composer; the agent, Tasks, Skills
+  and import / export moved into the `⋯` menu, the model and effort pickers sit small beside Send.
+- **Copy gives clean text.** Right-click a message: Copy text (no markup), Copy as Markdown, Copy attachments, Retry,
+  Edit and resend, Delete. Ctrl+C on text selected in a message copies that text - it no longer also copied the
+  selected clips' JSON over it.
+- **Attach anything**: the paperclip, a drop on the pane, or Ctrl+V of a picture or of files copied in Explorer. Click a
+  thumbnail to preview it; right-click it to Copy (the picture itself) or Save as.
+- **Capture the editor into a message**: the camera menu takes the current frame, a screenshot of any panel, an area you
+  drag anywhere in the window, or the timeline range (a picture plus its clips and tracks); every pane tab's right-click
+  menu has Attach to Assistant. New tool: `assistant.capture`.
+
 ### AI enhancer
 - **AI Upscale is no longer starved on a busy PC**: the upscaler runs at normal priority and steps down only while
   the timeline or Source monitor plays; the result is encoded on the graphics card (NVENC / QSV / AMF, x264 fallback).

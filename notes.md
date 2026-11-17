@@ -715,3 +715,21 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   `<cache>/gallery-thumbs/<key>.rgba` keyed by the template JSON. A failed render retries once, then the type icon.
 - In a fresh worktree `core.autocrlf=true` checks `library/` out as CRLF, so `library_index_matches_files` and
   `connecting_loads_the_index_once` fail there (sizes); not a code problem.
+
+## Assistant chat app (2026-11-17, feat/assistant-chat)
+
+- The "copy gives a giant string" bug: Ctrl+C with clips selected fires `CopyClips`, whose template JSON (HTML layers
+  included) goes to the OS clipboard (`App::os_clipboard`). Copy / Cut of clips now stand aside while a label holds a
+  text selection (`hotkeys::fires_with_text_selected`) and while the pointer is over the Assistant. Message copies
+  go through `markdown::plain` (Copy text) or the raw Markdown; tool-call lines are never copied.
+- egui only makes a label selection from a real drag: headless synthetic drags (and `ui.input` keys, which are
+  `Key` events, not `Event::Copy`) don't select or copy. Live-checked in a scratch instance instead.
+- A right-click on a message is `menu::context_area` (a rect, not a response): its selectable labels take the
+  right-click themselves, so `menu::context` on the message never fired.
+- Picture paste: egui-winit sends no event for Ctrl+V when the clipboard holds no text, so `assistant_ctl::paste_tick`
+  reads the V key with `GetAsyncKeyState` while the composer has focus and takes the picture / file list through
+  `arboard` (already in the build via egui-winit).
+- Captures ask for a screenshot one frame after they are queued (`Shot`), so the menu or the area overlay is gone from
+  the picture; the crop is `tools_uikit::crop_frame`. Captures keep up to 2048 px (`CAPTURE_MAX`), other images 1024.
+- Line-by-line agents (codex, custom) now merge consecutive stdout lines into one Markdown text, so fenced blocks and
+  lists render whole.

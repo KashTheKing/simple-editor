@@ -40,6 +40,11 @@ impl App {
             let inner = i.viewport().inner_rect?;
             Some(egui::pos2(p.x as f32 / i.pixels_per_point, p.y as f32 / i.pixels_per_point) - inner.min.to_vec2())
         });
+        // ---- ws:assistant-chat ---- anything dropped on the Assistant goes into its composer
+        if pos.is_some_and(|p| self.layout.rects.iter().any(|(pane, r)| *pane == Pane::Assistant && r.contains(p))) {
+            super::assistant_ctl::attach_paths(self, &dropped);
+            return;
+        }
         // a project file: open it
         if dropped.len() == 1
             && dropped[0].extension().map(|e| e.to_string_lossy().eq_ignore_ascii_case(PROJECT_EXT)).unwrap_or(false)

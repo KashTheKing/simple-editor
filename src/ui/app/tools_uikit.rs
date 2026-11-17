@@ -244,7 +244,7 @@ pub(super) fn frame(app: &mut App, ctx: &egui::Context) {
 }
 
 /// The screenshot (opaque RGBA pixels), cropped to `px` (a pixel rect, clamped to the image) if given.
-fn crop_frame(img: &egui::ColorImage, px: Option<egui::Rect>) -> Frame {
+pub(super) fn crop_frame(img: &egui::ColorImage, px: Option<egui::Rect>) -> Frame {
     let [w, h] = img.size;
     let (x0, y0, x1, y1) = match px {
         Some(r) => (

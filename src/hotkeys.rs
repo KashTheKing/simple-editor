@@ -533,8 +533,16 @@ impl Hotkeys {
         }
         // exact matching: a chord fits at most one binding, so declaration order is as good as any
         let mut out = Vec::new();
+        // text selected in a label (a chat message, a log): Ctrl+C / Ctrl+X copy that text - egui does it
+        // at the end of the frame - and must not also copy the selected clips over it
+        let text_selected = ctx
+            .plugin_opt::<egui::text_selection::LabelSelectionState>()
+            .is_some_and(|p| p.lock().has_selection());
         ctx.input_mut(|i| {
             for &a in Action::ALL.iter().filter(|&&a| is_late(a) == late) {
+                if !fires_with_text_selected(a, text_selected) {
+                    continue;
+                }
                 if self.get(a).is_some_and(|ks| consume_exact(i, &ks)) {
                     out.push(a);
                 }
@@ -542,6 +550,11 @@ impl Hotkeys {
         });
         out
     }
+}
+
+/// Copy / Cut of clips stand aside while text is selected in a label: Ctrl+C then copies that text.
+fn fires_with_text_selected(a: Action, text_selected: bool) -> bool {
+    !(text_selected && matches!(a, Action::CopyClips | Action::CutClips))
 }
 
 /// Like `InputState::consume_shortcut`, but the pressed modifiers must equal the binding's
@@ -802,6 +815,19 @@ mod tests {
             let (early, late) = run(ev, m);
             assert!(early.is_empty(), "{want:?} must wait for the late pass, got {early:?}");
             assert_eq!(late, vec![want]);
+        }
+    }
+
+    /// Text selected in a label (a chat message) + Ctrl+C copies just that text: the clip Copy / Cut do
+    /// not also fire and put the clips' template JSON on the clipboard over it. (egui only makes a label
+    /// selection from a real drag, so the live check is in notes.md; this pins the gate.)
+    #[test]
+    fn clip_copy_waits_while_text_is_selected() {
+        for a in [Action::CopyClips, Action::CutClips] {
+            assert!(!fires_with_text_selected(a, true) && fires_with_text_selected(a, false), "{a:?}");
+        }
+        for a in [Action::PasteClips, Action::Delete, Action::DuplicateClips] {
+            assert!(fires_with_text_selected(a, true), "{a:?}");
         }
     }
 
