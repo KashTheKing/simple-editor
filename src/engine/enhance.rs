@@ -46,13 +46,54 @@ pub fn version() -> Option<String> {
     parse_manifest(&text).ok().map(|m| m.version)
 }
 
-/// A below-normal-priority child with no console window.
-/// ponytail: same flags as `media::bg::command` on the perf branches; switch to it once that lands.
-fn low(exe: &Path) -> Command {
-    use std::os::windows::process::CommandExt;
-    let mut c = Command::new(exe);
-    c.creation_flags(0x0800_0000 | 0x0000_4000); // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS
-    c
+/// A child with no console window, at normal priority: the upscaler is GPU work that waits on the GPU
+/// per tile, and below normal it starves whenever anything else keeps the CPU busy (97 frames took
+/// ~45 min that way, 5 s per 24 frames at normal). `Pri` drops it below normal only while playing.
+fn child(exe: &Path) -> Command {
+    crate::media::ffpipe::command(exe)
+}
+
+/// Keeps a child's priority class in step with playback: below normal while the timeline or the
+/// Source monitor plays (`media::bg::playing`), normal otherwise. Call `sync` from every wait loop.
+#[derive(Default)]
+struct Pri(Option<bool>);
+
+impl Pri {
+    fn sync(&mut self, child: &std::process::Child) {
+        self.sync_to(child, crate::media::bg::playing());
+    }
+    /// Only calls into Windows when the wanted class changes.
+    fn sync_to(&mut self, child: &std::process::Child, low: bool) {
+        if self.0 != Some(low) && set_low(child, low) {
+            self.0 = Some(low);
+        }
+    }
+}
+
+fn set_low(child: &std::process::Child, low: bool) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::System::Threading::{SetPriorityClass, BELOW_NORMAL_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS};
+    let class = if low { BELOW_NORMAL_PRIORITY_CLASS } else { NORMAL_PRIORITY_CLASS };
+    // SAFETY: the handle belongs to `child`, which outlives this call; a failure leaves the class as it was.
+    unsafe { SetPriorityClass(windows::Win32::Foundation::HANDLE(child.as_raw_handle()), class).is_ok() }
+}
+
+/// `export::wait_ffmpeg` with the priority kept in step with playback while it waits.
+fn wait_child(
+    child: &mut std::process::Child,
+    tail: Option<std::thread::JoinHandle<String>>,
+    pri: &mut Pri,
+    prog: &Progress,
+) -> Result<(), String> {
+    while !prog.is_cancelled() {
+        pri.sync(child);
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(30)),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    export::wait_ffmpeg(child, tail, prog) // exited (or cancelled: it kills): status + stderr tail
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -309,8 +350,13 @@ fn run_child(mut cmd: Command, what: &str, prog: &Progress) -> Result<(), String
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("{what}: {e}"))?;
     let tail = export::stderr_tail(&mut child);
-    export::wait_ffmpeg(&mut child, tail, prog)
-        .map_err(|e| if e == export::CANCELLED { e } else { format!("{what}: {e}") })
+    wait_child(&mut child, tail, &mut Pri::default(), prog).map_err(|e| {
+        if e == export::CANCELLED {
+            e
+        } else {
+            format!("{what}: {e}")
+        }
+    })
 }
 
 /// Upscale `req` into `req.out`. Blocking; a background job (`export::spawn_job`) only.
@@ -342,10 +388,12 @@ fn upscale(
     prog: &Progress,
 ) -> Result<(), String> {
     let (model, native) = req.model.run_as(req.scale);
+    let mut encoder_name = String::from("libx264");
     let shrink = native != req.scale; // x4plus asked for ×2
     let len = req.range.1 - req.range.0;
     prog.set(0.01, "Reading the frames…");
-    let mut x = low(ffmpeg);
+    crate::engine::encoders::start(); // the hardware-encoder probe (cached; never blocks) for the encode below
+    let mut x = child(ffmpeg);
     x.args(["-v", "error", "-y"]);
     if req.still {
         x.arg("-i").arg(&req.src).args(["-frames:v", "1"]).arg(frames.join("00000001.png"));
@@ -363,7 +411,7 @@ fn upscale(
     let n = all.len();
 
     // the encoder: PNGs on stdin, the source's audio for the same range alongside
-    let mut enc = low(ffmpeg);
+    let mut enc = child(ffmpeg);
     enc.args(["-v", "error", "-y"]);
     if req.still {
         enc.args(["-f", "image2pipe", "-c:v", "png", "-i", "-"]);
@@ -378,13 +426,24 @@ fn upscale(
         if shrink {
             enc.args(["-vf", "scale=iw/2:ih/2:flags=lanczos"]);
         }
-        enc.args([
-            "-c:v", "libx264", "-crf", "16", "-preset", "medium", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
-        ]);
-        enc.args(["-shortest", "-movflags", "+faststart"]);
+        // NVENC / QSV / AMF when the probe found one (the frames already came off the GPU), else libx264;
+        // CRF 16 = the export's "visually lossless". ponytail: a hardware encoder that dies mid-run fails
+        // this job and is marked broken, so the next run uses libx264; retrying in place would mean
+        // re-upscaling every frame.
+        // the probe (started above, cached after the first run) usually finishes during the frame read;
+        // on a first run give it up to 30 s rather than settle for libx264
+        let wait = std::time::Instant::now();
+        while !crate::engine::encoders::done() && wait.elapsed() < std::time::Duration::from_secs(30) {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let hw = crate::engine::encoders::best_for("mp4");
+        encoder_name = hw.clone().unwrap_or_else(|| "libx264".into());
+        enc.args(export::codec_args("mp4", hw.as_deref().unwrap_or("libx264"), 16, "medium", &[]));
+        enc.args(["-shortest"]);
     }
     enc.arg(&req.out).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
     let mut encoder = enc.spawn().map_err(|e| format!("ffmpeg: {e}"))?;
+    let mut enc_pri = Pri::default();
     let tail = export::stderr_tail(&mut encoder);
     let mut stdin = encoder.stdin.take();
 
@@ -397,8 +456,9 @@ fn upscale(
                 std::fs::rename(f, chunk.join(f.file_name().unwrap_or_default())).map_err(|e| e.to_string())?;
             }
             let at = i * CHUNK;
-            prog.set(0.05 + 0.9 * at as f32 / n as f32, format!("Upscaling frame {} of {n}…", at + 1));
-            let mut cmd = low(up);
+            prog.set(0.05 + 0.9 * at as f32 / n as f32, format!("Upscaling frame {} of {n} ({encoder_name})…", at + 1));
+            enc_pri.sync(&encoder);
+            let mut cmd = child(up);
             cmd.arg("-i").arg(chunk).arg("-o").arg(done).args(["-n", model, "-s", &native.to_string(), "-f", "png"]);
             // the models sit beside the exe; -m makes that independent of the working directory
             if let Some(models) = up.parent().map(|p| p.join("models")).filter(|p| p.is_dir()) {
@@ -431,11 +491,14 @@ fn upscale(
         return Err(e);
     }
     prog.set(0.97, "Encoding…");
-    export::wait_ffmpeg(&mut encoder, tail, prog).map_err(|e| {
+    wait_child(&mut encoder, tail, &mut enc_pri, prog).map_err(|e| {
         if e == export::CANCELLED {
             e
         } else {
-            format!("encoder: {e}")
+            if encoder_name != "libx264" {
+                crate::engine::encoders::mark_broken(&encoder_name);
+            }
+            format!("encoder ({encoder_name}): {e}")
         }
     })?;
     prog.set(1.0, "Upscaled");
@@ -531,6 +594,44 @@ mod tests {
         std::fs::write(root.join(EXE), b"x").unwrap();
         assert_eq!(find_exe(&root), Some(root.clone()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Children start at normal priority, drop below normal while playing and come back after.
+    #[test]
+    fn children_run_normal_and_drop_below_normal_only_while_playing() {
+        use std::os::windows::io::AsRawHandle;
+        use windows::Win32::System::Threading::{GetPriorityClass, BELOW_NORMAL_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS};
+        let class = |c: &std::process::Child| unsafe {
+            GetPriorityClass(windows::Win32::Foundation::HANDLE(c.as_raw_handle()))
+        };
+        let mut c = child(Path::new("ping.exe")).args(["-n", "30", "127.0.0.1"]).stdout(Stdio::null()).spawn().unwrap();
+        assert_eq!(class(&c), NORMAL_PRIORITY_CLASS.0, "starts at normal, not below");
+        let mut pri = Pri::default();
+        pri.sync_to(&c, false);
+        assert_eq!(class(&c), NORMAL_PRIORITY_CLASS.0);
+        pri.sync_to(&c, true); // the timeline / Source monitor started playing
+        assert_eq!(class(&c), BELOW_NORMAL_PRIORITY_CLASS.0);
+        assert_eq!(pri.0, Some(true));
+        pri.sync_to(&c, false); // stopped
+        assert_eq!(class(&c), NORMAL_PRIORITY_CLASS.0);
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+
+    /// The encode picks a hardware H.264 encoder when the probe found one, else libx264; both get CRF-16-class
+    /// quality and AAC audio from the export's own argument builder.
+    #[test]
+    fn encode_args_use_the_hardware_encoder_with_libx264_fallback() {
+        let pick = |w: &[&str]| {
+            let w: Vec<String> = w.iter().map(|s| s.to_string()).collect();
+            crate::engine::encoders::pick("mp4", &w).unwrap_or("libx264").to_string()
+        };
+        assert_eq!(pick(&["h264_nvenc", "h264_qsv"]), "h264_nvenc");
+        assert_eq!(pick(&[]), "libx264");
+        let nv = export::codec_args("mp4", "h264_nvenc", 16, "medium", &[]).join(" ");
+        assert!(nv.contains("-c:v h264_nvenc") && nv.contains("-cq 16") && nv.contains("-c:a aac"), "{nv}");
+        let sw = export::codec_args("mp4", "libx264", 16, "medium", &[]).join(" ");
+        assert!(sw.contains("-c:v libx264") && sw.contains("-crf 16") && sw.contains("+faststart"), "{sw}");
     }
 
     #[test]
