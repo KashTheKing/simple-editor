@@ -715,3 +715,20 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   `<cache>/gallery-thumbs/<key>.rgba` keyed by the template JSON. A failed render retries once, then the type icon.
 - In a fresh worktree `core.autocrlf=true` checks `library/` out as CRLF, so `library_index_matches_files` and
   `connecting_loads_the_index_once` fail there (sizes); not a code problem.
+
+## Ctrl+P palette (2026-11-17, feat/ctrl-p-palette)
+- `ui/palette.rs`: `mode()` picks by the FIRST character only (plain = go to, `>` commands, `/` assistant, `:` tools by name).
+  Go-to rows score an `Item` index built by `palette::index` once per project change (`palette_ctl::project_sig`: undo/redo
+  length + top entry time, open sequence, counts, project path) and on each open; rows are cached per (query, sig).
+- What a go-to does is a pure `palette::plan` (tested without an App); `palette_ctl::go` applies it. Clips inside sequences
+  open that sequence; `timelines()` knows the open one lives in `Project.tracks` and main in `main_stash`.
+- `/` reuses `assistant_ctl::ask` (a `/skill args` text runs the skill there) and `assistant_ctl::palette_row` - the only
+  touch in assistant files is `..Default::default()` in that row (Row grew `sub` / `group` / `alt`).
+- Shortcut: default Ctrl+P (nothing held it). `Hotkeys::from_settings`: an untouched default yields to a chord the user bound
+  themselves, and the palette then falls back to Ctrl+K. Ctrl+K stays an alias in `palette_ctl::tick` while unbound
+  (the Premiere preset gives it to split, so the preset no longer moves the palette).
+- `ui.palette {query, pick, alt}` lists or runs rows over MCP (kind/group/subtitle/alt per row).
+- Gotcha: a Tab on the frame right after opening beat egui's focus lock (the lock exists only once the box has focus);
+  the box now re-takes focus whenever it lost it. Git Bash rewrites a lone "/" argument into C:/Program Files/Git/ -
+  use MSYS_NO_PATHCONV=1 when driving `/` queries through ui.input from bash.
+- NOT verified: Alt+Enter on a Gallery card live (gallery.apply path; tested only as a plan), very large projects by timing.

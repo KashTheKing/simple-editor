@@ -137,7 +137,7 @@ pub fn markdown(hotkeys: &Hotkeys) -> String {
         "![The Keyboard Shortcuts window (F1)](/img/tutorial/cheatsheet.png)\n\n",
         "These are the default keys. Every one can be changed in **Settings ▸ Hotkeys**, which also has Premiere, ",
         "Resolve and Avid presets. In the app, **F1** shows this list with your own keys and a search box, and ",
-        "**Ctrl+K** runs any command by name, including the ones without a key (shown as -).\n\n",
+        "**Ctrl+P** goes to any clip, media file, timeline, marker, page or panel by name; type **>** first to run any command (including the ones without a key, shown as -), **/** for the assistant.\n\n",
         "Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` is `;`, `Quote` is `'`, ",
         "`Slash` is `/`, `Comma` is `,` and `Backtick` is the key left of 1.\n",
     ));

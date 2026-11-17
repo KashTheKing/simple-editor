@@ -2,6 +2,14 @@
 
 ## 1.3.1
 
+### Ctrl+P: go to anything
+- **The command palette is now Ctrl+P and goes to things by name**: clips on any timeline (nested sequences too),
+  timelines, Library media and bins, markers and comments, pages, panels and Gallery cards, grouped by type with
+  their track and time or folder. Enter goes there (jump and select, open, reveal); Alt+Enter adds media at the
+  playhead or applies a Gallery card. `>` runs commands and on/off settings, `/ask` and `/<skill>` talk to the
+  assistant (the only way to it from the palette). Ctrl+K still opens it while nothing else uses Ctrl+K, and a key
+  you bound to Ctrl+P yourself keeps it.
+
 ### Gallery cards
 - **Gallery: a Video | Audio switch with audio presets, and pictures for every title and template.** The Audio side
   has Animate (fades, swell, duck, tremolo, pan sweeps), Transitions (equal-power / linear / exponential crossfades,
