@@ -52,6 +52,17 @@ impl std::fmt::Debug for FrameSource {
     }
 }
 
+/// Drawn over every exported frame at its timeline time `t`, at project size, before ffmpeg (the
+/// burnt-in social guide). Runs on the export thread, never on playback.
+#[derive(Clone)]
+pub struct FrameOverlay(pub Arc<dyn Fn(Frame, f64) -> Frame + Send + Sync>);
+
+impl std::fmt::Debug for FrameOverlay {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("FrameOverlay")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ExportOptions {
     pub out_path: PathBuf,
@@ -86,6 +97,8 @@ pub struct ExportOptions {
     pub audio: AudioLayout,
     /// What a "stem" is when `audio` isn't `Mix`.
     pub stem_by: StemBy,
+    /// Drawn over each frame before encoding (None = nothing). Forces the RGBA readback.
+    pub overlay: Option<FrameOverlay>,
 }
 
 // ---- ws:pro-schema ----
@@ -565,6 +578,7 @@ fn run_export_with(
         FrameSource::Cpu => None,
     };
     let nv12 = NV12_READBACK
+        && opts.overlay.is_none()
         && gpu_tx.is_some()
         && w % 2 == 0
         && h % 2 == 0
@@ -680,6 +694,10 @@ fn run_export_with(
                         }
                         out
                     }
+                };
+                let frame = match &opts.overlay {
+                    Some(o) => (o.0)(frame, t),
+                    None => frame,
                 };
                 if wtx.send(frame).is_err() {
                     break; // the writer stopped: ffmpeg died
@@ -2060,6 +2078,7 @@ pub(crate) mod tests {
             // ---- ws:pro-schema ----
             audio: Default::default(),
             stem_by: Default::default(),
+            overlay: None,
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         assert_eq!(wait_done(&start_export(p, opts, text)), None);
@@ -2099,6 +2118,7 @@ pub(crate) mod tests {
             // ---- ws:pro-schema ----
             audio: Default::default(),
             stem_by: Default::default(),
+            overlay: None,
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         let prog = start_export(p.clone(), opts.clone(), text.clone());
@@ -2137,6 +2157,7 @@ pub(crate) mod tests {
             // ---- ws:pro-schema ----
             audio: Default::default(),
             stem_by: Default::default(),
+            overlay: None,
         }
     }
 

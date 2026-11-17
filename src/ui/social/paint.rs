@@ -24,6 +24,8 @@ pub struct GuideView<'a> {
     pub clock: String,
     /// The editor is playing (the player buttons show pause). `new` leaves it false: set it from the player.
     pub playing: bool,
+    /// Burnt into an export: the platform's UI only, none of the editor's marks (labels, crop dimming).
+    pub export: bool,
     /// The project's aspect (w / h).
     pub aspect: f32,
     /// The desktop long-form player view.
@@ -67,6 +69,7 @@ impl<'a> GuideView<'a> {
             progress: progress(playhead, duration),
             clock: clock(playhead, duration),
             playing: false,
+            export: false,
             aspect,
             view: ViewMode::from_id(&s.guide_view).unwrap_or_default(),
         })
@@ -87,7 +90,7 @@ impl<'a> GuideView<'a> {
     }
     /// The safe-zone / UI-preview ops over the video rectangle `lb`.
     pub fn overlay_ops(&self, lb: Rect) -> Vec<Op> {
-        scene::overlay(&self.data, self.platform(), self.dev(), self.mode, self.worst, lb, self.frame_in(lb), &self.ctx())
+        scene::overlay(&self.data, self.platform(), self.dev(), self.mode, self.worst, lb, self.frame_in(lb), &self.ctx(), !self.export)
     }
     pub fn device_view(&self, open: Option<Sheet>, e: f32) -> device::View<'_> {
         device::View {

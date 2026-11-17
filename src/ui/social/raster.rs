@@ -280,3 +280,27 @@ pub fn render_device(frame: Option<&Frame>, g: &GuideView, open: Option<Sheet>, 
     c.run(&scene.over, av.as_deref());
     c.f
 }
+
+/// The burnt-in guide for an export (None when no guide is chosen): the overlay of `s`'s guide on each
+/// frame, playing, its bar and time those of the exported video - `range` (In/Out) when it is one, else
+/// the timeline. A Device preview burns as its UI overlay (an export keeps the project's frame size).
+pub fn export_overlay(s: &crate::settings::Settings, project: &crate::model::Project, range: Option<(f64, f64)>) -> Option<crate::engine::export::FrameOverlay> {
+    let mut s = s.clone();
+    if s.guide.is_none() {
+        return None;
+    }
+    if s.guide_mode == super::Mode::Device.id() {
+        s.guide_mode = super::Mode::Ui.id().into();
+    }
+    let (a, b) = range.unwrap_or((0.0, project.duration()));
+    let title = project.name.clone();
+    let aspect = project.width.max(1) as f32 / project.height.max(1) as f32;
+    Some(crate::engine::export::FrameOverlay(std::sync::Arc::new(move |f: Frame, t: f64| match GuideView::new(&s, &title, aspect, t - a, b - a) {
+        Some(mut g) => {
+            g.playing = true;
+            g.export = true;
+            render_overlay(f, &g)
+        }
+        None => f,
+    })))
+}

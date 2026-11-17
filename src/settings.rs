@@ -581,6 +581,11 @@ pub struct Settings {
     pub guide_render: bool,
     /// Desktop long-form player view: "default", "theatre" or "fullscreen".
     pub guide_view: String,
+    /// Export ▸ "Burn in social guide": exports draw the chosen guide over every frame (UI overlay; a
+    /// Device preview burns as its UI overlay), its bar and time following the exported frame. Off by default.
+    pub export_guide: bool,
+    /// Export ▸ "Burn in captions": None = follow the preview's subtitle toggle (what exports always did).
+    pub export_captions: Option<bool>,
     /// The user's fake accounts (Settings ▸ Social). No credentials, ever.
     pub social_profiles: Vec<crate::ui::social::profile::SocialProfile>,
     /// The profile used per network (id), when more than one exists.
@@ -836,6 +841,8 @@ impl Default for Settings {
             guide_worst: false,
             guide_render: false,
             guide_view: "default".into(),
+            export_guide: false,
+            export_captions: None,
             social_profiles: Vec::new(),
             social_active: BTreeMap::new(),
             // ---- ws:cache-budget ----

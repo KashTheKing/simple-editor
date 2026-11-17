@@ -130,6 +130,7 @@ pub fn build_choice(
             // ws:export-audio-tracks
             audio: export::AudioLayout::parse(&settings.export_audio),
             stem_by: export::StemBy::parse(&settings.export_stem_by),
+            overlay: None,
         },
         lossless,
         use_project_bg: state.use_project_bg,
@@ -413,6 +414,25 @@ pub fn body(
              export instead of black. Checkerboard bakes as literal grey squares, not real \
              transparency - that needs an alpha-capable codec this checkbox does not add.",
         );
+        // burn-ins: captions (follows the preview's subtitle toggle until ticked here) and the social guide
+        if !project.subtitles.is_empty() {
+            let mut caps = settings.export_captions.unwrap_or(project.show_subtitles);
+            if ui
+                .checkbox(&mut caps, "Burn in captions")
+                .on_hover_text("Draws the subtitles into the picture. Off: the export has none (export an .srt from Captions instead).")
+                .changed()
+            {
+                settings.export_captions = Some(caps);
+                save = true;
+            }
+        }
+        save |= ui
+            .add_enabled(settings.guide.is_some(), egui::Checkbox::new(&mut settings.export_guide, "Burn in social guide"))
+            .on_hover_text(
+                "Draws the Social Guide chosen in the preview (right-click the Preview) over every frame, playing, its                  progress bar and time following the exported video (the In/Out range when that is what you export).                  A Device preview burns in as its UI preview.",
+            )
+            .on_disabled_hover_text("Choose a guide first: right-click the Preview ▸ Social Guides.")
+            .changed();
         // ws:export-deliver
         save |= ui
             .checkbox(&mut settings.loudnorm, "Normalize loudness (−14 LUFS)")

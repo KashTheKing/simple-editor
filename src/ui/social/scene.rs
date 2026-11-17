@@ -485,8 +485,10 @@ pub fn worst_safe(d: &Data, plat: &Platform) -> ([f32; 4], Vec<String>) {
 }
 
 /// Safe-zone or UI-preview overlay for `plat` in `frame` (the platform's own aspect rectangle).
-/// `video` is the whole video rectangle; what the platform crops away is dimmed.
-pub fn overlay(d: &Data, plat: &Platform, dev: &Device, mode: Mode, worst: bool, video: Rect, frame: Rect, cx: &Ctx) -> Vec<Op> {
+/// `video` is the whole video rectangle; what the platform crops away is dimmed. `aids` = the editor's own
+/// marks (that dimming, the guide's name and where it was measured); off for a burnt-in export.
+#[allow(clippy::too_many_arguments)]
+pub fn overlay(d: &Data, plat: &Platform, dev: &Device, mode: Mode, worst: bool, video: Rect, frame: Rect, cx: &Ctx, aids: bool) -> Vec<Op> {
     let lay = plat.layout(dev);
     let k = frame.width() / lay.refsz[0];
     let size = vec2(frame.width() / k, frame.height() / k);
@@ -499,7 +501,7 @@ pub fn overlay(d: &Data, plat: &Platform, dev: &Device, mode: Mode, worst: bool,
         Rect::from_min_max(pos2(video.min.x, frame.min.y), pos2(frame.min.x, frame.max.y)),
         Rect::from_min_max(pos2(frame.max.x, frame.min.y), pos2(video.max.x, frame.max.y)),
     ] {
-        if r.width() > 0.5 && r.height() > 0.5 {
+        if aids && r.width() > 0.5 && r.height() > 0.5 {
             b.rect(r, 0.0, Color32::from_black_alpha(150));
         }
     }
@@ -572,6 +574,9 @@ pub fn overlay(d: &Data, plat: &Platform, dev: &Device, mode: Mode, worst: bool,
                 b.clip(None);
             }
         }
+    }
+    if !aids {
+        return b.ops;
     }
     b.text(frame.min + vec2(5.0, 5.0 + if mode == Mode::Safe { (dev.st / dev.h * frame.height()).max(0.0) } else { 0.0 }), font, white(0.95), false, &title, 0);
     // where the numbers come from, and how to refresh them
