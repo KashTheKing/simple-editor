@@ -20,7 +20,7 @@ module.exports = {
       type: 'category',
       label: 'Editing with AI',
       collapsed: false,
-      items: ['assistant', 'voice'],
+      items: ['assistant', 'editing-skills', 'voice'],
     },
     {
       type: 'category',

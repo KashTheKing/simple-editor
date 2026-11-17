@@ -460,7 +460,7 @@ pub fn meta_of(kind: Kind, text: &str) -> (String, String, Vec<String>, String) 
                     .map(|v| v.trim_matches('"').to_string())
                     .unwrap_or_default()
             };
-            (key("name"), key("description"), Vec::new(), String::new())
+            (key("name"), key("description"), tags(&key("tags")), key("credit"))
         }
     }
 }
@@ -580,6 +580,9 @@ mod tests {
         let md = "---\nname: captions\ndescription: Add captions.\nargs: \"[x]\"\n---\nbody";
         assert_eq!(meta_of(Kind::Skill, md).0, "captions");
         assert_eq!(meta_of(Kind::Skill, md).1, "Add captions.");
+        let md = "---\nname: a\ndescription: d\ntags: Style, vlog\ncredit: cut-video (MIT)\n---\nbody";
+        assert_eq!(meta_of(Kind::Skill, md).2, vec!["style".to_string(), "vlog".into()]);
+        assert_eq!(meta_of(Kind::Skill, md).3, "cut-video (MIT)");
         let cube = "# @name Teal\n# @desc Warm skin.\n# @tags a, B\nTITLE \"Teal\"\nLUT_3D_SIZE 2\n";
         assert_eq!(
             meta_of(Kind::Lut, cube),

@@ -68,6 +68,20 @@
   labels), and choose whether the subtitles are drawn in (until changed it follows the preview, as before).
   MCP: `export.video` takes `guide` / `captions`; `settings.set` takes `export_guide` / `export_captions`.
 - **Premiere Pro, DaVinci Resolve and CapCut themes**, each in a dark and a light variant (greys, accents, clip colours, playhead and corner radii), in Settings > Appearance > Theme. **Import theme** now also reads Premiere Pro preferences (UI brightness and highlight colour) and CapCut preferences (dark/light); Resolve has no theme file and says so.
+### Editing skills and styles (online library)
+- **Technique skills**: `/jl-cuts` (split edits by rolling only the sound cut), `/pacing` (shot-length targets per
+  style), `/loudness` (web -14, podcast -16, broadcast -23 LUFS), `/color-grade` (normalise, balance, match, then a
+  look), `/recap`. `/captions`, `/cut-silences`, `/shorts`, `/b-roll`, `/sync-to-beat`, `/clean-audio`,
+  `/highlight-reel`, `/review` and `/color-match` now use published numbers (subtitle line length and reading speed,
+  noise-floor thresholds and tone presets, beat-versus-bar cutting, duck depth); `/color-match` had the grade
+  before/after switch backwards.
+- **Style skills** with a visible style card: `/style-vlog`, `/style-documentary`, `/style-music-video`,
+  `/style-podcast-clips`, `/style-trailer`, `/style-shorts`.
+- **`/convert-from-editor`** maps a Premiere Pro, DaVinci Resolve, Avid or After Effects workflow onto Simple
+  Editor's tools (with alternatives and a not-supported list) and can save it as a skill; converted with it:
+  `/reframe`, `/audio-to-keyframes`, `/deliver`, `/apply-cdl`. Guide page: Editing skills and styles.
+- Skill headers can carry `tags` (searchable in the Gallery) and `credit` (kept in the library catalogue); a test fails the build when a library skill
+  names a tool or argument that does not exist.
 
 ## 1.3.0
 
