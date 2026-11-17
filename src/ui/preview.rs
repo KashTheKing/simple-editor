@@ -1555,7 +1555,8 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
             o.knob = o.knob.clamp(rect.min + vec2(6.0, 6.0), rect.max - vec2(6.0, 6.0));
             painter.add(Shape::closed_line(o.corners.to_vec(), stroke));
             // ws:animator: onion skin - where the layer was (blue) / will be (orange) a few frames away, and
-            // (dashed) where the Animator's selected block starts. Outlines only: nothing is rendered.
+            // (dashed) where the Animator's selected block starts. The layer's own picture, faded and tinted,
+            // when its thumbnail is ready (`animator::onion_tex`), else just the outline. Nothing is rendered.
             let ghosts = crate::ui::animator::onion();
             if ghosts > 0 && !c.playing {
                 let step = 2.0 / c.project.fps.max(1.0);
@@ -1565,7 +1566,17 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
                     for (dir, col) in [(-1.0, Color32::from_rgb(0x5B, 0x8C, 0xFF)), (1.0, Color32::from_rgb(0xFF, 0x9A, 0x4D))] {
                         let t = c.playhead + dir * k as f64 * step;
                         if clip.contains(t) {
-                            painter.add(Shape::closed_line(ghost(t).corners.to_vec(), Stroke::new(1.2, col.gamma_multiply(al))));
+                            let q = ghost(t).corners;
+                            if let Some((tex, _)) = crate::ui::animator::onion_tex() {
+                                let tint = Color32::WHITE.lerp_to_gamma(col, 0.35).gamma_multiply(al * 0.5);
+                                let mut m = egui::Mesh::with_texture(tex);
+                                for (p, uv) in q.iter().zip([pos2(0.0, 0.0), pos2(1.0, 0.0), pos2(1.0, 1.0), pos2(0.0, 1.0)]) {
+                                    m.vertices.push(egui::epaint::Vertex { pos: *p, uv, color: tint });
+                                }
+                                m.indices.extend([0, 1, 2, 0, 2, 3]);
+                                painter.add(Shape::mesh(m));
+                            }
+                            painter.add(Shape::closed_line(q.to_vec(), Stroke::new(1.2, col.gamma_multiply(al))));
                         }
                     }
                 }

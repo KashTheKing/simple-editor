@@ -28,6 +28,18 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         };
         let stats = app.gpu.as_ref().and_then(|g| g.stats());
         let pick_mode = app.monitor.pick_armed.map(|(_, t)| t);
+        // ws:animator: the onion skin ghosts the selected layer's own picture (a still's image, a video's frame
+        // at the playhead), loaded off the UI thread by the thumbnail cache - nothing renders on the way
+        let ghost = (crate::ui::animator::onion() > 0 && !app.player.is_playing())
+            .then(|| {
+                let c = app.selection.iter().find_map(|&id| {
+                    app.project.clip(id).filter(|c| c.is_visual() && c.enabled && c.contains(app.playhead))
+                })?;
+                let a = app.project.asset(c.asset).filter(|a| a.has_video())?;
+                app.thumbs.texture(ui.ctx(), &a.path, c.src_time(app.playhead), 360)
+            })
+            .flatten();
+        crate::ui::animator::set_onion_tex(ghost);
         let tracker = app.tracking.preview_box().filter(|_| app.pane_drawn(Pane::Tracking));
         let resp = {
             let App {

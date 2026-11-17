@@ -20,6 +20,14 @@ use std::cell::Cell;
 thread_local! {
     static SEL: Cell<Option<(Id, usize)>> = const { Cell::new(None) };
     static ONION: Cell<u8> = const { Cell::new(0) };
+    static ONION_TEX: Cell<Option<(egui::TextureId, [u32; 2])>> = const { Cell::new(None) };
+}
+/// The selected layer's own picture for the onion skin's ghosts (None while it is still loading).
+pub fn onion_tex() -> Option<(egui::TextureId, [u32; 2])> {
+    ONION_TEX.with(|o| o.get())
+}
+pub fn set_onion_tex(t: Option<(egui::TextureId, [u32; 2])>) {
+    ONION_TEX.with(|o| o.set(t));
 }
 /// Onion-skin ghosts each side the Preview draws around the selected layer (0 = off). Set while the
 /// Animator is on screen (`animator_ctl` clears it when it isn't).
@@ -59,7 +67,7 @@ pub struct AnimState {
     boxsel: Option<(Pos2, Pos2)>,
     ranges: Option<Vec<(&'static str, f64, f64)>>,
     speed_sel: Option<usize>,
-    /// Onion-skin ghosts each side (`onion`); `None` = the default, 3.
+    /// Onion-skin ghosts each side (`onion`); `None` = the default, off.
     pub ghosts: Option<u8>,
     /// Width of the lanes' label column (the splitter between labels and lanes); `None` = `HEAD_W`.
     pub head_w: Option<f32>,
@@ -72,6 +80,82 @@ pub struct AnimState {
     ctx_t: Option<f64>,
     /// The time window shown (timeline seconds) after a zoom / pan; `None` = fit.
     pub win: Option<(f64, f64)>,
+    /// The clips `win` was framed for: another selection frames its own blocks again.
+    win_for: Vec<Id>,
+    /// Blocks: the lanes span the whole timeline (else just the selected clips).
+    pub whole: bool,
+    /// More blocks picked with Shift / Ctrl-click (`sel` is the main one, the Inspector's).
+    pub multi: Vec<(Id, usize)>,
+    /// The app's snapping setting (the caller sets it each frame): off = a dragged block snaps to nothing.
+    pub snap: bool,
+    /// Curves: width of the channel list (the splitter between it and the graph); `None` = 300.
+    pub ch_w: Option<f32>,
+    /// The last press was in the Animator: Delete / Backspace / Split act on its block or keys, not the clip.
+    pub here: bool,
+}
+
+/// What a click in the lanes asked for (applied after they are drawn, as one undo step).
+type Act = Box<dyn FnOnce(&mut Project, &mut AnimState, &mut AnimResp)>;
+
+/// Every picked block: the main one first.
+fn picked(st: &AnimState) -> Vec<(Id, usize)> {
+    st.sel.into_iter().chain(st.multi.iter().copied()).collect()
+}
+
+/// Delete the picked blocks (highest index first, so the rest keep theirs).
+fn remove_picked(p: &mut Project, st: &mut AnimState) {
+    let mut v = picked(st);
+    v.sort_by(|a, b| b.1.cmp(&a.1));
+    for (id, i) in v {
+        p.remove_key_block(id, i);
+    }
+    (st.sel, st.multi, st.open) = (None, Vec::new(), Vec::new());
+}
+
+/// Link the picked blocks into one (they must be on one clip).
+fn link_act(sel: Vec<(Id, usize)>) -> Act {
+    Box::new(move |p, s, o| {
+        let idx: Vec<usize> = sel.iter().map(|b| b.1).collect();
+        match p.link_key_blocks(sel[0].0, &idx) {
+            Some(i) => {
+                (s.sel, s.multi, s.open) = (Some((sel[0].0, i)), Vec::new(), Vec::new());
+                o.toast = Some("Linked into one block: its properties move, stretch and ease together".into());
+            }
+            None => o.toast = Some("Pick two or more blocks of one clip to link".into()),
+        }
+    })
+}
+/// The picked blocks when there are several, all on one clip (what Link needs).
+fn linkable(st: &AnimState) -> Option<Vec<(Id, usize)>> {
+    let v = picked(st);
+    (v.len() > 1 && v.iter().all(|b| b.0 == v[0].0)).then_some(v)
+}
+
+fn flow_act(sel: Vec<(Id, usize)>, mode: Match) -> Act {
+    Box::new(move |p, _, o| {
+        let n = p.flow_key_blocks(&sel, mode);
+        o.toast = Some(match n {
+            0 => "Nothing to flow: pick blocks on one clip, or either side of a cut".into(),
+            _ => format!("Flowed {n} hand-off{}: each block starts where the one before ends", if n == 1 { "" } else { "s" }),
+        });
+    })
+}
+
+/// Delete or Backspace, taken from the frame's input so the app's own Delete never also removes the clip.
+fn del_pressed(ui: &Ui) -> bool {
+    use egui::{Key, Modifiers};
+    !ui.ctx().wants_keyboard_input()
+        && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Delete) | i.consume_key(Modifiers::NONE, Key::Backspace))
+}
+
+/// The key whose ease shapes the move picked key `k` belongs to: itself, or the key before it when no move
+/// follows (a key's ease is of the segment after it, so on a block's last key it would change nothing).
+fn ease_slot(a: &Animated, k: usize, end: f64) -> usize {
+    if k > 0 && (k + 1 >= a.keys.len() || a.keys[k].t >= end - 1e-4) {
+        k - 1
+    } else {
+        k
+    }
 }
 
 #[derive(Default)]
@@ -96,7 +180,8 @@ pub struct AnimResp {
 
 const HEAD_W: f32 = 132.0;
 const LANE_H: f32 = 30.0;
-const SUB_H: f32 = 18.0;
+/// An open block's row: its move as a string from origin to target.
+const STRING_H: f32 = 72.0;
 const SNAP_PX: f32 = 7.0;
 /// Narrower than this the pane is a list (`compact`).
 pub const COMPACT_W: f32 = 560.0;
@@ -452,9 +537,12 @@ pub fn show(
     st.sel = st.sel.filter(|&(id, i)| ids.contains(&id) && project.clip(id).is_some_and(|c| i < c.blocks.len()));
     if st.sel.is_none() {
         st.keys.clear();
+        st.multi.clear();
     }
+    let main = st.sel;
+    st.multi.retain(|&(id, i)| Some((id, i)) != main && project.clip(id).is_some_and(|c| i < c.blocks.len()));
     SEL.with(|s| s.set(st.sel));
-    set_onion(st.ghosts.unwrap_or(3));
+    set_onion(st.ghosts.unwrap_or(0));
     let compact = ui.available_width() < COMPACT_W;
     header(ui, st, project, &ids, *playhead, compact, presets, undo, &mut out);
     ui.separator();
@@ -468,15 +556,18 @@ pub fn show(
         });
         return out;
     }
-    if compact {
-        compact_list(ui, st, project, &ids, playhead, pal, undo, &mut out);
-        return out;
-    }
     match st.view {
-        View::Blocks => blocks(ui, st, project, &ids, playhead, playing, pal, undo, &mut out),
+        _ if compact => compact_list(ui, st, project, &ids, playhead, pal, undo, &mut out),
+        View::Blocks => blocks(ui, st, project, &ids, playhead, pal, undo, &mut out),
         View::Curves => curves(ui, st, project, &ids, playhead, pal, undo, &mut out),
         View::Flow => flow(ui, st, project, &ids, playhead, pal, undo, &mut out),
         View::Speed => speed_view(ui, st, project, &ids, playhead, pal, undo, &mut out),
+    }
+    // Delete / Backspace: the picked blocks and only them (selected keys or a speed point took the key first)
+    if !playing && st.sel.is_some() && (st.here || ui.ui_contains_pointer()) && del_pressed(ui) {
+        undo(project);
+        remove_picked(project, st);
+        out.edited = true;
     }
     SEL.with(|s| s.set(st.sel));
     out
@@ -546,18 +637,26 @@ fn header(
             if let Some(b) = find_block(presets, &name) {
                 undo(project);
                 let at = project.clip(id).filter(|c| c.contains(playhead)).map(|c| playhead - c.start);
-                if let Some((t, d)) = project.apply_key_block(id, &b, at, None) {
+                if let Some((t, _)) = project.apply_key_block(id, &b, at, None) {
                     let c = project.clip(id).unwrap();
                     st.sel = Some((id, c.blocks.iter().position(|x| (x.t - t).abs() < 1e-9).unwrap_or(0)));
                     out.edited = true;
-                    out.play = Some((c.start + t, c.start + t + d + 0.25));
                     out.toast = Some(format!("Added {name} to {}", c.name));
                 }
             }
         }
-        let on = st.ghosts.unwrap_or(3) > 0;
+        let on = st.ghosts.unwrap_or(0) > 0;
         if chip(ui, on, "Onion skin").on_hover_text("Ghost outlines of the selected layer a few frames before (blue) and after (orange), and where the selected block starts (dashed)").clicked() {
             st.ghosts = Some(if on { 0 } else { 3 });
+        }
+        let rec = crate::model::recording();
+        // ponytail: the dot is painted over the chip's leading spaces instead of a chip that takes an icon
+        let r = chip(ui, rec, "    Record").on_hover_text(
+            "On: changing a value at the playhead adds a key there. Off: keys are only placed by hand (◆, double-click)",
+        );
+        ui.painter().circle_filled(pos2(r.rect.left() + 11.0, r.rect.center().y), 3.5, if rec { BAD } else { look::DIM });
+        if r.clicked() {
+            crate::model::set_recording(!rec);
         }
         menu::button(ui, "⋯", |ui| {
             if menu::row(ui, None, "Select clip + overlays", "").clicked() {
@@ -682,8 +781,38 @@ fn range(project: &Project, ids: &[Id]) -> (f64, f64) {
     ((a - pad).max(0.0), b + pad)
 }
 
+/// The window the lanes open on: the clips' blocks with a little air, never so wide that the shortest block
+/// is a sliver (at most 14 of it across), inside `fit`. No blocks: `fit`.
+fn block_fit(project: &Project, ids: &[Id], fit: (f64, f64)) -> (f64, f64) {
+    let spans: Vec<(f64, f64)> = ids
+        .iter()
+        .filter_map(|&id| project.clip(id))
+        .flat_map(|c| c.blocks.iter().map(move |b| (c.start + b.t, c.start + b.end())))
+        .collect();
+    if spans.is_empty() {
+        return fit;
+    }
+    let (a, b) = spans.iter().fold((f64::MAX, f64::MIN), |(a, b), s| (a.min(s.0), b.max(s.1)));
+    let short = spans.iter().map(|s| s.1 - s.0).fold(f64::MAX, f64::min).max(0.05);
+    let pad = ((b - a) * 0.15).max(0.3);
+    let (a, b) = (a - pad, (b + pad).min(a - pad + short * 14.0));
+    let len = (b - a).min(fit.1 - fit.0);
+    let a = a.clamp(fit.0, (fit.1 - len).max(fit.0));
+    (a, a + len)
+}
+
+/// A keyed block that wiggles and comes back to where it started (a shake, a pulse): it has no side and no
+/// origin / target, and its picture is its real curve.
+fn wiggles(ctl: &BlockCtl) -> bool {
+    let t = &ctl.src.tracks;
+    ctl.src.gen.is_none()
+        && t.iter().any(|t| t.keys.len() > 2)
+        && t.iter().all(|t| t.keys.first().map(|k| k.v) == t.keys.last().map(|k| k.v))
+}
+
 fn ruler(ui: &mut Ui, rect: Rect, t0: f64, t1: f64, playhead: &mut f64, pal: &Palette, out: &mut AnimResp) {
-    let p = ui.painter_at(rect);
+    // a label centred on the first / last tick hangs over the edge: let it (else "0s" reads "s")
+    let p = ui.painter_at(rect.expand2(vec2(14.0, 0.0)));
     let x = |t: f64| rect.left() + ((t - t0) / (t1 - t0)) as f32 * rect.width();
     for t in ticks(t0, t1, rect.width()) {
         p.line_segment([pos2(x(t), rect.bottom() - 5.0), pos2(x(t), rect.bottom())], Stroke::new(1.0, pal.border));
@@ -724,7 +853,7 @@ fn zoom_bar(ui: &mut Ui, pal: &Palette, win: &mut Option<(f64, f64)>, fit: (f64,
         });
     });
     if fitted || z <= 1.0 + 1e-6 && z != z0 {
-        *win = None;
+        *win = Some(fit); // the whole range, kept (None would frame the blocks again)
     } else if z != z0 {
         let len = flen / z.min(400.0);
         let at = if (t0..=t1).contains(&playhead) { playhead } else { (t0 + t1) / 2.0 };
@@ -740,15 +869,32 @@ fn blocks(
     project: &mut Project,
     ids: &[Id],
     playhead: &mut f64,
-    playing: bool,
     pal: &Palette,
     undo: &mut dyn FnMut(&Project),
     out: &mut AnimResp,
 ) {
-    let fit = range(project, ids);
-    st.win = st.win.filter(|w| w.1 > fit.0 && w.0 < fit.1);
     let seams = project.block_seams();
-    zoom_bar(ui, pal, &mut st.win, fit, *playhead);
+    let (mut fit, mut flow_now, mut link_now) = ((0.0, 1.0), false, false);
+    ui.horizontal(|ui| {
+        if segmented(ui, &mut st.whole, &[(false, "Selected clips"), (true, "Whole timeline")]) {
+            st.win = None;
+        }
+        if picked(st).len() > 1 {
+            let tip = "Chain the picked blocks: each starts where the one before ends, at its speed (Smooth by easing sets which side gives way)";
+            flow_now = primary(ui, "Flow together").on_hover_text(tip).clicked();
+        }
+        if linkable(st).is_some() {
+            let tip = "Make the picked blocks one block with all their properties: they move, stretch and ease together";
+            link_now = chip(ui, false, "Link into one block").on_hover_text(tip).clicked();
+        }
+        fit = if st.whole { (0.0, project.duration().max(1.0) * 1.02) } else { range(project, ids) };
+        if st.win_for != ids {
+            (st.win, st.win_for) = (None, ids.to_vec());
+        }
+        st.win = st.win.filter(|w| w.1 > fit.0 && w.0 < fit.1).or_else(|| Some(block_fit(project, ids, fit)));
+        zoom_bar(ui, pal, &mut st.win, fit, *playhead);
+    });
+    let ph = *playhead;
     let (t0, t1) = st.win.unwrap_or(fit);
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         let full = ui.available_rect_before_wrap();
@@ -756,12 +902,14 @@ fn blocks(
         let body_x0 = full.left() + head_w;
         let bw = (full.right() - body_x0).max(50.0);
         let x = |t: f64| body_x0 + ((t - t0) / (t1 - t0)) as f32 * bw;
-        let tx = |px: f32| t0 + ((px - body_x0) / bw) as f64 * (t1 - t0);
         let pps = bw as f64 / (t1 - t0);
         let (rr, _) = ui.allocate_exact_size(vec2(full.width(), 20.0), Sense::hover());
         ruler(ui, Rect::from_min_max(pos2(body_x0, rr.top()), rr.max), t0, t1, playhead, pal, out);
         let top = rr.bottom();
-        let mut act: Option<Box<dyn FnOnce(&mut Project, &mut AnimState, &mut AnimResp)>> = None;
+        let mut act: Option<Act> = flow_now.then(|| flow_act(picked(st), st.mode));
+        if link_now {
+            act = linkable(st).map(link_act);
+        }
         for &id in ids {
             let Some(c) = project.clip(id).cloned() else { continue };
             // a lane per kind of property (Motion / Opacity / Speed / Sound), more rows only where blocks
@@ -886,7 +1034,7 @@ fn blocks(
                 if !r.intersects(body) {
                     continue;
                 }
-                let sel = st.sel == Some((id, i));
+                let sel = st.sel == Some((id, i)) || st.multi.contains(&(id, i));
                 let (_, col) = block_kind(b);
                 p.rect(
                     r,
@@ -947,12 +1095,23 @@ fn blocks(
                 let resp =
                     resp.on_hover_cursor(if edge != 0 { CursorIcon::ResizeHorizontal } else { CursorIcon::Grab });
                 let resp = resp.on_hover_text(format!(
-                    "{} · {:.2} s · drag to move, drag an end to stretch, click ▸ to see its keys",
+                    "{} · {:.2} s · drag to move, drag an end to stretch, click ▸ to shape how it moves, Shift-click to pick more",
                     b.name, b.dur
                 ));
                 if resp.clicked() {
-                    st.sel = Some((id, i));
-                    if hp.is_some_and(|p| p.x < r.left() + 16.0) {
+                    let more = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+                    if more && st.sel.is_some_and(|s| s != (id, i)) {
+                        match st.multi.iter().position(|m| *m == (id, i)) {
+                            Some(j) => drop(st.multi.remove(j)),
+                            None => st.multi.push((id, i)),
+                        }
+                    } else {
+                        st.sel = Some((id, i));
+                        if !more {
+                            st.multi.clear();
+                        }
+                    }
+                    if !more && hp.is_some_and(|p| p.x < r.left() + 16.0) {
                         if open {
                             st.open.retain(|o| *o != (id, i));
                         } else {
@@ -972,10 +1131,15 @@ fn blocks(
                         let ob = &orig.blocks[i];
                         let dt = ((pos.x - press.x) / bw) as f64 * (t1 - t0);
                         let (mut bt, mut bd) = (ob.t, ob.dur);
-                        let mut cands = vec![*playhead - orig.start, 0.0, orig.duration];
-                        cands.extend(
-                            orig.blocks.iter().enumerate().filter(|(j, _)| *j != i).flat_map(|(_, o)| [o.t, o.end()]),
-                        );
+                        // snapping on: the playhead, the other blocks, and every clip's edges on the timeline
+                        let mut cands = Vec::new();
+                        if st.snap {
+                            cands.push(ph - orig.start);
+                            cands.extend(
+                                orig.blocks.iter().enumerate().filter(|(j, _)| *j != i).flat_map(|(_, o)| [o.t, o.end()]),
+                            );
+                            cands.extend(project.all_clips().flat_map(|(_, o)| [o.start - orig.start, o.end() - orig.start]));
+                        }
                         let snap = |t: f64| {
                             cands
                                 .iter()
@@ -1030,6 +1194,23 @@ fn blocks(
                             }
                         }
                     });
+                    if menu::row(ui, None, "Split at playhead", "Ctrl+B").clicked() {
+                        let t = ph - c.start;
+                        act = Some(Box::new(move |p, s, o| {
+                            s.multi.clear();
+                            if !p.split_key_block(id, i, t) {
+                                o.toast = Some("Move the playhead inside the block to split it there".into());
+                            }
+                        }));
+                    }
+                    if picked(st).len() > 1 && menu::row(ui, None, "Flow together", "").clicked() {
+                        act = Some(flow_act(picked(st), st.mode));
+                    }
+                    if let Some(v) = linkable(st) {
+                        if menu::row(ui, None, "Link into one block", "").clicked() {
+                            act = Some(link_act(v));
+                        }
+                    }
                     if b.ctl.as_ref().is_some_and(|c| c.edited)
                         && menu::row(ui, None, "Reset to its controls", "").clicked()
                     {
@@ -1044,8 +1225,10 @@ fn blocks(
                     }
                     if menu::row(ui, Some(crate::ui::tools::Glyph::Cross), "Delete", "").clicked() {
                         act = Some(Box::new(move |p, s, _| {
-                            p.remove_key_block(id, i);
-                            s.sel = None;
+                            if !picked(s).contains(&(id, i)) {
+                                (s.sel, s.multi) = (Some((id, i)), Vec::new());
+                            }
+                            remove_picked(p, s);
                         }));
                     }
                 });
@@ -1089,62 +1272,91 @@ fn blocks(
                     }));
                 }
             }
-            // open blocks: their keys, one row per property, diamonds drag in time
+            // open blocks: the move as a string from its origin (bottom) to its target (top). No keys here (Curves
+            // has them): pull the two middle points to shape the ease, an end point sideways to stretch it
             for (i, b) in c.blocks.iter().enumerate().filter(|(i, _)| st.open.contains(&(id, *i))) {
-                for prop in &b.props {
-                    let (sub, _) = ui.allocate_exact_size(vec2(full.width(), SUB_H), Sense::hover());
-                    let p = ui.painter_at(sub);
-                    p.rect_filled(sub, 0.0, look::DEEP);
-                    p.text(
-                        pos2(sub.left() + 22.0, sub.center().y),
+                let (sub, _) = ui.allocate_exact_size(vec2(full.width(), STRING_H), Sense::hover());
+                ui.painter_at(sub).rect_filled(sub, 0.0, look::DEEP);
+                let live = b.ctl.as_ref().filter(|c| !c.edited && !c.is_sim() && !wiggles(c));
+                let (xa, xb) = (x(c.start + b.t), x(c.start + b.end()));
+                let (y0, y1) = (sub.bottom() - 18.0, sub.top() + 18.0);
+                let at = |fx: f32, fy: f32| pos2(xa + fx * (xb - xa), y0 + fy * (y1 - y0));
+                let pts: Vec<Pos2> = match live {
+                    Some(ctl) => {
+                        let e = current_ease(ctl);
+                        (0..=48).map(|k| at(k as f32 / 48.0, e.apply(k as f64 / 48.0) as f32)).collect()
+                    }
+                    // simulated or edited by hand: what its first property really does
+                    None => {
+                        let a = b.props.first().and_then(|pr| prop_ref(&c, pr));
+                        let vs: Vec<f64> =
+                            a.map_or(Vec::new(), |a| (0..=48).map(|k| a.at(b.t + b.dur * k as f64 / 48.0)).collect());
+                        let (lo, hi) = vs.iter().fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
+                        let fy = |v: f64| if hi - lo > 1e-9 { ((v - lo) / (hi - lo)) as f32 } else { 0.5 };
+                        vs.iter().enumerate().map(|(k, &v)| at(k as f32 / 48.0, fy(v))).collect()
+                    }
+                };
+                let (Some(&first), Some(&last)) = (pts.first(), pts.last()) else { continue };
+                let sb = Rect::from_min_max(pos2(body_x0, sub.top()), sub.max);
+                let p = ui.painter_at(sb);
+                for (y, name) in [(y0, "origin"), (y1, "target")] {
+                    p.line_segment([pos2(xa, y), pos2(xb, y)], Stroke::new(1.0, look::LINE));
+                    ui.painter_at(sub).text(
+                        pos2(sub.left() + 22.0, y),
                         Align2::LEFT_CENTER,
-                        prop_label(prop),
+                        name,
                         FontId::proportional(10.5),
-                        prop_color(prop),
+                        look::MUTED,
                     );
-                    let Some(a) = prop_ref(&c, prop) else { continue };
-                    for (k, key) in
-                        a.keys.iter().enumerate().filter(|(_, k)| k.t >= b.t - 1e-4 && k.t <= b.end() + 1e-4)
-                    {
-                        let kx = x(c.start + key.t);
-                        if kx < body_x0 || kx > full.right() {
-                            continue;
-                        }
-                        let kr = Rect::from_center_size(pos2(kx, sub.center().y), vec2(10.0, 10.0));
-                        p.add(egui::Shape::convex_polygon(
-                            vec![
-                                pos2(kx, kr.top()),
-                                pos2(kr.right(), kr.center().y),
-                                pos2(kx, kr.bottom()),
-                                pos2(kr.left(), kr.center().y),
-                            ],
-                            prop_color(prop),
-                            Stroke::new(1.0, Color32::BLACK),
-                        ));
-                        let r = ui
-                            .interact(kr, ui.id().with(("akey", id, i, prop.as_str(), k)), Sense::drag())
-                            .on_hover_cursor(CursorIcon::ResizeHorizontal);
-                        if r.drag_started() {
+                }
+                p.add(egui::Shape::line(pts, Stroke::new(2.0, block_kind(b).1)));
+                let key = ("astr", id, i);
+                if let Some(ctl) = live {
+                    let (x1, y1h, x2, y2h) = current_ease(ctl).handles();
+                    for (k, hx, hy, from) in [(1u8, x1, y1h, first), (2, x2, y2h, last)] {
+                        let hc = at(hx, hy);
+                        p.line_segment([from, hc], Stroke::new(1.0, look::MUTED));
+                        p.circle_filled(hc, 5.0, look::HANDLE);
+                        let hr = ui
+                            .interact(Rect::from_center_size(hc, vec2(14.0, 14.0)).intersect(sb), ui.id().with((key, k)), Sense::drag())
+                            .on_hover_cursor(CursorIcon::Grab)
+                            .on_hover_text("Pull to shape how the block moves from its origin to its target");
+                        if hr.drag_started() {
                             undo(project);
                         }
-                        if let Some(pos) = r.interact_pointer_pos().filter(|_| r.dragged()) {
-                            let mut t = tx(pos.x) - c.start;
-                            t = (t * project.fps).round() / project.fps;
-                            let (lo, hi) = (
-                                a.keys.get(k.wrapping_sub(1)).map_or(f64::MIN, |o| o.t + 1e-3),
-                                a.keys.get(k + 1).map_or(f64::MAX, |o| o.t - 1e-3),
-                            );
-                            let prop = prop.clone();
-                            if let Some(cm) = project.clip_mut(id) {
-                                if let Some(a) = prop_mut(cm, &prop) {
-                                    a.keys[k].t = t.clamp(lo, hi);
-                                }
-                                if let Some(ctl) = cm.blocks[i].ctl.as_mut() {
-                                    ctl.edited = true;
-                                }
+                        if let Some(pp) = hr.interact_pointer_pos().filter(|_| hr.dragged()) {
+                            let fx = ((pp.x - xa) / (xb - xa).max(1.0)).clamp(0.0, 1.0);
+                            let fy = ((pp.y - y0) / (y1 - y0)).clamp(-0.4, 1.4);
+                            let mut ctl = ctl.clone();
+                            // the pulled end is the user's now, not the speed Flow gave it
+                            if k == 1 {
+                                (ctl.ease, ctl.in_speed) = (Some(Ease::Bezier { x1: fx, y1: fy, x2, y2: y2h }), None);
+                            } else {
+                                (ctl.ease, ctl.out_speed) = (Some(Ease::Bezier { x1, y1: y1h, x2: fx, y2: fy }), None);
                             }
+                            project.set_block_ctl(id, i, ctl);
                             out.edited = true;
                         }
+                    }
+                }
+                for (k, hc) in [(0u8, first), (3, last)] {
+                    p.circle(hc, 5.0, Color32::WHITE, Stroke::new(1.5, Color32::BLACK));
+                    let hr = ui
+                        .interact(Rect::from_center_size(hc, vec2(14.0, 14.0)).intersect(sb), ui.id().with((key, k)), Sense::drag())
+                        .on_hover_cursor(CursorIcon::ResizeHorizontal)
+                        .on_hover_text(if k == 0 { "Origin: pull sideways to start earlier or later" } else { "Target: pull sideways to end earlier or later" });
+                    if hr.drag_started() {
+                        undo(project);
+                    }
+                    let dt = hr.drag_delta().x as f64 / pps;
+                    if hr.dragged() && dt != 0.0 {
+                        let (t, d) = if k == 0 {
+                            let t = (b.t + dt).clamp(0.0, b.end() - 0.05);
+                            (t, b.end() - t)
+                        } else {
+                            (b.t, b.dur + dt)
+                        };
+                        out.edited |= project.retime_key_block(id, i, t, d);
                     }
                 }
             }
@@ -1180,14 +1392,6 @@ fn blocks(
                 [pos2(x(g), top), pos2(x(g), bottom)],
                 Stroke::new(1.0, Color32::from_rgb(0xF2, 0xC1, 0x4E)),
             );
-        }
-        if !playing && ui.ctx().input(|i| i.key_pressed(egui::Key::Delete)) && ui.ui_contains_pointer() {
-            if let Some((id, i)) = st.sel {
-                act = Some(Box::new(move |p, s, _| {
-                    p.remove_key_block(id, i);
-                    s.sel = None;
-                }));
-            }
         }
         if let Some(f) = act {
             undo(project);
@@ -1313,14 +1517,20 @@ fn curves(
         for (n, e) in Ease::PRESETS.into_iter().take(5).chain([("Linear", Ease::Linear), ("Hold", Ease::Hold)]) {
             if ease_chip(ui, false, n, e).clicked() {
                 undo(project);
-                if let Some(cm) = project.clip_mut(id) {
+                // no keys picked: the whole block, through its Ease control when it has one (so it stays live)
+                let live = |i: &usize| c.blocks[*i].ctl.as_ref().is_some_and(|c| !c.edited && !c.is_sim());
+                if let Some(i) = bi.filter(|i| st.keys.is_empty() && live(i)) {
+                    project.ease_key_block(id, i, e);
+                } else if let Some(cm) = project.clip_mut(id) {
                     for &p in &shown {
                         let Some(a) = prop_mut(cm, p) else { continue };
                         let mut hit = Vec::new();
-                        for (k, key) in a.keys.iter_mut().enumerate() {
-                            if (st.keys.is_empty() && key.t >= s0 - 1e-4 && key.t < s1 - 1e-4) || st.keys.contains(&(p, k)) {
-                                key.ease = e;
-                                hit.push(key.t);
+                        for k in 0..a.keys.len() {
+                            let t = a.keys[k].t;
+                            if (st.keys.is_empty() && t >= s0 - 1e-4 && t < s1 - 1e-4) || st.keys.contains(&(p, k)) {
+                                let k = ease_slot(a, k, s1);
+                                a.keys[k].ease = e;
+                                hit.push(a.keys[k].t);
                             }
                         }
                         for t in hit {
@@ -1352,10 +1562,19 @@ fn curves(
     });
 
     ui.horizontal_top(|ui| {
+        let w = st.ch_w.unwrap_or(300.0).clamp(150.0, 480.0);
         ui.vertical(|ui| {
-            ui.set_width(236.0);
+            ui.set_width(w);
             channel_list(ui, st, project, id, &channels, playhead, undo, out);
         });
+        // the splitter between the list and the graph
+        let (sr, sp) = ui.allocate_exact_size(vec2(6.0, ui.available_height()), Sense::drag());
+        let sp = sp.on_hover_cursor(CursorIcon::ResizeHorizontal);
+        if sp.dragged() {
+            st.ch_w = Some((w + sp.drag_delta().x).clamp(150.0, 480.0));
+        }
+        let col = if sp.hovered() || sp.dragged() { pal.accent } else { look::LINE };
+        ui.painter().vline(sr.center().x, sr.y_range(), Stroke::new(if col == look::LINE { 1.0 } else { 2.0 }, col));
         let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
         let c = project.clip(id).cloned().unwrap_or(c);
         graph(ui, st, project, &c, bi, (s0, s1), &shown, focus, rect, resp, playhead, pal, undo, out);
@@ -1388,7 +1607,7 @@ fn channel_list(
         let mut n = 0;
         // (props, ctrl) to apply after the list: one undo step
         let mut todo: Vec<(&'static str, usize)> = Vec::new();
-        for (g, props) in CHANNELS {
+        for (gi, (g, props)) in CHANNELS.into_iter().enumerate() {
             let list: Vec<&'static str> = props.iter().copied().filter(|p| channels.contains(p)).collect();
             if list.is_empty() {
                 continue;
@@ -1398,7 +1617,7 @@ fn channel_list(
             let r = rows.row(
                 ui,
                 n,
-                &RowSpec { key: g.len() as u64 * 7919, label: g, open: Some(open), dim: !any_keyed, values: &[""], ..Default::default() },
+                &RowSpec { key: u64::MAX - gi as u64, label: g, open: Some(open), dim: !any_keyed, values: &[""], ..Default::default() },
             );
             n += 1;
             if r.toggled {
@@ -1438,7 +1657,11 @@ fn channel_list(
                     ui.painter().rect_filled(r.label.expand2(vec2(4.0, 1.0)), 3.0, pal_accent(ui).gamma_multiply(0.12));
                 }
                 // a click on the name: focus it and select its keys (Shift adds)
-                if ui.interact(r.label, ui.id().with(("ch", id, p)), Sense::click()).clicked() {
+                // a double-click on the name: a key at the playhead
+                let lr = ui.interact(r.label, ui.id().with(("ch", id, p)), Sense::click());
+                if lr.double_clicked() {
+                    todo.push((p, 9));
+                } else if lr.clicked() {
                     st.focus = Some(p);
                     if !ui.input(|i| i.modifiers.shift) {
                         st.keys.clear();
@@ -1458,7 +1681,7 @@ fn channel_list(
         if todo.is_empty() {
             return;
         }
-        let edits = todo.iter().any(|t| t.1 == 1);
+        let edits = todo.iter().any(|t| t.1 == 1 || t.1 == 9);
         if edits {
             undo(project);
         }
@@ -1477,21 +1700,23 @@ fn channel_list(
                         st.focus = Some(p);
                     }
                 }
-                1 => {
+                // ◆ adds a key at the playhead or removes the one there; a double-click (9) only adds
+                1 | 9 => {
                     let Some(cm) = project.clip_mut(id) else { continue };
                     let Some(a) = prop_mut(cm, p) else { continue };
                     match a.key_index_at(lt) {
-                        Some(i) => {
+                        Some(i) if k == 1 => {
                             let v = a.keys[i].v;
                             a.keys.remove(i);
                             if a.keys.is_empty() {
                                 a.value = v; // the last key gone: the property keeps its value
                             }
                         }
+                        Some(_) => {}
                         None if !a.is_animated() => a.toggle_key(lt),
                         None => {
                             let v = a.at(lt);
-                            a.set_at(lt, v);
+                            a.key_at(lt, v);
                         }
                     }
                     touch_blocks(cm, p, lt);
@@ -1566,10 +1791,12 @@ fn graph(
             .iter()
             .map(|&p| {
                 let a = prop_ref(c, p).unwrap();
-                let (q0, q1) = (f0.max(0.0).min(s0), f1.min(c.duration).max(s1));
-                let vs: Vec<f64> = (0..=80)
+                // what is on screen, sampled as finely as it is drawn, plus the keys themselves (a shake's
+                // peaks fall between coarse samples)
+                let (q0, q1) = (f0, f1);
+                let mut vs: Vec<f64> = (0..=240)
                     .map(|i| {
-                        let t = q0 + (q1 - q0) * i as f64 / 80.0;
+                        let t = q0 + (q1 - q0) * i as f64 / 240.0;
                         if st.velocity {
                             vel(a, t)
                         } else {
@@ -1577,6 +1804,9 @@ fn graph(
                         }
                     })
                     .collect();
+                if !st.velocity {
+                    vs.extend(a.keys.iter().filter(|k| k.t >= q0 && k.t <= q1).map(|k| k.v));
+                }
                 let (mut lo, mut hi) = vs.iter().fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
                 if st.velocity {
                     let m = lo.abs().max(hi.abs()).max(1e-3);
@@ -1629,7 +1859,7 @@ fn graph(
             })
             .collect();
         let foc = Some(p) == focus;
-        painter.add(egui::Shape::line(pts, Stroke::new(if foc { 2.2 } else { 1.4 }, prop_color(p).gamma_multiply(if foc { 1.0 } else { 0.55 }))));
+        painter.with_clip_rect(plot).add(egui::Shape::line(pts, Stroke::new(if foc { 2.2 } else { 1.4 }, prop_color(p).gamma_multiply(if foc { 1.0 } else { 0.55 }))));
     }
     // keys + the selected keys' handles (value view only: the handles are the segment's bezier)
     let mut hits: Vec<(Rect, &'static str, usize, i8)> = Vec::new();
@@ -1857,7 +2087,8 @@ fn graph(
             act = Some(KeyAct::Fit);
         }
     });
-    if ui.rect_contains_pointer(rect) && ui.input(|i| i.key_pressed(egui::Key::Delete)) && n > 0 {
+    // Delete / Backspace: the picked keys (never the block or the timeline clip)
+    if n > 0 && (st.here || ui.rect_contains_pointer(rect)) && del_pressed(ui) {
         act = Some(KeyAct::Delete);
     }
     // double-click on the graph adds a key on the focused property there
@@ -1881,9 +2112,10 @@ fn graph(
             undo(project);
             if let Some(cm) = project.clip_mut(id) {
                 for &(p, k) in &st.keys {
-                    let t = prop_mut(cm, p).and_then(|a| a.keys.get_mut(k)).map(|key| {
-                        key.ease = e;
-                        key.t
+                    let t = prop_mut(cm, p).filter(|a| k < a.keys.len()).map(|a| {
+                        let k = ease_slot(a, k, s1);
+                        a.keys[k].ease = e;
+                        a.keys[k].t
                     });
                     if let Some(t) = t {
                         touch_blocks(cm, p, t);
@@ -1917,7 +2149,7 @@ fn graph(
                 if let Some(a) = prop_mut(cm, p) {
                     if a.is_animated() {
                         let v = a.at(t);
-                        a.set_at(t, v);
+                        a.key_at(t, v);
                     } else {
                         a.toggle_key(t);
                     }
@@ -1949,6 +2181,8 @@ fn flow(
     // this clip and the one it cuts to (Flow is about hand-offs, and the cut is the one people feel most)
     let next = project.tracks[tr].clips.iter().find(|n| (n.start - c.end()).abs() < 1.5 / project.fps).cloned();
     let (t0, t1) = (c.start, next.as_ref().map_or(c.end(), |n| n.start + n.duration.min(c.duration.max(2.0))));
+    // the zoom the Blocks lanes are at, while it shows some of this
+    let (t0, t1) = st.win.filter(|w| w.1 > t0 && w.0 < t1).unwrap_or((t0, t1));
     let seams: Vec<Seam> = project.block_seams().into_iter().filter(|s| s.left.0 == id || s.right.0 == id).collect();
     let prop = seams
         .iter()
@@ -1980,7 +2214,10 @@ fn flow(
         });
     });
     let (rect, resp) = ui.allocate_exact_size(ui.available_size(), Sense::click());
-    let plot = Rect::from_min_max(rect.min + vec2(64.0, 30.0), rect.max - vec2(14.0, 40.0));
+    let plot = Rect::from_min_max(rect.min + vec2(64.0, 30.0), rect.max - vec2(14.0, 66.0));
+    if let Some(w) = wheel_zoom(ui, &resp, plot, (t0, t1), false) {
+        st.win = Some(w);
+    }
     let x = |t: f64| plot.left() + ((t - t0) / (t1 - t0).max(1e-3)) as f32 * plot.width();
     let samples: Vec<(f64, Option<f64>)> = (0..=300)
         .map(|i| {
@@ -2018,7 +2255,7 @@ fn flow(
             pal.text_dim,
         );
     }
-    if next.is_some() {
+    if next.is_some() && (t0..=t1).contains(&c.end()) {
         p.line_segment(
             [pos2(x(c.end()), plot.top() - 8.0), pos2(x(c.end()), plot.bottom())],
             Stroke::new(1.0, pal.text_dim),
@@ -2039,16 +2276,24 @@ fn flow(
             .map(|(t, v)| pos2(x(*t), y(v.unwrap())))
             .collect();
         if pts.len() > 1 {
-            p.add(egui::Shape::line(pts, Stroke::new(2.2, col)));
+            p.with_clip_rect(plot).add(egui::Shape::line(pts, Stroke::new(2.2, col)));
         }
     }
-    // the blocks underneath, for orientation
-    let mut row = 0.0;
+    // the blocks underneath, for orientation: a row each where they overlap in time (three rows at most)
+    let mut ends: Vec<f64> = Vec::new();
     for cl in std::iter::once(&c).chain(next.iter()) {
         for b in &cl.blocks {
+            let (a, e) = (cl.start + b.t, cl.start + b.end());
+            let lane = ends.iter().position(|&x| x <= a + 1e-4).unwrap_or(ends.len()).min(2);
+            if lane == ends.len() {
+                ends.push(e);
+            } else {
+                ends[lane] = e;
+            }
+            let row = lane as f32 * 13.0;
             let r = Rect::from_min_max(
-                pos2(x(cl.start + b.t).max(plot.left()), plot.bottom() + 8.0 + row),
-                pos2(x(cl.start + b.end()).min(plot.right()), plot.bottom() + 20.0 + row),
+                pos2(x(a).max(plot.left()), plot.bottom() + 8.0 + row),
+                pos2(x(e).min(plot.right()), plot.bottom() + 20.0 + row),
             );
             if r.width() > 1.0 {
                 p.rect_filled(r, 3.0, block_col(b).gamma_multiply(0.45));
@@ -2060,7 +2305,6 @@ fn flow(
                     Color32::WHITE,
                 );
             }
-            row = if row == 0.0 { 13.0 } else { 0.0 };
         }
     }
     let mut act = None;
@@ -2269,7 +2513,7 @@ fn speed_view(
                         Keyframe { t: cm.duration, v: s, ease: Ease::EaseInOut },
                     ];
                 }
-                cm.speed_curve.set_at(t, sy(pp.y).clamp(0.05, 8.0));
+                cm.speed_curve.key_at(t, sy(pp.y).clamp(0.05, 8.0));
                 if let Some(k) = cm.speed_curve.key_index_at(t) {
                     cm.speed_curve.keys[k].ease = Ease::EaseInOut;
                 }
@@ -2277,8 +2521,7 @@ fn speed_view(
             out.edited = true;
         }
     }
-    if let Some(i) = st.speed_sel.filter(|_| ui.ui_contains_pointer() && ui.input(|i| i.key_pressed(egui::Key::Delete)))
-    {
+    if let Some(i) = st.speed_sel.filter(|_| (st.here || ui.ui_contains_pointer()) && del_pressed(ui)) {
         undo(project);
         if let Some(cm) = project.clip_mut(id).filter(|cm| i < cm.speed_curve.keys.len()) {
             cm.speed_curve.keys.remove(i);
@@ -2486,10 +2729,16 @@ fn block_controls(
     let mut dur = b.dur;
     let mut changed = false;
     let mut gesture = false;
+    // origin / target: where each property is as the block starts / ends
+    let ends: Vec<(String, f64, f64)> = project
+        .clip(id)
+        .map(|c| b.props.iter().take(3).filter_map(|p| prop_ref(c, p).map(|a| (p.clone(), a.at(b.t), a.at(b.end())))).collect())
+        .unwrap_or_default();
     egui::Grid::new(("anim-ctl", id, i)).num_columns(2).spacing([12.0, 9.0]).min_col_width(70.0).show(ui, |ui| {
-        let moves_xy = ctl.src.gen.map_or(ctl.dir.is_some(), |g| g.has_dir());
+        let wig = wiggles(&ctl);
+        let moves_xy = ctl.src.gen.map_or(ctl.dir.is_some() && !wig, |g| g.has_dir());
         if moves_xy {
-            field(ui, if b.name.contains("Out") || ctl.src.gen == Some(Gen::ThrowOut) { "Toward" } else { "From" });
+            field(ui, if b.name.contains("Out") || ctl.src.gen == Some(Gen::ThrowOut) { "Toward side" } else { "From side" });
             let lr = ctl.src.gen.is_none() && b.name == "Spin";
             if let Some(d) = side_pad(ui, ctl.dir, lr) {
                 ctl.dir = Some(d);
@@ -2504,6 +2753,37 @@ fn block_controls(
         let r = slider(ui, "Duration", &mut dur, 0.05, 10.0, " s");
         if r.changed() {
             gesture |= r.drag_started() || !r.dragged();
+        }
+        for (label, to) in [("From", false), ("To", true)].into_iter().filter(|_| ctl.src.gen.is_none() && !wig) {
+            field(ui, label);
+            ui.horizontal(|ui| {
+                for (p, v0, v1) in &ends {
+                    let pct = !matches!(p.as_str(), "x" | "y" | "rotation");
+                    let mut v = shown(p, if to { *v1 } else { *v0 });
+                    let name = match p.as_str() {
+                        _ if ends.len() == 1 => String::new(),
+                        "x" => "X ".into(),
+                        "y" => "Y ".into(),
+                        _ => format!("{} ", prop_label(p)),
+                    };
+                    let r = ui.add(egui::DragValue::new(&mut v).speed(if pct { 0.5 } else { 1.0 }).max_decimals(1).prefix(name).suffix(unit(p))).on_hover_text(
+                        if to { "The target: where the block ends" } else { "The origin: where the block starts" },
+                    );
+                    gesture |= r.drag_started() || (r.changed() && !r.dragged());
+                    if r.changed() {
+                        let list = if to { &mut ctl.to } else { &mut ctl.from };
+                        list.retain(|(q, _)| q != p);
+                        list.push((p.clone(), if pct { v / 100.0 } else { v }));
+                        changed = true;
+                    }
+                }
+                if to && (!ctl.from.is_empty() || !ctl.to.is_empty()) && chip(ui, false, "As designed").on_hover_text("Back to the preset's own origin and target").clicked() {
+                    (ctl.from, ctl.to) = (Vec::new(), Vec::new());
+                    changed = true;
+                    gesture = true;
+                }
+            });
+            ui.end_row();
         }
         if let Some(g) = ctl.src.gen {
             let ph = &mut ctl.phys;
@@ -2548,7 +2828,8 @@ fn block_controls(
                     .chain([("Linear", Some(Ease::Linear), Ease::Linear)])
                 {
                     if ease_chip(ui, cur == e, n, shown).clicked() {
-                        ctl.ease = e;
+                        // an ease picked by hand replaces what Flow bent the ends to
+                        (ctl.ease, ctl.in_speed, ctl.out_speed) = (e, None, None);
                         changed = true;
                         gesture = true;
                     }
@@ -2728,6 +3009,24 @@ mod tests {
         p.place_key_block(1, &f("Speed Ramp Out"), 0.2, Some(0.5));
         let b = &p.clip(1).unwrap().blocks;
         assert_eq!(lane_rows(b), (vec![0, 1, 0], vec!["Opacity", "Speed"]), "{b:?}");
+    }
+
+    /// The lanes open framed on the blocks, not the whole clip: short blocks on a long clip stay readable.
+    #[test]
+    fn the_lanes_open_on_the_blocks_and_a_shake_has_no_side() {
+        let f = |n| find_block(&[], n).unwrap();
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "a", 0.0, 30.0));
+        let fit = range(&p, &[1]);
+        assert_eq!(block_fit(&p, &[1], fit), fit, "no blocks: the whole clip");
+        p.place_key_block(1, &f("Pop In"), 10.0, Some(0.4));
+        p.place_key_block(1, &f("Slide Out Right"), 12.0, Some(0.6));
+        let (a, b) = block_fit(&p, &[1], fit);
+        assert!(a <= 10.0 && a >= fit.0 && b <= fit.1, "{a} {b}");
+        // the shortest block (0.4 s) is at least a fourteenth of the window
+        assert!(b - a <= 0.4 * 14.0 + 1e-9 && b - a >= 0.4, "{a} {b}");
+        assert!(wiggles(&BlockCtl::new(f("Shake"))));
+        assert!(!wiggles(&BlockCtl::new(f("Slide In Left"))) && !wiggles(&BlockCtl::new(f("Fade Out"))));
     }
 
     #[test]

@@ -96,6 +96,9 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("ease_key_block", "keyblocks.ease"),
     // ---- ws:animator ----
     ("set_block_ctl", "keyblocks.set"),
+    ("split_key_block", "keyblocks.split"),
+    ("flow_key_blocks", "flow.together"),
+    ("link_key_blocks", "keyblocks.link"),
     ("make_stack", "animate.stack"),
     ("trim_clip", "timeline.trim"),
     ("block_from_keys", "keyblocks.from_keys"),

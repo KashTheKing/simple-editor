@@ -41,7 +41,7 @@ fn key_at(a: &mut Animated, t: f64, db: Option<f64>) {
             if !a.is_animated() {
                 a.toggle_key(t);
             }
-            a.set_at(t, db_to_gain(db));
+            a.key_at(t, db_to_gain(db));
         }
         None => {
             if a.has_key_at(t) {

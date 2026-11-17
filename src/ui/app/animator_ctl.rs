@@ -7,9 +7,19 @@ use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 use crate::model::{find_block, AnimLink, BlockCtl, Dir, Match};
 
 /// Onion skin follows the Animator: off whenever it wasn't on screen last frame.
-pub(super) fn frame(app: &mut App, _ctx: &egui::Context) {
+pub(super) fn frame(app: &mut App, ctx: &egui::Context) {
     if !app.pane_drawn(Pane::Animator) {
         crate::ui::animator::set_onion(0);
+        app.animator.here = false;
+    }
+    // Delete / Backspace / Split belong to the Animator's block or keys after a press in it, and to the
+    // timeline's clips again after a press on the timeline or the Viewer
+    if ctx.input(|i| i.pointer.any_pressed()) {
+        match app.layout.hovered {
+            Some(Pane::Animator) => app.animator.here = true,
+            Some(Pane::Timeline | Pane::Preview) => app.animator.here = false,
+            _ => {}
+        }
     }
 }
 
@@ -21,6 +31,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     let resp = {
         let App { project, selection, playhead, undo, redo, animator: st, palette, settings, .. } = app;
         let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+        st.snap = settings.snap;
         crate::ui::animator::show(
             ui,
             st,
@@ -157,7 +168,28 @@ fn stack(app: &mut App) {
     }
 }
 
+/// Split (Ctrl+B) with a block picked in the Animator: the block at the playhead, not the clip.
+fn split_block(app: &mut App, (id, i): (Id, usize)) {
+    let snap = app.project.to_json();
+    let t = app.playhead - app.project.clip(id).map_or(0.0, |c| c.start);
+    if app.project.split_key_block(id, i, t) {
+        push_undo_json(&mut app.undo, &mut app.redo, snap);
+        app.animator.multi.clear();
+        app.after_edit();
+        app.toast("Split the block at the playhead: the first part ends there, the second starts from it");
+    } else {
+        app.toast("Move the playhead inside the block to split it there");
+    }
+}
+
 pub(super) fn act(app: &mut App, a: Action) -> bool {
+    match (a, app.animator.sel) {
+        (Action::Split, Some(b)) if app.animator.here => {
+            split_block(app, b);
+            return true;
+        }
+        _ => {}
+    }
     match a {
         Action::StackOverlays => stack(app),
         _ => return false,
@@ -223,6 +255,53 @@ pub const TOOLS: &[ToolDef] = &[
             }
             app.project.set_block_ctl(id, i, ctl);
             done(json!({"ok": true}))
+        },
+    },
+    ToolDef {
+        name: "keyblocks.split",
+        desc: "Split an applied block in two at clip-local t (default: the playhead), the motion unchanged: the first part ends at the value there (its target), the second starts from it (its origin) and keeps the old target. The parts are blocks index and index + 1.",
+        args: &["clip_id:integer:true:", "index:integer:true:", "t:number:false:clip-local s, inside the block"],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let (id, i) = clip_block(args)?;
+            let start = app.project.clip(id).ok_or("no such clip")?.start;
+            let t = arg_f64(args, "t").unwrap_or(app.playhead - start);
+            if !app.project.split_key_block(id, i, t) {
+                return Err("t must be inside the block".into());
+            }
+            done(json!({"ok": true, "index": [i, i + 1]}))
+        },
+    },
+    ToolDef {
+        name: "keyblocks.link",
+        desc: "Link two or more applied blocks of one clip into a single block over their whole span with all their properties (motion unchanged). Returns the new block's index; the other blocks' indexes change.",
+        args: &["clip_id:integer:true:", "indexes:array:true:block indexes, two or more"],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let id = req(arg_u64(args, "clip_id"), "clip_id")?;
+            let idx: Vec<usize> = args
+                .get("indexes")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_u64()).map(|v| v as usize).collect())
+                .unwrap_or_default();
+            let i = app.project.link_key_blocks(id, &idx).ok_or("indexes: two or more blocks of that clip")?;
+            done(json!({"ok": true, "index": i}))
+        },
+    },
+    ToolDef {
+        name: "flow.together",
+        desc: "Chain two or more blocks in time order: each next block on the same clip moves to start where the one before ends, from the value it ends at (origin = that target), and the speeds are matched at each hand-off (mode as flow.match). Returns how many hand-offs it made.",
+        args: &["blocks:array:true:[{clip_id, index}, ...]", "mode:string:false:next | earlier | both"],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let mode = arg_str(args, "mode").map_or(Ok(Match::Next), |m| Match::parse(m).ok_or("mode: next, earlier or both"))?;
+            let one = |b: &Value| Some((b.get("clip_id")?.as_u64()?, b.get("index")?.as_u64()? as usize));
+            let sel: Vec<(Id, usize)> =
+                args.get("blocks").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(one).collect()).unwrap_or_default();
+            if sel.len() < 2 {
+                return Err("blocks: two or more {clip_id, index}".into());
+            }
+            done(json!({"ok": true, "handoffs": app.project.flow_key_blocks(&sel, mode)}))
         },
     },
     ToolDef {

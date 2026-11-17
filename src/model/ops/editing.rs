@@ -521,7 +521,7 @@ impl Project {
             if !pa.is_animated() {
                 pa.toggle_key(0.0);
             }
-            pa.set_at(da, meet);
+            pa.key_at(da, meet);
             if let Some(k) = pa.keys.iter_mut().rev().nth(1) {
                 k.ease = Ease::EaseIn;
             }
@@ -529,7 +529,7 @@ impl Project {
             if !pb.is_animated() {
                 pb.toggle_key(db);
             }
-            pb.set_at(0.0, meet);
+            pb.key_at(0.0, meet);
             if let Some(k) = pb.keys.first_mut() {
                 k.ease = Ease::EaseOut;
             }

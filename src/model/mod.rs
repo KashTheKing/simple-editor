@@ -368,8 +368,10 @@ impl Animated {
         self.baked_rev = 0;
         self.link_err = None;
     }
-    /// Set the value at time t: upserts a keyframe when animated, otherwise sets the constant.
-    /// A manual edit detaches any live link (AE-style: dragging a linked value breaks the link).
+    /// A value edit (a slider, a drag in the Viewer) at time t. Not animated: sets the constant. A key at t:
+    /// changes it. Animated with no key at t: only while Record is on (`set_recording`) does it add a key -
+    /// otherwise the whole animation shifts by the change, so an edit never litters keys.
+    /// A manual edit detaches any live link (dragging a linked value breaks the link).
     pub fn set_at(&mut self, t: f64, v: f64) {
         if !self.link.is_none() {
             self.unlink();
@@ -377,6 +379,20 @@ impl Animated {
         if !self.is_animated() {
             self.value = v;
             return;
+        }
+        match self.key_index_at(t) {
+            Some(i) => self.keys[i].v = v,
+            None if recording() => self.insert(t, v),
+            None => {
+                let d = v - self.at(t);
+                self.keys.iter_mut().for_each(|k| k.v += d);
+            }
+        }
+    }
+    /// Put a key at t with value v (the keyframe button, a tool, a paste): always a key, Record or not.
+    pub fn key_at(&mut self, t: f64, v: f64) {
+        if !self.link.is_none() {
+            self.unlink();
         }
         match self.key_index_at(t) {
             Some(i) => self.keys[i].v = v,
@@ -677,3 +693,16 @@ pub use subtitle::*;
 pub use text::*;
 pub use track::*;
 pub use transition::*;
+
+thread_local! {
+    // ponytail: on in unit tests, where `set_at` on an animated property has always meant "key it here"
+    static RECORDING: std::cell::Cell<bool> = const { std::cell::Cell::new(cfg!(test)) };
+}
+/// Record mode: while on, changing an animated value away from its keys adds a key there (`Animated::set_at`).
+/// Off by default - keys are placed by hand.
+pub fn recording() -> bool {
+    RECORDING.with(|r| r.get())
+}
+pub fn set_recording(on: bool) {
+    RECORDING.with(|r| r.set(on));
+}

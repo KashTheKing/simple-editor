@@ -527,7 +527,7 @@ fn add_key_at(
         if !a.is_animated() {
             a.toggle_key(t);
         }
-        a.set_at(t, v);
+        a.key_at(t, v);
         if let Some(k) = a.key_index_at(t) {
             state.selected.clear();
             state.selected.push((active, k));

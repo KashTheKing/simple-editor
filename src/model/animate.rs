@@ -123,9 +123,15 @@ pub struct BlockCtl {
     /// The side it moves from / to (blocks that move along x or y).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dir: Option<Dir>,
-    /// Ease of the main move (each track's first segment).
+    /// Ease of the move (every segment but a Hold): how it travels from its origin to its target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ease: Option<Ease>,
+    /// Origin / target: (property, value) the block starts from / ends at, instead of the preset's own
+    /// (relative) first / last key. Empty = as designed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub from: Vec<(String, f64)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub to: Vec<(String, f64)>,
     #[serde(default)]
     pub phys: Phys,
     /// Speed at the start / end set by Flow: (property, normalized slope of that segment).
@@ -190,6 +196,8 @@ impl BlockCtl {
             strength: 1.0,
             dir,
             ease: None,
+            from: Vec::new(),
+            to: Vec::new(),
             phys: Phys::default(),
             in_speed: None,
             out_speed: None,
@@ -213,9 +221,16 @@ impl BlockCtl {
                 continue;
             }
             if let Some(e) = self.ease.filter(|_| self.src.gen.is_none()) {
-                if t.keys[0].ease != Ease::Hold {
-                    t.keys[0].ease = e;
+                // every segment (the last key's ease belongs to what follows the block)
+                for k in t.keys[..n - 1].iter_mut().filter(|k| k.ease != Ease::Hold) {
+                    k.ease = e;
                 }
+            }
+            if let Some((_, v)) = self.from.iter().find(|(p, _)| *p == t.prop) {
+                t.keys[0].v = BlockVal::Abs(*v);
+            }
+            if let Some((_, v)) = self.to.iter().find(|(p, _)| *p == t.prop) {
+                t.keys[n - 1].v = BlockVal::Abs(*v);
             }
             if let Some((p, s)) = &self.in_speed {
                 if *p == t.prop {
