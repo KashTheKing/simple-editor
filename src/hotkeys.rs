@@ -315,6 +315,8 @@ actions! {
     // unbound by design (toolbar button / header double-click / palette only).
     Find => "find", "Find…", sc(CTRL, Key::F);
     ToggleOverview => "toggle_overview", "Toggle Overview Strip", None;
+    WaveformsSimple => "waveforms_simple", "Waveforms: Simple", None;
+    WaveformsDetailed => "waveforms_detailed", "Waveforms: Detailed", None;
     RenameTrack => "rename_track", "Rename Track", None;
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
@@ -678,6 +680,7 @@ pub fn group(a: Action) -> &'static str {
         | TrimTail | SlipLeft | SlipRight | ToggleTrimView => "Trimming",
         LiftInOut | ExtractInOut | TrimToInOut | RippleDeleteInOut | CloseGapAtPlayhead | JoinThroughEdit
         | SpliceInsert | OverwriteAtPlayhead | ZoomIn | ZoomOut | ZoomFit | ToggleSnap | ToggleOverview
+        | WaveformsSimple | WaveformsDetailed
         | AddVideoTrack | AddAudioTrack | RenameTrack | ToggleTrackLock | ToggleTrackRipple | ToggleTrackMagnetic
         | OpenParentSequence | RenderSelection | BakeSelection | ShapesToHtml => "Timeline",
         ToggleAutoCloseGaps | ToggleShowVideoTracks | ToggleShowAudioTracks => "Timeline",

@@ -2,6 +2,12 @@
 
 ## 1.3.1
 
+### Timeline waveforms
+- **Clearer audio waveforms on the timeline**: Simple (the default) draws loudness on a dB scale, so quiet speech
+  shows and loud music no longer fills the clip, with the peaks as a lighter outline around it. **Detailed** colours
+  each moment by its bass (orange), mids (green) and highs (blue), marks hits with ticks, and shows a spectrogram
+  heat map on tall tracks. Switch in the timeline ruler's View menu, Settings ▸ General or the palette
+  ("Waveforms: Simple / Detailed"); a track's right-click ▸ Waveform overrides it. Waveforms are re-analysed once.
 ### Quick Export
 - **A Quick Export button in the top bar** (top right, beside Jobs; also File ▸ Export ▸ Quick Export… and the
   palette): a Save As dialog with a file type list (MP4, MOV, MKV, WebM, GIF, WAV, MP3), then the export runs as a

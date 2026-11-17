@@ -53,6 +53,7 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("set_track_flag", "track.set"),
     ("rename_track", "track.set"),
     ("set_track_color", "track.set"),
+    ("set_track_waveform", "track.set"),
     ("move_track", "track.move"),
     ("ripple_trim", "timeline.ripple_trim"),
     ("roll_edit", "timeline.roll"),

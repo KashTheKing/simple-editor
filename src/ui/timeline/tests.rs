@@ -159,6 +159,7 @@ struct Harness {
     realtime: Vec<(f64, f64, bool, bool)>,
     // ---- ws:timeline-surface ----
     views: Vec<TimelineView>,
+    wave_detailed: bool,
 }
 
 impl Harness {
@@ -212,6 +213,7 @@ impl Harness {
                 TimelineView { name: "Detailed".into(), ..DETAILED_VIEW },
                 TimelineView { name: "Compact".into(), waves: false, thumbs: false, keys: false, ..DETAILED_VIEW },
             ],
+            wave_detailed: false,
         };
         h.frame(vec![]); // layout pass: sets lanes_rect
         h
@@ -246,6 +248,7 @@ impl Harness {
             boring_thr,
             realtime,
             views,
+            wave_detailed,
             ..
         } = self;
         let mut resp = None;
@@ -276,6 +279,7 @@ impl Harness {
                         boring_thr: *boring_thr,
                         realtime,
                         views,
+                        wave_detailed: *wave_detailed,
                     },
                 ));
             });
@@ -3136,4 +3140,57 @@ fn headless_a_keyed_clip_has_nothing_to_grab_but_the_clip() {
     assert!((c.start - 1.0).abs() < 0.05, "the clip moved, got start {}", c.start);
     assert_eq!(c.opacity.keys.iter().map(|k| k.t).collect::<Vec<_>>()[..2], [2.0, 5.0], "keys stay in clip time");
     assert!(h.state.mini_graph_open.is_empty());
+}
+
+#[test]
+fn waveform_db_scale_shows_quiet_and_keeps_loud_off_the_ceiling() {
+    assert_eq!(db_h(1.0), 1.0);
+    assert_eq!(db_h(0.0), 0.0);
+    // -30 dB (a quiet syllable) still shows; -60 dB (room tone) is not
+    assert!((0.15..0.45).contains(&db_h(0.0316)), "{}", db_h(0.0316));
+    assert_eq!(db_h(0.001), 0.0);
+    // a 6 dB step reads as the same height step anywhere on the scale (a linear scale squashes it near 0)
+    let step = |a: f32| db_h(a) - db_h(a * 0.5);
+    assert!((step(1.0) - step(0.05)).abs() < 1e-3);
+    // bands: pure bass is red-orange, pure highs are blue
+    let bass = band_color([255, 0, 0]);
+    assert!(bass.r() > 200 && bass.b() < 60, "{bass:?}");
+    let high = band_color([0, 0, 255]);
+    assert!(high.b() > 200 && high.r() < 60, "{high:?}");
+}
+
+/// The global setting picks the style; a track's own override wins over it.
+#[test]
+fn track_waveform_override_beats_the_setting() {
+    let backing = |h: &Harness| {
+        h.shapes.iter().any(|cs| matches!(&cs.shape, Shape::Rect(r) if r.fill == Color32::from_black_alpha(150)))
+    };
+    let mut h = Harness::new();
+    let ai = h.project.tracks.iter().position(|t| t.kind == TrackKind::Audio).unwrap();
+    // the (missing) file resolves to empty analysis in the background: wait for it
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let ready = |h: &mut Harness| {
+        let a = h.project.tracks[ai].clips[0].asset;
+        let path = h.project.asset(a).unwrap().path.clone();
+        h.waves.detail(&path, 0).is_some()
+    };
+    while !ready(&mut h) {
+        assert!(std::time::Instant::now() < deadline, "analysis never resolved");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    h.frame(vec![]);
+    assert!(!backing(&h), "simple by default");
+    h.wave_detailed = true;
+    h.frame(vec![]);
+    assert!(backing(&h), "the setting turns detailed on");
+    assert!(h.project.set_track_waveform(ai, Some(false)));
+    h.frame(vec![]);
+    assert!(!backing(&h), "the track's Simple wins");
+    h.wave_detailed = false;
+    h.project.set_track_waveform(ai, Some(true));
+    h.frame(vec![]);
+    assert!(backing(&h), "the track's Detailed wins");
+    // and it survives a save
+    let p = Project::from_json(&h.project.to_json()).unwrap();
+    assert_eq!(p.tracks[ai].wave_detailed, Some(true));
 }

@@ -134,6 +134,7 @@ pub(super) fn draw_header(
 
     let (locked, ripple, magnetic) = (track.locked, track.ripple.unwrap_or(false), track.magnetic);
     let (empty, muted, solo) = (track.clips.is_empty(), track.muted, track.solo);
+    let wave = track.wave_detailed;
     menu::context(&hresp, |ui| {
         super::menus::acts(ui, &[Some(Action::AddVideoTrack), Some(Action::AddAudioTrack)]);
         super::menus::track_kind_checks(ui, show_kinds);
@@ -165,6 +166,15 @@ pub(super) fn draw_header(
         ui.separator();
         if menu::row(ui, Some(Glyph::Pencil), "Rename…", &menu::shortcut(Action::RenameTrack)).clicked() {
             *track_rename = Some((ti, track.name.clone()));
+        }
+        if !is_video {
+            menu::sub(ui, None, "Waveform", |ui| {
+                for (d, name) in [(None, "Follow View Setting"), (Some(false), "Simple"), (Some(true), "Detailed")] {
+                    if menu::check(ui, wave == d, name, "").clicked() {
+                        act = Some(Act::SetTrackWaveform(ti, d));
+                    }
+                }
+            });
         }
         menu::sub(ui, Some(Glyph::Swatch), "Colour", |ui| {
             if menu::row(ui, None, "None", "").clicked() {

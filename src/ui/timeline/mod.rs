@@ -41,7 +41,7 @@
 //! selection as one undo step.
 
 use crate::media::thumbs::ThumbCache;
-use crate::media::waveform::{Peaks, WaveformCache};
+use crate::media::waveform::{WaveDetail, WaveformCache};
 use crate::model::ops::tracks::TrackFlag;
 use crate::model::{
     Asset, Clip, ClipKind, Ease, EffectKind, Id, Label, Project, TrackKind, TransitionKind, ABUT_EPS, MIN_CLIP,
@@ -348,6 +348,8 @@ pub struct TimelineCtx<'a> {
     // ---- ws:timeline-surface ----
     /// Every `Settings.timeline_views` preset, for the ruler's View ▸ menu (`view` is the active one).
     pub views: &'a [TimelineView],
+    /// `Settings.timeline_waveform == "detailed"` (a track's `wave_detailed` overrides it).
+    pub wave_detailed: bool,
 }
 
 #[derive(Default)]
@@ -538,6 +540,8 @@ enum Act {
     SetTrackColor(usize, Option<[u8; 3]>),
     /// Header drag-grip release -> `Project::move_track` (trim-model). `true` = up.
     ReorderTrack(usize, bool),
+    /// Track menu ▸ Waveform -> `Project::set_track_waveform` (None = follow the setting).
+    SetTrackWaveform(usize, Option<bool>),
 }
 
 mod arm;
@@ -911,13 +915,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             // ws:pro-timeline: the active TimelineView preset gates waveform/filmstrip/keyframe/text
             let seq_audio = clip.kind == ClipKind::Sequence && track.kind == TrackKind::Audio;
             if (clip.kind == ClipKind::Audio || seq_audio) && c.view.waves {
-                let peaks = if seq_audio {
-                    c.waveforms.sequence(c.project, clip.sequence)
-                } else {
-                    c.project.asset(clip.asset).and_then(|a| c.waveforms.get(&a.path, clip.audio_stream))
+                let path = if seq_audio { None } else { c.project.asset(clip.asset).map(|a| a.path.as_str()) };
+                let d = match path {
+                    None if seq_audio => c.waveforms.sequence_detail(c.project, clip.sequence),
+                    None => None,
+                    Some(path) => c.waveforms.detail(path, clip.audio_stream),
                 };
-                if let Some(peaks) = peaks {
-                    draw_waveform(&lp, &peaks, clip, vis.shrink(1.0), state, wave_color(color, clip_label, &pal));
+                if let Some(d) = d {
+                    let detailed = track.wave_detailed.unwrap_or(c.wave_detailed);
+                    let mut area = vis.shrink(1.0);
+                    // a tall clip in detailed mode gives its lower part to the spectrogram heat map
+                    if let Some(path) = path.filter(|_| detailed && !d.spec.is_empty() && area.height() >= 70.0) {
+                        let split = area.top() + area.height() * 0.55;
+                        let spec = Rect::from_x_y_ranges(area.x_range(), split + 1.0..=area.bottom());
+                        draw_spectrogram(&lp, c.waveforms, path, clip.audio_stream, &d, clip, spec, state);
+                        area.set_bottom(split);
+                    }
+                    draw_waveform(&lp, &d, clip, area, state, wave_color(color, clip_label, &pal), detailed);
                 }
             } else if matches!(clip.kind, ClipKind::Video | ClipKind::Image | ClipKind::Sequence) && c.view.thumbs && !is_html {
                 let p: &Project = c.project;
@@ -1734,6 +1748,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 out.actions.push(ToggleOverview);
             }
             ui.separator();
+            for (a, on, name) in [
+                (WaveformsSimple, !c.wave_detailed, "Simple Waveforms"),
+                (WaveformsDetailed, c.wave_detailed, "Detailed Waveforms"),
+            ] {
+                if menu::check(ui, on, name, "").clicked() {
+                    out.actions.push(a);
+                }
+            }
+            ui.separator();
             menus::track_kind_checks(ui, state.show_kinds);
         });
         if nested {
@@ -2164,6 +2187,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 | Act::RenameTrack(..)
                 | Act::SetTrackColor(..)
                 | Act::ReorderTrack(..)
+                | Act::SetTrackWaveform(..)
         );
         let before = refusable.then(|| p.clone());
         let mut changed = true;
@@ -2387,6 +2411,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             Act::ReorderTrack(ti, up) => {
                 label = "Reorder track";
                 changed = p.move_track(ti, up);
+            }
+            Act::SetTrackWaveform(ti, d) => {
+                label = "Track waveform";
+                changed = p.set_track_waveform(ti, d);
             }
         }
         if let Some(b) = before {

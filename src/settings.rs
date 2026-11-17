@@ -174,6 +174,10 @@ pub fn default_palette() -> PaletteOverride {
     PaletteOverride { accent: None, ..crate::theme::preset("GitHub Dark").unwrap() }
 }
 
+fn default_waveform() -> String {
+    "simple".into()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -456,6 +460,10 @@ pub struct Settings {
     /// Inline overview minimap strip above the ruler.
     #[serde(default)]
     pub overview: bool,
+    /// Audio clips on the timeline: "simple" (dB envelope, loudness body) or "detailed" (frequency
+    /// colours, onset ticks, spectrogram on tall tracks). A track's own `Track.waveform` wins.
+    #[serde(default = "default_waveform")]
+    pub timeline_waveform: String,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
     // ---- ws:jobs-panel ----
@@ -797,6 +805,7 @@ impl Default for Settings {
             ],
             boring_thr: default_boring_thr(),
             overview: false,
+            timeline_waveform: default_waveform(),
             // ---- ws:text-titles ----
             // ---- ws:docs-refresh ----
             // ---- ws:jobs-panel ----
