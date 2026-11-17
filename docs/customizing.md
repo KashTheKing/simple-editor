@@ -135,7 +135,7 @@ were written per feature as it landed; if a row disagrees with `tools/list`, `to
 | `library.remove` | Ui | id | Remove an installed item. |
 | `guides.list` | Read | - | The social guides: every platform (id, network, aspect, verified date, source, zones as fractions of the frame, how each sheet moves the video), the devices and the current setting. |
 | `guides.set` | Ui | platform?, mode?, device?, profile?, worst_case?, keep_aspect?, draw_in_render?, state? | What the viewer's guide shows: platform (`off` hides it), `safe` / `ui` / `device`, device class, the active profile, and which sheet the device preview has open. View only: never the project or the export. |
-| `guides.preview` | Read (image) | platform?, device?, mode?, state?, profile?, t?, width? | A picture of the guide: the frame at `t` inside the device with the platform UI and the sheet open (`state`: `default`, `theatre`, `fullscreen` (desktop long form), `comments`, `desc`, `share`, `more`, `profile`, `sound`), or with the safe-zone / UI overlay. Deterministic. |
+| `guides.preview` | Read (image) | platform?, device?, mode?, state?, profile?, t?, playing?, width? | A picture of the guide: the frame at `t` inside the device with the platform UI and the sheet open (`state`: `default`, `theatre`, `fullscreen` (desktop long form), `comments`, `desc`, `share`, `more`, `profile`, `sound`), or with the safe-zone / UI overlay. Deterministic. |
 | `profile.get` | Read | id?, network? | The social profiles (fake accounts the guide shows) and which is active per network. |
 | `profile.set` | Ui | id? \| network?, fields?, avatar_path?, active?, delete? | Create or edit a profile: handle, display, verified, followers, caption, tags, sound, counts, link, `comment_list`; a picture file; make it active. No credentials exist anywhere. |
 | `profile.fetch` | Ui | id, url?, apply? | Fill a profile from its PUBLIC page (curl, no login, no cookies): name, picture, follower text. Returns what was found and from where. Held for the user's Allow like `export.*`: it is the only call that reads the web. |
@@ -270,7 +270,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `export.stabilize` | Job | clip_ids | Bake the clip(s) through ffmpeg deshake, then swap them onto the result. |
 | `export.status` | Read | - | Current export progress (fraction, status, ETA seconds) and the queue / bake counts. |
 | `export.xml` | Read | path | Write the main timeline as Final Cut Pro 7 XML (xmeml v5) for Premiere / Resolve: clips, audio level/pan, A/V links, cross dissolves and sequence + clip markers (track names are not part of xmeml). |
-| `export.video` | Job | audio, crf, encoder, height, path, scaler, stem_by, width | Export the timeline to a file (blocks until done, up to 30 min); encoder/crf/audio/stem_by default to settings. audio=streams adds one audio track per stem after the mix (mp4/mov/mkv/m4v, else one mix); audio=stems writes '<name> stems/NN <stem>.wav' beside the file. |
+| `export.video` | Job | audio, captions, crf, encoder, guide, height, path, scaler, stem_by, width | Export the timeline to a file (blocks until done, up to 30 min); encoder/crf/audio/stem_by default to settings. audio=streams adds one audio track per stem after the mix (mp4/mov/mkv/m4v, else one mix); audio=stems writes '<name> stems/NN <stem>.wav' beside the file. `guide` / `captions` burn in the social guide / subtitles (default: the Export settings). |
 
 **`frame.*`** (2 tools)
 

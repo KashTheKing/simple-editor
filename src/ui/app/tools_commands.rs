@@ -11,6 +11,8 @@ use crate::ui::palette;
 /// deliberately small (a stringly-typed round-trip through JSON scalars, no nested structures): this is
 /// a scripting convenience, not a settings-migration tool. Extend when a genuinely useful field shows up.
 const SCALAR_WHITELIST: &[&str] = &[
+    "export_guide",
+    "export_captions",
     "ui_scale",
     "keymap_preset",
     "theme",
@@ -63,6 +65,8 @@ fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
         "cache_disk_gb" => json!(s.cache_disk_gb),
         "cache_folder" => json!(Settings::cache_dir().to_string_lossy()),
         "web_browser" => json!(s.web_browser),
+        "export_guide" => json!(s.export_guide),
+        "export_captions" => json!(s.export_captions.map_or("follow".to_string(), |b| b.to_string())),
         _ => return None,
     })
 }
@@ -120,6 +124,9 @@ fn set_scalar(s: &mut Settings, key: &str, value: &str) -> Result<(), String> {
             s.web_browser = v.to_string();
             crate::engine::browsers::set_choice(v);
         }
+        "export_guide" => s.export_guide = parse_bool(value)?,
+        // "follow" = burn captions in when the preview shows them (the old behaviour)
+        "export_captions" => s.export_captions = if value == "follow" { None } else { Some(parse_bool(value)?) },
         _ => return Err(format!("'{key}' is not a whitelisted setting")),
     }
     Ok(())

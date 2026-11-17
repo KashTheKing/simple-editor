@@ -281,6 +281,7 @@ impl App {
             // ws:export-audio-tracks
             audio: export::AudioLayout::parse(&self.settings.export_audio),
             stem_by: export::StemBy::parse(&self.settings.export_stem_by),
+            overlay: None,
         }
     }
 
@@ -339,11 +340,13 @@ impl App {
         if !choice.use_project_bg {
             project.preview_bg = crate::model::BackgroundMode::Black;
         }
-        let prog = if choice.lossless {
-            export::start_lossless_cut(project, choice.opts.out_path.clone())
+        // ws:export-pipeline: the same frame source every other export gets (GPU when it is on)
+        let mut opts = ExportOptions { frames: self.export_frames(), ..choice.opts };
+        self.deliver(&mut project, &mut opts, None, None);
+        // a burnt-in guide or caption change needs the re-encode a lossless cut skips
+        let prog = if choice.lossless && opts.overlay.is_none() && export::lossless_segments(&project).is_some() {
+            export::start_lossless_cut(project, opts.out_path)
         } else {
-            // ws:export-pipeline: the same frame source every other export gets (GPU when it is on)
-            let opts = ExportOptions { frames: self.export_frames(), ..choice.opts };
             export::start_export(project, opts, self.text.clone())
         };
         self.export = Some((prog.clone(), ExportKind::File { path }));

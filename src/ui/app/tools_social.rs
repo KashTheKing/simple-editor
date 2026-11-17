@@ -20,11 +20,18 @@ pub(super) fn decorate(app: &App, f: Arc<Frame>, t: f64, args: &Value) -> Arc<Fr
         return f;
     }
     let aspect = app.project.width.max(1) as f32 / app.project.height.max(1) as f32;
-    let Some(g) = GuideView::new(&app.settings, &app.project.name, aspect, t, app.project.duration()) else { return f };
+    let Some(mut g) = GuideView::new(&app.settings, &app.project.name, aspect, t, app.project.duration()) else { return f };
+    g.playing = guide_playing(app, args);
     Arc::new(match g.mode {
         Mode::Device => raster::render_device(Some(&f), &g, None, f.width.max(320)),
         _ => raster::render_overlay((*f).clone(), &g),
     })
+}
+
+/// The play state the guide's player buttons show: `playing` when given (an export plays, so true), else the
+/// editor's own (Play shows pause).
+fn guide_playing(app: &App, args: &Value) -> bool {
+    arg_bool(args, "playing").unwrap_or_else(|| app.player.is_playing())
 }
 
 /// `state`: a sheet (comments, desc, share, more, profile, sound), a desktop player view (theatre, fullscreen),
@@ -213,6 +220,7 @@ pub const TOOLS: &[ToolDef] = &[
             "state:string:false:default|theatre|fullscreen|comments|desc|share|more|profile|sound",
             "profile:string:false:profile id to show",
             "t:number:false:default = the playhead",
+            "playing:boolean:false:the play button state (default: the editor's)",
             "width:integer:false:picture width in px (default 540)",
         ],
         kind: ToolKind::Read,
@@ -245,7 +253,8 @@ pub const TOOLS: &[ToolDef] = &[
             let title = app.project.name.clone();
             let dur = app.project.duration();
             let frame = app.render_frame_now(t, width.min(app.project.width.max(16)));
-            let g = GuideView::new(&s, &title, aspect, t, dur).ok_or("no such platform")?;
+            let mut g = GuideView::new(&s, &title, aspect, t, dur).ok_or("no such platform")?;
+            g.playing = guide_playing(app, args);
             let out = match g.mode {
                 Mode::Device => raster::render_device(frame.as_deref(), &g, open, width),
                 _ => match &frame {
@@ -253,7 +262,7 @@ pub const TOOLS: &[ToolDef] = &[
                     None => return Err("render timed out".into()),
                 },
             };
-            let meta = json!({"platform": plat, "device": s.guide_device, "mode": g.mode.id(), "state": open.map_or(s.guide_view.as_str(), |x| x.id()), "t": t,
+            let meta = json!({"platform": plat, "device": s.guide_device, "mode": g.mode.id(), "state": open.map_or(s.guide_view.as_str(), |x| x.id()), "t": t, "playing": g.playing, "clock": g.clock,
                               "width": out.width, "height": out.height, "profile": g.profile.id, "verified": platform.ver});
             Ok(ToolOutcome::Image { png_b64: base64(&crate::mcp::png_encode(&out)), meta })
         },

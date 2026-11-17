@@ -62,6 +62,7 @@ pub struct View<'a> {
     pub title: &'a str,
     pub progress: f32,
     pub clock: &'a str,
+    pub playing: bool,
     /// The project's aspect (w / h).
     pub pa: f32,
     /// The sheet shown (kept while it slides back down) and how far open it is, 0..1 eased.
@@ -242,7 +243,7 @@ pub fn build(v: &View, area: Rect) -> Scene {
     let lay = plat.layout(dev);
     let sheet_m = v.open.map(|s| s.metrics(&plat.st).clone());
     let e = if v.open.is_some() { v.e.clamp(0.0, 1.0) } else { 0.0 };
-    let cx = Ctx { prof: v.prof, title: v.title, progress: v.progress, clock: v.clock };
+    let cx = Ctx { prof: v.prof, title: v.title, progress: v.progress, clock: v.clock, playing: v.playing };
     let (base, video, uv, sheet_top);
     match plat.pg.as_str() {
         "watch" if desktop => {

@@ -59,6 +59,14 @@
   at the exact moment playing, so it is in step from the first frame, after seeks and after buffering.
 - **Fixed: Spectrum Bars and Voxel Blocks upside down in the Source monitor.** The monitor now draws styles the
   same way up as the timeline and the export.
+- **Social guides follow playback**: the guide's play button shows pause while the editor plays, and its progress
+  bar and time ("0:42 / 3:51", hours on hour-long videos) track the playhead as you play, scrub or seek. The total
+  is the whole timeline. `render.frame`, `render.contact_sheet` and `guides.preview` draw the bar and time of the
+  exact frame they render and take `playing` to choose the button.
+- **Burn in social guide** and **Burn in captions** in Export ▸ Advanced: draw the chosen guide over every
+  exported frame (playing, its bar and time following the exported video or In/Out range, without the editor's
+  labels), and choose whether the subtitles are drawn in (until changed it follows the preview, as before).
+  MCP: `export.video` takes `guide` / `captions`; `settings.set` takes `export_guide` / `export_captions`.
 
 ## 1.3.0
 

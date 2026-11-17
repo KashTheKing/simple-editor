@@ -1117,6 +1117,18 @@ impl App {
     }
 
     /// The project with any open sequence closed - exports always render the MAIN timeline.
+    /// A delivered export (the Export window, its queue, Quick Export, `export.video`): the Export
+    /// settings' "Burn in captions" and "Burn in social guide" applied to the clone and the options.
+    /// Overwrite Original and bakes never call this.
+    fn deliver(&self, project: &mut Project, opts: &mut crate::engine::export::ExportOptions, captions: Option<bool>, guide: Option<bool>) {
+        if let Some(b) = captions.or(self.settings.export_captions) {
+            project.show_subtitles = b;
+        }
+        if guide.unwrap_or(self.settings.export_guide) {
+            opts.overlay = crate::ui::social::raster::export_overlay(&self.settings, project, opts.range);
+        }
+    }
+
     fn export_project(&self) -> Project {
         let mut p = self.project.clone();
         if p.editing.is_some() {

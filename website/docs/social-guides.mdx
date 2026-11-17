@@ -8,7 +8,8 @@ where, measured on the real apps' own pages, so a Short, TikTok or Reel keeps it
 of them.
 
 Right-click the Preview ▸ **Social Guides** (or **Window ▸ Social Guides**) and pick a platform. Pick
-**Off** to hide it. The guide only ever draws over the picture: it never changes your project or your export.
+**Off** to hide it. The guide only ever draws over the picture: it never changes your project, and your export
+only when you tick **Burn in social guide** in the Export settings (see below).
 
 ## Three ways to look
 
@@ -42,7 +43,18 @@ Click things like you would on the phone:
   **Share** and **⋮ more**: the share and menu sheets.
 - Long form (YouTube) and feed posts (Instagram post, X) get the page around the player: title, channel
   row, description and comments, which open under the player.
-- The progress bar follows the **playhead**: press Play, or scrub the timeline.
+- The player follows the editor: the progress bar and the time ("0:42 / 3:51") track the **playhead** as you
+  play, scrub or seek, and the play button shows pause while the editor plays. The total length is the whole
+  timeline (what a full export gives you); it counts in hours once the timeline is an hour long. This works in
+  every mode (UI preview and Device preview).
+
+### Burning a guide into an export
+
+Export ▸ Advanced ▸ **Burn in social guide** draws the chosen guide over every exported frame, as if the video
+were playing in the app: the pause button shows, and the progress bar and time follow the exported video (the
+In/Out range when you export one, else the whole timeline), frame by frame. A Device preview burns in as its UI
+preview, so the export keeps your project's size. The editor's own labels (the guide's name, "Measured …") and the
+crop dimming are left out. Off by default; Overwrite Original never burns a guide in.
 
 Each sheet shows the sample comments from your profile.
 
