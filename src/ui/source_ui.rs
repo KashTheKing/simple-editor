@@ -330,11 +330,13 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
                 let title = crate::ui::audio_card::title(ui.ctx(), &path);
                 crate::ui::audio_card::paint(ui, rect, cover, &title);
             } else if settings.audio_visualizer {
-                // animate only while playing: paused, the orb holds still and asks for no repaints
+                // the song's own analysis at the playhead's source time (the same one a visualizer clip's keys
+                // are baked from), built once in the background; repaint only while playing / until it lands
+                let backend = crate::media::Backend::parse(&settings.decoder);
+                let ctx = ui.ctx().clone();
+                let song = crate::engine::visualizer::analysis_async(&path, 0, backend, move || ctx.request_repaint());
+                st.ball.show(song.as_deref(), playhead);
                 if playing {
-                    if let Some(p) = waveforms.and_then(|w| w.get(&path, 0)) {
-                        st.ball.update(crate::ui::spiky_ball::live(&p, playhead), ui.input(|i| i.stable_dt));
-                    }
                     ui.ctx().request_repaint();
                 }
                 let want = &settings.audio_visualizer_style;

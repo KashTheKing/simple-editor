@@ -522,6 +522,124 @@ pub struct Effect {
     /// before this field existed deserialises to.
     #[serde(default)]
     pub len: f64,
+    // ---- ws:audio-visualizer ----
+    /// An audio visualizer's band mixer: which frequency bands drive it and how (None = the defaults).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_mix: Option<AudioMix>,
+    /// A 3D visualizer's camera (shaders that declare `// @camera`); None = the default slow orbit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<VizCamera>,
+}
+
+/// The camera of a 3D visualizer, in the shader's own world units: it looks from yaw / pitch / distance
+/// around `target` (degrees; pitch up from the horizon), with a vertical field of view and a roll. Every
+/// value is keyframeable; `auto_orbit` turns the yaw by `orbit_speed` degrees a second on top of it.
+/// Reaches the shader as `u_cam_pos`, `u_cam_target`, `u_fov` (radians) and `u_cam_roll` (radians):
+/// `engine::visualizer::camera_at`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct VizCamera {
+    pub yaw: Animated,
+    pub pitch: Animated,
+    pub distance: Animated,
+    pub fov: Animated,
+    pub roll: Animated,
+    pub target_x: Animated,
+    pub target_y: Animated,
+    pub target_z: Animated,
+    pub auto_orbit: bool,
+    pub orbit_speed: f64,
+}
+
+impl Default for VizCamera {
+    fn default() -> Self {
+        Self {
+            yaw: Animated::new(40.0),
+            pitch: Animated::new(35.0),
+            distance: Animated::new(22.5),
+            fov: Animated::new(35.0),
+            roll: Animated::new(0.0),
+            target_x: Animated::new(0.0),
+            target_y: Animated::new(0.0),
+            target_z: Animated::new(0.0),
+            auto_orbit: true,
+            orbit_speed: 6.9,
+        }
+    }
+}
+
+// ---- ws:audio-visualizer ----
+/// How a visualizer listens: the six bands' weights (`band1`..`band6` = `AudioMix::BANDS`), overall
+/// sensitivity, smoothing and which bands the beat detection hears. Baked into the visualizer's keys
+/// (`engine::visualizer::bake`), so it costs nothing at playback.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AudioMix {
+    /// Per band, 0 = ignored .. 3 = tripled.
+    pub gains: [f32; 6],
+    /// Overall drive, 0.25 .. 4.
+    pub sensitivity: f32,
+    /// Seconds to rise to a louder value (0 = instant).
+    pub attack: f32,
+    /// Seconds to fall back.
+    pub release: f32,
+    /// Bands the beat detection listens to (none = the whole signal).
+    pub beat_bands: [bool; 6],
+    /// The preset this started from, for display ("" = none / edited by hand).
+    pub preset: String,
+}
+
+impl Default for AudioMix {
+    fn default() -> Self {
+        Self { gains: [1.0; 6], sensitivity: 1.0, attack: 0.0, release: 0.15, beat_bands: [false; 6], preset: String::new() }
+    }
+}
+
+impl AudioMix {
+    /// The bands, low to high, with their edges in Hz.
+    pub const BANDS: [(&'static str, f32, f32); 6] = [
+        ("Sub", 20.0, 80.0),
+        ("Bass", 80.0, 250.0),
+        ("Low-mid", 250.0, 500.0),
+        ("Mid", 500.0, 2000.0),
+        ("High-mid", 2000.0, 6000.0),
+        ("Air", 6000.0, 16000.0),
+    ];
+    pub const PRESETS: [&'static str; 6] = ["EDM", "Hip-hop", "Rock", "Vocal", "Lo-fi", "Classical"];
+
+    /// A named starting point (case-insensitive), None for an unknown name.
+    pub fn preset(name: &str) -> Option<AudioMix> {
+        let n = Self::PRESETS.iter().find(|p| p.eq_ignore_ascii_case(name.trim()))?;
+        let b = |bands: &[usize]| std::array::from_fn(|i| bands.contains(&i));
+        // (gains, sensitivity, attack, release, beat bands): kick-led styles listen for beats low,
+        // vocal / acoustic ones in the mids, and the slower genres smooth more
+        let (gains, sensitivity, attack, release, beat_bands) = match *n {
+            "EDM" => ([2.0, 1.6, 0.6, 0.5, 0.8, 0.8], 1.2, 0.0, 0.12, b(&[0, 1])),
+            "Hip-hop" => ([1.4, 2.0, 0.8, 0.7, 0.6, 0.4], 1.0, 0.0, 0.2, b(&[1])),
+            "Rock" => ([0.6, 1.2, 1.4, 1.6, 1.0, 0.6], 1.0, 0.01, 0.15, b(&[1, 3])),
+            "Vocal" => ([0.2, 0.5, 1.2, 2.0, 1.6, 0.6], 1.0, 0.03, 0.3, b(&[3])),
+            "Lo-fi" => ([0.8, 1.2, 1.4, 0.8, 0.4, 0.2], 0.8, 0.05, 0.5, b(&[1])),
+            _ => ([0.6, 0.8, 1.0, 1.2, 1.0, 0.8], 0.9, 0.1, 0.8, [false; 6]), // Classical
+        };
+        Some(AudioMix { gains, sensitivity, attack, release, beat_bands, preset: n.to_string() })
+    }
+
+    /// A band by name ("bass", "High-mid", "highmid"), its index.
+    pub fn band(name: &str) -> Option<usize> {
+        let key = |s: &str| s.to_ascii_lowercase().replace(['-', ' ', '_'], "");
+        Self::BANDS.iter().position(|(n, _, _)| key(n) == key(name))
+    }
+
+    /// Clamped into the ranges the UI offers.
+    pub fn clamped(mut self) -> AudioMix {
+        for g in &mut self.gains {
+            *g = if g.is_finite() { g.clamp(0.0, 3.0) } else { 1.0 };
+        }
+        self.sensitivity = if self.sensitivity.is_finite() { self.sensitivity.clamp(0.25, 4.0) } else { 1.0 };
+        self.attack = if self.attack.is_finite() { self.attack.clamp(0.0, 0.5) } else { 0.0 };
+        self.release = if self.release.is_finite() { self.release.clamp(0.02, 2.0) } else { 0.15 };
+        self
+    }
 }
 
 impl Effect {
@@ -535,6 +653,8 @@ impl Effect {
             lut: String::new(),
             start: 0.0,
             len: 0.0,
+            audio_mix: None,
+            camera: None,
         }
     }
     /// Is the effect on at clip-local time `t`? Enabled + inside its window (the default window is the

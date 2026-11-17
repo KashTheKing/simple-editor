@@ -39,6 +39,26 @@
   extensions page: `chrome://extensions`, `edge://extensions`, …) and watches its download folder; Firefox, which
   cannot save a page as one file, gets the Ctrl+S ▸ Web Page, complete route instead. No browser or site is
   named in examples any more (example.com, neutral sample captions and hashtags).
+### Audio visualizers
+- **Add with Audio Visualizer**: right-click a song in the Media Library to put it on the timeline at the
+  playhead together with a visualizer layer over the same span, in the style you used last (Neon Orb at first).
+  The two are linked like a video and its own audio: moving, trimming or deleting one takes the other along, and
+  the export renders the visualizer with the song. **Add Audio Visualizer** on a timeline clip links too.
+  `audio.visualizer {asset_id}` does the same for the Assistant.
+- **Band mixer**: tune which frequencies drive a visualizer and how strongly - six bands from Sub to Air with
+  their own intensity, sensitivity, attack / release, and which bands the beat follows (the kick or the snare),
+  with presets for EDM, Hip-hop, Rock, Vocal, Lo-fi and Classical. A spectrum of the song shows what it has.
+  Changes show at once and are saved with the project; custom shaders get the mixed values.
+- **3D camera for Voxel Blocks** (and custom shaders marked `// @camera`): with the visualizer selected, drag in
+  the Preview to orbit, Shift+drag to pan, scroll to zoom; the Inspector's Camera section sets yaw, pitch,
+  distance, field of view, roll and target, each keyframeable for fly-throughs, with auto-orbit and Reset camera.
+  Preview and export always use the same camera, and moving it costs no playback frames.
+- **Fixed: the Source monitor's visualizer lagging the music for seconds** (on a song's first play, and after a
+  loud part or a seek). It waited for the waveform to finish computing and followed the speakers through a
+  slow auto-gain; now every visualizer - Source monitor, timeline and export - shows the song's own analysis
+  at the exact moment playing, so it is in step from the first frame, after seeks and after buffering.
+- **Fixed: Spectrum Bars and Voxel Blocks upside down in the Source monitor.** The monitor now draws styles the
+  same way up as the timeline and the export.
 
 ## 1.3.0
 

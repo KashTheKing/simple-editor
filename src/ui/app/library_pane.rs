@@ -47,6 +47,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
     if let Some(name) = resp.deleted_sequence {
         app.toast_undo(format!("Deleted sequence \"{name}\""), Action::Undo);
     }
+    // ---- ws:audio-visualizer ----
+    if !resp.add_with_visualizer.is_empty() {
+        let at = app.playhead;
+        super::audio_actions::add_songs_with_visualizer(app, &resp.add_with_visualizer, at);
+    }
     if !resp.add_to_timeline.is_empty() || !resp.add_paths.is_empty() {
         let at = if resp.place == library::PlaceAt::End { app.project.duration() } else { app.playhead };
         app.add_in_order(resp.add_to_timeline.clone(), &resp.add_paths, at, resp.place, resp.new_sequence);

@@ -1636,6 +1636,13 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
         (Some(o), Some(pp)) => o.hit(pp, state.crop_mode),
         _ => None,
     };
+    // ---- ws:audio-visualizer ---- a lone 3D visualizer: drag / Shift+drag / scroll fly its camera
+    if handle_hit.is_none() && poly_hit.is_none() && sel.len() == 1 {
+        if let Some(edited) = crate::ui::visualizer_ui::camera_gesture(ui, &resp, c.project, sel[0], c.playhead, &mut *c.undo) {
+            r.edited |= edited;
+            return;
+        }
+    }
     if resp.drag_started_by(PointerButton::Primary) {
         (c.undo)(c.project);
         state.handle = None;

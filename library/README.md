@@ -52,6 +52,7 @@ Header lines (all `// @key value`, at the top of the file, before any code):
 | `// @desc <text>` | required; one sentence |
 | `// @tags a, b, c` | required; lowercase search words |
 | `// @param <id> <default> <min> <max>` | 0 to 14 controls. `<id>` is a lowercase identifier (`[a-z][a-z0-9_]*`); the Inspector shows it as "Glow Size" for `glow_size`; in the code it is a `float` of that name. Every control is keyframeable. Defaults must give a visible, good-looking result. |
+| `// @camera` | optional; a 3D effect that takes the audio visualizer camera: `vec3 u_cam_pos`, `vec3 u_cam_target`, `float u_fov`, `float u_cam_roll` (radians). Thumbnails render without one (`u_cam_pos == u_cam_target`): fall back to a default view |
 | `// @needs previous [n]` | optional; the effect also gets earlier frames (below). `n` = how many frames back the earliest one is, 1 to 8 (default 1); the "ghost camera" / echo look wants 3 to 6 |
 | `// @credit <text>` | optional; required for adapted work |
 
