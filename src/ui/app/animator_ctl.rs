@@ -31,7 +31,6 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     let resp = {
         let App { project, selection, playhead, undo, redo, animator: st, palette, settings, .. } = app;
         let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
-        st.snap = settings.snap;
         crate::ui::animator::show(
             ui,
             st,
@@ -79,6 +78,18 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     }
     if resp.stack {
         stack(app);
+    }
+    if resp.transitionable {
+        let snap = app.project.to_json();
+        let ids = app.selection.clone();
+        match app.project.make_transitionable(&ids) {
+            0 => app.toast("Nothing to close: the clips already sit end to end (or something is between them)"),
+            n => {
+                push_undo_json(&mut app.undo, &mut app.redo, snap);
+                app.after_edit();
+                app.toast(format!("Closed {n} gap{}: these clips now share cuts a transition can sit on", if n == 1 { "" } else { "s" }));
+            }
+        }
     }
     if let Some((pid, turn)) = resp.follow {
         let ids = app.selection.clone();
@@ -190,6 +201,17 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
         }
         _ => {}
     }
+    // the timeline's tool keys drive the Animator's own tools while it is the panel in use
+    if app.animator.here && app.pane_drawn(Pane::Animator) {
+        use crate::ui::animator::AnimTool;
+        match a {
+            Action::ToolSelect => app.animator.tool = AnimTool::Select,
+            Action::ToolCut => app.animator.tool = AnimTool::Cut,
+            Action::ToggleSnap => app.animator.no_snap = !app.animator.no_snap,
+            _ => return false,
+        }
+        return true;
+    }
     match a {
         Action::StackOverlays => stack(app),
         _ => return false,
@@ -215,6 +237,16 @@ pub const TOOLS: &[ToolDef] = &[
             let ids = arg_ids(args, "clip_ids").unwrap_or_else(|| app.project.clip_with_overlays(app.playhead));
             let id = app.project.make_stack(&ids).ok_or("need a footage clip on a video track")?;
             done(json!({"ok": true, "stack_clip": id}))
+        },
+    },
+    ToolDef {
+        name: "animate.transitionable",
+        desc: "Make clips ready for transitions: on each track, close the empty gaps between the given clips so they sit end to end and every pair shares a cut a transition can go on. clip_ids default: every clip on the timeline. Returns how many gaps it closed.",
+        args: &["clip_ids:array:false:default = every clip"],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let n = app.project.make_transitionable(&arg_ids(args, "clip_ids").unwrap_or_default());
+            done(json!({"ok": true, "gaps_closed": n}))
         },
     },
     ToolDef {

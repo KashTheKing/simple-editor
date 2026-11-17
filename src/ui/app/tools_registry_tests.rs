@@ -100,6 +100,7 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("flow_key_blocks", "flow.together"),
     ("link_key_blocks", "keyblocks.link"),
     ("make_stack", "animate.stack"),
+    ("make_transitionable", "animate.transitionable"),
     ("trim_clip", "timeline.trim"),
     ("block_from_keys", "keyblocks.from_keys"),
     // ---- ws:browser-layer ----

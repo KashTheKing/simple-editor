@@ -1614,6 +1614,34 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
             ol = Some(o);
         }
 
+        // ws:animator: onion skin of a shape (it has no asset, so no outline above): its box where it was (blue)
+        // and will be (orange), filled faintly with its own colour
+        let ghosts = crate::ui::animator::onion();
+        if let (Some(sh), true) = (clip.shape.as_ref(), ghosts > 0 && !c.playing) {
+            let step = 2.0 / c.project.fps.max(1.0);
+            for k in 1..=ghosts {
+                let al = 0.85 * (1.0 - k as f32 / (ghosts as f32 + 1.0));
+                for (dir, col) in [(-1.0, Color32::from_rgb(0x5B, 0x8C, 0xFF)), (1.0, Color32::from_rgb(0xFF, 0x9A, 0x4D))] {
+                    let t = c.playhead + dir * k as f64 * step;
+                    if !clip.contains(t) {
+                        continue;
+                    }
+                    let (p, gl) = (placement(c.project, clip, t, (1, 1), cw, ch, false), clip.local(t));
+                    let (sn, cs) = p.rot.to_radians().sin_cos();
+                    let k2 = clip.scale.at(gl) as f32 * lb.width() / c.project.width.max(1) as f32;
+                    let (hw, hh) = (sh.w.at(gl) as f32 / 2.0 * k2, sh.h.at(gl) as f32 / 2.0 * k2);
+                    let o = to_screen(p.cx, p.cy);
+                    let q: Vec<Pos2> = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+                        .iter()
+                        .map(|&(x, y)| pos2(o.x + x * cs - y * sn, o.y + x * sn + y * cs))
+                        .collect();
+                    let [r, g, b, _] = sh.fill;
+                    let fill = Color32::from_rgb(r, g, b).lerp_to_gamma(col, 0.35).gamma_multiply(al * 0.35);
+                    painter.add(Shape::convex_polygon(q.clone(), fill, Stroke::new(1.2, col.gamma_multiply(al))));
+                }
+            }
+        }
+
         // explicit polygon vertices: outline + one grab handle each, in the shape's own rotated/scaled frame
         let poly: Vec<(f32, f32)> =
             clip.shape.as_ref().and_then(|s| s.poly_points()).map(|p| p.to_vec()).unwrap_or_default();

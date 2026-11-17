@@ -190,7 +190,9 @@ impl Project {
 
     /// Chain blocks `sel` in time order: each next one on the same clip moves to start where the one before
     /// ends, from the value it ends at (its origin = that target), and their speeds are matched at the seam
-    /// (`match_seam`; across a cut only the speeds). Returns how many hand-offs it made.
+    /// (`match_seam`; across a cut only the speeds). Blocks on different clips that run at the same time (one
+    /// layer pops in over another popping out) are locked together instead: the later one takes the earlier
+    /// one's start, length and - when one was picked by hand - ease. Returns how many pairs it joined.
     pub fn flow_key_blocks(&mut self, sel: &[(Id, usize)], mode: Match) -> usize {
         let at = |p: &Project, (id, i): (Id, usize)| p.clip(id).and_then(|c| Some(c.start + c.blocks.get(i)?.t));
         let mut sel: Vec<(Id, usize)> = sel.iter().copied().filter(|&s| at(self, s).is_some()).collect();
@@ -198,6 +200,24 @@ impl Project {
         let mut n = 0;
         for w in sel.windows(2) {
             let (l, r) = (w[0], w[1]);
+            let span = |p: &Project, (id, i): (Id, usize)| {
+                let c = p.clip(id).unwrap();
+                (c.start + c.blocks[i].t, c.start + c.blocks[i].end())
+            };
+            let (l0, l1) = span(self, l);
+            let (lc, rc) = (self.clip(l.0).unwrap(), self.clip(r.0).unwrap());
+            if l.0 != r.0 && rc.start < lc.end() - BK_EPS && lc.start < rc.end() - BK_EPS {
+                let ease = self.clip(l.0).unwrap().blocks[l.1].ctl.as_ref().and_then(|c| c.ease);
+                let rs = self.clip(r.0).unwrap().start;
+                self.retime_key_block(r.0, r.1, l0 - rs, l1 - l0);
+                let ctl = self.clip(r.0).unwrap().blocks[r.1].ctl.clone().filter(|c| !c.edited && !c.is_sim());
+                if let (Some(e), Some(mut ctl)) = (ease, ctl) {
+                    (ctl.ease, ctl.in_speed, ctl.out_speed) = (Some(e), None, None);
+                    self.set_block_ctl(r.0, r.1, ctl);
+                }
+                n += 1;
+                continue;
+            }
             let same = l.0 == r.0 && l.1 != r.1;
             if same {
                 let c = self.clip(l.0).unwrap();
@@ -510,6 +530,27 @@ mod tests {
         p.set_block_ctl(id, i, ctl);
         assert!((p.clip(id).unwrap().x.at(2.0) - 150.0).abs() < 1e-6);
         let _ = w;
+    }
+
+    #[test]
+    fn flowing_blocks_on_two_layers_locks_them_to_the_same_time() {
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "a", 0.0, 5.0));
+        p.tracks[0].clips.push(Clip::new(2, ClipKind::Video, "b", 0.5, 5.0)); // which track does not matter here
+        p.place_key_block(1, &find("Pop In"), 1.0, Some(0.4));
+        p.place_key_block(2, &find("Pop Out"), 1.0, Some(0.7));
+        assert_eq!(p.flow_key_blocks(&[(1, 0), (2, 0)], Match::Both), 1);
+        // and gaps between clips on a track close, leaving cuts a transition can sit on
+        let mut q = Project::new();
+        q.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "a", 0.0, 2.0));
+        q.tracks[0].clips.push(Clip::new(2, ClipKind::Video, "b", 3.0, 2.0));
+        q.tracks[0].clips.push(Clip::new(3, ClipKind::Video, "c", 9.0, 1.0));
+        assert_eq!(q.make_transitionable(&[]), 2);
+        assert_eq!((q.clip(2).unwrap().start, q.clip(3).unwrap().start), (2.0, 4.0));
+        let (a, b) = (&p.clip(1).unwrap().blocks[0], &p.clip(2).unwrap().blocks[0]);
+        assert!((a.t - 1.0).abs() < 1e-9 && (a.dur - 0.4).abs() < 1e-9, "{a:?}");
+        // the same timeline time: 1.0 on a clip that starts at 0 = 0.5 on one that starts at 0.5
+        assert!((b.t - 0.5).abs() < 1e-9 && (b.dur - 0.4).abs() < 1e-9, "{b:?}");
     }
 
     #[test]

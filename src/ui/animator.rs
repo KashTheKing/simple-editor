@@ -51,8 +51,20 @@ pub enum View {
     Speed,
 }
 
+/// The Animator's own tools (its lanes are not the timeline's): Select picks, moves and stretches blocks;
+/// Cut splits the block you click, where you click it.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub enum AnimTool {
+    #[default]
+    Select,
+    Cut,
+}
+
 #[derive(Default)]
 pub struct AnimState {
+    pub tool: AnimTool,
+    /// The Animator's own snapping, off (it is on by default).
+    pub no_snap: bool,
     pub view: View,
     pub sel: Option<(Id, usize)>,
     open: Vec<(Id, usize)>,
@@ -82,11 +94,15 @@ pub struct AnimState {
     pub win: Option<(f64, f64)>,
     /// The clips `win` was framed for: another selection frames its own blocks again.
     win_for: Vec<Id>,
+    /// Blocks: the lanes' row height (Alt+wheel); `None` = `LANE_H`.
+    pub lane_h: Option<f32>,
+    /// Blocks: where a selection box dragged over empty lane space began.
+    lasso: Option<Pos2>,
     /// Blocks: the lanes span the whole timeline (else just the selected clips).
     pub whole: bool,
     /// More blocks picked with Shift / Ctrl-click (`sel` is the main one, the Inspector's).
     pub multi: Vec<(Id, usize)>,
-    /// The app's snapping setting (the caller sets it each frame): off = a dragged block snaps to nothing.
+    /// `!no_snap`, set each frame: off = a dragged block snaps to nothing.
     pub snap: bool,
     /// Curves: width of the channel list (the splitter between it and the graph); `None` = 300.
     pub ch_w: Option<f32>,
@@ -131,12 +147,25 @@ fn linkable(st: &AnimState) -> Option<Vec<(Id, usize)>> {
     (v.len() > 1 && v.iter().all(|b| b.0 == v[0].0)).then_some(v)
 }
 
+/// Add `block` to clip `id` at clip-local `at` (None = after its last block) and pick it.
+fn add_act(id: Id, block: KeyBlock, at: Option<f64>) -> Act {
+    Box::new(move |p, s, o| {
+        if let Some((t, _)) = p.apply_key_block(id, &block, at, None) {
+            let i = p.clip(id).and_then(|c| c.blocks.iter().position(|x| (x.t - t).abs() < 1e-9));
+            (s.sel, s.multi) = (i.map(|i| (id, i)), Vec::new());
+            o.toast = Some(format!("Added {}", block.name));
+        } else {
+            o.toast = Some(format!("{} has nothing to animate on this clip", block.name));
+        }
+    })
+}
+
 fn flow_act(sel: Vec<(Id, usize)>, mode: Match) -> Act {
     Box::new(move |p, _, o| {
         let n = p.flow_key_blocks(&sel, mode);
         o.toast = Some(match n {
-            0 => "Nothing to flow: pick blocks on one clip, or either side of a cut".into(),
-            _ => format!("Flowed {n} hand-off{}: each block starts where the one before ends", if n == 1 { "" } else { "s" }),
+            0 => "Nothing to flow: pick blocks on one clip, on layers that overlap, or either side of a cut".into(),
+            _ => format!("Flowed {n} pair{} of blocks together", if n == 1 { "" } else { "s" }),
         });
     })
 }
@@ -171,6 +200,8 @@ pub struct AnimResp {
     pub open_folder: bool,
     /// Group the selection into a stack (a nested sequence) / select the clip under the playhead + its overlays.
     pub stack: bool,
+    /// "Make transitionable": close the gaps between the selected clips (all of them when none are selected).
+    pub transitionable: bool,
     pub with_overlays: bool,
     /// Make the selected clips follow this saved path (and turn along it when true).
     pub follow: Option<(Id, bool)>,
@@ -558,7 +589,7 @@ pub fn show(
     }
     match st.view {
         _ if compact => compact_list(ui, st, project, &ids, playhead, pal, undo, &mut out),
-        View::Blocks => blocks(ui, st, project, &ids, playhead, pal, undo, &mut out),
+        View::Blocks => blocks(ui, st, project, &ids, playhead, presets, pal, undo, &mut out),
         View::Curves => curves(ui, st, project, &ids, playhead, pal, undo, &mut out),
         View::Flow => flow(ui, st, project, &ids, playhead, pal, undo, &mut out),
         View::Speed => speed_view(ui, st, project, &ids, playhead, pal, undo, &mut out),
@@ -602,35 +633,7 @@ fn header(
             w.bg_stroke = Stroke::NONE;
         }
         let r = menu::button(ui, egui::RichText::new("+ Animation").color(Color32::WHITE), |ui| {
-            let mut pick = None;
-            let groups: [(&str, &[&str]); 7] = [
-                ("In", &["Fade In", "Pop In", "Slide In Left", "Drop In", "Swing In", "Elastic", "Spring In"]),
-                ("Out", &["Fade Out", "Pop Out", "Slide Out Right", "Whip", "Throw Out"]),
-                ("Emphasis", &["Pulse", "Zoom Punch", "Shake", "Wiggle", "Bounce", "Spin", "Flash", "Wobble"]),
-                ("Camera", &["Camera Shake", "Ken Burns", "Drift", "Bounce Drop"]),
-                ("Text", &["Typewriter"]),
-                ("Sound", &["Sound Swell", "Sound Fade", "Duck", "Pan Sweep", "Pan Swing", "Tremolo"]),
-                ("Speed", &["Speed Ramp In", "Speed Ramp Out", "Slow-mo Hit", "Speed Up"]),
-            ];
-            for (g, names) in groups {
-                menu::sub(ui, None, g, |ui| {
-                    for n in names {
-                        if menu::row(ui, None, n, "").clicked() {
-                            pick = Some(n.to_string());
-                        }
-                    }
-                });
-            }
-            if !presets.is_empty() {
-                menu::sub(ui, None, "Mine", |ui| {
-                    for b in presets {
-                        if menu::row(ui, None, &b.name, "").clicked() {
-                            pick = Some(b.name.clone());
-                        }
-                    }
-                });
-            }
-            pick
+            anim_menu(ui, presets)
         });
         ui.visuals_mut().widgets = saved;
         if let (Some(Some(name)), Some(id)) = (r.inner, target) {
@@ -648,6 +651,15 @@ fn header(
         let on = st.ghosts.unwrap_or(0) > 0;
         if chip(ui, on, "Onion skin").on_hover_text("Ghost outlines of the selected layer a few frames before (blue) and after (orange), and where the selected block starts (dashed)").clicked() {
             st.ghosts = Some(if on { 0 } else { 3 });
+        }
+        if chip(ui, false, "Stack").on_hover_text("Group the selected clip and its overlays so a transition or block moves them as one").clicked() {
+            out.stack = true;
+        }
+        if chip(ui, false, "Make transitionable")
+            .on_hover_text("Close the gaps between the selected clips (every clip when none are selected) so each pair shares a cut a transition can sit on")
+            .clicked()
+        {
+            out.transitionable = true;
         }
         let rec = crate::model::recording();
         // ponytail: the dot is painted over the chip's leading spaces instead of a chip that takes an icon
@@ -703,6 +715,49 @@ fn header(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| mode_seg(ui, st));
         }
     });
+}
+
+/// The animations to add, by kind (the "+ Animation" button and a lane's right-click): the picked name.
+fn anim_menu(ui: &mut Ui, presets: &[KeyBlock]) -> Option<String> {
+    let mut pick = None;
+    let groups: [(&str, &[&str]); 8] = [
+        ("In", &["Fade In", "Pop In", "Slide In Left", "Drop In", "Swing In", "Elastic"]),
+        ("Out", &["Fade Out", "Pop Out", "Slide Out Right", "Whip"]),
+        ("Physics", &["Spring In", "Bounce Drop", "Throw Out", "Wobble", "Camera Shake"]),
+        ("Emphasis", &["Pulse", "Zoom Punch", "Shake", "Wiggle", "Bounce", "Spin", "Flash"]),
+        ("Camera", &["Ken Burns", "Drift"]),
+        ("Text", &["Typewriter"]),
+        ("Sound", &["Sound Swell", "Sound Fade", "Duck", "Pan Sweep", "Pan Swing", "Tremolo"]),
+        ("Speed", &["Speed Ramp In", "Speed Ramp Out", "Slow-mo Hit", "Speed Up"]),
+    ];
+    for (n, (g, names)) in groups.into_iter().enumerate() {
+        // a transition is how a clip arrives or leaves; everything else moves it while it is on screen
+        match n {
+            0 => drop(ui.weak("Transitions - how it arrives or leaves")),
+            2 => {
+                ui.separator();
+                ui.weak("Motion and effects - while it is on screen");
+            }
+            _ => {}
+        }
+        menu::sub(ui, None, g, |ui| {
+            for n in names {
+                if menu::row(ui, None, n, "").clicked() {
+                    pick = Some(n.to_string());
+                }
+            }
+        });
+    }
+    if !presets.is_empty() {
+        menu::sub(ui, None, "Mine", |ui| {
+            for b in presets {
+                if menu::row(ui, None, &b.name, "").clicked() {
+                    pick = Some(b.name.clone());
+                }
+            }
+        });
+    }
+    pick
 }
 
 /// A block as a preset: its controls' result when it has them (so a simulation saves its keys), else its keys.
@@ -779,6 +834,13 @@ fn range(project: &Project, ids: &[Id]) -> (f64, f64) {
         .fold((f64::MAX, f64::MIN), |(a, b), c| (a.min(c.start), b.max(c.end())));
     let pad = ((b - a) * 0.04).max(0.1);
     ((a - pad).max(0.0), b + pad)
+}
+
+/// `w` kept inside `fit`: no longer than it, and slid back in when it hangs over an end.
+fn clamp_win(w: (f64, f64), fit: (f64, f64)) -> (f64, f64) {
+    let len = (w.1 - w.0).min(fit.1 - fit.0);
+    let a = w.0.clamp(fit.0, (fit.1 - len).max(fit.0));
+    (a, a + len)
 }
 
 /// The window the lanes open on: the clips' blocks with a little air, never so wide that the shortest block
@@ -869,29 +931,54 @@ fn blocks(
     project: &mut Project,
     ids: &[Id],
     playhead: &mut f64,
+    presets: &[KeyBlock],
     pal: &Palette,
     undo: &mut dyn FnMut(&Project),
     out: &mut AnimResp,
 ) {
     let seams = project.block_seams();
     let (mut fit, mut flow_now, mut link_now) = ((0.0, 1.0), false, false);
+    st.snap = !st.no_snap;
     ui.horizontal(|ui| {
+        // the lanes' own tools (the timeline's keys pick them while this panel is the one in use)
+        use crate::ui::tools::{icon_button, Glyph};
+        for (t, g, tip) in [
+            (AnimTool::Select, Glyph::Cursor, "Select (V): click or drag a box to pick blocks, drag one to move it, an end to stretch it"),
+            (AnimTool::Cut, Glyph::Razor, "Cut (C): click a block to split it there (Ctrl+B splits the picked block at the playhead)"),
+        ] {
+            if icon_button(ui, pal, ui.id().with(("an_tool", t as u8)), g, tip, st.tool == t).clicked() {
+                st.tool = t;
+            }
+        }
+        let tip = "Snapping (S): a dragged block snaps to the playhead, other blocks and clip edges";
+        if icon_button(ui, pal, ui.id().with("an_snap"), Glyph::Magnet, tip, st.snap).clicked() {
+            st.no_snap = !st.no_snap;
+        }
+        ui.separator();
+        // the range the lanes cover when zoomed all the way out: the selected clips, or the timeline (its
+        // In-Out range when one is set)
+        let range_of = |whole: bool, p: &Project| match (whole, p.in_point, p.out_point) {
+            (true, Some(a), Some(b)) if b > a => (a, b),
+            (true, ..) => (0.0, p.duration().max(1.0)),
+            _ => range(p, ids),
+        };
         if segmented(ui, &mut st.whole, &[(false, "Selected clips"), (true, "Whole timeline")]) {
-            st.win = None;
+            st.win = Some(range_of(st.whole, project)); // switching shows the whole of the new range
         }
         if picked(st).len() > 1 {
-            let tip = "Chain the picked blocks: each starts where the one before ends, at its speed (Smooth by easing sets which side gives way)";
+            let tip = "Join the picked blocks. One after another: each starts where the one before ends, at its speed. On layers at the same time: they start and end together";
             flow_now = primary(ui, "Flow together").on_hover_text(tip).clicked();
         }
         if linkable(st).is_some() {
             let tip = "Make the picked blocks one block with all their properties: they move, stretch and ease together";
             link_now = chip(ui, false, "Link into one block").on_hover_text(tip).clicked();
         }
-        fit = if st.whole { (0.0, project.duration().max(1.0) * 1.02) } else { range(project, ids) };
+        fit = range_of(st.whole, project);
         if st.win_for != ids {
             (st.win, st.win_for) = (None, ids.to_vec());
         }
         st.win = st.win.filter(|w| w.1 > fit.0 && w.0 < fit.1).or_else(|| Some(block_fit(project, ids, fit)));
+        st.win = st.win.map(|w| clamp_win(w, fit)); // zoomed all the way out = exactly the range
         zoom_bar(ui, pal, &mut st.win, fit, *playhead);
     });
     let ph = *playhead;
@@ -907,6 +994,15 @@ fn blocks(
         ruler(ui, Rect::from_min_max(pos2(body_x0, rr.top()), rr.max), t0, t1, playhead, pal, out);
         let top = rr.bottom();
         let mut act: Option<Act> = flow_now.then(|| flow_act(picked(st), st.mode));
+        let mut rects: Vec<(Rect, (Id, usize))> = Vec::new(); // every block bar drawn, for the selection box
+        let mut heads: Vec<(Rect, Id, usize)> = Vec::new(); // every clip's label cell and how many blocks it has
+        // Alt+wheel: taller / shorter lanes, like the timeline's tracks (taken before the list scrolls by it)
+        let over = ui.rect_contains_pointer(full);
+        let dz = ui.input_mut(|i| if over && i.modifiers.alt { std::mem::take(&mut i.smooth_scroll_delta.y) } else { 0.0 });
+        if dz != 0.0 {
+            st.lane_h = Some((st.lane_h.unwrap_or(LANE_H) * (1.0 + dz * 0.004)).clamp(22.0, 90.0));
+        }
+        let lane_h = st.lane_h.unwrap_or(LANE_H);
         if link_now {
             act = linkable(st).map(link_act);
         }
@@ -919,7 +1015,7 @@ fn blocks(
             let keys_row = labels.len();
             let nrows = (labels.len() + (!loose.is_empty()) as usize).max(1);
             let (row, _) = ui
-                .allocate_exact_size(vec2(full.width(), LANE_H + (nrows - 1) as f32 * (LANE_H - 8.0)), Sense::hover());
+                .allocate_exact_size(vec2(full.width(), lane_h + (nrows - 1) as f32 * (lane_h - 8.0)), Sense::hover());
             let p = ui.painter_at(row.expand(1.0));
             let on = st.sel.is_some_and(|s| s.0 == id);
             let head = Rect::from_min_max(row.min, pos2(row.left() + head_w, row.bottom()));
@@ -935,7 +1031,7 @@ fn blocks(
                 ClipKind::Sequence => pal.clip_sequence,
                 _ => pal.clip_video,
             };
-            let hy = row.top() + LANE_H / 2.0;
+            let hy = row.top() + lane_h / 2.0;
             p.circle_filled(pos2(head.left() + 11.0, hy), 4.0, dot);
             // [dot][name: fills, truncates with "…"][track tag: fixed, right-aligned] - nothing passes the column
             let tag = project.track_of(id).map_or(String::new(), |t| project.tracks[t].name.clone());
@@ -948,7 +1044,7 @@ fn blocks(
             // the other rows' names: the lane they are (the first row carries the clip's name)
             for r in 1..nrows {
                 let label = labels.get(r).copied().unwrap_or("Hand keys");
-                let ry = row.top() + LANE_H / 2.0 + r as f32 * (LANE_H - 8.0);
+                let ry = row.top() + lane_h / 2.0 + r as f32 * (lane_h - 8.0);
                 let same = r < labels.len() && labels[r] == labels[r - 1];
                 if !same {
                     p.text(
@@ -965,7 +1061,25 @@ fn blocks(
                 c.name,
                 labels.first().map_or(String::new(), |l| format!(" - first lane: {l}"))
             ));
+            heads.push((head, id, c.blocks.len()));
+            // a click on the name picks every block of the clip (Shift / Ctrl adds them to the pick)
+            if hr.clicked() {
+                let all = (0..c.blocks.len()).map(|i| (id, i));
+                if ui.input(|i| i.modifiers.shift || i.modifiers.command) {
+                    let have = picked(st);
+                    st.multi.extend(all.filter(|b| !have.contains(b)));
+                } else {
+                    st.multi = all.skip(1).collect();
+                    st.sel = (!c.blocks.is_empty()).then_some((id, 0));
+                }
+                st.here = true;
+            }
             menu::context(&hr, |ui| {
+                menu::sub(ui, None, "Add animation", |ui| {
+                    if let Some(b) = anim_menu(ui, presets).and_then(|n| find_block(presets, &n)) {
+                        act = Some(add_act(id, b, None));
+                    }
+                });
                 let r = ui
                     .add_enabled_ui(!loose.is_empty(), |ui| menu::row(ui, None, "Turn hand keys into blocks", ""))
                     .inner;
@@ -979,12 +1093,25 @@ fn blocks(
             // everything in time draws and clicks only inside the lanes, never over the label column when zoomed
             let body = Rect::from_min_max(pos2(body_x0, row.top() - 1.0), pos2(full.right(), row.bottom() + 1.0));
             let p = ui.painter_at(body);
+            // right-click the lane's empty space: add an animation where the pointer is (under the blocks, so
+            // theirs win)
+            let lane_bg = ui.interact(body, ui.id().with(("lane-bg", id)), Sense::click());
+            if let Some(pp) = lane_bg.interact_pointer_pos().filter(|_| lane_bg.secondary_clicked()) {
+                st.ctx_t = Some(t0 + ((pp.x - body_x0) / bw) as f64 * (t1 - t0) - c.start);
+            }
+            let at = st.ctx_t.map(|t| t.clamp(0.0, c.duration));
+            menu::context(&lane_bg, |ui| {
+                ui.weak("Add animation here");
+                if let Some(b) = anim_menu(ui, presets).and_then(|n| find_block(presets, &n)) {
+                    act = Some(add_act(id, b, at));
+                }
+            });
             // keys made by hand: a dashed "Hand keys" bar per cluster; a click makes it a block with controls
             for &(a, b) in &loose {
-                let ktop = row.top() + 5.0 + keys_row as f32 * (LANE_H - 8.0);
+                let ktop = row.top() + 5.0 + keys_row as f32 * (lane_h - 8.0);
                 let kr = Rect::from_min_max(
                     pos2(x(c.start + a) - 4.0, ktop),
-                    pos2(x(c.start + b) + 4.0, ktop + LANE_H - 10.0),
+                    pos2(x(c.start + b) + 4.0, ktop + lane_h - 10.0),
                 );
                 if !kr.intersects(body) {
                     continue;
@@ -1028,9 +1155,9 @@ fn blocks(
             edge.push(edge[0]);
             p.extend(egui::Shape::dashed_line(&edge, Stroke::new(1.0, Color32::from_white_alpha(18)), 4.0, 3.0));
             for (i, b) in c.blocks.iter().enumerate() {
-                let top = row.top() + 5.0 + pack[i] as f32 * (LANE_H - 8.0);
+                let top = row.top() + 5.0 + pack[i] as f32 * (lane_h - 8.0);
                 let r =
-                    Rect::from_min_max(pos2(x(c.start + b.t), top), pos2(x(c.start + b.end()), top + LANE_H - 10.0));
+                    Rect::from_min_max(pos2(x(c.start + b.t), top), pos2(x(c.start + b.end()), top + lane_h - 10.0));
                 if !r.intersects(body) {
                     continue;
                 }
@@ -1081,6 +1208,26 @@ fn blocks(
                 if edited && r.width() > 30.0 {
                     inner.circle_filled(pos2(r.right() - 8.0, r.center().y), 3.0, look::HANDLE);
                 }
+                rects.push((r.intersect(body), (id, i)));
+                if st.tool == AnimTool::Cut {
+                    let resp = ui
+                        .interact(r.intersect(body), ui.id().with(("ablk-cut", id, i)), Sense::click())
+                        .on_hover_cursor(CursorIcon::Crosshair);
+                    if let Some(hp) = resp.hover_pos() {
+                        ui.painter().line_segment([pos2(hp.x, r.top()), pos2(hp.x, r.bottom())], Stroke::new(1.5, Color32::WHITE));
+                    }
+                    if let Some(pp) = resp.interact_pointer_pos().filter(|_| resp.clicked()) {
+                        let t = t0 + ((pp.x - body_x0) / bw) as f64 * (t1 - t0) - c.start;
+                        act = Some(Box::new(move |p, s, o| {
+                            if p.split_key_block(id, i, t) {
+                                (s.sel, s.multi) = (Some((id, i)), Vec::new());
+                            } else {
+                                o.toast = Some("Too close to the block's end to cut there".into());
+                            }
+                        }));
+                    }
+                    continue;
+                }
                 let resp = ui.interact(r.intersect(body), ui.id().with(("ablk", id, i)), Sense::click_and_drag());
                 let hp = resp.hover_pos().or(resp.interact_pointer_pos());
                 let edge = hp.map_or(0, |p| {
@@ -1093,7 +1240,7 @@ fn blocks(
                     }
                 });
                 let resp =
-                    resp.on_hover_cursor(if edge != 0 { CursorIcon::ResizeHorizontal } else { CursorIcon::Grab });
+                    resp.on_hover_cursor(if edge != 0 { CursorIcon::ResizeHorizontal } else { CursorIcon::Default });
                 let resp = resp.on_hover_text(format!(
                     "{} · {:.2} s · drag to move, drag an end to stretch, click ▸ to shape how it moves, Shift-click to pick more",
                     b.name, b.dur
@@ -1238,7 +1385,7 @@ fn blocks(
                 if s.left.0 != id && project.clip(s.left.0).is_some() && ids.contains(&s.left.0) {
                     continue; // drawn on the earlier clip's lane already
                 }
-                let c0 = pos2(x(s.t), row.top() + LANE_H / 2.0);
+                let c0 = pos2(x(s.t), row.top() + lane_h / 2.0);
                 let br = Rect::from_center_size(c0, vec2(16.0, 16.0));
                 if !body.contains(c0) {
                     continue;
@@ -1370,6 +1517,40 @@ fn blocks(
         }
         if ui.rect_contains_pointer(lanes_rect) && ui.input(|i| i.key_pressed(egui::Key::F) || i.key_pressed(egui::Key::Home)) {
             st.win = None;
+        }
+        // a drag that starts on empty lane space is a selection box, like the timeline's: every block it
+        // touches is picked
+        let (press, cur, down) =
+            ui.input(|i| (i.pointer.press_origin(), i.pointer.latest_pos(), i.pointer.primary_down()));
+        match (press, cur, down) {
+            (Some(o), Some(c), true) => {
+                let in_head = o.x < body_x0 - 3.0 && heads.iter().any(|h| h.0.contains(o));
+                let free = in_head || lanes_rect.contains(o) && o.y > top && !rects.iter().any(|r| r.0.contains(o));
+                if st.lasso.is_none() && free && (c - o).length() > 4.0 && ui.ctx().dragged_id().is_none() {
+                    st.lasso = Some(o);
+                }
+                if let Some(o) = st.lasso {
+                    let r = Rect::from_two_pos(o, c);
+                    ui.painter().rect(
+                        r.intersect(full),
+                        0.0,
+                        pal.accent.gamma_multiply(0.12),
+                        Stroke::new(1.0, pal.accent),
+                        egui::StrokeKind::Inside,
+                    );
+                    // dragged down the names: every block of the clips it crosses; in the lanes: the blocks it touches
+                    let hit: Vec<(Id, usize)> = if o.x < body_x0 - 3.0 {
+                        let rows = heads.iter().filter(|h| h.0.y_range().intersects(r.y_range()));
+                        rows.flat_map(|h| (0..h.2).map(move |i| (h.1, i))).collect()
+                    } else {
+                        rects.iter().filter(|b| b.0.intersects(r)).map(|b| b.1).collect()
+                    };
+                    st.sel = hit.first().copied();
+                    st.multi = hit.into_iter().skip(1).collect();
+                    st.here = true;
+                }
+            }
+            _ => st.lasso = None,
         }
         let split = Rect::from_min_max(pos2(body_x0 - 3.0, top), pos2(body_x0 + 3.0, bottom));
         let sr =
@@ -2635,7 +2816,16 @@ pub fn block_section(ui: &mut Ui, project: &mut Project, pal: &Palette, undo: &m
     egui::Frame::new().fill(look::CARD).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            kind_pill(ui, kind, col);
+            // say what it is: a transition (the clip arrives / leaves) or motion while it is on screen
+            let what = match kind {
+                "In" => "Transition · In",
+                "Out" => "Transition · Out",
+                "Emphasis" => "Motion · Emphasis",
+                "Physics" => "Motion · Physics",
+                "Camera" => "Motion · Camera",
+                k => k,
+            };
+            kind_pill(ui, what, col);
             ui.label(egui::RichText::new(&b.name).size(15.0).strong().color(look::TEXT));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let del = egui::Button::new(egui::RichText::new("Delete").size(12.0).color(look::MUTED)).frame(false);
@@ -3025,6 +3215,9 @@ mod tests {
         assert!(a <= 10.0 && a >= fit.0 && b <= fit.1, "{a} {b}");
         // the shortest block (0.4 s) is at least a fourteenth of the window
         assert!(b - a <= 0.4 * 14.0 + 1e-9 && b - a >= 0.4, "{a} {b}");
+        // zoomed all the way out is exactly the range; a window hanging over an end slides back in
+        assert_eq!(clamp_win((-5.0, 50.0), (2.0, 8.0)), (2.0, 8.0));
+        assert_eq!(clamp_win((7.0, 9.0), (2.0, 8.0)), (6.0, 8.0));
         assert!(wiggles(&BlockCtl::new(f("Shake"))));
         assert!(!wiggles(&BlockCtl::new(f("Slide In Left"))) && !wiggles(&BlockCtl::new(f("Fade Out"))));
     }

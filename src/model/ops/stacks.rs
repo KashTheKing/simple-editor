@@ -6,6 +6,28 @@
 use crate::model::*;
 
 impl Project {
+    /// Make `ids` (empty = every clip) ready for transitions: on each track, each of them that follows another
+    /// across an empty gap moves back to start where that one ends, so every pair shares a cut a transition
+    /// can sit on. Clips with something else between them stay. Returns how many gaps it closed.
+    pub fn make_transitionable(&mut self, ids: &[Id]) -> usize {
+        let mut n = 0;
+        for ti in 0..self.tracks.len() {
+            let mut on: Vec<Id> =
+                self.tracks[ti].clips.iter().filter(|c| ids.is_empty() || ids.contains(&c.id)).map(|c| c.id).collect();
+            on.sort_by(|a, b| self.clip(*a).unwrap().start.total_cmp(&self.clip(*b).unwrap().start));
+            for w in 0..on.len().saturating_sub(1) {
+                let (Some(a), Some(b)) = (self.clip(on[w]), self.clip(on[w + 1])) else { continue };
+                let (end, start) = (a.end(), b.start);
+                let empty = !self.tracks[ti].clips.iter().any(|c| c.start < start - 1e-6 && c.end() > end + 1e-6);
+                if start - end > 1e-6 && empty {
+                    let moved = self.expand_links(&[on[w + 1]]);
+                    n += self.move_clips(&moved, end - start, 0, None) as usize;
+                }
+            }
+        }
+        n
+    }
+
     /// The video clip on the lowest video track under timeline time `t`, then every clip on the video tracks
     /// above it that is mostly (over half its length) over that clip. Empty when no video clip is under `t`.
     pub fn clip_with_overlays(&self, t: f64) -> Vec<Id> {
