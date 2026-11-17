@@ -62,6 +62,15 @@ pub struct SettingsUi {
     pub(super) import_undo: Option<crate::keymaps::import::Snapshot>,
     // ---- ws:social-guides ----
     pub(super) social: social::SocialUi,
+    // ---- ws:neutral-web ----
+    /// Cache folder ▸ Browse… / Reset picked a folder: the Move / Start fresh choice is showing.
+    pub(super) cache_pick: Option<general::CachePick>,
+    /// The choice was made this frame: the app (windows.rs) takes it, since the change needs `&mut App`.
+    pub cache_change: Option<general::CachePick>,
+    /// Why the last change was refused (shown under the choice).
+    pub cache_error: Option<String>,
+    /// The Windows default browser and every installed one (registry reads: once per Settings open).
+    pub(super) browsers: Option<(Option<crate::engine::browsers::Browser>, Vec<crate::engine::browsers::Browser>)>,
 }
 
 pub(super) struct Status {
@@ -73,6 +82,13 @@ pub(super) struct Status {
     pub(super) ffmpeg: String,
     pub(super) ytdlp: String,
     pub(super) ctxmenu: &'static str,
+}
+
+impl SettingsUi {
+    /// ws:neutral-web: a refused cache-folder change shows its choice again (with the reason).
+    pub fn reopen_cache_pick(&mut self, c: general::CachePick) {
+        self.cache_pick = Some(c);
+    }
 }
 
 impl Status {
@@ -124,6 +140,9 @@ pub fn show(
     let mut open = state.open;
     let just_opened = state.open && !state.prev_open;
     state.prev_open = state.open;
+    if just_opened {
+        state.browsers = None; // a browser may have been installed since
+    }
     let mut window = egui::Window::new("Settings")
         .open(&mut open)
         // "when I open the settings tab, it should be really big" - sized to most of the screen,

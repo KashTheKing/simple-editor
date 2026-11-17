@@ -234,7 +234,7 @@ fn show_spans(ui: &mut egui::Ui, spans: &[Span], size: f32, heading: bool) {
             Span::Link(text, url) => {
                 let r = ui.link(base(text));
                 if r.clicked() {
-                    let _ = std::process::Command::new("explorer").arg(url).spawn();
+                    crate::engine::browsers::open_url(url);
                 }
                 r
             }

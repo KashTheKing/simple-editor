@@ -95,7 +95,7 @@ fn map_sticks_edges_and_keeps_centres() {
 
 #[test]
 fn caption_wraps_and_truncates_with_more() {
-    let text = "I tried the hardest obby in Roblox and you will not believe how it ended #roblox #obby #gaming";
+    let text = "I tried the hardest challenge on the internet and you will not believe how it ended #gaming #challenge #fyp";
     let (s, w) = (14.0, 200.0);
     let lines = scene::wrap(text, s, false, w);
     assert!(lines.len() >= 3, "{lines:?}");

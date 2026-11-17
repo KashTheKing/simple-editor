@@ -33,6 +33,9 @@ const SCALAR_WHITELIST: &[&str] = &[
     "start_maximized",
     "buffer_before_play", // ws:play-gate
     "cache_disk_gb",      // ws:cache-budget
+    // ---- ws:neutral-web ----
+    "cache_folder", // get: the folder in use; set: a new one ("" = default), the old cache moves there
+    "web_browser",  // an exe path, "" = the Windows default browser
 ];
 
 fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
@@ -58,6 +61,8 @@ fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
         "start_maximized" => json!(s.start_maximized),
         "buffer_before_play" => json!(s.buffer_before_play),
         "cache_disk_gb" => json!(s.cache_disk_gb),
+        "cache_folder" => json!(Settings::cache_dir().to_string_lossy()),
+        "web_browser" => json!(s.web_browser),
         _ => return None,
     })
 }
@@ -104,6 +109,16 @@ fn set_scalar(s: &mut Settings, key: &str, value: &str) -> Result<(), String> {
         "buffer_before_play" => s.buffer_before_play = parse_bool(value)?,
         "cache_disk_gb" => {
             s.cache_disk_gb = value.parse().map_err(|_| "cache_disk_gb: expected an integer".to_string())?
+        }
+        // changing it moves files: `settings.set` routes it to `caches::change_folder` before this
+        "cache_folder" => return Err("cache_folder: set through settings.set".into()),
+        "web_browser" => {
+            let v = value.trim();
+            if !v.is_empty() && !v.to_ascii_lowercase().ends_with(".exe") {
+                return Err("web_browser: an .exe path, or \"\" for the Windows default".into());
+            }
+            s.web_browser = v.to_string();
+            crate::engine::browsers::set_choice(v);
         }
         _ => return Err(format!("'{key}' is not a whitelisted setting")),
     }
@@ -273,12 +288,16 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "settings.set",
-        desc: "Set one whitelisted scalar setting ('value' is a stringified scalar).",
+        desc: "Set one whitelisted scalar setting ('value' is a stringified scalar). cache_folder: a new cache folder (\"\" = the default); the existing cache is moved there in the background (a job), files in use stay behind.",
         args: &["key:string:true:", "value:string:true:stringified scalar"],
         kind: ToolKind::Ui,
         run: |app, args| {
             let key = req(arg_str(args, "key"), "key")?;
             let value = req(arg_str(args, "value"), "value")?;
+            if key == "cache_folder" {
+                let msg = caches::change_folder(app, value, true, false, false)?;
+                return Ok(ToolOutcome::Done(json!({"ok": true, "message": msg})));
+            }
             set_scalar(&mut app.settings, key, value)?;
             app.settings.save();
             Ok(ToolOutcome::Done(json!({"ok": true})))
@@ -313,6 +332,8 @@ mod tests {
         assert!(set_scalar(&mut s, "mcp_port", "not-a-number").is_err());
         assert!(set_scalar(&mut s, "snap", "maybe").is_err());
         assert!(set_scalar(&mut s, "assistant_backend", "bash").is_err());
+        assert!(set_scalar(&mut s, "web_browser", "notes.txt").is_err());
+        assert!(set_scalar(&mut s, "cache_folder", r"D:\x").is_err(), "only through settings.set (it moves files)");
         set_scalar(&mut s, "voice_autosend", "true").unwrap();
         assert_eq!(get_scalar(&s, "voice_autosend"), Some(json!(true)));
         // the API key is never a setting

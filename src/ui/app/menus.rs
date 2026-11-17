@@ -488,12 +488,12 @@ impl App {
     fn help_menu(&mut self, ui: &mut egui::Ui) {
         use Action::*;
         if menu::row(ui, None, "Tutorial & Docs", "").on_hover_text(DOCS_URL).clicked() {
-            let _ = std::process::Command::new("explorer").arg(DOCS_URL).spawn();
+            crate::engine::browsers::open_url(DOCS_URL);
         }
         // the issue form on GitHub, with the version filled in (`version` is that form's field id)
         let report = format!("{ISSUES_URL}?template=bug_report.yml&version={}", env!("CARGO_PKG_VERSION"));
         if menu::row(ui, None, "Report a Bug…", "").on_hover_text("Opens the GitHub issue form").clicked() {
-            let _ = std::process::Command::new("explorer").arg(report).spawn();
+            crate::engine::browsers::open_url(&report);
         }
         acts(ui, &[Some(CheatSheet), Some(CommandPalette), None, Some(WhatsNew), Some(ShowWelcome), None]);
         ui.weak(format!("Simple Editor {}", env!("CARGO_PKG_VERSION")));

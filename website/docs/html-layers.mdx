@@ -47,15 +47,19 @@ To animate a number from the timeline, declare a **parameter**:
 **Add ▸ Web Page Snapshot…** copies a real web page into your edit as HTML and CSS you can scroll, zoom and
 animate. Pick a size (Phone, Short, Desktop or your own width) and one of two ways:
 
-- **From a web address.** Paste the address. Simple Editor opens it in its own private Edge, as a visitor
+- **From a web address.** Paste the address. Simple Editor opens it in its own private page renderer, as a visitor
   who is not signed in, keeps the HTML and CSS, drops the scripts, and adds a linked clip. Pages that need a
   login, or fill themselves in with scripts, may come out empty.
 - **From my browser.** For the page exactly as you see it (signed in, scrolled, a menu open). Install the tiny
-  extension once: the window can **save the extension to a folder**; in your browser open the extensions page
-  (`brave://extensions`, `chrome://extensions` or `edge://extensions`), turn on **Developer mode**, click
-  **Load unpacked** and pick that folder. Then click the extension's button, or press **Alt+Shift+S**, on any
-  page. The snapshot lands in your Downloads folder and appears in Simple Editor as a new clip within a couple
-  of seconds. Nothing leaves your computer.
+  extension once: the window can **save the extension to a folder**, and shows the steps for your browser
+  (open its extensions page, such as `chrome://extensions` or `edge://extensions`, turn on **Developer mode**,
+  click **Load unpacked** and pick that folder). Then click the extension's button, or press **Alt+Shift+S**,
+  on any page. The snapshot lands in your browser's download folder and appears in Simple Editor as a new clip
+  within a couple of seconds. Nothing leaves your computer. The extension works in Chromium-based browsers
+  (Chrome, Edge, Brave, Vivaldi, Opera, Arc…). Firefox cannot save a page as one file: there, press **Ctrl+S**,
+  save as **Web Page, complete** and use **Import a saved page…**.
+
+  Simple Editor uses your Windows default browser; pick another in **Settings ▸ General ▸ Web browser**.
 
   No extension? Save the page as a single file (`.mhtml`) and drop it on the timeline.
 

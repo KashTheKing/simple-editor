@@ -244,7 +244,7 @@ impl Source {
     }
 }
 
-/// `%LOCALAPPDATA%\SimpleEditor\cache\library`: the cached `index.json`, thumbnails and item files.
+/// `Settings::cache_dir()/library`: the cached `index.json`, thumbnails and item files.
 pub fn cache_root() -> PathBuf {
     crate::settings::Settings::cache_dir().join("library")
 }

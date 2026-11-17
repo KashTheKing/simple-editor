@@ -129,6 +129,8 @@ pub struct HtmlState {
     web_seen: HashSet<PathBuf>,
     web_sizes: std::collections::HashMap<PathBuf, u64>,
     web_at: Option<Instant>,
+    /// The folders the user's browser saves downloads to (looked up when the window opens).
+    web_dirs: Vec<PathBuf>,
 }
 
 impl Drop for HtmlState {
@@ -430,6 +432,11 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
                     w.width = app.project.width.clamp(320, 3840);
                 }
                 app.html.web_since = Some(std::time::SystemTime::now());
+                w.browser = crate::engine::browsers::current();
+                app.html.web_dirs = match &w.browser {
+                    Some(b) => b.download_dirs(),
+                    None => vec![crate::engine::browsers::windows_downloads()],
+                };
                 app.html.web_seen.clear();
                 app.html.web_sizes.clear();
             }
@@ -679,10 +686,6 @@ fn fresh_snapshots(
     out
 }
 
-fn downloads_dir() -> PathBuf {
-    std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("Downloads")).unwrap_or_default()
-}
-
 fn web_tick(app: &mut App, ctx: &egui::Context, now: Instant) {
     // a snapshot from an address, in progress or done
     if let Some((prog, slot, width)) = app.html.web_job.clone() {
@@ -709,7 +712,8 @@ fn web_tick(app: &mut App, ctx: &egui::Context, now: Instant) {
             app.html.web_at = Some(now + Duration::from_secs(1));
             if let Some(since) = app.html.web_since {
                 let (seen, mut sizes) = (app.html.web_seen.clone(), std::mem::take(&mut app.html.web_sizes));
-                let found = fresh_snapshots(&downloads_dir(), since, &seen, &mut sizes);
+                let found: Vec<PathBuf> =
+                    app.html.web_dirs.iter().flat_map(|d| fresh_snapshots(d, since, &seen, &mut sizes)).collect();
                 app.html.web_sizes = sizes;
                 for p in found {
                     app.html.web_seen.insert(p.clone());
@@ -736,7 +740,7 @@ fn save_extension(app: &mut App) {
     match r {
         Ok(()) => {
             let _ = std::process::Command::new("explorer").arg(&dir).spawn();
-            app.html.web.status = format!("Extension saved to {} - load that folder in your browser's extensions page (Developer mode, Load unpacked).", dir.display());
+            app.html.web.status = format!("Extension saved to {} - load that folder in {}'s extensions page (Developer mode, Load unpacked).", dir.display(), app.html.web.browser.as_ref().map_or("your browser", |b| b.name.as_str()));
         }
         Err(e) => app.html.web.status = format!("Could not save the extension: {e}"),
     }
