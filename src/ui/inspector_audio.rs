@@ -106,10 +106,16 @@ fn prop_row(
         #[cfg(test)]
         mark(ui, &format!("kf_{label}"), &_kf);
         if let Some(on) = chain {
-            let tip = if *on { "Hide Scale X / Y" } else { "Scale X and Y separately" };
-            let id = ui.id().with("scale_xy");
+            let pos = label == "Position X";
+            let tip = match (pos, *on) {
+                (true, true) => "Position X and Y are keyed together - click to key them separately",
+                (true, false) => "Position X and Y are keyed separately - click to key them together",
+                (false, true) => "Hide Scale X / Y",
+                (false, false) => "Scale X and Y separately",
+            };
+            let id = ui.id().with(if pos { "pos_xy" } else { "scale_xy" });
             let r = crate::ui::tools::icon_button(ui, palette, id, crate::ui::tools::Glyph::Chain, tip, *on);
-            mark(ui, "scale_xy", &r);
+            mark(ui, if pos { "pos_xy" } else { "scale_xy" }, &r);
             if r.clicked() {
                 *on = !*on;
             }
@@ -225,11 +231,17 @@ pub(super) fn section(
     } else {
         let xy_id = egui::Id::new("insp_scale_xy");
         let mut show_xy: bool = ui.ctx().data(|d| d.get_temp(xy_id).unwrap_or(false));
+        // Position is one linked property unless unlinked: a key (or a reset) on X or Y lands on both
+        let pos_id = egui::Id::new("insp_pos_linked");
+        let mut pos_linked: bool = ui.ctx().data(|d| d.get_temp(pos_id).unwrap_or(true));
+        let keyed = |c: &Clip| [(c.x.has_key_at(lt), c.x.is_animated()), (c.y.has_key_at(lt), c.y.is_animated())];
+        let before = keyed(&clip);
         fold(ui, folds, "transform", "Transform", None, |ui| {
             egui::Grid::new("inspector_clip_transform").num_columns(2).show(ui, |ui| {
                 for (label, a) in props(&mut clip, false) {
                     match label {
                         "Opacity" => {}
+                        "Position X" => prop_row(ui, label, a, lt, palette, &mut g, &path_list, Some(&mut pos_linked)),
                         "Scale X" | "Scale Y" if !show_xy => {}
                         "Scale" => prop_row(ui, label, a, lt, palette, &mut g, &path_list, Some(&mut show_xy)),
                         _ => prop_row(ui, label, a, lt, palette, &mut g, &path_list, None),
@@ -238,6 +250,24 @@ pub(super) fn section(
             });
         });
         ui.ctx().data_mut(|d| d.insert_temp(xy_id, show_xy));
+        ui.ctx().data_mut(|d| d.insert_temp(pos_id, pos_linked));
+        let after = keyed(&clip);
+        if pos_linked && clip.x.link.is_none() && clip.y.link.is_none() {
+            // the axis that changed this frame leads; the other follows
+            for (lead, follow) in [(0, 1), (1, 0)] {
+                if after[lead] == before[lead] {
+                    continue;
+                }
+                let f = if follow == 0 { &mut clip.x } else { &mut clip.y };
+                if before[lead].1 && !after[lead].1 {
+                    f.clear_keys(lt);
+                } else if after[lead].0 != f.has_key_at(lt) {
+                    f.toggle_key(lt);
+                }
+                g.changed = true;
+                break;
+            }
+        }
         fold(ui, folds, "opacity", "Opacity & blend", None, |ui| {
             egui::Grid::new("inspector_clip_opacity").num_columns(2).show(ui, |ui| {
                 if let Some((label, a)) = props(&mut clip, false).into_iter().find(|(l, _)| *l == "Opacity") {

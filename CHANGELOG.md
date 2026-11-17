@@ -19,6 +19,13 @@
 - The Animator gives each clip a lane per kind of property its blocks animate: Motion, Opacity, Speed, Sound.
 - Motion and speed-ramp presets drop as blocks; timeline clips no longer draw keyframes (a thin colour strip marks an animated clip).
 - Fixed: `timeline.move` ignored `dtrack`; `timeline.trim` with both `start` and `end` limited the end by the media left before the start moved; `clip.keyframe` / `clip.set` property names now accept the short names (`x`, `X`, `position_y`, `speed`, …).
+- **A block is a move from an origin to a target**: From / To fields in the Inspector set where it starts and ends; the ease is just how it travels between them. Open a block (▸) and it shows that move as one string: pull the two middle points to shape the ease, an end point sideways to stretch it. Keyframes only show in Curves.
+- **Split a block** at the playhead (Ctrl+B with a block picked, or right-click ▸ Split at playhead): the first part ends at the value there, the second starts from it and keeps the old target. **Flow together**: Shift / Ctrl-click several blocks, then each one starts where the one before ends and their speeds are matched.
+- Animator: Selected clips / Whole timeline switch for the lanes; with Snapping on a dragged block also snaps to every clip's edges (off: no snapping); a **Record** switch (off: a value change never adds a key, keys are placed by hand with ◆ or a double-click on the property name); adding a block no longer starts playback.
+- Fixed: Delete / Backspace with a block or keys picked in the Animator also deleted the timeline clip; an ease picked for a block only changed its first segment (and nothing on the last key of a move), and the right-click Ease was lost on the next control change; changing a value away from a key littered an animated property with keys.
+- **Link into one block**: with several blocks of one clip picked, they become a single block with all their properties (the motion stays). The Curves channel list can be resized (drag the line between it and the graph).
+- Fixed: the Sound and Speed group rows of the Curves channel list shared widget ids (red "ID clash" boxes on a sound clip).
+- MCP: `keyblocks.split`, `keyblocks.link`, `flow.together`.
 
 ## 1.3.0
 

@@ -151,10 +151,16 @@ pub(crate) fn take_block_request() -> Option<String> {
     BLOCK_REQ.with(|s| s.borrow_mut().take())
 }
 
-/// The one keyframe control of every property row (Inspector, Effects stack, masks, shapes): a ◆ that
-/// toggles a key at the clip-local playhead `lt` - filled when a key sits here, outlined when the
-/// property is animated elsewhere, faint when it isn't; a ∿ while a live link drives it. Right-click it
-/// (or the value - see `key_menu`) for everything else. `label` names the property, and is its id.
+thread_local! {
+    /// Keys copied from a keyframe menu ("Copy keyframes"), times from the first one.
+    static KEY_CLIP: std::cell::RefCell<Vec<crate::model::Keyframe>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The one keyframe control of every property row (Inspector, Effects stack, masks, shapes). Not keyed yet:
+/// a record ring - click to capture the first key at the clip-local playhead `lt`. Keyed: a ◆ that toggles a
+/// key here (filled when one sits here) with a reset arrow beside it that clears the keys; a ∿ while a live
+/// link drives it. Right-click it (or the value - see `key_menu`) for everything else. `label` names the
+/// property, and is its id.
 pub(crate) fn key_buttons(
     ui: &mut egui::Ui,
     a: &mut Animated,
@@ -170,7 +176,12 @@ pub(crate) fn key_buttons(
     let color = if a.is_animated() || !a.link.is_none() { palette.accent } else { palette.text_dim };
     let color = if r.hovered() { palette.text } else { color };
     let p = ui.painter();
-    if a.link.is_none() {
+    if a.link.is_none() && !a.is_animated() {
+        // nothing keyed yet: a record ring (red under the pointer)
+        let c = if r.hovered() { egui::Color32::from_rgb(0xEF, 0x55, 0x50) } else { color };
+        p.circle_stroke(rect.center(), 5.0, egui::Stroke::new(1.3, c));
+        p.circle_filled(rect.center(), 2.2, c);
+    } else if a.link.is_none() {
         let fill = if here { color } else { egui::Color32::TRANSPARENT };
         p.add(crate::ui::tools::diamond(rect.center(), 5.0, fill, egui::Stroke::new(1.3, color)));
     } else {
@@ -182,6 +193,7 @@ pub(crate) fn key_buttons(
         AnimLink::Layer { .. } => "Linked to another layer - right-click to scale, offset or unlink",
         AnimLink::PathAngle(_) => "Turning along a path - right-click to unlink",
         AnimLink::None if here => "Remove the keyframe at the playhead (right-click: more)",
+        AnimLink::None if !a.is_animated() => "Start keyframing: capture a keyframe at the playhead (right-click: more)",
         AnimLink::None => "Add a keyframe at the playhead (right-click: more)",
     };
     let r = r.on_hover_text(tip);
@@ -190,6 +202,19 @@ pub(crate) fn key_buttons(
         g.click();
     }
     menu::context(&r, |ui| key_menu(ui, a, lt, g, label, paths));
+    // the reset arrow: only on a keyed property (the slot is always there, so rows stay aligned)
+    let (rr, _) = ui.allocate_exact_size(egui::vec2(14.0, 18.0), egui::Sense::hover());
+    if a.is_animated() {
+        let rs = ui
+            .interact(rr, ui.id().with(("kf-reset", label)), egui::Sense::click())
+            .on_hover_text("Reset: clear the keyframes of this property (it keeps the value shown now)");
+        let col = if rs.hovered() { palette.text } else { palette.text_dim };
+        crate::ui::tools::draw_glyph(ui.painter(), rr.shrink2(egui::vec2(0.0, 2.0)), crate::ui::tools::Glyph::UndoArrow(crate::ui::tools::Dir::Left), col);
+        if rs.clicked() {
+            a.clear_keys(lt);
+            g.click();
+        }
+    }
     r
 }
 
@@ -221,6 +246,21 @@ pub(crate) fn key_menu(
     let animated = a.is_animated();
     if ui.add_enabled_ui(animated, |ui| menu::row(ui, Some(Glyph::Cross), "Clear keyframes", "")).inner.clicked() {
         a.clear_keys(lt);
+        g.click();
+    }
+    if ui.add_enabled_ui(animated, |ui| menu::row(ui, Some(Glyph::Copy), "Copy keyframes", "")).inner.clicked() {
+        let t0 = a.keys.first().map_or(0.0, |k| k.t);
+        let ks = a.keys.iter().map(|k| crate::model::Keyframe { t: k.t - t0, ..*k }).collect();
+        KEY_CLIP.with(|c| *c.borrow_mut() = ks);
+    }
+    let clip = KEY_CLIP.with(|c| c.borrow().clone());
+    let paste =
+        ui.add_enabled_ui(!clip.is_empty(), |ui| menu::row(ui, Some(Glyph::Paste), "Paste keyframes at the playhead", ""));
+    if paste.inner.clicked() {
+        for k in clip {
+            a.key_at(lt + k.t, k.v);
+            a.set_ease_at(lt + k.t, k.ease);
+        }
         g.click();
     }
     // ws:keyframe-blocks: ease the key at the playhead (or the segment the playhead is in), or every key

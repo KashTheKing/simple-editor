@@ -44,7 +44,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     if !a.is_animated() {
                         a.toggle_key(t); // first key: set_at alone would only change the constant value
                     }
-                    a.set_at(t, value.unwrap_or_else(|| a.at(t)));
+                    a.key_at(t, value.unwrap_or_else(|| a.at(t)));
                     if let Some(e) = ease {
                         a.set_ease_at(t, e);
                     }
