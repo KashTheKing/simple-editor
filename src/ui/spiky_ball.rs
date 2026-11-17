@@ -84,6 +84,8 @@ impl Orb {
                 },
             })
             .collect();
+        // a `// @camera` style gets the default camera at this moment, as a clip with no camera set does
+        let camera = visualizer::camera_at(&crate::model::Effect::from_shader(src), self.time as f64);
         let (gl_state, time, src) = (self.gl.clone(), self.time, src.to_string());
         let cb = egui_glow::CallbackFn::new(move |info, painter| {
             let gl = painter.gl();
@@ -106,6 +108,13 @@ impl Orb {
                 gl.uniform_1_f32(gl.get_uniform_location(prog, "u_scale").as_ref(), 1.0);
                 for (i, v) in params.iter().enumerate() {
                     gl.uniform_1_f32(gl.get_uniform_location(prog, &format!("p{i}")).as_ref(), *v);
+                }
+                if let Some(c) = camera {
+                    let u = |n: &str| gl.get_uniform_location(prog, n);
+                    gl.uniform_3_f32(u("u_cam_pos").as_ref(), c.pos[0], c.pos[1], c.pos[2]);
+                    gl.uniform_3_f32(u("u_cam_target").as_ref(), c.target[0], c.target[1], c.target[2]);
+                    gl.uniform_1_f32(u("u_fov").as_ref(), c.fov);
+                    gl.uniform_1_f32(u("u_cam_roll").as_ref(), c.roll);
                 }
                 gl.bind_vertex_array(Some(vao));
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);

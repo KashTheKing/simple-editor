@@ -12,6 +12,10 @@
   their own intensity, sensitivity, attack / release, and which bands the beat follows (the kick or the snare),
   with presets for EDM, Hip-hop, Rock, Vocal, Lo-fi and Classical. A spectrum of the song shows what it has.
   Changes show at once and are saved with the project; custom shaders get the mixed values.
+- **3D camera for Voxel Blocks** (and custom shaders marked `// @camera`): with the visualizer selected, drag in
+  the Preview to orbit, Shift+drag to pan, scroll to zoom; the Inspector's Camera section sets yaw, pitch,
+  distance, field of view, roll and target, each keyframeable for fly-throughs, with auto-orbit and Reset camera.
+  Preview and export always use the same camera, and moving it costs no playback frames.
 - **Fixed: the Source monitor's visualizer lagging the music for seconds** (on a song's first play, and after a
   loud part or a seek). It waited for the waveform to finish computing and followed the speakers through a
   slow auto-gain; now every visualizer - Source monitor, timeline and export - shows the song's own analysis

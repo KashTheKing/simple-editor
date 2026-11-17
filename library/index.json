@@ -720,7 +720,7 @@
       "id": "effects/voxel-blocks",
       "kind": "effect",
       "name": "Voxel Blocks",
-      "desc": "Audio visualizer: a blocky voxel island with pixel-art grass, dirt, stone and ores. Columns rise with the music's spectrum, a block drops in and stacks on every beat while the oldest ones break away, and the camera slowly orbits. Background 0 is transparent for overlays.",
+      "desc": "Audio visualizer: a blocky voxel island with pixel-art grass, dirt, stone and ores. Columns rise with the music's spectrum, a block drops in and stacks on every beat while the oldest ones break away, and the camera orbits - or fly it yourself (Inspector ▸ Camera, or drag in the Preview). Background 0 is transparent for overlays.",
       "tags": [
         "visualizer",
         "audio",
@@ -733,7 +733,7 @@
         "game"
       ],
       "file": "effects/voxel-blocks.glsl",
-      "size": 11153,
+      "size": 11716,
       "credit": "",
       "thumb": "thumbs/effects-voxel-blocks.jpg"
     },

@@ -526,6 +526,46 @@ pub struct Effect {
     /// An audio visualizer's band mixer: which frequency bands drive it and how (None = the defaults).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_mix: Option<AudioMix>,
+    /// A 3D visualizer's camera (shaders that declare `// @camera`); None = the default slow orbit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera: Option<VizCamera>,
+}
+
+/// The camera of a 3D visualizer, in the shader's own world units: it looks from yaw / pitch / distance
+/// around `target` (degrees; pitch up from the horizon), with a vertical field of view and a roll. Every
+/// value is keyframeable; `auto_orbit` turns the yaw by `orbit_speed` degrees a second on top of it.
+/// Reaches the shader as `u_cam_pos`, `u_cam_target`, `u_fov` (radians) and `u_cam_roll` (radians):
+/// `engine::visualizer::camera_at`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct VizCamera {
+    pub yaw: Animated,
+    pub pitch: Animated,
+    pub distance: Animated,
+    pub fov: Animated,
+    pub roll: Animated,
+    pub target_x: Animated,
+    pub target_y: Animated,
+    pub target_z: Animated,
+    pub auto_orbit: bool,
+    pub orbit_speed: f64,
+}
+
+impl Default for VizCamera {
+    fn default() -> Self {
+        Self {
+            yaw: Animated::new(40.0),
+            pitch: Animated::new(35.0),
+            distance: Animated::new(22.5),
+            fov: Animated::new(35.0),
+            roll: Animated::new(0.0),
+            target_x: Animated::new(0.0),
+            target_y: Animated::new(0.0),
+            target_z: Animated::new(0.0),
+            auto_orbit: true,
+            orbit_speed: 6.9,
+        }
+    }
 }
 
 // ---- ws:audio-visualizer ----
@@ -614,6 +654,7 @@ impl Effect {
             start: 0.0,
             len: 0.0,
             audio_mix: None,
+            camera: None,
         }
     }
     /// Is the effect on at clip-local time `t`? Enabled + inside its window (the default window is the

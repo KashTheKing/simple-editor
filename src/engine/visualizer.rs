@@ -92,6 +92,42 @@ pub fn last_used(name: &str) -> Style {
     find((!name.is_empty()).then_some(name)).or_else(|_| find(None)).expect("a built-in style")
 }
 
+/// A camera as the shader gets it: world-space position and target, vertical field of view and roll in
+/// radians.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CamUniforms {
+    pub pos: [f32; 3],
+    pub target: [f32; 3],
+    pub fov: f32,
+    pub roll: f32,
+}
+
+/// The camera of a `// @camera` shader effect at clip-local second `t` (None for any other effect): its
+/// `VizCamera` (or the default orbit) evaluated there - keyframes, then the auto-orbit's turn. A pure
+/// function of (effect, t), so the preview, the Source monitor and the export see the same camera.
+pub fn camera_at(e: &Effect, t: f64) -> Option<CamUniforms> {
+    if e.kind != crate::model::EffectKind::Shader || !crate::engine::shaderlib::parse_meta(&e.shader).camera {
+        return None;
+    }
+    let def = crate::model::VizCamera::default();
+    let c = e.camera.as_ref().unwrap_or(&def);
+    let orbit = if c.auto_orbit { c.orbit_speed * t } else { 0.0 };
+    let (yaw, pitch) = ((c.yaw.at(t) + orbit).to_radians(), c.pitch.at(t).clamp(-89.0, 89.0).to_radians());
+    let dist = c.distance.at(t).max(0.01);
+    let target = [c.target_x.at(t), c.target_y.at(t), c.target_z.at(t)];
+    let pos = [
+        target[0] + dist * yaw.cos() * pitch.cos(),
+        target[1] + dist * pitch.sin(),
+        target[2] + dist * yaw.sin() * pitch.cos(),
+    ];
+    Some(CamUniforms {
+        pos: pos.map(|v| v as f32),
+        target: target.map(|v| v as f32),
+        fov: c.fov.at(t).clamp(5.0, 150.0).to_radians() as f32,
+        roll: c.roll.at(t).to_radians() as f32,
+    })
+}
+
 /// The style name of a visualizer effect: its shader's `@name`.
 pub fn style_of(e: &Effect) -> Option<String> {
     (e.kind == crate::model::EffectKind::Shader && is_visualizer(&e.shader)).then(|| e.name())
@@ -499,6 +535,7 @@ pub fn restyle(p: &mut Project, vis: Id, style: &Style, backend: Backend) -> Res
     let mut e = Effect::from_shader(&style.src);
     e.enabled = c.effects[i].enabled;
     e.audio_mix = c.effects[i].audio_mix.clone(); // the band mixer is how the song is heard, not the look
+    e.camera = c.effects[i].camera.clone();
     c.effects[i] = e;
     match source_of(p, vis) {
         Some(a) => rebake(p, vis, a, backend).map(|_| ()),
@@ -932,6 +969,39 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
         restyle(&mut p, id, &find(Some("Neon Orb")).unwrap(), Backend::Auto).unwrap();
         assert_eq!(p.clip(id).unwrap().effects[0].audio_mix, crate::model::AudioMix::preset("EDM"), "kept across styles");
         assert_eq!(crate::model::AudioMix::band("high mid"), Some(4));
+    }
+
+    /// The 3D camera: saved with the project; a keyframed field interpolates between its keys (a
+    /// fly-through), the auto-orbit adds its turn on top; only `// @camera` shaders have one.
+    #[test]
+    fn the_camera_round_trips_and_keyframes_interpolate() {
+        let mut e = Effect::from_shader(BUILTIN[2].1);
+        assert!(camera_at(&Effect::from_shader(BUILTIN[0].1), 0.0).is_none(), "Neon Orb is 2D");
+        let def = camera_at(&e, 0.0).unwrap();
+        assert!((def.fov - 35f32.to_radians()).abs() < 1e-5);
+        let mut cam = crate::model::VizCamera { auto_orbit: false, ..Default::default() };
+        cam.yaw.set_at(0.0, 0.0);
+        cam.yaw.toggle_key(0.0);
+        cam.yaw.toggle_key(2.0);
+        cam.yaw.set_at(2.0, 90.0);
+        cam.pitch = crate::model::Animated::new(0.0);
+        cam.distance = crate::model::Animated::new(10.0);
+        e.camera = Some(cam);
+        let at = |e: &Effect, t: f64| camera_at(e, t).unwrap();
+        assert!((at(&e, 0.0).pos[0] - 10.0).abs() < 1e-4 && at(&e, 0.0).pos[2].abs() < 1e-4, "{:?}", at(&e, 0.0).pos);
+        assert!((at(&e, 2.0).pos[2] - 10.0).abs() < 1e-4 && at(&e, 2.0).pos[0].abs() < 1e-4, "{:?}", at(&e, 2.0).pos);
+        let half = at(&e, 1.0).pos;
+        assert!((half[0] - half[2]).abs() < 1e-3 && (half[0] - 10.0 * 45f32.to_radians().cos()).abs() < 1e-3, "45 deg: {half:?}");
+        e.camera.as_mut().unwrap().auto_orbit = true;
+        e.camera.as_mut().unwrap().orbit_speed = 90.0;
+        assert!((at(&e, 0.0).pos[0] - 10.0).abs() < 1e-3, "no turn yet at 0 s");
+        assert!((at(&e, 1.0).pos[0] - 10.0 * 135f32.to_radians().cos()).abs() < 1e-3, "45 keyed + 90 orbited at 1 s: {:?}", at(&e, 1.0).pos);
+        let mut p = Project::new();
+        let id = p.add_shape_clip(crate::model::ShapeKind::Rect, 0.0, 2.0);
+        p.clip_mut(id).unwrap().effects.push(e.clone());
+        let back = Project::from_json(&p.to_json()).unwrap();
+        assert_eq!(back.clip(id).unwrap().effects[0].camera, e.camera);
+        assert_eq!(camera_at(&back.clip(id).unwrap().effects[0], 1.3), camera_at(&e, 1.3), "same camera after loading");
     }
 
     /// `bake` keys exactly the audio params a shader declares, on their own ranges.

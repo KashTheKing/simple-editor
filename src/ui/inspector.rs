@@ -931,6 +931,12 @@ fn clip_section(
                 settings.save();
             }
         });
+        // a 3D style's camera (`// @camera` shaders)
+        if project.clip(id).is_some_and(|c| c.effects.iter().any(|e| crate::engine::visualizer::camera_at(e, 0.0).is_some())) {
+            section(ui, "visualizer_camera", "Camera", true, folds.map, None, |ui| {
+                visualizer_changed |= crate::ui::visualizer_ui::camera_section(ui, project, id, lt, palette, undo);
+            });
+        }
     }
 
     // ---- ws:text-titles: primary-first ordering ----

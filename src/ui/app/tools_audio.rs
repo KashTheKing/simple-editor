@@ -379,7 +379,7 @@ pub const TOOLS: &[ToolDef] = &[
                audio.visualizer_styles (default the last used, else Neon Orb). Band mixer (which frequencies \
                drive it): preset EDM|Hip-hop|Rock|Vocal|Lo-fi|Classical|Reset, gains = 6 numbers 0..3 \
                (Sub, Bass, Low-mid, Mid, High-mid, Air) or {band: gain}, sensitivity 0.25..4, attack / \
-               release seconds, beat_bands = band names the beat detection hears ([] = the whole sound).",
+               release seconds, beat_bands = band names the beat detection hears ([] = the whole sound).                3D styles (Voxel Blocks, custom `// @camera` shaders): camera = {yaw, pitch, distance, fov,                roll (degrees / world units), target: [x,y,z], auto_orbit, orbit_speed (deg/s)}, set at                camera_time (timeline s, default the playhead); camera_key = true adds keyframes there.",
         args: &[
             "clip_id:integer:false:an audio clip (adds a visualizer) or a visualizer clip (restyles it)",
             "asset_id:integer:false:an audio file in the library: place it with a visualizer",
@@ -391,6 +391,9 @@ pub const TOOLS: &[ToolDef] = &[
             "attack:number:false:seconds to rise",
             "release:number:false:seconds to fall",
             "beat_bands:array:false:band names the beats follow; [] = the whole sound",
+            "camera:object:false:3D camera fields to set",
+            "camera_time:number:false:timeline seconds the camera values apply at",
+            "camera_key:boolean:false:add camera keyframes at camera_time",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
@@ -409,6 +412,7 @@ pub const TOOLS: &[ToolDef] = &[
                 let at = a.f64("at").unwrap_or(app.playhead);
                 let (song, vis) = visualizer::add_song(&mut app.project, asset, at, &style, backend)?;
                 apply_mix(app, vis, mix, backend)?;
+                apply_camera(app, vis, args)?;
                 return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": vis, "audio_clip_id": song, "style": style.name})));
             }
             let id = req(a.id("clip_id"), "clip_id or asset_id")?;
@@ -422,10 +426,12 @@ pub const TOOLS: &[ToolDef] = &[
                     cur
                 };
                 apply_mix(app, id, mix, backend)?;
+                apply_camera(app, id, args)?;
                 return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": id, "style": name})));
             }
             let vid = visualizer::add(&mut app.project, id, &style, backend)?;
             apply_mix(app, vid, mix, backend)?;
+            apply_camera(app, vid, args)?;
             Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": vid, "style": style.name})))
         },
     },
@@ -508,6 +514,53 @@ fn mix_args(args: &Value) -> Result<MixArgs, String> {
         }
         m.clamped()
     })))
+}
+
+/// `audio.visualizer`'s `camera` fields onto visualizer `vis`'s 3D camera, at `camera_time` (timeline
+/// seconds, default the playhead), keyed there when `camera_key` (else set like the Inspector: a key
+/// where the field is already animated, the constant otherwise).
+fn apply_camera(app: &mut App, vis: Id, args: &Value) -> Result<(), String> {
+    let Some(c) = args.get("camera").filter(|v| !v.is_null()) else { return Ok(()) };
+    let o = c.as_object().ok_or("camera: an object")?;
+    let at = args.get("camera_time").and_then(Value::as_f64).unwrap_or(app.playhead);
+    let key = args.get("camera_key").and_then(Value::as_bool).unwrap_or(false);
+    let clip = app.project.clip_mut(vis).ok_or("no such clip")?;
+    let lt = clip.local(at);
+    let e = clip
+        .effects
+        .iter_mut()
+        .find(|e| visualizer::camera_at(e, 0.0).is_some())
+        .ok_or("not a 3D visualizer (its style has no camera)")?;
+    let cam = e.camera.get_or_insert_with(crate::model::VizCamera::default);
+    let mut set = |a: &mut crate::model::Animated, v: f64| {
+        if key && !a.has_key_at(lt) {
+            a.toggle_key(lt);
+        }
+        a.set_at(lt, v);
+    };
+    for (k, v) in o {
+        let num = || v.as_f64().ok_or(format!("camera.{k}: a number"));
+        match k.as_str() {
+            "yaw" => set(&mut cam.yaw, num()?),
+            "pitch" => set(&mut cam.pitch, num()?.clamp(-89.0, 89.0)),
+            "distance" => set(&mut cam.distance, num()?.clamp(0.5, 500.0)),
+            "fov" => set(&mut cam.fov, num()?.clamp(5.0, 150.0)),
+            "roll" => set(&mut cam.roll, num()?),
+            "target" => {
+                let t: Vec<f64> = v.as_array().map(|a| a.iter().filter_map(Value::as_f64).collect()).unwrap_or_default();
+                if t.len() != 3 {
+                    return Err("camera.target: [x, y, z]".into());
+                }
+                set(&mut cam.target_x, t[0]);
+                set(&mut cam.target_y, t[1]);
+                set(&mut cam.target_z, t[2]);
+            }
+            "auto_orbit" => cam.auto_orbit = v.as_bool().ok_or("camera.auto_orbit: true / false")?,
+            "orbit_speed" => cam.orbit_speed = num()?.clamp(-90.0, 90.0),
+            _ => return Err(format!("camera.{k}: unknown (yaw, pitch, distance, fov, roll, target, auto_orbit, orbit_speed)")),
+        }
+    }
+    Ok(())
 }
 
 /// Set visualizer `vis`'s band mix from `audio.visualizer`'s arguments and bake again.

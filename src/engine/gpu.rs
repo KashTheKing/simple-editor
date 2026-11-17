@@ -78,6 +78,11 @@ const UNIFORMS: &[&str] = &[
     "p11",
     "p12",
     "p13",
+    // ws:audio-visualizer: a `// @camera` shader's camera
+    "u_cam_pos",
+    "u_cam_target",
+    "u_fov",
+    "u_cam_roll",
     "u_mask",
     "u_has_mask",
     "u_dst",
@@ -1302,6 +1307,7 @@ impl GpuRenderer {
         for (p, v) in params.iter_mut().zip(param_values(effect, t)) {
             *p = v as f32;
         }
+        let camera = crate::engine::visualizer::camera_at(effect, t); // ws:audio-visualizer
         // uniforms persist on a cached program, so a motion kind must set these every draw
         let motion = effect.needs_motion().then(|| motion.unwrap_or((self.blank, self.blank, 0.0)));
         // ---- ws:color-engine ----
@@ -1313,6 +1319,13 @@ impl GpuRenderer {
             gl.uniform_1_f32(prog.uni.get("u_scale"), scale);
             for (i, v) in params.iter().enumerate() {
                 gl.uniform_1_f32(prog.uni.get(PARAM_NAMES[i]), *v);
+            }
+            if let Some(c) = &camera {
+                let (p, g) = (c.pos, c.target);
+                gl.uniform_3_f32(prog.uni.get("u_cam_pos"), p[0], p[1], p[2]);
+                gl.uniform_3_f32(prog.uni.get("u_cam_target"), g[0], g[1], g[2]);
+                gl.uniform_1_f32(prog.uni.get("u_fov"), c.fov);
+                gl.uniform_1_f32(prog.uni.get("u_cam_roll"), c.roll);
             }
             if let Some((prev, next, frames)) = motion {
                 gl.active_texture(glow::TEXTURE0 + U_PREV);
@@ -3128,6 +3141,49 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         }
         let _ = std::fs::remove_file(wav);
         assert!(frame(&mut r, 0.8) == cold, "the same moment renders the same pixels after any history");
+    }
+
+    /// The 3D camera through the renderer (what preview and export draw): the default camera is the very
+    /// orbit the shader falls back to without one (library thumbnails), a moved camera draws something
+    /// else, and the same camera at the same time draws the same pixels again.
+    #[test]
+    fn the_visualizer_camera_reaches_the_shader() {
+        let Some(gl) = gl() else {
+            eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+            return;
+        };
+        use crate::engine::visualizer;
+        let (w, h) = (320u32, 180u32);
+        let voxel = visualizer::BUILTIN[2].1;
+        // the shader alone, no camera uniforms: its fallback orbit
+        let defaults: Vec<f32> = crate::engine::shaderlib::parse_meta(voxel).params.iter().map(|p| p.default as f32).collect();
+        let fallback = unsafe { run_sized(&gl, voxel, w as i32, h as i32, 1.5, &defaults) }.unwrap();
+        let mut p = crate::model::Project::new();
+        (p.width, p.height) = (w, h);
+        let id = p.add_shape_clip(crate::model::ShapeKind::Rect, 0.0, 4.0);
+        let c = p.clip_mut(id).unwrap();
+        if let Some(s) = c.shape.as_mut() {
+            (s.w, s.h) = (crate::model::Animated::new(w as f64 / 2.0), crate::model::Animated::new(h as f64 / 2.0));
+        }
+        c.effects.push(crate::model::Effect::from_shader(voxel));
+        let mut pool = crate::media::DecoderPool::new(crate::media::Backend::Ffmpeg);
+        let (mut spare, mut text) = (Vec::new(), crate::engine::text::TextRasterizer::new());
+        let (mut shapes, mut comp) = (crate::engine::shapes::ShapeRasterizer::new(), crate::engine::compose::Compositor::new());
+        let mut r = GpuRenderer::new(std::sync::Arc::new(gl)).expect("renderer");
+        let mut frame = |r: &mut GpuRenderer, p: &crate::model::Project| {
+            let layers = crate::playback::decode_layers(p, 1.5, w, h, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
+            let mut out = Frame::default();
+            r.render_frame(p, 1.5, w, h, &layers, &mut out);
+            out.rgba
+        };
+        let diff = |a: &[u8], b: &[u8]| a.iter().zip(b).filter(|(x, y)| (**x as i32 - **y as i32).abs() > 3).count() as f64 / a.len() as f64;
+        let default_cam = frame(&mut r, &p);
+        assert!(diff(&default_cam, &fallback) < 0.01, "default camera == the shader's own orbit ({})", diff(&default_cam, &fallback));
+        p.clip_mut(id).unwrap().effects[0].camera =
+            Some(crate::model::VizCamera { yaw: crate::model::Animated::new(130.0), pitch: crate::model::Animated::new(70.0), ..Default::default() });
+        let moved = frame(&mut r, &p);
+        assert!(diff(&moved, &default_cam) > 0.2, "a moved camera draws another view");
+        assert!(frame(&mut r, &p) == moved, "same camera, same time: same pixels");
     }
 
     /// What an export draws: `GpuRenderer::render_frame` (the compositor the export's GPU path runs) of a

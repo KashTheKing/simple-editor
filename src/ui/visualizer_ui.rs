@@ -7,7 +7,8 @@
 
 use crate::engine::visualizer;
 use crate::media::Backend;
-use crate::model::{AudioMix, Id, Project};
+use crate::model::{Animated, AudioMix, Id, Project, VizCamera};
+use crate::theme::Palette;
 use eframe::egui;
 
 /// The clip's current style name, if it is a visualizer clip.
@@ -124,6 +125,135 @@ pub fn section(
         }
         None => mix_changed,
     }
+}
+
+/// The effect index of `id`'s 3D visualizer (a `// @camera` shader), if it has one.
+fn camera_effect(project: &Project, id: Id) -> Option<usize> {
+    project.clip(id)?.effects.iter().position(|e| visualizer::camera_at(e, 0.0).is_some())
+}
+
+/// The Inspector's Camera section for a 3D visualizer: auto-orbit + speed, then yaw, pitch, distance,
+/// field of view, roll and the target, each a value with its ◆ keyframe button (clip-local `lt`), and
+/// Reset camera. One undo per edit (the Inspector's `Gesture`). True when the project changed.
+pub fn camera_section(ui: &mut egui::Ui, project: &mut Project, id: Id, lt: f64, palette: &Palette, undo: &mut dyn FnMut(&Project)) -> bool {
+    let Some(ei) = camera_effect(project, id) else { return false };
+    let Some(e) = project.clip(id).map(|c| &c.effects[ei]) else { return false };
+    let had = e.camera.is_some();
+    let mut cam = e.camera.clone().unwrap_or_default();
+    let mut g = crate::ui::Gesture::default();
+    let mut reset = false;
+    egui::Grid::new(("visualizer_camera", id)).num_columns(3).show(ui, |ui| {
+        ui.label("Auto-orbit");
+        g.note(&ui.checkbox(&mut cam.auto_orbit, ""));
+        let r = ui.add_enabled(cam.auto_orbit, egui::DragValue::new(&mut cam.orbit_speed).speed(0.1).suffix(" °/s").range(-90.0..=90.0));
+        g.note(&r);
+        ui.end_row();
+        let rows: [(&str, &mut Animated, f64, &str, (f64, f64)); 8] = [
+            ("Yaw", &mut cam.yaw, 0.5, "°", (-100_000.0, 100_000.0)),
+            ("Pitch", &mut cam.pitch, 0.5, "°", (-89.0, 89.0)),
+            ("Distance", &mut cam.distance, 0.1, "", (0.5, 500.0)),
+            ("Field of view", &mut cam.fov, 0.2, "°", (5.0, 150.0)),
+            ("Roll", &mut cam.roll, 0.5, "°", (-180.0, 180.0)),
+            ("Target X", &mut cam.target_x, 0.05, "", (-1000.0, 1000.0)),
+            ("Target Y", &mut cam.target_y, 0.05, "", (-1000.0, 1000.0)),
+            ("Target Z", &mut cam.target_z, 0.05, "", (-1000.0, 1000.0)),
+        ];
+        for (name, a, speed, suffix, (lo, hi)) in rows {
+            ui.label(name);
+            let mut v = a.at(lt);
+            let r = ui.add(egui::DragValue::new(&mut v).speed(speed).suffix(suffix).range(lo..=hi).max_decimals(2));
+            g.note(&r);
+            if r.changed() {
+                a.set_at(lt, v);
+            }
+            crate::ui::key_buttons(ui, a, lt, palette, &mut g, &format!("camera {name}"), &[]);
+            ui.end_row();
+        }
+    });
+    if ui.add_enabled(had, egui::Button::new("Reset camera").small()).on_hover_text("Back to the default slow orbit").clicked() {
+        reset = true;
+        g.click();
+    }
+    if !(g.changed || reset) {
+        return false;
+    }
+    if g.start {
+        undo(project);
+    }
+    if let Some(e) = project.clip_mut(id).map(|c| &mut c.effects[ei]) {
+        e.camera = if reset { None } else { Some(cam) };
+    }
+    true
+}
+
+/// The Preview's camera gestures on a selected 3D visualizer under the playhead: drag orbits (yaw /
+/// pitch), Shift+drag pans the target across the view, the scroll wheel dollies. None when `id` is not
+/// one (the Preview's own move / handles apply); Some(edited) when it took the gesture. Values are set
+/// at the clip-local playhead, so a keyframed camera gets a key there (the Inspector's `set_at`). Only
+/// the camera uniforms change: no re-render cost beyond the frame itself.
+pub fn camera_gesture(
+    ui: &egui::Ui,
+    resp: &egui::Response,
+    project: &mut Project,
+    id: Id,
+    playhead: f64,
+    undo: &mut dyn FnMut(&Project),
+) -> Option<bool> {
+    let cl = project.clip(id)?;
+    if playhead < cl.start || playhead >= cl.start + cl.duration {
+        return None;
+    }
+    let lt = cl.local(playhead);
+    let ei = camera_effect(project, id)?;
+    let (shift, ctrl, scroll) = ui.input(|i| (i.modifiers.shift, i.modifiers.command, i.raw_scroll_delta.y));
+    let scroll = if resp.hovered() && !ctrl { scroll } else { 0.0 };
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(if resp.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
+    }
+    let dragging = resp.dragged_by(egui::PointerButton::Primary);
+    if !dragging && scroll == 0.0 {
+        return Some(false);
+    }
+    // one undo per drag, and per burst of wheel turns (a pause of half a second starts a new one)
+    let now = ui.input(|i| i.time);
+    let last_id = egui::Id::new(("visualizer_camera_scroll", id));
+    let last_scroll = ui.ctx().data(|d| d.get_temp::<f64>(last_id)).unwrap_or(f64::NEG_INFINITY);
+    if resp.drag_started_by(egui::PointerButton::Primary) || (!dragging && now - last_scroll > 0.5) {
+        undo(project);
+    }
+    if scroll != 0.0 {
+        ui.ctx().data_mut(|d| d.insert_temp(last_id, now));
+    }
+    let basis = visualizer::camera_at(&project.clip(id)?.effects[ei], lt)?;
+    let e = &mut project.clip_mut(id)?.effects[ei];
+    let cam = e.camera.get_or_insert_with(VizCamera::default);
+    let d = resp.drag_delta();
+    if dragging && shift {
+        // pan: move the target along the view's right / up axes, scaled to the distance
+        let (p, t) = (basis.pos.map(f64::from), basis.target.map(f64::from));
+        let fw = [t[0] - p[0], t[1] - p[1], t[2] - p[2]];
+        let len = (fw[0] * fw[0] + fw[1] * fw[1] + fw[2] * fw[2]).sqrt().max(1e-6);
+        let fw = fw.map(|v| v / len);
+        let rt = [-fw[2], 0.0, fw[0]];
+        let rl = (rt[0] * rt[0] + rt[2] * rt[2]).sqrt().max(1e-6);
+        let rt = rt.map(|v| v / rl);
+        let up = [rt[1] * fw[2] - rt[2] * fw[1], rt[2] * fw[0] - rt[0] * fw[2], rt[0] * fw[1] - rt[1] * fw[0]];
+        let k = len * 0.002;
+        let (dx, dy) = (d.x as f64 * k, d.y as f64 * k);
+        for (a, i) in [(&mut cam.target_x, 0), (&mut cam.target_y, 1), (&mut cam.target_z, 2)] {
+            let v = a.at(lt) - rt[i] * dx + up[i] * dy;
+            a.set_at(lt, v);
+        }
+    } else if dragging {
+        let (yaw, pitch) = (cam.yaw.at(lt) + d.x as f64 * 0.3, (cam.pitch.at(lt) + d.y as f64 * 0.3).clamp(-89.0, 89.0));
+        cam.yaw.set_at(lt, yaw);
+        cam.pitch.set_at(lt, pitch);
+    }
+    if scroll != 0.0 {
+        let dist = (cam.distance.at(lt) * (-(scroll as f64) * 0.002).exp()).clamp(0.5, 500.0);
+        cam.distance.set_at(lt, dist);
+    }
+    Some(true)
 }
 
 /// The band mixer's widgets: a preset, the spectrum graph, per band a gain and a beat-source tick, then
