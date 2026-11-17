@@ -197,6 +197,120 @@ pub struct BlockCtl {
     pub loops: u32,
     #[serde(default, skip_serializing_if = "is_false")]
     pub pingpong: bool,
+    /// A Path block: the stroke as it was drawn and how the clip travels it (its keys come from this, not
+    /// from `src`'s tracks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathCtl>,
+}
+
+/// A Path block's controls: a stroke drawn in the Viewer, kept as drawn, and how the clip travels along it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct PathCtl {
+    /// The raw stroke: x, y in project px from the frame's centre (a clip's Position), t in seconds from
+    /// the stroke's start.
+    pub points: Vec<(f32, f32, f32)>,
+    /// Timing. false = "Shape": the path at one speed along its length over the block, shaped by the
+    /// block's Ease. true = "As drawn": the stroke's own timing (its rushes and pauses), scaled to the block.
+    pub as_drawn: bool,
+    /// 0 = the points as drawn .. 1 = a heavily smoothed curve. The two ends never move.
+    pub smoothing: f64,
+    /// Rotation faces the way the clip travels.
+    pub turn: bool,
+}
+
+impl PathCtl {
+    /// The stroke smoothed by `smoothing`: each point becomes the average of its neighbours, over a wider
+    /// window the higher it is, twice. The window shrinks toward the ends, so the first and last points stay
+    /// exactly where they were drawn; every point keeps its time.
+    pub fn smoothed(&self) -> Vec<(f64, f64, f64)> {
+        let mut pts: Vec<(f64, f64, f64)> = self.points.iter().map(|p| (p.0 as f64, p.1 as f64, p.2 as f64)).collect();
+        let n = pts.len();
+        let r = (self.smoothing.clamp(0.0, 1.0) * n as f64 / 6.0).round() as usize;
+        for _ in 0..if r > 0 { 2 } else { 0 } {
+            let src = pts.clone();
+            for i in 0..n {
+                let w = r.min(i).min(n - 1 - i);
+                let k = (2 * w + 1) as f64;
+                pts[i].0 = src[i - w..=i + w].iter().map(|p| p.0).sum::<f64>() / k;
+                pts[i].1 = src[i - w..=i + w].iter().map(|p| p.1).sum::<f64>() / k;
+            }
+        }
+        pts
+    }
+
+    /// The block's keys: Position X / Y (and Rotation with `turn`) as absolute values over 0..1 of a block
+    /// `dur` seconds long.
+    pub fn tracks(&self, ease: Ease, dur: f64) -> Vec<BlockTrack> {
+        let pts = self.smoothed();
+        let n = pts.len();
+        if n < 2 {
+            return Vec::new();
+        }
+        // (f, x, y) samples
+        let mut ks: Vec<(f64, f64, f64)> = Vec::new();
+        if self.as_drawn {
+            let span = pts[n - 1].2 - pts[0].2;
+            for (i, p) in pts.iter().enumerate() {
+                let f = if span > 1e-9 { (p.2 - pts[0].2) / span } else { i as f64 / (n - 1) as f64 };
+                // two points at one time: the later a hair after
+                let f = ks.last().map_or(f, |l| f.max(l.0 + 1e-6));
+                ks.push((f, p.0, p.1));
+            }
+            let end = ks[n - 1].0.max(1e-9);
+            ks.iter_mut().for_each(|k| k.0 /= end);
+        } else {
+            // by length: where the path is after each stretch of it
+            let mut len = vec![0.0; n];
+            for i in 1..n {
+                len[i] = len[i - 1] + (pts[i].0 - pts[i - 1].0).hypot(pts[i].1 - pts[i - 1].1);
+            }
+            let total = len[n - 1];
+            // ponytail: sampled 60 times a second (a corner is cut by less than a frame's travel); put keys
+            // on the vertices instead if a slow path ever shows it
+            let m = ((dur * 60.0).ceil() as usize).clamp(16, 600);
+            for j in 0..=m {
+                let f = j as f64 / m as f64;
+                let s = ease.apply(f).clamp(0.0, 1.0) * total;
+                let i = len.partition_point(|l| *l < s).clamp(1, n - 1);
+                let seg = len[i] - len[i - 1];
+                let q = if seg > 1e-12 { (s - len[i - 1]) / seg } else { 0.0 };
+                ks.push((f, pts[i - 1].0 + (pts[i].0 - pts[i - 1].0) * q, pts[i - 1].1 + (pts[i].1 - pts[i - 1].1) * q));
+            }
+            // the ends are the drawn ends whatever the ease does
+            let last = ks.len() - 1;
+            (ks[0].1, ks[0].2) = (pts[0].0, pts[0].1);
+            (ks[last].1, ks[last].2) = (pts[n - 1].0, pts[n - 1].1);
+        }
+        let track = |prop: &str, v: &dyn Fn(usize) -> f64| BlockTrack {
+            prop: prop.into(),
+            keys: (0..ks.len()).map(|i| BlockKey { f: ks[i].0, v: BlockVal::Abs(v(i)), ease: Ease::Linear }).collect(),
+        };
+        let mut out = vec![track("x", &|i| ks[i].1), track("y", &|i| ks[i].2)];
+        if self.turn {
+            // the way it travels at each key (its neighbours' direction), unwrapped; a standstill keeps
+            // the angle before it
+            let m = ks.len() - 1;
+            let mut angles = Vec::with_capacity(m + 1);
+            let mut last: Option<f64> = None;
+            for i in 0..=m {
+                let (a, b) = (ks[i.saturating_sub(1)], ks[(i + 1).min(m)]);
+                let (dx, dy) = (b.1 - a.1, b.2 - a.2);
+                let mut ang = if dx.abs() + dy.abs() > 1e-6 { dy.atan2(dx).to_degrees() } else { last.unwrap_or(f64::NAN) };
+                if let Some(l) = last {
+                    ang -= ((ang - l) / 360.0).round() * 360.0;
+                }
+                if !ang.is_nan() {
+                    last = Some(ang);
+                }
+                angles.push(ang);
+            }
+            // a path that starts at a standstill faces the first way it moves
+            let first = angles.iter().copied().find(|a| !a.is_nan()).unwrap_or(0.0);
+            out.push(track("rotation", &|i| if angles[i].is_nan() { first } else { angles[i] }));
+        }
+        out
+    }
 }
 
 /// How long a loop's jump back to its start takes: one frame at 60 fps.
@@ -316,6 +430,7 @@ impl BlockCtl {
             edited: false,
             loops: 0,
             pingpong: false,
+            path: None,
         }
     }
     pub fn is_sim(&self) -> bool {
@@ -339,6 +454,11 @@ impl BlockCtl {
     }
 
     fn resolve_one(&self, dur: f64) -> KeyBlock {
+        // a Path block: its keys are the stroke's (strength, side, origin / target don't apply)
+        if let Some(p) = &self.path {
+            let tracks = p.tracks(self.ease.unwrap_or(Ease::Linear), dur);
+            return KeyBlock { name: self.src.name.clone(), dur, tracks, gen: None };
+        }
         let mut b = match self.src.gen {
             Some(g) => simulate(g, &self.phys, self.strength, self.dir.unwrap_or(Dir::Left), dur),
             None => self.reshape(),

@@ -1,10 +1,13 @@
 //! ---- ws:animator ----
-//! App side of the Animator (`ui::animator`): the pane, Stack with Overlays, block controls and Flow over MCP.
+//! App side of the Animator (`ui::animator`): the pane, Stack with Overlays, the Path tool's strokes, block
+//! controls and Flow over MCP.
 
 use super::tools_helpers::*;
 use super::*;
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
-use crate::model::{find_block, AnimLink, BlockCtl, Dir, Match};
+use crate::model::{find_block, AnimLink, BlockCtl, Dir, Match, PathCtl};
+use crate::ui::animator::AnimTool;
+use crate::ui::tools::Tool;
 
 /// Onion skin follows the Animator: off whenever it wasn't on screen last frame.
 pub(super) fn frame(app: &mut App, ctx: &egui::Context) {
@@ -17,6 +20,24 @@ pub(super) fn frame(app: &mut App, ctx: &egui::Context) {
         app.player.set_loop(None);
         app.animator.looping = false;
     }
+    // the Path tool draws in the Viewer: while it is picked the Viewer holds its Draw tool (`path_armed`), and
+    // leaving either one (another Viewer tool, another Animator tool, the pane closed) leaves both
+    let path = app.animator.tool == AnimTool::Path && app.pane_drawn(Pane::Animator);
+    if path && app.path_armed && app.tools.tool != Tool::Draw {
+        (app.animator.tool, app.path_armed) = (AnimTool::Select, false);
+    } else if path != app.path_armed {
+        app.path_armed = path;
+        if path {
+            app.tools.tool = Tool::Draw;
+        } else {
+            if app.animator.tool == AnimTool::Path {
+                app.animator.tool = AnimTool::Select; // the pane went away
+            }
+            if app.tools.tool == Tool::Draw {
+                app.tools.tool = Tool::Select;
+            }
+        }
+    }
     // Delete / Backspace / Split belong to the Animator's block or keys after a press in it, and to the
     // timeline's clips again after a press on the timeline or the Viewer
     if ctx.input(|i| i.pointer.any_pressed()) {
@@ -24,6 +45,21 @@ pub(super) fn frame(app: &mut App, ctx: &egui::Context) {
             Some(Pane::Animator) => app.animator.here = true,
             Some(Pane::Timeline | Pane::Preview) => app.animator.here = false,
             _ => {}
+        }
+    }
+    // the timeline's tool keys pick the Animator's own tools while it is the panel in use. Taken here: the
+    // tool strip claims its keys before the action table is polled, so `act` below only ever sees them from
+    // a direct dispatch (the palette, a script)
+    if app.animator.here && app.pane_drawn(Pane::Animator) && !ctx.wants_keyboard_input() {
+        for (a, t) in [
+            (Action::ToolSelect, AnimTool::Select),
+            (Action::ToolCut, AnimTool::Cut),
+            (Action::ToolDraw, AnimTool::Path),
+            (Action::ToolPen, AnimTool::Path),
+        ] {
+            if app.hotkeys.get(a).is_some_and(|ks| ctx.input_mut(|i| crate::hotkeys::consume_exact(i, &ks))) {
+                app.animator.tool = t;
+            }
         }
     }
 }
@@ -105,15 +141,6 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             app.toast("Following the path - right-click Position X / Y and Unlink to stop");
         }
     }
-    if resp.draw_path {
-        if app.selection.is_empty() {
-            app.toast("Select the clips that should follow the path first");
-        } else {
-            app.path_armed = true;
-            app.tools.tool = crate::ui::tools::Tool::Draw;
-            app.toast("Draw the motion path in the Viewer - the selected clips follow it at your drawing's pace");
-        }
-    }
     true
 }
 
@@ -136,24 +163,35 @@ fn follow_path(p: &mut Project, ids: &[Id], pid: Id, turn: bool) -> usize {
     n
 }
 
-/// A stroke drawn while "Draw a motion path" was armed: save it as a path and make the selection follow it.
-/// True when it took the stroke (the caller then doesn't add it as a drawing).
+/// A stroke drawn in the Viewer with the Animator's Path tool: a Path block on every selected picture clip,
+/// from the playhead (the clip's start when the playhead is not on it), as long as the stroke took to draw,
+/// timed as it was drawn. True when it took the stroke (the caller then doesn't add it as a drawing).
 pub(super) fn take_stroke(app: &mut App, s: &crate::model::Stroke) -> bool {
-    if !std::mem::take(&mut app.path_armed) || s.points.len() < 2 {
+    if !app.path_armed || s.points.len() < 2 {
         return false;
     }
+    let t0 = s.points[0].2;
+    let points: Vec<(f32, f32, f32)> = s.points.iter().map(|p| (p.0, p.1, p.2 - t0)).collect();
+    let dur = (points[points.len() - 1].2 as f64).max(0.2);
     let snap = app.project.to_json();
-    let name = format!("Motion path {}", app.project.paths.len() + 1);
-    let pid = app.project.add_path(name.clone(), s.points.clone());
-    let ids = app.selection.clone();
-    let n = follow_path(&mut app.project, &ids, pid, false);
+    let mut made = Vec::new();
+    for id in app.selection.clone() {
+        let Some(c) = app.project.clip(id) else { continue };
+        let at = if c.contains(app.playhead) { app.playhead - c.start } else { 0.0 };
+        let path = PathCtl { points: points.clone(), as_drawn: true, ..Default::default() };
+        made.extend(app.project.add_path_block(id, path, at, dur).map(|i| (id, i)));
+    }
+    if made.is_empty() {
+        // the tool stays on: select a clip and draw again
+        app.toast("Select the picture clips that should travel the path, then draw it");
+        return true;
+    }
     push_undo_json(&mut app.undo, &mut app.redo, snap);
     app.after_edit();
-    app.tools.tool = crate::ui::tools::Tool::Select;
-    app.toast(format!(
-        "Saved {name}: {n} clip{} follow it - Rotation, Turn along path to face its way",
-        if n == 1 { "" } else { "s" }
-    ));
+    // back to Select (the frame hook hands the Viewer its Select tool back), the new block picked
+    app.animator.tool = AnimTool::Select;
+    (app.animator.sel, app.animator.multi) = (made.first().copied(), made[1..].to_vec());
+    app.toast(format!("Path block on {} clip{}", made.len(), if made.len() == 1 { "" } else { "s" }));
     true
 }
 
@@ -208,10 +246,10 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
     }
     // the timeline's tool keys drive the Animator's own tools while it is the panel in use
     if app.animator.here && app.pane_drawn(Pane::Animator) {
-        use crate::ui::animator::AnimTool;
         match a {
             Action::ToolSelect => app.animator.tool = AnimTool::Select,
             Action::ToolCut => app.animator.tool = AnimTool::Cut,
+            Action::ToolDraw | Action::ToolPen => app.animator.tool = AnimTool::Path,
             Action::ToggleSnap => app.animator.no_snap = !app.animator.no_snap,
             // Play runs the range the Animator shows and stops at its end (or repeats it with Loop on)
             Action::PlayPause
@@ -235,6 +273,8 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
     }
     match a {
         Action::StackOverlays => stack(app),
+        // the timeline's "Show Animations": the Animator, on the clips that are selected
+        Action::ShowAnimations => app.surface(Pane::Animator),
         _ => return false,
     }
     true
@@ -243,6 +283,53 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 fn done(v: Value) -> Result<ToolOutcome, String> {
     Ok(ToolOutcome::Done(v))
 }
+
+/// The span fields a tool call gives, onto `sp`.
+fn span_fields(sp: &mut crate::model::TransitionSpan, args: &Value) -> Result<(), String> {
+    use crate::model::TransitionKind;
+    if let Some(k) = arg_str(args, "kind") {
+        sp.kind = TransitionKind::from_name(k).ok_or("kind: Cross Fade, Fade to Color, Push or Wipe (a shader transition: give shader)")?;
+    }
+    if let Some(src) = arg_str(args, "shader") {
+        crate::ui::animator::set_span_kind(sp, (TransitionKind::Shader, src.to_string()));
+    }
+    if let Some(v) = args.get("params").and_then(|v| v.as_array()) {
+        sp.params = v.iter().filter_map(|x| x.as_f64()).collect();
+    }
+    if let Some(t) = arg_f64(args, "t") {
+        sp.t = t.max(0.0);
+    }
+    if let Some(d) = arg_f64(args, "dur") {
+        sp.dur = d.max(crate::model::ops::spans::MIN_SPAN);
+    }
+    if let Some(d) = arg_f64(args, "cut_dur") {
+        sp.cut_dur = d.clamp(0.05, 10.0);
+    }
+    if let Some(e) = arg_str(args, "ease") {
+        sp.ease = super::tools_keyblocks::ease_arg(e).ok_or("unknown ease")?;
+    }
+    if let Some(d) = arg_str(args, "direction") {
+        let i = ["left", "right", "up", "down"].iter().position(|n| n.eq_ignore_ascii_case(d));
+        sp.direction = i.ok_or("direction: left, right, up or down")? as u8;
+    }
+    Ok(())
+}
+
+fn span_json(sp: &crate::model::TransitionSpan) -> Value {
+    json!({"span_id": sp.id, "t": sp.t, "dur": sp.dur, "kind": sp.name(), "cut_dur": sp.cut_dur, "direction": sp.direction, "transitions": sp.made})
+}
+
+/// The arguments `animate.span_add` and `animate.span_set` share.
+const SPAN_ARGS: [&str; 8] = [
+    "t:number:false:timeline s where it starts",
+    "dur:number:false:seconds it covers",
+    "kind:string:false:Cross Fade | Fade to Color | Push | Wipe",
+    "cut_dur:number:false:seconds each transition lasts (default 0.5)",
+    "ease:string:false:",
+    "direction:string:false:left | right | up | down (Push / Wipe)",
+    "shader:string:false:GLSL source of a shader transition (instead of kind)",
+    "params:array:false:the shader's control values, in header order",
+];
 
 fn clip_block(args: &Value) -> Result<(Id, usize), String> {
     Ok((req(arg_u64(args, "clip_id"), "clip_id")?, req(arg_u64(args, "index"), "index")? as usize))
@@ -269,6 +356,61 @@ pub const TOOLS: &[ToolDef] = &[
             let n = app.project.make_transitionable(&arg_ids(args, "clip_ids").unwrap_or_default());
             done(json!({"ok": true, "gaps_closed": n}))
         },
+    },
+    ToolDef {
+        name: "animate.span_add",
+        desc: "Add a transition span: a bar over the timeline (the Animator's Timeline lane) that sets up the transitions under it. Every cut between two clips on a video track whose time lies in [t, t + dur] gets the span's transition; clips under it that are separated by an empty gap are closed up first. It stays procedural: after every edit (clips moved, the span moved or stretched) the transitions it made are remade for what is under it now, and deleting it removes them. Overlays are not grouped: each video track gets its own transitions. Defaults: the whole timeline, Cross Fade, 0.5 s per cut. Returns span_id and the transitions it made.",
+        args: &SPAN_ARGS,
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let t = arg_f64(args, "t").unwrap_or(0.0).max(0.0);
+            let dur = arg_f64(args, "dur").unwrap_or((app.project.duration() - t).max(1.0));
+            let id = app.project.add_span(t, dur, crate::model::TransitionKind::CrossFade);
+            span_fields(app.project.spans.iter_mut().find(|s| s.id == id).ok_or("no span")?, args)?;
+            app.project.refresh_spans();
+            done(span_json(app.project.spans.iter().find(|s| s.id == id).ok_or("no span")?))
+        },
+    },
+    ToolDef {
+        name: "animate.span_set",
+        desc: "Change a transition span (animate.span_add): move or stretch it (t, dur) or change the transition it makes (kind / shader, cut_dur, ease, direction). Its transitions are remade for what is under it now. Returns the span and the transitions it made.",
+        args: &[
+            "span_id:integer:true:",
+            SPAN_ARGS[0],
+            SPAN_ARGS[1],
+            SPAN_ARGS[2],
+            SPAN_ARGS[3],
+            SPAN_ARGS[4],
+            SPAN_ARGS[5],
+            SPAN_ARGS[6],
+            SPAN_ARGS[7],
+        ],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let id = req(arg_u64(args, "span_id"), "span_id")?;
+            span_fields(app.project.spans.iter_mut().find(|s| s.id == id).ok_or("no such span")?, args)?;
+            app.project.refresh_spans();
+            done(span_json(app.project.spans.iter().find(|s| s.id == id).ok_or("no such span")?))
+        },
+    },
+    ToolDef {
+        name: "animate.span_remove",
+        desc: "Delete a transition span and the transitions it made (the clips stay where they are).",
+        args: &["span_id:integer:true:"],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            if !app.project.remove_span(req(arg_u64(args, "span_id"), "span_id")?) {
+                return Err("no such span".into());
+            }
+            done(json!({"ok": true}))
+        },
+    },
+    ToolDef {
+        name: "animate.spans",
+        desc: "The transition spans on the timeline (animate.span_add): span_id, t, dur, kind, cut_dur, direction and the ids of the transitions each one made.",
+        args: &[],
+        kind: ToolKind::Read,
+        run: |app, _| done(json!(app.project.spans.iter().map(span_json).collect::<Vec<_>>())),
     },
     ToolDef {
         name: "keyblocks.set",
@@ -476,6 +618,56 @@ pub const TOOLS: &[ToolDef] = &[
             let turn = args.get("turn").and_then(|v| v.as_bool()).unwrap_or(false);
             let n = follow_path(&mut app.project, &ids, pid, turn);
             done(json!({"ok": true, "count": n}))
+        },
+    },
+    ToolDef {
+        name: "animate.path",
+        desc: "Add a Path block to a picture clip: its Position travels the given stroke (what the Animator's Path tool makes from a drawing in the Viewer). points: [[x, y, t], ...] - x, y in project px from the frame's centre (a clip's Position), t in seconds from the stroke's start (left out: 30 points a second). timing 'shape' (default): one speed along the path over the block, shaped by ease; 'drawn': the points' own timing scaled to the block. smoothing 0..1 (0 = the points as given, 1 = a heavily smoothed curve; the ends stay). turn: Rotation faces the way it travels. The block keeps the stroke: keyblocks.set (ease, dur) and another animate.path replace its keys. Returns the block's index.",
+        args: &[
+            "clip_id:integer:true:",
+            "points:array:true:[[x, y, t], ...] two or more",
+            "timing:string:false:shape | drawn",
+            "smoothing:number:false:0..1",
+            "turn:boolean:false:",
+            "t:number:false:clip-local start s, default = the playhead (0 when it is not on the clip)",
+            "dur:number:false:seconds, default = the stroke's own length (at least 0.2)",
+            "ease:string:false:shape timing only",
+        ],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let id = req(arg_u64(args, "clip_id"), "clip_id")?;
+            let raw = args.get("points").and_then(|v| v.as_array()).ok_or("points: [[x, y, t], ...]")?;
+            let mut points = Vec::new();
+            for (i, p) in raw.iter().enumerate() {
+                let n = |k: usize| p.get(k).and_then(|v| v.as_f64());
+                let (x, y) = n(0).zip(n(1)).ok_or("points: each one is [x, y] or [x, y, t]")?;
+                points.push((x as f32, y as f32, n(2).unwrap_or(i as f64 / 30.0) as f32));
+            }
+            if points.len() < 2 {
+                return Err("points: two or more".into());
+            }
+            let as_drawn = match arg_str(args, "timing").unwrap_or("shape") {
+                "shape" => false,
+                "drawn" | "as drawn" | "as_drawn" => true,
+                _ => return Err("timing: shape or drawn".into()),
+            };
+            let c = app.project.clip(id).ok_or("no such clip")?;
+            let at = arg_f64(args, "t").unwrap_or(if c.contains(app.playhead) { app.playhead - c.start } else { 0.0 });
+            let span = (points[points.len() - 1].2 - points[0].2) as f64;
+            let dur = arg_f64(args, "dur").unwrap_or(span).max(0.2);
+            let path = PathCtl {
+                points,
+                as_drawn,
+                smoothing: arg_f64(args, "smoothing").unwrap_or(0.0).clamp(0.0, 1.0),
+                turn: args.get("turn").and_then(|v| v.as_bool()).unwrap_or(false),
+            };
+            let i = app.project.add_path_block(id, path, at, dur).ok_or("needs a picture clip with room for the block")?;
+            if let Some(e) = arg_str(args, "ease") {
+                let mut ctl = app.project.clip(id).and_then(|c| c.blocks[i].ctl.clone()).ok_or("no such block")?;
+                ctl.ease = Some(super::tools_keyblocks::ease_arg(e).ok_or("unknown ease")?);
+                app.project.set_block_ctl(id, i, ctl);
+            }
+            done(json!({"ok": true, "index": i}))
         },
     },
     ToolDef {

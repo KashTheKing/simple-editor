@@ -38,6 +38,21 @@ impl Project {
         Some(at)
     }
 
+    /// ws:animator: a "Path" block on clip `id` from clip-local `t0`, `dur` seconds long: the clip's Position
+    /// (and Rotation with `path.turn`) travels the stroke `path.points`. The block keeps the stroke, so its
+    /// Timing / Smoothing / Turn controls (`set_block_ctl`) make the keys again. Returns the block's index.
+    pub fn add_path_block(&mut self, id: Id, path: PathCtl, t0: f64, dur: f64) -> Option<usize> {
+        let (w, h) = (self.width as f64, self.height as f64);
+        if path.points.len() < 2 {
+            return None;
+        }
+        let c = self.clip_mut(id).filter(|c| c.is_visual())?;
+        let mut ctl = BlockCtl::new(KeyBlock { name: "Path".into(), dur, ..Default::default() });
+        ctl.path = Some(path);
+        let (t, _) = c.place_ctl(ctl, t0, Some(dur), w, h)?;
+        c.blocks.iter().position(|b| (b.t - t).abs() < 1e-9 && b.ctl.as_ref().is_some_and(|c| c.path.is_some()))
+    }
+
     /// A clip's picture on screen at clip-local `lt`: centre and half size in project px, the frame's centre
     /// at (0, 0).
     /// ponytail: the media fitted to the frame (or the shape's own size) times the clip's scale. Crop, rotation
@@ -1005,6 +1020,82 @@ mod tests {
         assert!((a.t - 1.0).abs() < 1e-9 && (a.dur - 0.4).abs() < 1e-9, "{a:?}");
         // the same timeline time: 1.0 on a clip that starts at 0 = 0.5 on one that starts at 0.5
         assert!((b.t - 0.5).abs() < 1e-9 && (b.dur - 0.4).abs() < 1e-9, "{b:?}");
+    }
+
+    /// A stroke: right 300 px in 1 s, a 2 s pause, then down 300 px in 1 s (a point every 10 px, none while
+    /// the pen stands still - what the Draw tool records).
+    fn stroke() -> Vec<(f32, f32, f32)> {
+        let mut v: Vec<(f32, f32, f32)> = (0..=30).map(|i| (i as f32 * 10.0, 0.0, i as f32 / 30.0)).collect();
+        v.extend((1..=30).map(|i| (300.0, i as f32 * 10.0, 3.0 + i as f32 / 30.0)));
+        v
+    }
+
+    #[test]
+    fn a_path_block_travels_its_shape_at_one_speed_or_as_it_was_drawn() {
+        let (mut p, id) = proj();
+        let path = PathCtl { points: stroke(), ..Default::default() };
+        let i = p.add_path_block(id, path.clone(), 1.0, 4.0).expect("a block");
+        let at = |p: &Project, t: f64| (p.clip(id).unwrap().x.at(t), p.clip(id).unwrap().y.at(t));
+        let b = p.clip(id).unwrap().blocks[i].clone();
+        assert_eq!((b.name.as_str(), b.t, b.dur), ("Path", 1.0, 4.0));
+        assert_eq!(b.props, ["x", "y"]);
+        // Shape: the same distance in every tenth of the block (600 px over 4 s), corner or not
+        let steps: Vec<f64> = (0..40)
+            .map(|k| {
+                let (a, b) = (at(&p, 1.0 + k as f64 * 0.1), at(&p, 1.1 + k as f64 * 0.1));
+                (b.0 - a.0).abs() + (b.1 - a.1).abs() // the path only runs along the axes
+            })
+            .collect();
+        assert!(steps.iter().all(|d| (d - 15.0).abs() < 0.5), "{steps:?}");
+        assert_eq!((at(&p, 1.0), at(&p, 5.0)), ((0.0, 0.0), (300.0, 300.0)));
+        // an ease shapes the travel along the same path: slow at both ends, the middle where it was
+        let mut ctl = b.ctl.clone().unwrap();
+        ctl.ease = Some(Ease::EaseInOut);
+        p.set_block_ctl(id, i, ctl.clone());
+        assert!(at(&p, 1.4).0 < 30.0, "eased in: {:?}", at(&p, 1.4));
+        let mid = at(&p, 3.0);
+        assert!((mid.0 - 300.0).abs() < 1.0 && mid.1.abs() < 1.0, "{mid:?}");
+        // As drawn: the stroke's 4 s over the block's 4 s - it stands at the corner through the pause
+        ctl.path.as_mut().unwrap().as_drawn = true;
+        p.set_block_ctl(id, i, ctl.clone());
+        for t in [2.1, 3.0, 3.9] {
+            let v = at(&p, t);
+            assert!((v.0 - 300.0).abs() < 1e-6 && v.1 < 11.0, "paused at the corner at {t}: {v:?}");
+        }
+        assert!((at(&p, 1.5).0 - 150.0).abs() < 1.0);
+        // stretched to twice as long, the pause is twice as long too
+        p.retime_key_block(id, i, 0.0, 6.0);
+        assert!((at(&p, 3.0).0 - 300.0).abs() < 1e-6 && at(&p, 4.4).1 < 11.0);
+        // Turn along path: it faces right, then down
+        ctl.path.as_mut().unwrap().turn = true;
+        p.set_block_ctl(id, i, ctl);
+        let c = p.clip(id).unwrap();
+        assert_eq!(c.blocks[i].props, ["x", "y", "rotation"]);
+        assert!(c.rotation.at(0.5).abs() < 1.0 && (c.rotation.at(5.5) - 90.0).abs() < 1.0);
+        // deleting the block takes its keys
+        p.remove_key_block(id, i);
+        let c = p.clip(id).unwrap();
+        assert!(!c.x.is_animated() && !c.y.is_animated() && !c.rotation.is_animated());
+    }
+
+    #[test]
+    fn smoothing_a_path_rounds_it_and_keeps_its_ends() {
+        let raw = PathCtl { points: stroke(), ..Default::default() };
+        let soft = PathCtl { smoothing: 1.0, ..raw.clone() };
+        assert_eq!(raw.smoothed().len(), raw.points.len());
+        let (a, b) = (raw.smoothed(), soft.smoothed());
+        assert_eq!((a[0], a[60]), ((0.0, 0.0, 0.0), (300.0, 300.0, 4.0)), "0 = the points as drawn");
+        assert_eq!((b[0], b[60]), (a[0], a[60]), "the ends stay");
+        // the corner at (300, 0) is cut: the smoothed path passes inside it
+        assert!(b[30].0 < 290.0 && b[30].1 > 10.0, "{:?}", b[30]);
+        // and the block made from it still starts and ends where the stroke does
+        let (mut p, id) = proj();
+        p.add_path_block(id, soft, 0.0, 2.0).unwrap();
+        let c = p.clip(id).unwrap();
+        assert_eq!(((c.x.at(0.0), c.y.at(0.0)), (c.x.at(2.0), c.y.at(2.0))), ((0.0, 0.0), (300.0, 300.0)));
+        // a block saved before Path blocks existed loads (no `path`)
+        let old: BlockCtl = serde_json::from_str(r#"{"src":{"name":"Fade In","dur":0.5,"tracks":[]}}"#).unwrap();
+        assert!(old.path.is_none());
     }
 
     #[test]

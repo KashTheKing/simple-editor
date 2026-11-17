@@ -34,6 +34,7 @@ impl Project {
             notes: Vec::new(),
             moodboard: Vec::new(),
             paths: Vec::new(),
+            spans: Vec::new(),
             next_id: 0,
             // ---- ws:registries-schema-hooks ----
             transcripts: Vec::new(),

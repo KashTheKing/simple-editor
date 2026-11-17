@@ -1062,6 +1062,7 @@ impl App {
         if self.settings.auto_close_gaps {
             crate::ui::timeline::close_all_gaps(&mut self.project);
         }
+        self.project.refresh_spans(); // ws:animator: the transitions under a span follow the edit
         let p = &self.project;
         self.selection.retain(|id| p.clip(*id).is_some());
         self.player.set_project(&self.project);

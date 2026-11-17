@@ -1,8 +1,9 @@
-//! The clip's property sections - `Clip::props_mut()` drawn as Transform (Position X/Y, Scale with a
-//! chain toggle revealing Scale X/Y, Rotation) + "Opacity & blend" (Opacity, Blend, fades) for visual
-//! clips, or one Audio section (Volume, Pan, fades, Role, Bus; right-click for Repair / Clarity / Open in
-//! Mixer / Auto Duck / Normalize) for anything on an audio track. Every property row is label · value ·
-//! ◆ (`ui::key_buttons`; right-click the ◆ or the value for keys and links).
+//! The clip's property sections: "Properties" for visual clips - one aligned list (`prop_list`, the Curves
+//! channel list's rows) of Transform (Position X/Y, Scale with a chain toggle revealing Scale X/Y, Rotation),
+//! Opacity and Speed - plus "Blend and fades"; or one Audio section (the list's Sound group: Volume, Pan;
+//! then fades, Role, Bus; right-click for Repair / Clarity / Open in Mixer / Auto Duck / Normalize) for
+//! anything on an audio track. Every property row is name · value · ◀ key ▶ reset chain (right-click the
+//! key or the value for keys and links).
 //!
 //! Unlike the rest of clip_section (which edits a clip clone the caller writes back), this manages its
 //! own clone-edit-writeback + diff-propagate cycle directly against `project`: the property / fade /
@@ -13,8 +14,8 @@ use crate::hotkeys::Action;
 use crate::model::{AnimLink, Animated, AudioRole, BlendMode, Clip, ClipKind, Id, Project, TrackKind};
 use crate::theme::Palette;
 use crate::ui::inspector::{fold, luau_highlight, mark, set_pending_action, Folds};
-use crate::ui::{key_buttons, key_menu, menu, Gesture};
-use eframe::egui::{self, DragValue, Slider};
+use crate::ui::{key_menu, menu, Gesture};
+use eframe::egui::{self, DragValue};
 
 pub(super) fn gain_to_db(g: f64) -> f64 {
     if g <= 0.0 {
@@ -48,122 +49,200 @@ fn props(c: &mut Clip, audio: bool) -> Vec<(&'static str, &mut Animated)> {
     }
 }
 
-/// One grid row: label · value · ◆ (+ the Scale row's chain toggle), and the expression editor under it
-/// while an expression drives the property. Right-clicking the value opens the ◆'s menu too.
+/// The Inspector's name of a property (`model::BLOCK_PROPS`).
+fn label_of(p: &str) -> &'static str {
+    match p {
+        "x" => "Position X",
+        "y" => "Position Y",
+        "scale" => "Scale",
+        "scale_x" => "Scale X",
+        "scale_y" => "Scale Y",
+        "rotation" => "Rotation",
+        "opacity" => "Opacity",
+        "pan" => "Pan",
+        "speed" => "Speed",
+        _ => "Volume",
+    }
+}
+
+/// The property groups of the list, in order, and their properties.
+const GROUPS: [(&str, &[&str]); 4] = [
+    ("Transform", &["x", "y", "scale", "scale_x", "scale_y", "rotation"]),
+    ("Opacity", &["opacity"]),
+    ("Sound", &["volume", "pan"]),
+    ("Speed", &["speed"]),
+];
+
+/// The clip's properties as one aligned list, the Curves channel list's rows: groups that fold, and for each
+/// property [colour bar + name: fills, elides] [value box: one width] [◀] [key] [▶] [reset] [chain] - every
+/// slot is there on every row, so a longer number moves nothing. A double-click on a name puts a key at the
+/// playhead; a right-click on the value or the key opens the keyframe menu; an expression is edited under
+/// its property. `open` = each of `GROUPS` unfolded.
 #[allow(clippy::too_many_arguments)]
-fn prop_row(
+fn prop_list(
     ui: &mut egui::Ui,
-    label: &'static str,
-    a: &mut Animated,
+    clip: &mut Clip,
+    audio: bool,
     lt: f64,
     palette: &Palette,
     g: &mut Gesture,
     paths: &[(Id, String)],
-    chain: Option<&mut bool>,
+    open: &mut [bool; 4],
+    pos_linked: &mut bool,
+    show_xy: &mut bool,
 ) {
-    // [colour bar][name] | [value: fixed width][key controls]: nothing moves when a number gets longer
-    ui.horizontal(|ui| {
-        let short = match label {
-            "Position X" => "x",
-            "Position Y" => "y",
-            "Scale" => "scale",
-            "Scale X" => "scale_x",
-            "Scale Y" => "scale_y",
-            "Rotation" => "rotation",
-            "Opacity" => "opacity",
-            "Pan" => "pan",
-            _ => "volume",
+    use crate::ui::animator::{group_row, prop_list_row};
+    use crate::ui::list_rows::{Ctrl, Rows};
+    use crate::ui::tools::{draw_glyph, Glyph};
+    // ◀ and ▶ are the list's own; the key, the reset and the chain are drawn into their slots (bits 1, 3, 4)
+    const CTRLS: &[Ctrl] = &[
+        Ctrl { glyph: "◀", hint: "Previous key" },
+        Ctrl { glyph: "", hint: "" },
+        Ctrl { glyph: "▶", hint: "Next key" },
+        Ctrl { glyph: "", hint: "" },
+        Ctrl { glyph: "", hint: "" },
+    ];
+    const OWN: u8 = 0b11010;
+    const VAL_W: f32 = 76.0; // the number box: one width on every row
+    let id = clip.id;
+    let ramps = clip.uses_asset();
+    let mut rows = Rows::new(ui, ("insp-props", id), CTRLS, &[VAL_W], true).fixed_order();
+    let mut n = 0;
+    for (gi, (group, list)) in GROUPS.iter().enumerate() {
+        let shows = match *group {
+            "Sound" => audio,
+            "Speed" => ramps,
+            _ => !audio,
         };
-        let (bar, _) = ui.allocate_exact_size(egui::vec2(3.0, 12.0), egui::Sense::hover());
-        ui.painter().rect_filled(bar, 1.0, crate::ui::animator::prop_color(short));
-        ui.label(label);
-    });
-    let linked = !a.link.is_none();
-    ui.horizontal(|ui| {
-        const VAL_W: f32 = 72.0; // the number box: one width on every row
-        let mut v = a.at(lt);
-        let r = ui
-            .add_enabled_ui(!linked, |ui| match label {
-                "Volume" => {
-                    let mut db = gain_to_db(v);
-                    let r = ui.add(Slider::new(&mut db, -60.0..=12.0).suffix(" dB").fixed_decimals(1));
-                    if r.changed() {
-                        v = db_to_gain(db);
-                    }
-                    r
-                }
-                "Pan" => {
-                    let r = ui.add(Slider::new(&mut v, -1.0..=1.0).fixed_decimals(2));
-                    #[cfg(test)]
-                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("test_pan_slider"), r.id));
-                    r
-                }
-                "Scale" | "Scale X" | "Scale Y" => {
-                    ui.add_sized([VAL_W, 18.0], DragValue::new(&mut v).speed(0.01).range(0.01..=20.0))
-                }
-                "Opacity" => {
-                    let mut pct = v * 100.0;
-                    let r = ui.add(Slider::new(&mut pct, 0.0..=100.0).suffix(" %").fixed_decimals(0));
-                    if r.changed() {
-                        v = pct / 100.0;
-                    }
-                    #[cfg(test)]
-                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("test_opacity_slider"), r.id));
-                    r
-                }
-                _ => ui.add_sized([VAL_W, 18.0], DragValue::new(&mut v).speed(1.0)),
-            })
-            .inner;
-        if r.changed() {
-            a.set_at(lt, v);
+        if !shows {
+            continue;
         }
-        g.note(&r);
-        #[cfg(test)]
-        mark(ui, &format!("val_{label}"), &r);
-        menu::context(&r, |ui| key_menu(ui, a, lt, g, label, paths));
-        let _kf = key_buttons(ui, a, lt, palette, g, label, paths);
-        #[cfg(test)]
-        mark(ui, &format!("kf_{label}"), &_kf);
-        if let Some(on) = chain {
-            let pos = label == "Position X";
-            let tip = match (pos, *on) {
-                (true, true) => "Position X and Y are keyed together - click to key them separately",
-                (true, false) => "Position X and Y are keyed separately - click to key them together",
-                (false, true) => "Hide Scale X / Y",
-                (false, false) => "Scale X and Y separately",
+        let r = group_row(ui, &mut rows, n, group, open[gi], false, 0b11111);
+        n += 1;
+        if r.toggled || r.body.double_clicked() {
+            open[gi] = !open[gi];
+        }
+        if !open[gi] {
+            continue;
+        }
+        let xy = *show_xy;
+        for &p in list.iter().filter(|p| xy || !matches!(**p, "scale_x" | "scale_y")) {
+            let label = label_of(p);
+            let Some(a) = crate::model::prop_mut(clip, p) else { continue };
+            let (r, name) = prop_list_row(ui, &mut rows, n, id, p, label, "", 2, false, OWN);
+            n += 1;
+            if name.double_clicked() && a.link.is_none() && !a.has_key_at(lt) {
+                let v = a.at(lt);
+                a.key_at(lt, v);
+                g.click();
+            }
+            name.on_hover_text("Double-click: a key at the playhead");
+            // the value: drag or type. A linked one is greyed; a speed ramp has a value once it is keyed
+            // (the clip's constant speed is the Speed section's)
+            let live = a.link.is_none() && (p != "speed" || a.is_animated());
+            let vr = r.values().shrink2(egui::vec2(0.0, 2.0));
+            let mut cui = ui.new_child(egui::UiBuilder::new().id_salt(("insp-val", p)).max_rect(vr));
+            if !live {
+                cui.disable();
+            }
+            // shown = the stored value in the row's unit (dB, %): the ranges and units the rows always had
+            let pct = matches!(p, "opacity" | "speed");
+            let v = a.at(lt);
+            let mut shown = match p {
+                "volume" => gain_to_db(v),
+                _ if pct => v * 100.0,
+                _ => v,
             };
-            let id = ui.id().with(if pos { "pos_xy" } else { "scale_xy" });
-            let r = crate::ui::tools::icon_button(ui, palette, id, crate::ui::tools::Glyph::Chain, tip, *on);
-            mark(ui, if pos { "pos_xy" } else { "scale_xy" }, &r);
-            if r.clicked() {
-                *on = !*on;
+            let dv = DragValue::new(&mut shown);
+            let dv = match p {
+                "volume" => dv.range(-60.0..=12.0).suffix(" dB").fixed_decimals(1).speed(0.1),
+                "pan" => dv.range(-1.0..=1.0).fixed_decimals(2).speed(0.01),
+                "scale" | "scale_x" | "scale_y" => dv.range(0.01..=20.0).speed(0.01),
+                "opacity" => dv.range(0.0..=100.0).suffix(" %").max_decimals(0).speed(1.0),
+                "speed" => dv.range(5.0..=800.0).suffix(" %").max_decimals(0).speed(1.0),
+                _ => dv.speed(1.0),
+            };
+            let vresp = cui.add_sized(vr.size(), dv);
+            if vresp.changed() {
+                a.set_at(
+                    lt,
+                    match p {
+                        "volume" => db_to_gain(shown),
+                        _ if pct => shown / 100.0,
+                        _ => shown,
+                    },
+                );
+            }
+            g.note(&vresp);
+            #[cfg(test)]
+            {
+                mark(ui, &format!("val_{label}"), &vresp);
+                if matches!(p, "pan" | "opacity") {
+                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(format!("test_{p}_slider")), vresp.id));
+                }
+            }
+            menu::context(&vresp, |ui| key_menu(ui, a, lt, g, label, paths));
+            match r.ctrl {
+                Some(0) => crate::ui::key_step(ui, a, lt, false),
+                Some(2) => crate::ui::key_step(ui, a, lt, true),
+                _ => {}
+            }
+            let slot = |k: usize, w: f32| egui::Rect::from_center_size(r.slot(k).center(), egui::vec2(w, 18.0));
+            let _kf = crate::ui::key_button_at(ui, slot(1, 18.0), a, lt, palette, g, label, paths);
+            #[cfg(test)]
+            mark(ui, &format!("kf_{label}"), &_kf);
+            crate::ui::key_reset_at(ui, slot(3, 14.0), a, lt, palette, g, label);
+            let chain = match p {
+                "x" => Some((&mut *pos_linked, "pos_xy")),
+                "scale" => Some((&mut *show_xy, "scale_xy")),
+                _ => None,
+            };
+            if let Some((on, key)) = chain {
+                let tip = match (p == "x", *on) {
+                    (true, true) => "Position X and Y are keyed together - click to key them separately",
+                    (true, false) => "Position X and Y are keyed separately - click to key them together",
+                    (false, true) => "Hide Scale X / Y",
+                    (false, false) => "Scale X and Y separately",
+                };
+                let cr = ui.interact(slot(4, 20.0), ui.id().with(key), egui::Sense::click()).on_hover_text(tip);
+                let col = if *on {
+                    palette.accent
+                } else if cr.hovered() {
+                    palette.text
+                } else {
+                    palette.text_dim
+                };
+                draw_glyph(ui.painter(), cr.rect.shrink(2.0), Glyph::Chain, col);
+                mark(ui, key, &cr);
+                if cr.clicked() {
+                    *on = !*on;
+                }
+            }
+            // a linked expression is edited right under its property
+            if let Animated { link: AnimLink::Expr(src), link_err, .. } = a {
+                ui.horizontal(|ui| {
+                    ui.add_space(42.0);
+                    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
+                        let mut job = luau_highlight(ui, buf.as_str());
+                        job.wrap.max_width = wrap_width;
+                        ui.fonts_mut(|f| f.layout_job(job))
+                    };
+                    g.note(
+                        &ui.add(
+                            egui::TextEdit::singleline(src)
+                                .desired_width((ui.available_width() - 24.0).max(60.0))
+                                .hint_text("return value + math.sin(t*4) * 20")
+                                .layouter(&mut layouter),
+                        ),
+                    );
+                    if let Some(e) = link_err {
+                        ui.colored_label(ui.visuals().warn_fg_color, "!").on_hover_text(e.clone());
+                    }
+                });
             }
         }
-    });
-    ui.end_row();
-    // a linked expression is edited right under its property
-    if let Animated { link: AnimLink::Expr(src), link_err, .. } = a {
-        ui.label("");
-        ui.horizontal(|ui| {
-            let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
-                let mut job = luau_highlight(ui, buf.as_str());
-                job.wrap.max_width = wrap_width;
-                ui.fonts_mut(|f| f.layout_job(job))
-            };
-            g.note(
-                &ui.add(
-                    egui::TextEdit::singleline(src)
-                        .desired_width(150.0)
-                        .hint_text("return value + math.sin(t*4) * 20")
-                        .layouter(&mut layouter),
-                ),
-            );
-            if let Some(e) = link_err {
-                ui.colored_label(ui.visuals().warn_fg_color, "!").on_hover_text(e.clone());
-            }
-        });
-        ui.end_row();
     }
+    let _ = rows.finish(ui);
 }
 
 /// The Audio section's right-click verbs that act on the project (run after the section has drawn).
@@ -197,6 +276,10 @@ pub(super) fn section(
     let mut g = Gesture::default();
     let path_list: Vec<(Id, String)> = project.paths.iter().map(|p| (p.id, p.name.clone())).collect();
     let mut changed = false;
+    // the list's groups, unfolded unless folded before (kept with the sections' own fold state)
+    let fold_key = |g: &str| format!("props_{}", g.to_lowercase());
+    let was: [bool; 4] = std::array::from_fn(|i| folds.map.get(&fold_key(GROUPS[i].0)).copied().unwrap_or(true));
+    let mut open = was;
 
     if audio {
         // ---- ws:audio-dsp-automation: Essential Sound verbs, now on the section's right-click ----
@@ -222,10 +305,8 @@ pub(super) fn section(
             }
         };
         fold(ui, folds, "audio", "Audio", Some(&mut menu_fn), |ui| {
+            prop_list(ui, &mut clip, true, lt, palette, &mut g, &path_list, &mut open, &mut false, &mut false);
             egui::Grid::new("inspector_clip_audio").num_columns(2).show(ui, |ui| {
-                for (label, a) in props(&mut clip, true) {
-                    prop_row(ui, label, a, lt, palette, &mut g, &path_list, None);
-                }
                 fades(ui, &mut clip, &mut g);
                 // Role + Bus write straight to the project, with their own undo
                 changed |= role_and_bus(ui, project, ids, &orig, undo);
@@ -255,18 +336,8 @@ pub(super) fn section(
         let mut pos_linked: bool = ui.ctx().data(|d| d.get_temp(pos_id).unwrap_or(true));
         let keyed = |c: &Clip| [(c.x.has_key_at(lt), c.x.is_animated()), (c.y.has_key_at(lt), c.y.is_animated())];
         let before = keyed(&clip);
-        fold(ui, folds, "transform", "Transform", None, |ui| {
-            egui::Grid::new("inspector_clip_transform").num_columns(2).show(ui, |ui| {
-                for (label, a) in props(&mut clip, false) {
-                    match label {
-                        "Opacity" => {}
-                        "Position X" => prop_row(ui, label, a, lt, palette, &mut g, &path_list, Some(&mut pos_linked)),
-                        "Scale X" | "Scale Y" if !show_xy => {}
-                        "Scale" => prop_row(ui, label, a, lt, palette, &mut g, &path_list, Some(&mut show_xy)),
-                        _ => prop_row(ui, label, a, lt, palette, &mut g, &path_list, None),
-                    }
-                }
-            });
+        fold(ui, folds, "transform", "Properties", None, |ui| {
+            prop_list(ui, &mut clip, false, lt, palette, &mut g, &path_list, &mut open, &mut pos_linked, &mut show_xy);
         });
         ui.ctx().data_mut(|d| d.insert_temp(xy_id, show_xy));
         ui.ctx().data_mut(|d| d.insert_temp(pos_id, pos_linked));
@@ -287,11 +358,8 @@ pub(super) fn section(
                 break;
             }
         }
-        fold(ui, folds, "opacity", "Opacity & blend", None, |ui| {
+        fold(ui, folds, "opacity", "Blend and fades", None, |ui| {
             egui::Grid::new("inspector_clip_opacity").num_columns(2).show(ui, |ui| {
-                if let Some((label, a)) = props(&mut clip, false).into_iter().find(|(l, _)| *l == "Opacity") {
-                    prop_row(ui, label, a, lt, palette, &mut g, &path_list, None);
-                }
                 ui.label("Blend");
                 egui::ComboBox::from_id_salt("blend").selected_text(clip.blend.name()).show_ui(ui, |ui| {
                     for b in BlendMode::ALL {
@@ -304,6 +372,9 @@ pub(super) fn section(
         });
     }
 
+    for i in (0..4).filter(|&i| open[i] != was[i]) {
+        folds.map.insert(fold_key(GROUPS[i].0), open[i]);
+    }
     if g.start {
         undo(project);
     }
@@ -316,6 +387,7 @@ pub(super) fn section(
             c.fade_in = clip.fade_in;
             c.fade_out = clip.fade_out;
             c.blend = clip.blend;
+            c.speed_curve = clip.speed_curve.clone();
             for (c_label, c_a) in props(c, audio) {
                 if let Some((_, src)) = edited_props.iter().find(|(l, _)| *l == c_label) {
                     *c_a = src.clone();

@@ -12,6 +12,10 @@
 //! selected clip, the range toggle, the zoom bar, Ctrl+wheel zoom / Shift+wheel pan and a scrollbar under the
 //! lanes. The view only changes what a clip's row shows.
 //!
+//! Blocks also has the Timeline lane above the clips' own: transition spans (`model::ops::spans`), bars that
+//! put their transition on every cut under them; and the Path tool, which turns the next stroke drawn in the
+//! Viewer into a Path block (`PathCtl`) on the selected clips.
+//!
 //! Narrow (a docked panel), it turns into a list of the focused clip's blocks with their controls in place.
 //! The selected block's controls also show at the top of the Inspector (`block_section`).
 
@@ -23,6 +27,7 @@ use std::cell::Cell;
 
 thread_local! {
     static SEL: Cell<Option<(Id, usize)>> = const { Cell::new(None) };
+    static SPAN: Cell<Option<Id>> = const { Cell::new(None) };
     static ONION: Cell<u8> = const { Cell::new(0) };
     static ONION_TEX: Cell<Option<(egui::TextureId, [u32; 2])>> = const { Cell::new(None) };
 }
@@ -45,6 +50,10 @@ pub fn set_onion(n: u8) {
 pub fn selected_block() -> Option<(Id, usize)> {
     SEL.with(|s| s.get())
 }
+/// The transition span selected in the Animator's Timeline lane (the Inspector shows its controls).
+pub fn selected_span() -> Option<Id> {
+    SPAN.with(|s| s.get())
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum View {
@@ -56,12 +65,14 @@ pub enum View {
 }
 
 /// The Animator's own tools (its lanes are not the timeline's): Select picks, moves and stretches blocks;
-/// Cut splits the block you click, where you click it.
+/// Cut splits the block you click, where you click it; Path turns the next stroke drawn in the Viewer into a
+/// Path block on the selected clips (the app holds the Viewer's Draw tool while it is picked).
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub enum AnimTool {
     #[default]
     Select,
     Cut,
+    Path,
 }
 
 #[derive(Default)]
@@ -130,6 +141,13 @@ pub struct AnimState {
     pub ch_w: Option<f32>,
     /// The last press was in the Animator: Delete / Backspace / Split act on its block or keys, not the clip.
     pub here: bool,
+    /// The Timeline lane's picked transition spans (the first is the Inspector's).
+    pub spans: Vec<Id>,
+    /// A dragged span as its drag started: (t, dur, the end held: -1 start, 1 end, 0 the bar).
+    span_orig: Option<(f64, f64, i8)>,
+    /// Where each span's bar was drawn last frame.
+    #[cfg(test)]
+    span_pos: Vec<(Id, Rect)>,
 }
 
 /// What a click in the lanes asked for (applied after they are drawn, as one undo step).
@@ -227,8 +245,6 @@ pub struct AnimResp {
     pub with_overlays: bool,
     /// Make the selected clips follow this saved path (and turn along it when true).
     pub follow: Option<(Id, bool)>,
-    /// The next stroke drawn in the Viewer becomes a motion path the selected clips follow.
-    pub draw_path: bool,
 }
 
 const HEAD_W: f32 = 132.0;
@@ -340,6 +356,9 @@ pub(crate) mod look {
 /// The kind of a block and its colour. Every kind has one colour of its own, used for its bar in the lanes,
 /// its Inspector pill, its Gallery card and its dot in the "+ Animation" menu (which so doubles as the legend).
 pub fn block_kind(b: &AppliedBlock) -> (&'static str, Color32) {
+    if b.ctl.as_ref().is_some_and(|c| c.path.is_some()) {
+        return ("Path", kind_color("Path"));
+    }
     let gen = b.ctl.as_ref().and_then(|c| c.src.gen);
     kind_of(&b.name, gen)
 }
@@ -356,6 +375,8 @@ pub fn kind_color(kind: &str) -> Color32 {
         "Text" => c(0x7F, 0xD0, 0xFF),     // sky
         "Sound" => c(0x4C, 0xC0, 0x6A),    // green
         "Speed" => c(0xC0, 0x22, 0x3B),    // red
+        "Path" => c(0x96, 0xDC, 0x32),     // lime
+        "Transition" => c(0xFF, 0x80, 0x80), // salmon: a span over the timeline
         _ => c(0x9A, 0xA3, 0xB2),          // Custom: slate
     }
 }
@@ -666,19 +687,28 @@ pub fn show(
     let main = st.sel;
     st.multi.retain(|&(id, i)| Some((id, i)) != main && project.clip(id).is_some_and(|c| i < c.blocks.len()));
     SEL.with(|s| s.set(st.sel));
+    // a picked span that went away (undo, delete) is forgotten
+    st.spans.retain(|id| project.spans.iter().any(|s| s.id == *id));
+    SPAN.with(|s| s.set(st.spans.first().copied()));
+    #[cfg(test)]
+    st.span_pos.clear();
     set_onion(st.ghosts.unwrap_or(0));
     let compact = ui.available_width() < COMPACT_W;
     header(ui, st, project, &ids, *playhead, compact, presets, undo, &mut out);
     ui.separator();
     if ids.is_empty() {
-        ui.add_space(16.0);
+        ui.add_space(8.0);
         ui.vertical_centered(|ui| {
             ui.label(egui::RichText::new("Select clips on the timeline to animate them.").color(pal.text_dim));
             if ui.button("Select the clip under the playhead and its overlays").clicked() {
                 out.with_overlays = true;
             }
         });
-        return out;
+        // the Timeline lane (transitions over the clips) needs no selection
+        if compact || project.editing.is_some() || project.duration() <= 0.0 {
+            return out;
+        }
+        ui.add_space(8.0);
     }
     match st.view {
         _ if compact => compact_list(ui, st, project, &ids, playhead, pal, undo, &mut out),
@@ -686,12 +716,17 @@ pub fn show(
         _ => lanes_view(ui, st, project, &ids, playhead, presets, pal, undo, &mut out),
     }
     // Delete / Backspace: the picked blocks and only them (selected keys or a speed point took the key first)
-    if !playing && st.sel.is_some() && (st.here || ui.ui_contains_pointer()) && del_pressed(ui) {
+    let any = st.sel.is_some() || !st.spans.is_empty();
+    if !playing && any && (st.here || ui.ui_contains_pointer()) && del_pressed(ui) {
         undo(project);
         remove_picked(project, st);
+        for id in std::mem::take(&mut st.spans) {
+            project.remove_span(id);
+        }
         out.edited = true;
     }
     SEL.with(|s| s.set(st.sel));
+    SPAN.with(|s| s.set(st.spans.first().copied()));
     out
 }
 
@@ -723,10 +758,19 @@ fn header(
             w.corner_radius = 6.into();
             w.bg_stroke = Stroke::NONE;
         }
+        // (spans belong to the main timeline: none while a nested sequence is open)
+        let (mut span_pick, main) = (None, project.editing.is_none());
         let r = menu::button(ui, egui::RichText::new("+ Animation").color(Color32::WHITE), |ui| {
-            anim_menu(ui, presets)
+            anim_menu(ui, presets, main.then_some(&mut span_pick))
         });
         ui.visuals_mut().widgets = saved;
+        // a transition over the timeline: a span across the range the lanes show
+        if let Some(k) = span_pick {
+            undo(project);
+            let (a, b) = if st.range.1 > st.range.0 { st.range } else { (0.0, project.duration().max(1.0)) };
+            span_add_act(a, b - a, k)(project, st, out);
+            out.edited = true;
+        }
         if let (Some(Some(name)), Some(id)) = (r.inner, target) {
             if let Some(b) = find_block(presets, &name) {
                 undo(project);
@@ -778,12 +822,12 @@ fn header(
                 out.stack = true;
             }
             ui.separator();
-            if menu::row(ui, None, "Draw a motion path…", "").on_hover_text("Draw in the Viewer with the pencil: the selected clips follow what you draw, at your drawing's pace").clicked() {
-                out.draw_path = true;
+            if menu::row(ui, None, "Draw a motion path…", "").on_hover_text("The Path tool: draw in the Viewer and the selected clips travel your stroke").clicked() {
+                st.tool = AnimTool::Path;
             }
             menu::sub(ui, None, "Follow a path", |ui| {
                 if project.paths.is_empty() {
-                    ui.weak("No saved paths yet - draw one first");
+                    ui.weak("No saved paths");
                 }
                 for p in &project.paths {
                     menu::sub(ui, None, &p.name, |ui| {
@@ -821,7 +865,58 @@ fn header(
 }
 
 /// The animations to add, by kind (the "+ Animation" button and a lane's right-click): the picked name.
-fn anim_menu(ui: &mut Ui, presets: &[KeyBlock]) -> Option<String> {
+/// A transition for a span: a built-in kind, or an installed library transition (`Shader` and its source).
+type SpanKind = (TransitionKind, String);
+
+/// The transitions a span can make, as menu rows (the built-in kinds, then the installed library ones): the
+/// picked one.
+fn span_kinds(ui: &mut Ui) -> Option<SpanKind> {
+    let mut pick = None;
+    for k in TransitionKind::ALL {
+        if menu::row(ui, None, k.name(), "").clicked() {
+            pick = Some((k, String::new()));
+        }
+    }
+    let now = ui.input(|i| i.time);
+    for it in crate::ui::transitions_ui::library_items(crate::engine::library::Kind::Transition, now).iter() {
+        if menu::row(ui, None, &it.name, "").clicked() {
+            pick = Some((TransitionKind::Shader, it.src.to_string()));
+        }
+    }
+    pick
+}
+
+/// Make span `s` produce transition `k` (a shader's controls start at its header's values).
+pub(crate) fn set_span_kind(s: &mut TransitionSpan, (kind, src): SpanKind) {
+    s.kind = kind;
+    if kind == TransitionKind::Shader {
+        if s.shader != src {
+            s.params = crate::engine::shaderlib::parse_meta(&src).params.iter().map(|p| p.default).collect();
+        }
+        s.shader = src;
+    }
+}
+
+/// Add a span over timeline [t, t + dur] making transition `k`, and pick it.
+fn span_add_act(t: f64, dur: f64, k: SpanKind) -> Act {
+    Box::new(move |p, s, o| {
+        let id = p.add_span(t, dur, k.0);
+        if let Some(sp) = p.spans.iter_mut().find(|s| s.id == id) {
+            set_span_kind(sp, k);
+        }
+        p.refresh_spans();
+        (s.spans, s.sel, s.multi) = (vec![id], None, Vec::new());
+        let n = p.spans.iter().find(|s| s.id == id).map_or(0, |s| s.made.len());
+        o.toast = Some(if n == 0 {
+            "Added to the Timeline lane: no cut under it yet - move or stretch it over two clips".into()
+        } else {
+            "Added to the Timeline lane: every cut under it has the transition, and follows the bar".into()
+        });
+    })
+}
+
+/// (`span` = where a pick under Transitions ▸ Timeline goes; None leaves that row out.)
+fn anim_menu(ui: &mut Ui, presets: &[KeyBlock], mut span: Option<&mut Option<SpanKind>>) -> Option<String> {
     let mut pick = None;
     let groups: [(&str, &[&str]); 8] = [
         ("In", &["Fade In", "Pop In", "Slide In Left", "Drop In", "Swing In", "Elastic"]),
@@ -836,7 +931,19 @@ fn anim_menu(ui: &mut Ui, presets: &[KeyBlock]) -> Option<String> {
     for (n, (g, names)) in groups.into_iter().enumerate() {
         // a transition is how a clip arrives or leaves; everything else moves it while it is on screen
         match n {
-            0 => drop(ui.weak("Transitions")),
+            0 => {
+                ui.weak("Transitions");
+                // over the timeline: a span in the Timeline lane, on every cut under it
+                if let Some(span) = span.as_deref_mut() {
+                    let y0 = ui.cursor().top();
+                    menu::sub(ui, None, "Timeline", |ui| {
+                        if let Some(k) = span_kinds(ui) {
+                            *span = Some(k);
+                        }
+                    });
+                    kind_dot(ui, y0, "Transition");
+                }
+            }
             2 => {
                 ui.separator();
                 ui.weak("Motion and effects");
@@ -1140,7 +1247,8 @@ fn lanes_view(
     let view = st.view;
     // the range the lanes cover when zoomed all the way out: exactly the selected clips, or the timeline (its
     // In-Out range when one is set)
-    let range_of = |whole: bool, p: &Project| match (whole, p.in_point, p.out_point) {
+    // (nothing selected: the timeline, for the Timeline lane)
+    let range_of = |whole: bool, p: &Project| match (whole || ids.is_empty(), p.in_point, p.out_point) {
         (true, Some(a), Some(b)) if b > a => (a, b),
         (true, ..) => (0.0, p.duration().max(1.0)),
         _ => range(p, ids),
@@ -1152,6 +1260,7 @@ fn lanes_view(
             for (t, g, tip) in [
                 (AnimTool::Select, Glyph::Cursor, "Select (V): click or drag a box to pick blocks, drag one to move it, an end to stretch it"),
                 (AnimTool::Cut, Glyph::Razor, "Cut (C): click a block to split it there (Ctrl+B splits the picked block at the playhead)"),
+                (AnimTool::Path, Glyph::Pencil, "Path (D): draw in the Viewer and the selected clips travel your stroke, as a Path block from the playhead"),
             ] {
                 if icon_button(ui, pal, ui.id().with(("an_tool", t as u8)), g, tip, st.tool == t).clicked() {
                     st.tool = t;
@@ -1252,6 +1361,184 @@ fn lanes_view(
         if link_now {
             act = linkable(st).map(link_act);
         }
+        // the Timeline lane, above the clips' own: transition spans (Blocks view, the main timeline). A bar
+        // puts its transition on every cut under it; Select moves and stretches it like a block
+        let mut span_rects: Vec<(Rect, Id)> = Vec::new(); // every span bar drawn, for the selection box
+        if view == View::Blocks && project.editing.is_none() {
+            let (row, _) = ui.allocate_exact_size(vec2(full.width(), lane_h), Sense::hover());
+            let head = Rect::from_min_max(row.min, pos2(body_x0, row.bottom()));
+            let body = Rect::from_min_max(pos2(body_x0, row.top() - 1.0), pos2(full.right(), row.bottom() + 1.0));
+            let col = kind_color("Transition");
+            {
+                let p = ui.painter_at(row.expand(1.0));
+                p.line_segment([row.left_bottom(), row.right_bottom()], Stroke::new(1.0, look::LINE));
+                p.line_segment([head.right_top(), head.right_bottom()], Stroke::new(1.0, look::LINE));
+                p.circle_filled(pos2(head.left() + 11.0, row.center().y), 4.0, col);
+                let g = elided(ui, "Timeline", FontId::proportional(12.0), look::TEXT, head.width() - 30.0);
+                p.galley(pos2(head.left() + 22.0, row.center().y - g.size().y / 2.0), g, look::TEXT);
+            }
+            ui.interact(head, ui.id().with("span-head"), Sense::hover()).on_hover_text(
+                "Transitions over the clips: a bar here puts its transition on every cut under it, wherever you move it. Right-click the lane to add one",
+            );
+            // right-click the lane's empty space: a span from there (under the bars, so theirs win)
+            let lane_bg = ui.interact(body, ui.id().with("span-bg"), Sense::click());
+            if let Some(pp) = lane_bg.interact_pointer_pos().filter(|_| lane_bg.secondary_clicked()) {
+                st.ctx_t = Some(t0 + ((pp.x - body_x0) / bw) as f64 * (t1 - t0));
+            }
+            let at = st.ctx_t.unwrap_or(t0).max(0.0);
+            menu::context(&lane_bg, |ui| {
+                ui.weak("Add transition");
+                if let Some(k) = span_kinds(ui) {
+                    act = Some(span_add_act(at, ((t1 - t0) / 4.0).max(1.0), k));
+                }
+            });
+            let p = ui.painter_at(body);
+            for (si, sp) in project.spans.clone().into_iter().enumerate() {
+                let r = Rect::from_min_max(pos2(x(sp.t), row.top() + 5.0), pos2(x(sp.t + sp.dur), row.bottom() - 5.0));
+                #[cfg(test)]
+                st.span_pos.push((sp.id, r));
+                if !r.intersects(body) {
+                    continue;
+                }
+                let sel = st.spans.contains(&sp.id);
+                p.rect(
+                    r,
+                    6.0,
+                    look::CARD.lerp_to_gamma(col, if sel { 0.45 } else { 0.24 }),
+                    Stroke::new(1.0, if sel { Color32::WHITE } else { col.gamma_multiply(0.75) }),
+                    egui::StrokeKind::Inside,
+                );
+                let name = sp.name();
+                p.with_clip_rect(r.shrink(1.0)).text(
+                    pos2(r.left() + 8.0, r.center().y),
+                    Align2::LEFT_CENTER,
+                    &name,
+                    FontId::proportional(11.0),
+                    Color32::WHITE,
+                );
+                let hit = r.intersect(body);
+                span_rects.push((hit, sp.id));
+                let resp = ui.interact(hit, ui.id().with(("aspan", sp.id)), Sense::click_and_drag());
+                let hp = resp.hover_pos().or(resp.interact_pointer_pos());
+                let edge_at = |p: Pos2| -> i8 {
+                    if p.x < r.left() + 6.0 {
+                        -1
+                    } else if p.x > r.right() - 6.0 {
+                        1
+                    } else {
+                        0
+                    }
+                };
+                let edge = hp.map_or(0, edge_at);
+                let resp = resp
+                    .on_hover_cursor(if edge != 0 { CursorIcon::ResizeHorizontal } else { CursorIcon::Default })
+                    .on_hover_text(format!(
+                        "{name} · {:.2} s · on every cut under it. Drag to move, drag an end to stretch, Shift-click to pick more",
+                        sp.dur
+                    ));
+                if resp.clicked() || resp.drag_started() {
+                    let more = resp.clicked() && ui.input(|i| i.modifiers.shift || i.modifiers.command);
+                    if more {
+                        match st.spans.iter().position(|s| *s == sp.id) {
+                            Some(j) => drop(st.spans.remove(j)),
+                            None => st.spans.push(sp.id),
+                        }
+                    } else {
+                        if !sel || resp.clicked() {
+                            st.spans = vec![sp.id];
+                        }
+                        (st.sel, st.multi) = (None, Vec::new());
+                    }
+                    st.here = true;
+                }
+                if resp.drag_started() {
+                    undo(project);
+                    // (the end held is where the press was, not where the pointer is by now)
+                    let held = ui.input(|i| i.pointer.press_origin()).map_or(edge, edge_at);
+                    st.span_orig = Some((sp.t, sp.dur, held));
+                }
+                if resp.dragged() {
+                    if let (Some((ot, od, held)), Some(pos), Some(press)) =
+                        (st.span_orig, resp.interact_pointer_pos(), ui.input(|i| i.pointer.press_origin()))
+                    {
+                        let dt = ((pos.x - press.x) / bw) as f64 * (t1 - t0);
+                        // snapping on: the playhead, every clip's edges, the other spans' ends
+                        let mut cands = Vec::new();
+                        if st.snap {
+                            cands.push(ph);
+                            cands.extend(project.all_clips().flat_map(|(_, o)| [o.start, o.end()]));
+                            cands.extend(project.spans.iter().filter(|o| o.id != sp.id).flat_map(|o| [o.t, o.t + o.dur]));
+                        }
+                        let snap = |t: f64| {
+                            cands
+                                .iter()
+                                .copied()
+                                .filter(|c| ((c - t) * pps).abs() < SNAP_PX as f64)
+                                .min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs()))
+                        };
+                        let min = crate::model::ops::spans::MIN_SPAN;
+                        let (mut bt, mut bd) = (ot, od);
+                        st.guide = None;
+                        match held {
+                            0 => {
+                                bt = (ot + dt).max(0.0);
+                                if let Some(s) = snap(bt).or_else(|| snap(bt + bd).map(|s| s - bd)) {
+                                    st.guide = Some(if snap(bt).is_some() { s } else { s + bd });
+                                    bt = s.max(0.0);
+                                }
+                            }
+                            -1 => {
+                                bt = (ot + dt).clamp(0.0, ot + od - min);
+                                if let Some(s) = snap(bt).filter(|s| *s <= ot + od - min) {
+                                    st.guide = Some(s);
+                                    bt = s;
+                                }
+                                bd = ot + od - bt;
+                            }
+                            _ => {
+                                let mut e = (ot + od + dt).max(ot + min);
+                                if let Some(s) = snap(e).filter(|s| *s >= ot + min) {
+                                    st.guide = Some(s);
+                                    e = s;
+                                }
+                                bd = e - ot;
+                            }
+                        }
+                        if let Some(slot) = project.spans.get_mut(si) {
+                            (slot.t, slot.dur) = (bt, bd);
+                        }
+                    }
+                }
+                if resp.drag_stopped() {
+                    (st.span_orig, st.guide) = (None, None);
+                    // the transitions follow on release, not while it is dragged: a bar passing over a gap
+                    // would close it on the way
+                    out.edited = true;
+                }
+                menu::context(&resp, |ui| {
+                    let id = sp.id;
+                    menu::sub(ui, Some(crate::ui::tools::Glyph::Transition), "Transition", |ui| {
+                        if let Some(k) = span_kinds(ui) {
+                            act = Some(Box::new(move |p, _, _| {
+                                if let Some(s) = p.spans.iter_mut().find(|s| s.id == id) {
+                                    set_span_kind(s, k);
+                                }
+                            }));
+                        }
+                    });
+                    if menu::row(ui, Some(crate::ui::tools::Glyph::Cross), "Delete", "").clicked() {
+                        act = Some(Box::new(move |p, s, _| {
+                            if !s.spans.contains(&id) {
+                                s.spans = vec![id];
+                            }
+                            for id in std::mem::take(&mut s.spans) {
+                                p.remove_span(id);
+                            }
+                        }));
+                    }
+                });
+            }
+        }
         for &id in ids {
             let Some(c) = project.clip(id).cloned() else { continue };
             // Curves / Flow / Speed: the clip's row is its graph on the same time axis, its controls in the
@@ -1349,7 +1636,7 @@ fn lanes_view(
             }
             menu::context(&hr, |ui| {
                 menu::sub(ui, None, "Add animation", |ui| {
-                    if let Some(b) = anim_menu(ui, presets).and_then(|n| find_block(presets, &n)) {
+                    if let Some(b) = anim_menu(ui, presets, None).and_then(|n| find_block(presets, &n)) {
                         act = Some(add_act(id, b, None));
                     }
                 });
@@ -1375,7 +1662,7 @@ fn lanes_view(
             let at = st.ctx_t.map(|t| t.clamp(0.0, c.duration));
             menu::context(&lane_bg, |ui| {
                 ui.weak("Add animation here");
-                if let Some(b) = anim_menu(ui, presets).and_then(|n| find_block(presets, &n)) {
+                if let Some(b) = anim_menu(ui, presets, None).and_then(|n| find_block(presets, &n)) {
                     act = Some(add_act(id, b, at));
                 }
             });
@@ -1533,6 +1820,7 @@ fn lanes_view(
                         st.sel = Some((id, i));
                         if !more {
                             st.multi.clear();
+                            st.spans.clear();
                         }
                     }
                     if !more && hp.is_some_and(|p| p.x < r.left() + 16.0) {
@@ -1815,7 +2103,8 @@ fn lanes_view(
         match (press, cur, down) {
             (Some(o), Some(c), true) if view == View::Blocks => {
                 let in_head = o.x < body_x0 - 3.0 && heads.iter().any(|h| h.0.contains(o));
-                let free = in_head || lanes_rect.contains(o) && o.y > top && !rects.iter().any(|r| r.0.contains(o));
+                let on_bar = rects.iter().any(|r| r.0.contains(o)) || span_rects.iter().any(|r| r.0.contains(o));
+                let free = in_head || lanes_rect.contains(o) && o.y > top && !on_bar;
                 if st.lasso.is_none() && free && (c - o).length() > 4.0 && ui.ctx().dragged_id().is_none() {
                     st.lasso = Some(o);
                 }
@@ -1837,6 +2126,8 @@ fn lanes_view(
                     };
                     st.sel = hit.first().copied();
                     st.multi = hit.into_iter().skip(1).collect();
+                    // (and the spans it touches, in the lanes)
+                    st.spans = span_rects.iter().filter(|b| o.x >= body_x0 - 3.0 && b.0.intersects(r)).map(|b| b.1).collect();
                     st.here = true;
                 }
             }
@@ -2198,6 +2489,46 @@ fn curve_row(
     }
 }
 
+/// A group's row of a property list (Curves' channel list and the Inspector's): its name and fold arrow.
+/// `blank` = the control slots it leaves empty.
+pub(crate) fn group_row(
+    ui: &mut Ui,
+    rows: &mut crate::ui::list_rows::Rows,
+    n: usize,
+    g: &str,
+    open: bool,
+    dim: bool,
+    blank: u8,
+) -> crate::ui::list_rows::RowResp {
+    let key = u64::MAX - CHANNELS.iter().position(|c| c.0 == g).unwrap_or(0) as u64;
+    rows.row(ui, n, &crate::ui::list_rows::RowSpec { key, label: g, open: Some(open), dim, values: &[""], blank, ..Default::default() })
+}
+
+/// A property's row of a property list (Curves' channel list and the Inspector's): the property's colour bar,
+/// its name (fills, elides), `value` in the fixed value column, the list's controls. Returns the row and its
+/// name's own response (click / double-click).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prop_list_row(
+    ui: &mut Ui,
+    rows: &mut crate::ui::list_rows::Rows,
+    n: usize,
+    id: Id,
+    p: &str,
+    label: &str,
+    value: &str,
+    depth: u8,
+    dim: bool,
+    blank: u8,
+) -> (crate::ui::list_rows::RowResp, egui::Response) {
+    let key = (id as u64) << 8 | PROPS.iter().position(|q| *q == p).unwrap_or(0) as u64;
+    let r = rows.row(ui, n, &crate::ui::list_rows::RowSpec { key, label, depth, dim, values: &[value], blank, ..Default::default() });
+    // the property's colour, as on the graph
+    let sw = Rect::from_min_size(pos2(r.label.left() - 7.0, r.label.center().y - 5.0), vec2(3.0, 10.0));
+    ui.painter().rect_filled(sw, 1.0, prop_color(p));
+    let lr = ui.interact(r.label, ui.id().with(("ch", id, key)), Sense::click());
+    (r, lr)
+}
+
 /// The channel rows: [▸ group | property] [value] [◀ previous key] [◆ key at the playhead] [▶ next key] [👁].
 #[allow(clippy::too_many_arguments)]
 fn channel_list(
@@ -2210,7 +2541,7 @@ fn channel_list(
     undo: &mut dyn FnMut(&Project),
     out: &mut AnimResp,
 ) {
-    use crate::ui::list_rows::{Ctrl, RowSpec, Rows};
+    use crate::ui::list_rows::{Ctrl, Rows};
     const CTRLS: &[Ctrl] = &[
         Ctrl { glyph: "◀", hint: "Previous key" },
         Ctrl { glyph: "◆", hint: "Add a key at the playhead (or remove the one there)" },
@@ -2235,18 +2566,7 @@ fn channel_list(
             }
             let open = !st.folded.contains(&g);
             let any_keyed = list.iter().any(|p| prop_ref(&c, p).is_some_and(|a| a.is_animated()));
-            let r = rows.row(
-                ui,
-                n,
-                &RowSpec {
-                    key: u64::MAX - CHANNELS.iter().position(|c| c.0 == g).unwrap_or(0) as u64,
-                    label: g,
-                    open: Some(open),
-                    dim: !any_keyed,
-                    values: &[""],
-                    ..Default::default()
-                },
-            );
+            let r = group_row(ui, &mut rows, n, g, open, !any_keyed, 0);
             n += 1;
             drawn.push((gi, None));
             if r.toggled {
@@ -2266,29 +2586,15 @@ fn channel_list(
                 let Some(a) = prop_ref(&c, p) else { continue };
                 let v = format!("{:.1}{}", shown(p, a.at(lt)), unit(p));
                 let hidden = st.hidden.contains(&p);
-                let r = rows.row(
-                    ui,
-                    n,
-                    &RowSpec {
-                        key: (id as u64) << 8 | PROPS.iter().position(|q| *q == p).unwrap_or(0) as u64,
-                        label: prop_label(p),
-                        depth: 1,
-                        dim: hidden || !a.is_animated(),
-                        values: &[&v],
-                        ..Default::default()
-                    },
-                );
+                let (r, lr) = prop_list_row(ui, &mut rows, n, id, p, prop_label(p), &v, 1, hidden || !a.is_animated(), 0);
                 n += 1;
                 drawn.push((gi, Some(p)));
-                // the property's colour, as on the graph; the focused one gets a bar
-                let sw = Rect::from_min_size(pos2(r.label.left() - 7.0, r.label.center().y - 5.0), vec2(3.0, 10.0));
-                ui.painter().rect_filled(sw, 1.0, prop_color(p));
+                // the focused one gets a bar
                 if st.focus == Some(p) {
                     ui.painter().rect_filled(r.label.expand2(vec2(4.0, 1.0)), 3.0, pal_accent(ui).gamma_multiply(0.12));
                 }
                 // a click on the name: focus it and select its keys (Shift adds)
                 // a double-click on the name: a key at the playhead
-                let lr = ui.interact(r.label, ui.id().with(("ch", id, p)), Sense::click());
                 if lr.double_clicked() {
                     todo.push((p, 9));
                 } else if lr.clicked() {
@@ -3252,6 +3558,13 @@ fn compact_list(
 
 /// The Inspector's block section: the Animator's selected block's controls. True when it edited the project.
 pub fn block_section(ui: &mut Ui, project: &mut Project, pal: &Palette, undo: &mut dyn FnMut(&Project)) -> bool {
+    // (both cards draw: the picked span's, then the picked block's)
+    let span = span_section(ui, project, undo);
+    block_card(ui, project, pal, undo) || span
+}
+
+/// The picked block's card.
+fn block_card(ui: &mut Ui, project: &mut Project, pal: &Palette, undo: &mut dyn FnMut(&Project)) -> bool {
     let Some((id, i)) = selected_block() else { return false };
     let Some((b, cname)) = project.clip(id).and_then(|c| c.blocks.get(i).map(|b| (b.clone(), c.name.clone()))) else {
         return false;
@@ -3271,6 +3584,7 @@ pub fn block_section(ui: &mut Ui, project: &mut Project, pal: &Palette, undo: &m
                 "Collide" => "Motion · Collide",
                 "Text" => "Motion · Text",
                 "Camera" => "Motion · Camera",
+                "Path" => "Motion · Path",
                 k => k,
             };
             kind_pill(ui, what, col);
@@ -3300,6 +3614,96 @@ pub fn block_section(ui: &mut Ui, project: &mut Project, pal: &Palette, undo: &m
     });
     ui.add_space(6.0);
     edited
+}
+
+/// The Inspector's card of the span picked in the Timeline lane: the transition it makes, each one's length,
+/// ease and direction. True when it edited the project (the app's edit hook then makes its transitions again).
+fn span_section(ui: &mut Ui, project: &mut Project, undo: &mut dyn FnMut(&Project)) -> bool {
+    let Some(sp) = selected_span().and_then(|id| project.spans.iter().find(|s| s.id == id).cloned()) else {
+        return false;
+    };
+    let col = kind_color("Transition");
+    let mut e = sp.clone();
+    let mut g = crate::ui::Gesture::default();
+    let mut del = false;
+    egui::Frame::new().fill(look::CARD).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            kind_pill(ui, "Transition · Timeline", col);
+            ui.label(egui::RichText::new(sp.name()).size(15.0).strong().color(look::TEXT));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let b = egui::Button::new(egui::RichText::new("Delete").size(12.0).color(look::MUTED)).frame(false);
+                del = ui.add(b).on_hover_text("Delete this span and the transitions it made").clicked();
+            });
+        });
+        let cuts = project.tracks.iter().filter(|t| t.kind == TrackKind::Video).flat_map(|t| &t.transitions);
+        let n = cuts.filter(|x| sp.made.contains(&x.id)).count();
+        ui.label(
+            egui::RichText::new(format!("{:.2} – {:.2} s · {n} cut{}", sp.t, sp.t + sp.dur, if n == 1 { "" } else { "s" }))
+                .size(11.5)
+                .color(look::MUTED),
+        );
+        ui.add_space(6.0);
+        egui::Grid::new(("anim-span", sp.id)).num_columns(2).spacing([12.0, 9.0]).min_col_width(70.0).show(ui, |ui| {
+            field(ui, "Transition");
+            egui::ComboBox::from_id_salt(("anim-span-kind", sp.id)).selected_text(e.name()).show_ui(ui, |ui| {
+                for k in TransitionKind::ALL {
+                    g.note(&ui.selectable_value(&mut e.kind, k, k.name()));
+                }
+                let now = ui.input(|i| i.time);
+                for it in crate::ui::transitions_ui::library_items(crate::engine::library::Kind::Transition, now).iter() {
+                    let on = e.kind == TransitionKind::Shader && *e.shader == *it.src;
+                    if ui.selectable_label(on, &it.name).clicked() {
+                        set_span_kind(&mut e, (TransitionKind::Shader, it.src.to_string()));
+                        g.click();
+                    }
+                }
+            });
+            ui.end_row();
+            field(ui, "Duration");
+            let r = ui.add(egui::DragValue::new(&mut e.cut_dur).range(0.1..=5.0).speed(0.02).suffix(" s"));
+            g.note(&r.on_hover_text("How long each transition it makes lasts"));
+            ui.end_row();
+            field(ui, "Ease");
+            egui::ComboBox::from_id_salt(("anim-span-ease", sp.id)).selected_text(e.ease.name()).show_ui(ui, |ui| {
+                for ea in Ease::ALL {
+                    g.note(&ui.selectable_value(&mut e.ease, ea, ea.name()));
+                }
+            });
+            ui.end_row();
+            if e.kind.has_direction() {
+                field(ui, "Direction");
+                ui.horizontal(|ui| {
+                    for (k, name) in ["Left", "Right", "Up", "Down"].iter().enumerate() {
+                        g.note(&ui.selectable_value(&mut e.direction, k as u8, *name));
+                    }
+                });
+                ui.end_row();
+            }
+            if e.kind == TransitionKind::Shader {
+                let specs = crate::model::shader_specs(&e.shader);
+                crate::ui::effects_ui::plain_param_rows(ui, &specs, &mut e.params, &mut g);
+            }
+        });
+    });
+    ui.add_space(6.0);
+    if del {
+        undo(project);
+        project.remove_span(sp.id);
+        SPAN.with(|s| s.set(None));
+        return true;
+    }
+    if g.start {
+        undo(project);
+    }
+    if e == sp {
+        return false;
+    }
+    if let Some(slot) = project.spans.iter_mut().find(|s| s.id == sp.id) {
+        *slot = e;
+    }
+    project.refresh_spans();
+    true
 }
 
 /// A label in the form's left column (muted, like the preview's).
@@ -3405,6 +3809,82 @@ fn current_ease(ctl: &BlockCtl) -> Ease {
     ctl.ease.or_else(|| ctl.src.tracks.first().and_then(|t| t.keys.first()).map(|k| k.ease)).unwrap_or(Ease::Linear)
 }
 
+/// A Path block's controls: Timing (Shape / As drawn), Duration, Smoothing, Turn along path and, for Shape,
+/// the ease the clip travels the path with. Any change makes the block's keys again from the stroke it keeps.
+fn path_controls(
+    ui: &mut Ui,
+    project: &mut Project,
+    (id, i): (Id, usize),
+    was: f64,
+    mut ctl: BlockCtl,
+    mut path: PathCtl,
+    undo: &mut dyn FnMut(&Project),
+) -> bool {
+    let (mut dur, mut changed, mut gesture) = (was, false, false);
+    let note = |r: &egui::Response, changed: &mut bool, gesture: &mut bool| {
+        *changed |= r.changed();
+        *gesture |= r.drag_started() || (r.changed() && !r.dragged());
+    };
+    egui::Grid::new(("anim-path", id, i)).num_columns(2).spacing([12.0, 9.0]).min_col_width(70.0).show(ui, |ui| {
+        field(ui, "Timing");
+        let r = ui.horizontal(|ui| segmented(ui, &mut path.as_drawn, &[(false, "Shape"), (true, "As drawn")]));
+        r.response.on_hover_text(
+            "Shape: one speed along the path over the block, shaped by Ease. As drawn: your stroke's own timing, its rushes and pauses, scaled to the block",
+        );
+        if r.inner {
+            (changed, gesture) = (true, true);
+        }
+        ui.end_row();
+        let r = slider(ui, "Duration", &mut dur, 0.05, 10.0, " s");
+        if r.changed() {
+            gesture |= r.drag_started() || !r.dragged();
+        }
+        let r = slider(ui, "Smoothing", &mut path.smoothing, 0.0, 1.0, "")
+            .on_hover_text("0: the points as you drew them. 1: a heavily smoothed curve. The two ends stay where they are");
+        note(&r, &mut changed, &mut gesture);
+        field(ui, "Turn along path");
+        let r = ui.checkbox(&mut path.turn, "").on_hover_text("Rotation faces the way the clip travels");
+        note(&r, &mut changed, &mut gesture);
+        ui.end_row();
+        if !path.as_drawn {
+            field(ui, "Ease");
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                let cur = current_ease(&ctl);
+                for (n, e) in [("Linear", Ease::Linear)].into_iter().chain(Ease::PRESETS) {
+                    if ease_chip(ui, cur == e, n, e).clicked() {
+                        ctl.ease = Some(e);
+                        (changed, gesture) = (true, true);
+                    }
+                }
+            });
+            ui.end_row();
+        }
+    });
+    if !path.as_drawn {
+        section(ui, "Ease shape");
+        let (new, started) = ease_editor(ui, egui::Id::new(("anim-ease", id, i)), current_ease(&ctl));
+        gesture |= started;
+        if let Some(e) = new {
+            ctl.ease = Some(e);
+            changed = true;
+        }
+    }
+    if gesture {
+        undo(project);
+    }
+    let mut edited = false;
+    if (dur - was).abs() > 1e-9 {
+        let t = project.clip(id).map_or(0.0, |c| c.blocks[i].t);
+        edited |= project.retime_key_block(id, i, t, dur);
+    }
+    if changed {
+        ctl.path = Some(path);
+        edited |= project.set_block_ctl(id, i, ctl);
+    }
+    edited
+}
+
 /// Side, strength, length, ease, physics and the block's hand-offs. True when it edited the project.
 fn block_controls(
     ui: &mut Ui,
@@ -3458,6 +3938,9 @@ fn block_controls(
                 }
             });
         return edited;
+    }
+    if let Some(path) = ctl.path.clone() {
+        return path_controls(ui, project, (id, i), b.dur, ctl, path, undo);
     }
     let mut dur = b.dur;
     let mut changed = false;
@@ -3865,8 +4348,9 @@ mod tests {
     /// all use it), and every shipped block lands in a kind.
     #[test]
     fn every_kind_of_animation_has_its_own_colour() {
-        const KINDS: [&str; 10] =
-            ["In", "Out", "Physics", "Collide", "Emphasis", "Camera", "Text", "Sound", "Speed", "Custom"];
+        const KINDS: [&str; 12] = [
+            "In", "Out", "Physics", "Collide", "Emphasis", "Camera", "Text", "Sound", "Speed", "Custom", "Path", "Transition",
+        ];
         for (i, a) in KINDS.iter().enumerate() {
             for b in &KINDS[i + 1..] {
                 let (ca, cb) = (kind_color(a), kind_color(b));
@@ -3893,6 +4377,58 @@ mod tests {
         for b in builtin_blocks() {
             assert!(KINDS.contains(&kind_of(&b.name, b.gen).0) && kind_of(&b.name, b.gen).0 != "Custom", "{}", b.name);
         }
+        // a Path block is its own kind whatever its name says
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "v", 0.0, 6.0));
+        let path = PathCtl { points: vec![(0.0, 0.0, 0.0), (100.0, 0.0, 1.0)], ..Default::default() };
+        let i = p.add_path_block(1, path, 0.0, 1.0).unwrap();
+        assert_eq!(block_kind(&p.clip(1).unwrap().blocks[i]), ("Path", kind_color("Path")));
+    }
+
+    /// The Timeline lane: a span's bar drags like a block (its transitions follow on release), Delete removes
+    /// it and what it made, and the lane is there with nothing selected - without asking for frames.
+    #[test]
+    fn assert_no_idle_repaint_animator_timeline_lane_and_a_span_drags_and_deletes() {
+        let count = |p: &Project| p.tracks.iter().map(|t| t.transitions.len()).sum::<usize>();
+        let mut h = H::new(1100.0);
+        (h.st.whole, h.st.win, h.st.win_for) = (true, Some((0.0, 12.0)), vec![1, 2]);
+        let s = h.p.add_span(5.0, 2.0, TransitionKind::Push);
+        assert_eq!(count(&h.p), 1, "the cut at 6 s is under it");
+        h.frame();
+        h.frame();
+        let r = h.st.span_pos.iter().find(|x| x.0 == s).expect("the bar is drawn").1;
+        let (c, dx) = (r.center(), r.width() * 1.5); // 3 s to the right
+        let mut edited = false;
+        for ev in [
+            vec![egui::Event::PointerMoved(c)],
+            vec![button(c, true)],
+            vec![egui::Event::PointerMoved(c + vec2(dx / 2.0, 0.0))],
+            vec![egui::Event::PointerMoved(c + vec2(dx, 0.0))],
+            vec![button(c + vec2(dx, 0.0), false)],
+            vec![],
+        ] {
+            let out = h.frame_with(ev, false);
+            // (the app's edit hook)
+            if out.edited {
+                h.p.refresh_spans();
+                edited = true;
+            }
+        }
+        let sp = h.p.spans[0].clone();
+        assert!(edited && (sp.t - 8.0).abs() < 0.05 && (sp.dur - 2.0).abs() < 1e-9, "{sp:?}");
+        assert_eq!((count(&h.p), h.st.spans.clone(), selected_span()), (0, vec![s], Some(s)), "off the cut, picked");
+        // nothing selected: the lane is still there, idle
+        h.sel.clear();
+        h.frame_with(vec![egui::Event::PointerGone], false);
+        for _ in 0..30 {
+            h.frame();
+        }
+        assert!(h.st.span_pos.iter().any(|x| x.0 == s), "the lane draws without a selection");
+        assert!(!h.ctx.has_requested_repaint(), "an idle Timeline lane must not repaint");
+        // Delete takes the picked span
+        let key = egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        assert!(h.frame_with(vec![key], false).edited);
+        assert!(h.p.spans.is_empty() && h.st.spans.is_empty());
     }
 
     /// Curves, one clip, the pointer over key `k` of Position X: (harness, the key's screen position).
