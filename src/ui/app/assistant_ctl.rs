@@ -922,6 +922,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             undo_len: app.undo.len(),
             top_at: app.undo.last().map(|e| e.at),
             last_call: Instant::now(),
+            idle: super::tools_context::GROUP_IDLE,
         });
         app.assistant_rt.split = true;
     }

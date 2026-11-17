@@ -427,11 +427,11 @@ impl Project {
         let ids = self.expand_links(ids);
         let mut link_map: std::collections::HashMap<Id, Id> = std::collections::HashMap::new();
         let mut new_ids = Vec::new();
-        let sources: Vec<(usize, Clip)> = ids
-            .iter()
-            .filter_map(|&id| self.find(id).map(|(ti, ci)| (ti, self.tracks[ti].clips[ci].clone())))
-            .collect();
-        for (ti, mut c) in sources {
+        let sources: Vec<Clip> =
+            ids.iter().filter_map(|&id| self.find(id).map(|(ti, ci)| self.tracks[ti].clips[ci].clone())).collect();
+        for mut c in sources {
+            // look the track up now: a track added for an earlier clip shifts the indices after it
+            let Some((ti, _)) = self.find(c.id) else { continue };
             if self.locked_of(ti) {
                 continue;
             }

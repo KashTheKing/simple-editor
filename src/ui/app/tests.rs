@@ -16,6 +16,19 @@ fn toast_with_folder_sets_open_path_plain_toast_does_not() {
     assert_eq!(with_folder.open_path, Some(PathBuf::from("C:/out.mp4")));
 }
 
+/// Live skill run: beat markers made inside an assistant's `edit.begin` group showed as the user's
+/// (empty author); markers the agent creates are signed, ones that already have an author are kept.
+#[test]
+fn markers_made_in_an_agent_group_are_signed() {
+    let mut p = Project::new();
+    let a = p.add_marker(1.0, "beat");
+    let b = p.add_marker(2.0, "mine");
+    p.marker_mut(b).unwrap().author = "Sam".into();
+    sign_markers(&mut p, &[a, b], "Assistant");
+    assert_eq!(p.marker_mut(a).unwrap().author, "Assistant");
+    assert_eq!(p.marker_mut(b).unwrap().author, "Sam", "an existing author is kept");
+}
+
 // ---- ws:audio-analysis ----
 
 /// `mark_instead_fires_marker_added_once_per_marker` (see the audio-analysis PR's tests) against the

@@ -105,6 +105,7 @@ pub const TOOLS: &[ToolDef] = &[
             "at:number:false:timeline seconds for HTML / icons (default: the playhead)",
             "track:integer:false:HTML / icons: a video track index, -1 for a new track (default: a free one)",
             "where:string:false:a transition only: start|end|connection|all (see gallery.apply); default = the old behaviour",
+            "intensity:number:false:a LUT only: strength 0..1 (default 1)",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {

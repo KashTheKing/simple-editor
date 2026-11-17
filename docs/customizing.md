@@ -169,7 +169,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `audio.add_bus` | Mutate | name | Create a bus (it feeds Main until routed elsewhere). |
 | `audio.add_filter` | Mutate | bus, kind, params | Add a filter to a bus with optional params {name: value}. |
-| `audio.analyze` | Read | clip_ids | Peak/RMS dBFS and onset count/BPM per clip (from cached waveform peaks); 'waveform still computing' if peaks aren't ready yet. |
+| `audio.analyze` | Read | clip_ids | Peak/RMS dBFS and onset count/BPM per clip (from cached waveform peaks of the source file), plus `gain_db` (the clip's own volume), `peak_db_out` / `rms_db_out` (levels after it) and `volume_keyed`; 'waveform still computing' if peaks aren't ready yet. |
 | `audio.beats` | Mutate | as_markers, clip_ids, refractory_s, split | Detect beats on audio clip(s). With neither flag: pure detection, returns onset times (source secs) + BPM, no mutation. as_markers adds a clip marker per onset (fires marker_added); split cuts each target clip's link group at every beat. |
 | `audio.buses` | Read | - | Mixer buses (id, name, gain, pan, mute/solo/mono, output, filters). |
 | `audio.duck` | Mutate | depth_db, dialogue_ids, dry_run, music_id, ramp_s | Duck the music clip's volume under every loud (speech) window found on the dialogue clips' peaks, with a ramp. dry_run returns the computed key count without writing. |
@@ -247,7 +247,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `edit.batch` | Ui | author, calls, label | Run several tool calls (calls: [{name, args}] in order) in one frame, as one undo step; returns each result. A failing call stops the batch and rolls the whole batch back (the error names the call). label default 'Batch edit', author default Claude. |
-| `edit.begin` | Ui | author, label | Start one undo step for a request: until edit.end every edit joins it, and the user can undo it all at once ('<author>: <label>' in History). Closes by itself after 30 s without calls. |
+| `edit.begin` | Ui | author, idle_s, label | Start one undo step for a request: until edit.end every edit joins it, and the user can undo it all at once ('<author>: <label>' in History). Closes by itself after `idle_s` (5..600, default 30) seconds without calls. |
 | `edit.end` | Ui | - | End the undo step edit.begin started: one History entry if anything changed, the changed clips glow, the user gets an Undo toast. |
 
 **`editor.*`** (1 tool)
@@ -304,7 +304,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `history.list` | Read | limit | Undo-stack entries with their lazily-derived labels and categories, newest first. |
-| `history.restore` | Mutate | index | Restores the project to an undo-stack snapshot by index (0 = oldest); refuses Layout entries. |
+| `history.restore` | Mutate | index | Restores the project to the state BEFORE the given history entry (`index` from `history.list`, 0 = oldest): undoes that entry and everything after it, as a new undo step. Refuses Layout entries. |
 
 **`hotkeys.*`** (3 tools)
 
@@ -385,7 +385,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `media.import_sequence` | Job | fps, path | Detect the numbered still run `path` belongs to (3+ frames, same prefix/extension) and bake it to one video asset in the background; fires the `import` hook once when it lands. |
 | `media.list` | Read | - | Library assets (id, path, kind, duration, size, tags, label, folder, description, used). |
 | `media.relink` | Mutate | dir, ids | Relink offline assets: by file name, then by duration within one frame, inside dir (+ one level of subfolders); returns {relinked, still_missing}. |
-| `media.scene_cuts` | Mutate | as_markers, clip_id, split, threshold | ffmpeg select='gt(scene,T)' shot-change detection over the clip's source. Neither flag: pure detection, returns cut times (source secs). as_markers adds one point marker (duration 0) per cut and fires marker_added; split cuts the clip at each one. Synchronous (blocks the UI thread for the ffmpeg pass) — documented ceiling. |
+| `media.scene_cuts` | Mutate | as_markers, clip_id, split, threshold | ffmpeg select='gt(scene,T)' shot-change detection over the clip's source. Neither flag: pure detection, returns cut times (source secs). as_markers adds one point marker (duration 0) per cut and fires marker_added; split cuts the clip at each one. Synchronous (blocks the UI thread for the ffmpeg pass) — documented ceiling. A cut reported at the very first frame is dropped. |
 | `media.set` | Mutate | description, folder, id, label, tags | Edit asset metadata. |
 | `media.set_effects` | Mutate | asset_id, effects | Replace an Asset's master effects (applied to every clip using it, prepended before clip-local effects). Effects: [{kind:string,params:object}], same shape as clip.add_effect. |
 | `media.smart_bin` | Mutate | id, name, op | Manage Project.smart_bins: save the current library filter under a name, apply one (by index or name) to the library, list them, or delete one. |
@@ -478,7 +478,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
-| `render.contact_sheet` | Read | count, from, to, width | Tile `count` frames (1..36, default 9) evenly spread over [from, to] into one PNG image (left to right, top to bottom; `times` lists each tile's time). width: px per tile, default 320. |
+| `render.contact_sheet` | Read | count, from, to, width | Tile `count` frames (1..16, default 9; tiles past the last frame are clamped to it) evenly spread over [from, to] into one PNG image (left to right, top to bottom; `times` lists each tile's time). width: px per tile, default 320. |
 | `render.frame` | Read | t, width | Render the timeline at time t as a PNG image, max `width` px wide (default 640). MCP clients get an image content block; Luau gets {width, height, data_url}. |
 | `render.layers_async` | Ui | max_w, t | Queue a non-blocking one-shot layer decode; returns a request id. |
 | `render.poll_layers` | Read | id | Poll for the async layer-decode reply (not ready until it matches the given id, or it was superseded by a newer request). |

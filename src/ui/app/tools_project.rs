@@ -77,7 +77,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "history.restore",
-        desc: "Restores the project to an undo-stack snapshot by index (0 = oldest); refuses Layout entries.",
+        desc: "Restores the project to the state BEFORE the given history entry (its `index` from history.list; 0 = oldest), i.e. undoes that entry and everything after it; the restore is itself a new undo step. Refuses Layout entries.",
         args: &["index:number:true:index into the undo stack (0 = oldest)"],
         kind: ToolKind::Mutate,
         run: |app, args| {

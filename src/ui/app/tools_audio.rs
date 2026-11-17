@@ -64,11 +64,18 @@ fn get_peaks(app: &mut App, id: Id) -> Option<Arc<Peaks>> {
     app.waveforms.get(&path, stream)
 }
 
+/// A clip's linear volume as dB (silence floored at -120 dB).
+fn gain_db(volume: f64) -> f64 {
+    if volume <= 1e-6 { -120.0 } else { 20.0 * volume.log10() }
+}
+
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "audio.analyze",
-        desc: "Peak/RMS dBFS and onset count/BPM per clip (from cached waveform peaks); 'waveform still \
-               computing' if peaks aren't ready yet.",
+        desc: "Peak/RMS dBFS and onset count/BPM per clip (from cached waveform peaks of the SOURCE file); \
+               gain_db is the clip's own volume and peak_db_out / rms_db_out the levels after it \
+               (volume_keyed: the volume is automated, so the constant is not the whole story); 'waveform \
+               still computing' if peaks aren't ready yet.",
         args: &["clip_ids:array:false:defaults to selection"],
         kind: ToolKind::Read,
         run: |app, args| {
@@ -78,6 +85,7 @@ pub const TOOLS: &[ToolDef] = &[
             for id in ids {
                 let Some(c) = app.project.clip(id) else { continue };
                 let (name, src_in, src_end) = (c.name.clone(), c.src_in, c.src_in + c.duration * c.speed);
+                let (gain, keyed) = (gain_db(c.volume.value), !c.volume.keys.is_empty());
                 match get_peaks(app, id) {
                     Some(peaks) => {
                         let lv = analysis::levels(&peaks, src_in, src_end);
@@ -85,6 +93,8 @@ pub const TOOLS: &[ToolDef] = &[
                         out.push(json!({
                             "clip_id": id, "name": name, "peak_db": lv.peak_db, "rms_db": lv.rms_db,
                             "onset_count": onsets.len(), "bpm": analysis::bpm(&onsets),
+                            "gain_db": gain, "volume_keyed": keyed,
+                            "peak_db_out": lv.peak_db as f64 + gain, "rms_db_out": lv.rms_db as f64 + gain,
                         }));
                     }
                     None => out.push(json!({"clip_id": id, "name": name, "status": "waveform still computing"})),
@@ -470,6 +480,16 @@ fn loudness_keys(peaks: &Peaks, src: impl Fn(f64) -> f64, len: f64, fps: f64) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Live skill runs: after normalising, audio.analyze still showed the source's levels, so a skill
+    /// could not check its own mix; it now reports the clip gain and the level after it.
+    #[test]
+    fn analyze_reports_clip_gain_in_db() {
+        assert!(gain_db(1.0).abs() < 1e-9);
+        assert!((gain_db(0.5) + 6.0206).abs() < 1e-3);
+        assert!((gain_db(2.0) - 6.0206).abs() < 1e-3);
+        assert_eq!(gain_db(0.0), -120.0);
+    }
 
     /// `every_arg_spec_parses`-style check scoped to just this file's 9 rows, plus a name/kind sanity
     /// pass - the crate-wide `mutate_rows_roll_back_on_error`/`every_arg_spec_parses` structural tests

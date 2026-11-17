@@ -2176,7 +2176,20 @@ impl App {
     /// regardless of entry point. See `fire_marker_added_for_each` for the plain, App-free half this
     /// delegates to (and that a test exercises directly).
     pub(crate) fn fire_markers_added(&mut self, ids: &[Id]) {
+        // made inside an agent's undo group (`edit.begin`): the agent's, not the user's
+        if let Some(author) = self.mcp_ctx.group.as_ref().and_then(|g| g.label.split_once(": ")).map(|(a, _)| a.to_string()) {
+            sign_markers(&mut self.project, ids, &author);
+        }
         fire_marker_added_for_each(ids, &mut |event, payload| self.fire_hook(event, payload));
+    }
+}
+
+/// Give every marker in `ids` that has no author yet `author` (an empty author means the user).
+pub(crate) fn sign_markers(project: &mut Project, ids: &[Id], author: &str) {
+    for &id in ids {
+        if let Some(m) = project.marker_mut(id).filter(|m| m.author.is_empty()) {
+            m.author = author.to_string();
+        }
     }
 }
 
