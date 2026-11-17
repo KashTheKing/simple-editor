@@ -40,6 +40,42 @@ pub fn lower_thread() {
     }
 }
 
+/// The playback threads (render, audio feeder) join the Multimedia Class Scheduler's "Playback" task
+/// (as a media player's do; above normal when MMCSS is off). At normal priority they shared the CPU with
+/// anything busy (parallel builds at 100 % CPU) and lost a whole scheduler quantum at a time: a lone
+/// 1080x1920 clip dropped frames. MMCSS caps the boost (80 % by default), so a runaway loop cannot
+/// freeze the PC.
+pub fn raise_thread() {
+    use windows::Win32::System::Threading::*;
+    let mut task = 0u32;
+    // SAFETY: plain Win32 calls on the calling thread; the MMCSS handle is kept for the thread's
+    // lifetime (Windows releases it with the thread); a failure leaves the priority as it was.
+    unsafe {
+        if AvSetMmThreadCharacteristicsW(windows::core::w!("Playback"), &mut task).is_err() {
+            let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+        }
+    }
+}
+
+/// The calling thread's priority, for the helper threads it starts to take on (`inherit`): a decode
+/// helper of the render thread runs above normal, one of a background export below.
+pub fn priority() -> i32 {
+    use windows::Win32::System::Threading::*;
+    // SAFETY: the pseudo handle of the calling thread
+    unsafe { GetThreadPriority(GetCurrentThread()) }
+}
+
+/// Run the calling thread at the `priority()` of the thread that started it, kept between below and
+/// above normal (an MMCSS thread reports its boosted level; its helpers stay ordinary threads).
+pub fn inherit(p: i32) {
+    use windows::Win32::System::Threading::*;
+    let p = p.clamp(THREAD_PRIORITY_BELOW_NORMAL.0, THREAD_PRIORITY_ABOVE_NORMAL.0);
+    // SAFETY: the pseudo handle of the calling thread; failure leaves the priority as it was
+    unsafe {
+        let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY(p));
+    }
+}
+
 /// Between units of work: block while something is playing, until it stops or `cancelled`.
 pub fn pause_point(cancelled: impl Fn() -> bool) {
     while playing() && !cancelled() {
@@ -80,5 +116,41 @@ mod tests {
     #[test]
     fn lower_thread_does_not_panic() {
         std::thread::spawn(lower_thread).join().unwrap();
+    }
+
+    /// The playback threads run above normal (MMCSS "Playback", else ABOVE_NORMAL) and their decode
+    /// helpers take that on, capped at above normal; a background worker's helpers stay below.
+    #[test]
+    fn playback_threads_outrank_a_busy_pc_and_helpers_inherit() {
+        let (raised, helper) = std::thread::spawn(|| {
+            raise_thread();
+            let p = priority();
+            (
+                p,
+                std::thread::spawn(move || {
+                    inherit(p);
+                    priority()
+                })
+                .join()
+                .unwrap(),
+            )
+        })
+        .join()
+        .unwrap();
+        assert!(raised > 0, "playback thread priority {raised}");
+        assert_eq!(helper, 1, "a helper runs above normal, never higher");
+        let low = std::thread::spawn(|| {
+            lower_thread();
+            let p = priority();
+            std::thread::spawn(move || {
+                inherit(p);
+                priority()
+            })
+            .join()
+            .unwrap()
+        })
+        .join()
+        .unwrap();
+        assert_eq!(low, -1, "a background worker's helper stays below normal");
     }
 }

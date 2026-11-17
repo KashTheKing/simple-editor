@@ -1,5 +1,6 @@
-//! A see-through HTML render (H.264, colour stacked over alpha) over footage: export must not take it
-//! for an opaque full-frame layer and drop the tracks below (the "Fortnite Short" black export).
+//! The "Fortnite Short" regressions on the real driver: a see-through HTML render (H.264, colour
+//! stacked over alpha) over footage must not black out the export, and the exported 1080x1920 clip
+//! alone must play at 60 fps on a busy PC.
 
 use super::driver_tests::gl;
 use super::*;
@@ -97,4 +98,82 @@ fn a_see_through_html_render_does_not_black_out_the_export() {
     assert!(r.render_export_sync(&p, 1.0, w, h, &set, false, &mut out));
     let c = &out.rgba[((h / 2 * w + w / 2) * 4) as usize..][..4];
     assert!(c[0] > 200 && c[1] < 60 && c[2] < 60, "the red footage shows through: {c:?}");
+}
+
+/// The exported Short (1080x1920 60 fps H.264) alone on the timeline, played for 10 s the way the
+/// preview plays it: GPU layer mode, zero-copy decode, each layer set composited on this GL context.
+/// `SE_BURN=n` adds n busy threads per core at normal priority (a parallel build) - before the
+/// playback threads joined MMCSS (`media::bg::raise_thread`) that dropped frames. Timing-only:
+/// `cargo test bench_vertical_clip_plays -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn bench_vertical_clip_plays_without_drops() {
+    use crate::playback::Player;
+    let dir = std::env::temp_dir().join("se-bench");
+    let _ = std::fs::create_dir_all(&dir);
+    let mp4 = dir.join("1080x1920p60.mp4");
+    let ok = mp4.exists()
+        || ffpipe::ffmpeg_exe().is_some_and(|exe| {
+            ffpipe::command(&exe)
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1080x1920:rate=60", "-t", "12"])
+                .args(["-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p"])
+                .arg(&mp4)
+                .status()
+                .is_ok_and(|s| s.success())
+        });
+    let Some(gl) = gl().filter(|_| ok) else {
+        eprintln!("SKIPPED: no ffmpeg or no OpenGL driver");
+        return;
+    };
+    let mut r = GpuRenderer::new(Arc::new(gl)).expect("renderer"); // opens the interop: zero-copy on
+    crate::media::bg::inherit(i32::MAX); // this thread stands in for the UI thread (`main`)
+    let asset = crate::media::probe(&mp4.to_string_lossy(), Backend::Auto).expect("probe");
+    let project = Project::from_media(asset);
+    let mut p = Player::new(
+        eframe::egui::Context::default(),
+        Backend::Auto,
+        Arc::new(std::sync::Mutex::new(TextRasterizer::new())),
+    );
+    p.set_gpu(true);
+    p.set_project(&project);
+    p.set_canvas(360, 640, 0); // about the preview pane's size for a vertical clip
+    p.seek(0.0);
+    let opened = std::time::Instant::now();
+    while p.take_layers().is_none() && opened.elapsed() < std::time::Duration::from_secs(5) {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let per_core = std::env::var("SE_BURN").ok().and_then(|v| v.parse().ok()).unwrap_or(0usize);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let cores = std::thread::available_parallelism().map_or(8, |n| n.get());
+    let burn: Vec<_> = (0..cores * per_core)
+        .map(|_| {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut x = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    x = std::hint::black_box(x.wrapping_mul(31).wrapping_add(1));
+                }
+            })
+        })
+        .collect();
+    let (published0, _) = p.publish_stats();
+    let dropped0 = p.dropped_frames();
+    let start = std::time::Instant::now();
+    p.play();
+    while start.elapsed() < std::time::Duration::from_secs(10) {
+        if let Some(layers) = p.take_layers() {
+            let _ = r.render_preview_texture(&project, p.time(), 360, 640, &layers);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    p.pause();
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    burn.into_iter().for_each(|h| h.join().unwrap());
+    let (published, worst_gap_ms) = p.publish_stats();
+    let dropped = p.dropped_frames() - dropped0;
+    eprintln!(
+        "1080x1920p60, {per_core} busy threads a core: {} published, dropped {dropped}, worst gap {worst_gap_ms:.1} ms",
+        published - published0
+    );
+    assert_eq!(dropped, 0, "the exported Short alone drops frames");
 }
