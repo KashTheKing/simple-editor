@@ -31,6 +31,47 @@ pub enum Side {
 }
 
 impl Project {
+    /// ws:animator: trim clip `id`'s edges to timeline times `start` / `end` (either or both), each against the
+    /// clip as it is by then - the media limit of the right edge depends on where the left one went. The edge
+    /// that moves first is the one that keeps the clip valid on the way (a clip moved entirely later takes its
+    /// new end first). Returns the new (start, end).
+    pub fn trim_clip(&mut self, id: Id, start: Option<f64>, end: Option<f64>) -> Result<(f64, f64), String> {
+        if let (Some(s), Some(e)) = (start, end) {
+            if e <= s + MIN_CLIP {
+                return Err(format!("end ({e}) must be after start ({s})"));
+            }
+        }
+        let old_end = self.clip(id).ok_or("no such clip")?.end();
+        let do_start = |p: &mut Project, s: f64| {
+            let c = p.clip(id).cloned().unwrap();
+            let room = p.head_room(&c);
+            p.clip_mut(id).unwrap().trim_start(s, room);
+        };
+        let do_end = |p: &mut Project, e: f64| {
+            let c = p.clip(id).cloned().unwrap();
+            let max = p.max_clip_duration(&c);
+            p.clip_mut(id).unwrap().trim_end(e, max);
+        };
+        match (start, end) {
+            (Some(s), Some(e)) if s >= old_end => {
+                do_end(self, e);
+                do_start(self, s);
+            }
+            (s, e) => {
+                if let Some(s) = s {
+                    do_start(self, s);
+                }
+                if let Some(e) = e {
+                    do_end(self, e);
+                }
+            }
+        }
+        let c = self.clip(id).ok_or("no such clip")?;
+        let r = (c.start, c.end());
+        self.tidy();
+        Ok(r)
+    }
+
     // ---------- trim primitives ----------
 
     /// Shift every clip (except `exclude`) starting at/after `at`, on `tracks`, by `dt` seconds - no

@@ -447,6 +447,10 @@ fn anim_of_props_and_effect_params() {
     assert!(anim_of(&mut c, "Position X").is_some());
     assert!(anim_of(&mut c, "Volume").is_some());
     assert!(anim_of(&mut c, "Nope").is_none());
+    // the short names and any case (a bug report: "X" did nothing)
+    for n in ["X", "x", "position_y", "SCALE", "width", "Speed"] {
+        assert!(anim_of(&mut c, n).is_some(), "{n}");
+    }
     c.effects.push(crate::model::Effect::new(EffectKind::Blur));
     let pname = EffectKind::Blur.params()[0].name;
     assert!(anim_of(&mut c, &format!("Blur: {pname}")).is_some());

@@ -73,6 +73,24 @@ pub(super) fn parse_ease(s: &str) -> Option<crate::model::Ease> {
 
 /// The animated property `name` of a clip: inspector labels or "<Effect name>: <Param name>".
 pub(super) fn anim_of<'a>(clip: &'a mut Clip, name: &str) -> Option<&'a mut crate::model::Animated> {
+    // ws:animator (bug report: "X" was not found): the short names (`BLOCK_PROPS`) and the labels, any case
+    let key = name.trim().to_ascii_lowercase().replace(['_', '-'], " ");
+    let short = match key.as_str() {
+        "x" | "position x" | "pos x" => Some("x"),
+        "y" | "position y" | "pos y" => Some("y"),
+        "scale" => Some("scale"),
+        "width" | "scale x" => Some("scale_x"),
+        "height" | "scale y" => Some("scale_y"),
+        "rotation" | "rot" => Some("rotation"),
+        "opacity" => Some("opacity"),
+        "volume" => Some("volume"),
+        "pan" => Some("pan"),
+        "speed" => Some("speed"),
+        _ => None,
+    };
+    if let Some(p) = short {
+        return crate::model::prop_mut(clip, p);
+    }
     match name {
         "Position X" => return Some(&mut clip.x),
         "Position Y" => return Some(&mut clip.y),

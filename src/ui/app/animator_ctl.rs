@@ -269,6 +269,18 @@ pub const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
+        name: "keyblocks.from_keys",
+        desc: "Turn keys made by hand (keys no block owns) into a block with controls (strength, ease, side), keeping the motion. With from/to (clip-local seconds): the keys in that span; without: every cluster of hand keys. Returns how many blocks it made.",
+        args: &["clip_id:integer:true:", "from:number:false:clip-local s", "to:number:false:clip-local s", "name:string:false:default Custom"],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let id = req(arg_u64(args, "clip_id"), "clip_id")?;
+            let span = arg_f64(args, "from").zip(arg_f64(args, "to"));
+            let n = app.project.block_from_keys(id, span, arg_str(args, "name").unwrap_or("Custom"));
+            done(json!({"ok": true, "blocks": n}))
+        },
+    },
+    ToolDef {
         name: "flow.seams",
         desc: "Every hand-off between two animation blocks (on one clip, or across a cut): the two blocks, timeline t, the property that moves most there, its speed as the earlier block ends and as the next starts (scale in %/s, x/y px/s, rotation °/s), and whether that is smooth.",
         args: &[],
