@@ -1358,6 +1358,7 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
 /// An Animate card's picture: each animated property's curve over the block, normalised to the tile,
 /// in the block's bar colour (the one its timeline bar uses).
 fn block_picture(p: &egui::Painter, tile: Rect, b: &crate::model::KeyBlock) {
+    let col = crate::ui::animator::kind_of(&b.name, b.gen).1; // the kind's colour, as in the Animator
     // a simulated block has no keys of its own: picture what it makes
     let made;
     let b = if b.gen.is_some() {
@@ -1366,8 +1367,6 @@ fn block_picture(p: &egui::Painter, tile: Rect, b: &crate::model::KeyBlock) {
     } else {
         b
     };
-    let [r, g, bl] = crate::model::block_color(&b.name);
-    let col = Color32::from_rgb(r, g, bl);
     let mut c = Clip::new(0, crate::model::ClipKind::Video, "", 0.0, 1.0);
     b.write(&mut c, 0.0, 1.0, 1.0, 1.0);
     let area = tile.shrink(8.0);

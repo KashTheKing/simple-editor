@@ -103,6 +103,10 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("make_transitionable", "animate.transitionable"),
     ("trim_clip", "timeline.trim"),
     ("block_from_keys", "keyblocks.from_keys"),
+    ("loop_key_block", "keyblocks.loop"),
+    ("loop_keys", "keyblocks.loop_keys"),
+    ("collide_drop", "animate.collide"),
+    ("recollide", "keyblocks.set"),
     // ---- ws:browser-layer ----
     ("add_browser_clip", "browser.add"),
     ("browser_fit_pages", "browser.page"),
