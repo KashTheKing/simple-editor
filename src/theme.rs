@@ -625,8 +625,8 @@ pub fn preset(name: &str) -> Option<PaletteOverride> {
             ov.selection = Some(if dark { [0, 210, 228] } else { [0, 140, 160] });
             ov.playhead = Some(if dark { [255, 255, 255] } else { [30, 30, 34] });
             let c = |d: [u8; 3], l: [u8; 3]| Some(if dark { d } else { l });
-            ov.clip_video = c([40, 76, 88], [150, 205, 218]);
-            ov.clip_audio = c([34, 84, 120], [150, 190, 225]);
+            ov.clip_video = c([40, 76, 88], [150, 212, 200]);
+            ov.clip_audio = c([34, 84, 120], [165, 185, 240]);
             ov.clip_image = c([84, 70, 140], [190, 178, 230]);
             ov.clip_text = c([150, 108, 40], [235, 205, 140]);
             ov.waveform = c([90, 210, 225], [0, 120, 140]);
@@ -664,8 +664,8 @@ pub fn preset(name: &str) -> Option<PaletteOverride> {
             ov.selection = Some(if dark { [0, 210, 228] } else { [0, 140, 160] });
             ov.playhead = Some(if dark { [255, 255, 255] } else { [30, 30, 34] });
             let c = |d: [u8; 3], l: [u8; 3]| Some(if dark { d } else { l });
-            ov.clip_video = c([40, 76, 88], [150, 205, 218]);
-            ov.clip_audio = c([34, 84, 120], [150, 190, 225]);
+            ov.clip_video = c([40, 76, 88], [150, 212, 200]);
+            ov.clip_audio = c([34, 84, 120], [165, 185, 240]);
             ov.clip_image = c([84, 70, 140], [190, 178, 230]);
             ov.clip_text = c([150, 108, 40], [235, 205, 140]);
             ov.waveform = c([90, 210, 225], [0, 120, 140]);
