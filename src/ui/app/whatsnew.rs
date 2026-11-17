@@ -14,7 +14,7 @@ use crate::ui::markdown;
 /// Version-gate (opens the What's New window once per version bump) + the winpos window-rect debounce.
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     let current = env!("CARGO_PKG_VERSION");
-    if app.settings.last_seen_version != current {
+    if app.settings.last_seen_version != current && !crate::winpos::quiet() {
         app.settings.last_seen_version = current.to_string();
         app.settings.save();
         app.whatsnew_open = true;
