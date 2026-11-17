@@ -26,20 +26,7 @@ impl Project {
     /// a zoom - that's the point of separate blocks). `dur` defaults to the block's own length.
     pub(crate) fn place_key_block(&mut self, id: Id, block: &KeyBlock, t0: f64, dur: Option<f64>) -> Option<(f64, f64)> {
         let (w, h) = (self.width as f64, self.height as f64);
-        let c = self.clip_mut(id)?;
-        let t0 = t0.clamp(0.0, c.duration);
-        let dur = dur.unwrap_or(block.dur).min(c.duration - t0);
-        if dur < 0.01 {
-            return None;
-        }
-        let ctl = BlockCtl::new(block.clone());
-        let props = ctl.resolve(dur).write(c, t0, dur, w, h);
-        if props.is_empty() {
-            return None;
-        }
-        c.blocks.push(AppliedBlock { name: block.name.clone(), t: t0, dur, props, ctl: Some(ctl) });
-        c.blocks.sort_by(|a, b| a.t.total_cmp(&b.t));
-        Some((t0, dur))
+        self.clip_mut(id)?.place_block(block, t0, dur, w, h)
     }
 
     /// Re-time applied block `i` of clip `id` to start `t` and last `dur` (both clamped inside the clip),

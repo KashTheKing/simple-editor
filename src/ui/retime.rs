@@ -172,7 +172,7 @@ pub fn show(
             let mut any = false;
             for &id in selection {
                 if let Some(c) = project.clip_mut(id) {
-                    apply_curve(&ramps[i], &mut c.speed_curve, c.duration, false);
+                    crate::engine::presets::apply_speed_ramp(&ramps[i], c); // ws:animator: as a block
                     any = true;
                 }
             }
