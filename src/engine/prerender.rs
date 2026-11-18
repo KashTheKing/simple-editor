@@ -688,7 +688,7 @@ mod tests {
         let mut p = project_with_clip();
         let mk = |p: &mut Project| {
             let id = p.new_id();
-            Sequence { id, name: "s".into(), width: 32, height: 16, fps: 10.0, tracks: Vec::new() }
+            Sequence { id, name: "s".into(), width: 32, height: 16, fps: 10.0, tracks: Vec::new(), max_duration: None }
         };
         let (a, b) = (mk(&mut p), mk(&mut p));
         let (ia, ib) = (a.id, b.id);

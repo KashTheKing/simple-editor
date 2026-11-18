@@ -1174,7 +1174,7 @@ mod tests {
         p.tracks[0].clips.push(Clip::new(10, ClipKind::Video, "Intro Shot", 2.0, 3.0));
         let mut t = Track::new(20, TrackKind::Video, "V1");
         t.clips.push(Clip::new(21, ClipKind::Video, "Drone Flyover", 4.5, 2.0));
-        p.sequences.push(Sequence { id: 30, name: "B-Roll Nest".into(), width: 1920, height: 1080, fps: 30.0, tracks: vec![t] });
+        p.sequences.push(Sequence { id: 30, name: "B-Roll Nest".into(), width: 1920, height: 1080, fps: 30.0, tracks: vec![t], max_duration: None });
         let a: crate::model::Asset = serde_json::from_value(serde_json::json!({
             "id": 40, "path": "C:/media/sunset_beach.mp4", "kind": "Video", "duration": 5.0,
             "width": 1920, "height": 1080, "fps": 30.0, "folder": "Footage/Day 1"

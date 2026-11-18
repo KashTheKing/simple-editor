@@ -2005,3 +2005,79 @@ fn sequence_peaks_map_clip_times_and_merge() {
     assert_eq!(m.min[250], -0.5);
     assert!(mix_sequence(&p, s, 0, &mut |_, _| None).is_none(), "loading source -> no mix yet");
 }
+
+// ---- ws:max-duration ----
+
+/// A project saved before Max length existed loads with no limit; a set one survives save / load, also for
+/// a sequence, and isn't written at all while off (old files stay byte-identical on re-save).
+#[test]
+fn max_duration_serde_round_trip_and_old_files() {
+    let mut old: serde_json::Value = serde_json::from_str(&Project::new().to_json()).unwrap();
+    old.as_object_mut().unwrap().remove("max_duration");
+    let p = Project::from_json(&old.to_string()).unwrap();
+    assert_eq!(p.max_duration, None);
+    assert!(!p.to_json().contains("max_duration"), "off is not written");
+    let mut p = Project::new();
+    p.max_duration = Some(60.0);
+    let s = p.new_sequence("S", 1080, 1920, 30.0);
+    p.sequence_mut(s).unwrap().max_duration = Some(15.0);
+    let q = Project::from_json(&p.to_json()).unwrap();
+    assert_eq!(q.max_duration, Some(60.0));
+    assert_eq!(q.sequence(s).unwrap().max_duration, Some(15.0));
+    // an old sequence entry without the field
+    let mut v: serde_json::Value = serde_json::from_str(&p.to_json()).unwrap();
+    v["sequences"][0].as_object_mut().unwrap().remove("max_duration");
+    assert_eq!(Project::from_json(&v.to_string()).unwrap().sequence(s).unwrap().max_duration, None);
+}
+
+/// Like width / height / fps, the open sequence's Max length is swapped into the project and back.
+#[test]
+fn max_duration_swaps_with_the_open_sequence() {
+    let mut p = Project::new();
+    p.max_duration = Some(60.0);
+    let s = p.new_sequence("S", 1080, 1920, 30.0);
+    p.sequence_mut(s).unwrap().max_duration = Some(15.0);
+    p.open_sequence(s);
+    assert_eq!(p.limit(), Some(15.0));
+    p.max_duration = Some(30.0); // edited while open
+    p.close_sequence();
+    assert_eq!(p.max_duration, Some(60.0));
+    assert_eq!(p.sequence(s).unwrap().max_duration, Some(30.0));
+    let q = Project::from_json(&{
+        p.open_sequence(s);
+        p.to_json()
+    })
+    .unwrap();
+    assert_eq!(q.main_stash.as_ref().unwrap().max_duration, Some(60.0), "saved while open");
+}
+
+/// Content past the limit: "over by", the view spans both, and an export range stops at the limit.
+/// Nothing is cut.
+#[test]
+fn max_duration_over_by_and_export_range() {
+    let mut p = Project::new();
+    p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "v", 0.0, 64.0));
+    assert_eq!((p.over_by(), p.limit_range(None)), (None, None), "no limit");
+    p.max_duration = Some(60.0);
+    assert!((p.over_by().unwrap() - 4.0).abs() < 1e-9);
+    assert_eq!(p.view_len(), 64.0);
+    assert_eq!(p.limit_range(None), Some((0.0, 60.0)));
+    assert_eq!(p.limit_range(Some((10.0, 62.0))), Some((10.0, 60.0)));
+    assert_eq!(p.limit_range(Some((1.0, 3.0))), Some((1.0, 3.0)));
+    assert_eq!(p.duration(), 64.0, "the clip is untouched");
+    p.max_duration = Some(90.0);
+    assert_eq!((p.over_by(), p.limit_range(None), p.view_len()), (None, None, 90.0));
+    assert_eq!(crate::ui::mmss(4.0), "0:04");
+    assert_eq!(crate::ui::mmss(3.2), "0:04");
+    assert_eq!(crate::ui::mmss(180.0), "3:00");
+}
+
+/// Undo is a project snapshot: restoring it brings the old Max length back.
+#[test]
+fn max_duration_undo_restores_the_value() {
+    let mut p = Project::new();
+    p.max_duration = Some(60.0);
+    let before = p.to_json(); // what `push_undo` stores
+    p.max_duration = Some(180.0);
+    assert_eq!(Project::from_json(&before).unwrap().max_duration, Some(60.0));
+}

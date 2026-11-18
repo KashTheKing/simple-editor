@@ -16,8 +16,11 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     .sequences
                     .iter()
                     .map(|s| {
+                        // the open one's live length / Max length are swapped into the project
+                        let open = app.project.editing == Some(s.id);
+                        let max = if open { app.project.max_duration } else { s.max_duration };
                         json!({"id": s.id, "name": s.name, "width": s.width, "height": s.height,
-                               "fps": s.fps, "duration": s.duration()})
+                               "fps": s.fps, "duration": app.project.sequence_duration(s.id), "max_duration": max})
                     })
                     .collect();
                 Ok(json!(list))
@@ -239,7 +242,7 @@ macro_rules! row {
 }
 
 pub const TOOLS: &[ToolDef] = &[
-    row!("sequence.list", ToolKind::Read, "Sequences (id, name, format, duration).", &[]),
+    row!("sequence.list", ToolKind::Read, "Sequences (id, name, format, duration, max_duration).", &[]),
     // not in the old hand-kept mutating-tool name list (switching the edited sequence isn't itself an undoable edit)
     row!(
         "sequence.open",

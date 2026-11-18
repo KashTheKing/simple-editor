@@ -1176,7 +1176,7 @@ impl App {
         self.player.set_project(&self.project);
         audio_only::edited(&self.project);
         self.player.seek(0.0);
-        self.timeline.zoom_to_fit(self.project.duration(), self.timeline.lanes_rect.width().max(800.0));
+        self.timeline.zoom_to_fit(self.project.view_len(), self.timeline.lanes_rect.width().max(800.0));
     }
 
     fn title(&self) -> String {

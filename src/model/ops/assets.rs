@@ -70,6 +70,8 @@ impl Project {
             // ---- ws:music-burn ----
             playlists: Vec::new(),
             audio_only_preview: false,
+            // ---- ws:max-duration ----
+            max_duration: None,
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);

@@ -608,7 +608,7 @@ use gestures::gap_at;
 pub(crate) use gestures::{close_all_gaps, delete_clips_magnetic};
 #[allow(unused_imports)] // label_menu: called directly by the test module
 use menus::{clip_menu, key_menu, label_menu, paste_menu, shared_effect_kinds, transition_menu, ClipMenu};
-pub(crate) use paint::row_top;
+pub(crate) use paint::{row_top, LIMIT};
 // ---- ws:pro-timeline ---- pure grouping/classification fns, reused by tools_timeline_pro.rs's
 // `timeline.dupes`/`timeline.pacing` MCP tools (a sibling module tree, so `pub(crate)` re-export here).
 use paint::*;
@@ -716,12 +716,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         );
         let op = painter.with_clip_rect(ov);
         op.rect_filled(ov, 0, pal.header);
-        let dur = c.project.duration().max(1.0);
+        let dur = c.project.view_len().max(1.0); // ws:max-duration: the strip spans the limit too
         for (_, cl) in c.project.all_clips() {
             let x0 = ov.left() + (cl.start / dur) as f32 * ov.width();
             let x1 = (ov.left() + (cl.end() / dur) as f32 * ov.width()).max(x0 + 1.0);
             let color = label_color(c.project, c.project.clip_label(cl), pal.clip_color(cl.kind));
             op.rect_filled(Rect::from_min_max(pos2(x0, ov.top() + 2.0), pos2(x1, ov.bottom() - 2.0)), 0, color);
+        }
+        if let Some(m) = c.project.limit() {
+            op.vline(ov.left() + (m / dur) as f32 * ov.width(), ov.y_range(), Stroke::new(1.5, LIMIT));
         }
         let phx = ov.left() + (*c.playhead / dur) as f32 * ov.width();
         op.vline(phx, ov.y_range(), Stroke::new(1.5, pal.playhead));
@@ -1791,6 +1794,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         primary_down,
     );
 
+    paint_limit(&painter, state, c.project.limit(), ruler, lanes); // ws:max-duration
     // ---- playhead (recomputed: a double-click seek above moves it this frame) ----
     let px = state.x_at(*c.playhead);
     if px >= lanes.left() - 1.0 && px <= lanes.right() + 1.0 {
@@ -2054,7 +2058,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         let hbar = Rect::from_min_max(pos2(lanes.left(), lanes.bottom()), pos2(full.right(), full.bottom()));
         painter.rect_filled(hbar, 0, pal.panel);
         let vis_w = (lanes.width() / state.zoom) as f64;
-        let total = (c.project.duration() * 1.1).max(state.scroll_x + vis_w).max(1e-6);
+        let total = (c.project.view_len() * 1.1).max(state.scroll_x + vis_w).max(1e-6);
         let max_sx = (total - vis_w).max(0.0);
         let bw = lanes.width().max(1.0);
         let tw = ((vis_w / total) as f32 * bw).clamp(20.0f32.min(bw), bw);

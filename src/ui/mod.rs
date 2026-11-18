@@ -742,6 +742,12 @@ pub fn duration_text(t: f64) -> String {
     format!("{m}:{s:04.1}")
 }
 
+/// "m:ss", seconds rounded up (0.2 s over reads 0:01, never 0:00). ws:max-duration
+pub fn mmss(t: f64) -> String {
+    let s = (t - 1e-6).ceil().max(0.0) as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
 /// Colour of a clip/asset/recent label index (0 or out of range = "no label" dim).
 pub fn label_color(idx: u8, palette: &Palette) -> egui::Color32 {
     if idx == 0 || idx as usize > LABEL_COLORS.len() {

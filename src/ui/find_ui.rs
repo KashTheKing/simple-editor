@@ -146,6 +146,7 @@ mod tests {
             height: 1080,
             fps: 30.0,
             tracks: vec![],
+            max_duration: None,
         });
         p
     }

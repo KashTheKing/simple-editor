@@ -115,6 +115,12 @@ pub struct Project {
     /// picture (no video decoded). Export is unaffected. Kept across undo / redo.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub audio_only_preview: bool,
+    // ---- ws:max-duration ----
+    /// Max length in seconds of the timeline being edited (None = no limit). Like width/height/fps it is
+    /// the open sequence's own while one is open (`open_sequence` swaps it). Nothing is ever cut to it:
+    /// the timeline shades past it and exports stop at it (`limit_range`) unless the user includes the rest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_duration: Option<f64>,
 }
 
 impl Default for Project {
