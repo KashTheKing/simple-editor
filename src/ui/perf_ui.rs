@@ -303,7 +303,9 @@ fn bold(p: &egui::Painter, at: Pos2, align: Align2, text: &str, size: f32, color
 fn donut(p: &egui::Painter, c: Pos2, r: f32, width: f32, rows: &[Row], fr: &[f32]) {
     use std::f32::consts::{FRAC_PI_2, TAU};
     if fr.iter().all(|&f| f <= 0.0) {
-        p.circle_stroke(c, r, Stroke::new(width, TRACK));
+        // a closed polyline, not `circle_stroke`: a 35 px wide circle stroke tessellates into an octagon
+        let pts: Vec<Pos2> = (0..=160).map(|k| k as f32 / 160.0 * TAU).map(|t| c + r * vec2(t.cos(), t.sin())).collect();
+        p.add(egui::Shape::line(pts, Stroke::new(width, TRACK)));
         return;
     }
     let shown = fr.iter().filter(|&&f| f > 0.0).count();
@@ -333,9 +335,11 @@ const CTRL_W: f32 = 190.0;
 /// ponytail: drawn here rather than with `ui::list_rows` - a legend is not reorderable, so no grip/arrow.
 fn legend_row(ui: &mut Ui, row: &Row, frac: Option<f32>, color: Color32, ctrls: bool) -> Option<Click> {
     let w = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, ROW_H), Sense::hover());
+    // a narrow pane puts the row's buttons on a line of their own under it
+    let wrap = ctrls && w < CTRL_W + 200.0;
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, if wrap { ROW_H + 24.0 } else { ROW_H }), Sense::hover());
     let p = ui.painter_at(rect);
-    let ctrl_x = rect.right() - if ctrls { CTRL_W } else { 0.0 };
+    let ctrl_x = rect.right() - if ctrls && !wrap { CTRL_W } else { 0.0 };
     let pct_x = ctrl_x - 8.0;
     let val_x = pct_x - PCT_W;
     let y = rect.top() + 12.0;
@@ -376,7 +380,8 @@ fn legend_row(ui: &mut Ui, row: &Row, frac: Option<f32>, color: Color32, ctrls: 
     let _ = resp;
     let mut out = None;
     if ctrls {
-        let b = |x: f32, w: f32| Rect::from_min_size(pos2(x, y - 10.0), vec2(w, 20.0));
+        let (x0, by) = if wrap { (rect.left() + 12.0, y + ROW_H) } else { (ctrl_x, y) };
+        let b = |x: f32, w: f32| Rect::from_min_size(pos2(x - ctrl_x + x0, by - 10.0), vec2(w, 20.0));
         if let Some((id, t)) = row.jump {
             if ui.put(b(ctrl_x + 6.0, 64.0), egui::Button::new("Jump to")).clicked() {
                 out = Some(Click::Jump(id, t));
@@ -415,15 +420,24 @@ fn card(ui: &mut Ui, w: &mut PerfWin) -> Option<Click> {
     let mut out = None;
     egui::Frame::new().fill(CARD).corner_radius(12.0).inner_margin(16.0).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.horizontal(|ui| {
+        // narrow (the Export page's Jobs column): the tabs go under the title, the legend under the donut
+        let narrow = ui.available_width() < STACK_BELOW;
+        if narrow {
             ui.label(egui::RichText::new("Where the performance goes").size(15.0).strong().color(TEXT));
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| segmented(ui, &mut w.tab));
-        });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| segmented(ui, &mut w.tab));
+        } else {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Where the performance goes").size(15.0).strong().color(TEXT));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| segmented(ui, &mut w.tab));
+            });
+        }
         ui.add_space(10.0);
         let live = w.tab == Tab::Live;
         let mut rows = if live { w.live.rows.clone() } else { w.project.clone() };
         let fr = segments(&mut rows);
-        ui.horizontal_top(|ui| {
+        let dir = if narrow { egui::Direction::TopDown } else { egui::Direction::LeftToRight };
+        ui.with_layout(egui::Layout::from_main_dir_and_cross_align(dir, egui::Align::Min), |ui| {
             let (rect, _) = ui.allocate_exact_size(vec2(210.0, 210.0), Sense::hover());
             let p = ui.painter_at(rect);
             donut(&p, rect.center(), 84.0, 35.0, &rows, &fr);
@@ -433,7 +447,7 @@ fn card(ui: &mut Ui, w: &mut PerfWin) -> Option<Click> {
                 let cap = if l.playing { format!("fps of {:.0}", l.target_fps) } else { "paused".into() };
                 (fps, cap, if l.playing { grade_fps(l.fps, l.target_fps).color() } else { TEXT })
             } else {
-                let total: f32 = rows.iter().map(|r| r.ms).sum();
+                let total: f32 = rows.iter().map(|r| r.ms).sum::<f32>() + 0.0; // an empty sum is -0.0
                 (format!("{total:.1}"), "ms per frame".into(), TEXT)
             };
             let col = if col == GOOD { TEXT } else { col }; // only a problem is coloured
@@ -566,8 +580,11 @@ fn tiles(ui: &mut Ui, l: &Live) {
 
 /// The widest the content gets: the card over two rows of five tiles, like the reference card.
 pub const WIDTH: f32 = 5.0 * TILE_W + 4.0 * 8.0;
-/// The narrowest: the donut and a readable legend (a narrower pane scrolls sideways).
-pub const MIN_WIDTH: f32 = 460.0;
+/// The narrowest: two tiles a row, the legend under the donut and each row's buttons under it (a narrower
+/// pane scrolls sideways).
+pub const MIN_WIDTH: f32 = 2.0 * TILE_W + 8.0;
+/// Under this the card stacks: donut, then legend (the card's inner width, margins taken off).
+const STACK_BELOW: f32 = 210.0 + 16.0 + 200.0;
 
 /// The content width for the space on hand.
 fn width(ui: &Ui) -> f32 {
@@ -696,12 +713,19 @@ mod tests {
         }
     }
 
-    /// The pane fits the tab it is in: the full card at its widest, narrower in a narrow tab, never under
-    /// the minimum (the pane scrolls sideways instead).
+    /// The pane fits the tab it is in: the full card at its widest, narrower in a narrow tab (the Export
+    /// page's Jobs column, about 316 px), never under the minimum (the pane scrolls sideways instead).
     #[test]
     fn performance_pane_follows_the_tab_width() {
         let mut w = filled();
-        for (avail, want) in [(1200.0, WIDTH), (600.0, 600.0), (300.0, MIN_WIDTH)] {
+        for (tab, avail, want) in [
+            (Tab::Live, 1200.0, WIDTH),
+            (Tab::Live, 600.0, 600.0),
+            (Tab::Live, 316.0, 316.0),
+            (Tab::Project, 316.0, 316.0),
+            (Tab::Live, 250.0, MIN_WIDTH),
+        ] {
+            w.tab = tab;
             let ctx = egui::Context::default();
             ctx.set_fonts(crate::theme::test_fonts());
             let mut got = 0.0;
@@ -714,7 +738,7 @@ mod tests {
                     got = ui.scope(|ui| body(ui, &mut w)).response.rect.width();
                 });
             });
-            assert!((got - want).abs() < 1.0, "{avail} wide: the pane drew {got}, not {want}");
+            assert!((got - want).abs() < 1.0, "{tab:?} {avail} wide: the pane drew {got}, not {want}");
         }
     }
 }
