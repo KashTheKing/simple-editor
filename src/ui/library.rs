@@ -37,6 +37,7 @@
 //! saved graph presets: `reuse_ui`). Effects, looks and adjustment layers are Gallery cards now (the
 //! Gallery's Effects / Looks / Templates tabs), so they are not repeated here.
 
+use crate::engine::linked_bins::State as LinkedState;
 use crate::hotkeys::Action;
 use crate::media::proxy::ProxyStatus;
 use crate::media::thumbs::ThumbCache;
@@ -133,6 +134,8 @@ pub struct LibraryState {
     all: Vec<Pick>,
     /// "Save filter…" name field open (the buffer) - a Smart Bin is born when it commits.
     pub new_bin: Option<String>,
+    /// Linked bins' folder listings, on-demand durations and the folder watch (see `engine::linked_bins`).
+    pub linked: crate::engine::linked_bins::Cache,
 }
 
 #[derive(Default)]
@@ -201,6 +204,10 @@ pub struct LibraryResponse {
     // ---- ws:media-library ----
     /// Offline assets to relink - the app opens a folder picker, then `media_sync::start_relink`.
     pub relink: Vec<Id>,
+    /// A linked bin's menu ▸ Convert to regular bin: the app imports every file under it.
+    pub convert_bin: Option<String>,
+    /// Files from a linked bin to make assets now (menu ▸ Add to the project) - never opened as the project.
+    pub import_paths: Vec<PathBuf>,
 }
 
 /// The bulk menu's placement verbs.
@@ -450,6 +457,8 @@ enum LibOp {
     FolderDelete(String),
     LinkFolder(String),
     UnlinkFolder(String),
+    UnlinkBin(String),
+    RelinkBin(String, String),
     SeqNew,
     SeqRename(Id, String),
     SeqDelete(Id),
@@ -726,6 +735,9 @@ fn rename_folder(project: &mut Project, old: &str, new: &str) {
     }
     for a in &mut project.assets {
         swap(&mut a.folder);
+    }
+    for b in &mut project.linked_bins {
+        swap(&mut b.bin);
     }
     project.folders.sort();
     project.folders.dedup();
@@ -1217,6 +1229,11 @@ fn browser(
     let mut ops: Vec<LibOp> = Vec::new();
     let mut op_start = false; // true when this frame starts an undo-worthy gesture
     let imported = state.tab == 0;
+    if imported && !project.linked_bins.is_empty() {
+        // the watcher wakes this context when a linked folder changes; a compare when nothing did
+        state.linked.set_ctx(ui.ctx());
+        state.linked.set_roots(project.linked_bins.iter().map(|b| b.path.as_str()));
+    }
     let mut columns_changed = false;
     header(ui, state, settings, labels, palette, resp, &mut columns_changed);
 
@@ -1285,6 +1302,8 @@ fn browser(
                 rec: &mut rec,
                 subs: Default::default(),
                 files: Default::default(),
+                asset_paths: None,
+                linked_rows: false,
             };
             if imported {
                 tree.imported(ui, &order, flat);
@@ -1299,7 +1318,7 @@ fn browser(
         state.visible =
             rows.iter().filter_map(|(p, _)| if let Pick::Asset(id) = p { Some(*id) } else { None }).collect();
         state.all = rows.iter().map(|(p, _)| p.clone()).collect();
-        if imported && project.assets.is_empty() {
+        if imported && project.assets.is_empty() && project.linked_bins.is_empty() {
             empty_state(ui, palette, resp);
         }
         if imported {
@@ -1406,6 +1425,15 @@ fn browser(
                 LibOp::UnlinkFolder(p) => {
                     project.linked_folders.retain(|f| *f != p);
                     state.dirs.retain(|(f, _)| !f.starts_with(&p));
+                }
+                LibOp::UnlinkBin(bin) => {
+                    project.unlink_bin(&bin);
+                }
+                LibOp::RelinkBin(bin, path) => {
+                    if let Some(old) = project.linked_bin_dir(&bin) {
+                        state.linked.forget(&old);
+                    }
+                    project.relink_bin(&bin, &path);
                 }
                 LibOp::SeqNew => {
                     let n = project.sequences.len() + 1;
@@ -2080,6 +2108,12 @@ struct Tree<'a, 'b> {
     /// used to rescan every folder and asset for each folder it drew).
     subs: std::collections::HashMap<String, Vec<String>>,
     files: std::collections::HashMap<String, Vec<usize>>,
+    /// Every asset's path, lower-case - built the first time an open linked bin asks this frame (its files
+    /// that are already assets draw as those assets, not twice).
+    asset_paths: Option<HashSet<String>>,
+    /// The file rows being drawn belong to a linked bin: they show an on-demand duration and their menu
+    /// imports instead of opening.
+    linked_rows: bool,
 }
 
 impl Tree<'_, '_> {
@@ -2155,6 +2189,7 @@ impl Tree<'_, '_> {
         if flat {
             self.sequences(ui, 0, true);
             self.assets(ui, 0, order);
+            self.linked_hits(ui);
             return;
         }
         let names = folder_tree_names(self.project);
@@ -2224,7 +2259,30 @@ impl Tree<'_, '_> {
     /// The subfolders of `path` (folders first, like an explorer), then the assets that live in it.
     /// In the gallery the subfolders are cards; an open one's contents follow the grid under its name.
     fn folder(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, names: &[String], order: &[usize]) {
-        let subs: Vec<String> = self.subs.get(path).cloned().unwrap_or_default();
+        let mut subs: Vec<String> = self.subs.get(path).cloned().unwrap_or_default();
+        // a linked bin (or a sub-bin of one): its folder's sub-folders join the bins, its files follow the
+        // assets. Read one level, on a worker, now that it is open.
+        let (mut disk, mut note) = (Vec::new(), None);
+        if let Some(dir) = (!path.is_empty()).then(|| self.project.linked_bin_dir(path)).flatten() {
+            match self.state.linked.listing(&dir) {
+                LinkedState::Ready(l) => {
+                    for d in &l.dirs {
+                        let child = format!("{path}/{d}");
+                        if !subs.contains(&child) {
+                            subs.push(child);
+                        }
+                    }
+                    subs.sort_by(|a, b| crate::engine::folder_import::natural_cmp(a, b));
+                    let known = self.asset_paths();
+                    disk = l.files.iter().filter(|f| !known.contains(&f.to_ascii_lowercase())).cloned().collect();
+                    if l.files.is_empty() && l.dirs.is_empty() {
+                        note = Some("(empty)");
+                    }
+                }
+                LinkedState::Pending => note = Some("Listing…"),
+                LinkedState::Missing => note = Some("(folder not found)"),
+            }
+        }
         if self.state.view == 1 {
             let w = TILE * self.state.zoom;
             let mut open = Vec::new();
@@ -2267,6 +2325,49 @@ impl Tree<'_, '_> {
         }
         let here: Vec<usize> = self.files.get(path).cloned().unwrap_or_default();
         self.assets(ui, depth, &here);
+        if let Some(n) = note.filter(|_| here.is_empty()) {
+            ui.horizontal(|ui| {
+                ui.add_space(indent(depth) + ARROW);
+                ui.weak(n);
+            });
+        }
+        if !disk.is_empty() {
+            self.linked_rows = true;
+            self.files(ui, depth, &disk, false);
+            self.linked_rows = false;
+        }
+    }
+
+    /// Lower-case paths of every asset, once per frame.
+    fn asset_paths(&mut self) -> &HashSet<String> {
+        let p = self.project;
+        self.asset_paths.get_or_insert_with(|| p.assets.iter().map(|a| a.path.to_ascii_lowercase()).collect())
+    }
+
+    /// A search over the Library also finds files in the linked folders that have been listed (opened)
+    /// so far; folders nobody opened are not read for it.
+    fn linked_hits(&mut self, ui: &mut egui::Ui) {
+        let st = &*self.state;
+        if st.search.is_empty() || st.label_filter != 0 || st.unused_only || !matches!(st.kind_filter, 0..=3) {
+            return;
+        }
+        let roots: Vec<String> = self.project.linked_bins.iter().map(|b| b.path.clone()).collect();
+        let (q, kind) = (st.search.clone(), st.kind_filter);
+        let mut hits: Vec<String> = Vec::new();
+        for (dir, l) in self.state.linked.listed() {
+            let d = dir.to_string_lossy();
+            if !roots.iter().any(|r| d.len() >= r.len() && d.is_char_boundary(r.len()) && d[..r.len()].eq_ignore_ascii_case(r)) {
+                continue;
+            }
+            hits.extend(l.files.iter().filter(|f| path_matches(f, &q, kind)).cloned());
+        }
+        let known = self.asset_paths();
+        hits.retain(|f| !known.contains(&f.to_ascii_lowercase()));
+        hits.sort_by(|a, b| crate::engine::folder_import::natural_cmp(split_path(a).0, split_path(b).0));
+        hits.dedup();
+        self.linked_rows = true;
+        self.files(ui, 0, &hits, false);
+        self.linked_rows = false;
     }
 
     /// One project folder's row/card (or its rename field), with its menu and drop target; true = open.
@@ -2280,6 +2381,10 @@ impl Tree<'_, '_> {
     ) -> bool {
         let key = format!("f:{child}");
         let last = child.rsplit('/').next().unwrap_or(child).to_string();
+        let renaming = self.state.rename_folder.as_ref().is_some_and(|(o, _)| o == child);
+        if let Some(lb) = self.project.linked_bin_of(child).cloned().filter(|_| !renaming) {
+            return self.linked_head(ui, child, &key, &last, depth, &lb);
+        }
         let kids = self.subs.contains_key(child.as_str()) || self.files.contains_key(child.as_str());
         if self.state.rename_folder.as_ref().is_some_and(|(o, _)| o == child) {
             let mut renamed = None;
@@ -2300,7 +2405,7 @@ impl Tree<'_, '_> {
             }
             return kids && self.is_open(&key, true);
         }
-        let r = self.folder_item(ui, Pick::Folder(child.clone()), &key, &last, depth, true, kids);
+        let r = self.folder_item(ui, Pick::Folder(child.clone()), &key, &last, depth, true, kids, None);
         if r.clicked() {
             self.state.folder = Some(child.clone()); // the subtree a search is limited to
         }
@@ -2320,6 +2425,76 @@ impl Tree<'_, '_> {
         kids && self.is_open(&key, true)
     }
 
+    /// A linked bin's row (or a sub-bin of one: a folder below it on disk). Starts closed - opening it is
+    /// what reads the folder. A link glyph marks the bin; a missing folder shows a warning and offers Relink.
+    fn linked_head(
+        &mut self,
+        ui: &mut egui::Ui,
+        child: &String,
+        key: &str,
+        last: &str,
+        depth: usize,
+        lb: &crate::model::LinkedBin,
+    ) -> bool {
+        let top = lb.bin == *child;
+        let offline = self.state.linked.online(&lb.path) == Some(false);
+        let warn = ui.visuals().warn_fg_color;
+        let badge = if offline {
+            Some((Glyph::Warning, warn, "Offline"))
+        } else if top {
+            Some((Glyph::Link, self.palette.text_dim, "Linked"))
+        } else {
+            None
+        };
+        #[cfg(test)]
+        ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(("lib_linked_offline", child.as_str())), offline));
+        let r = self.folder_item(ui, Pick::Folder(child.clone()), key, last, depth, false, !offline, badge);
+        if r.clicked() {
+            self.state.folder = Some(child.clone());
+        }
+        let dir = self.project.linked_bin_dir(child).unwrap_or_default();
+        menu::context(&r, |ui| {
+            if top
+                && menu::row(ui, Some(Glyph::Folder), "Relink…", "")
+                    .on_hover_text("Point the bin at the folder's new place")
+                    .clicked()
+            {
+                if let Some(p) = rfd::FileDialog::new().set_title("Relink bin").pick_folder() {
+                    self.ops.push(LibOp::RelinkBin(child.clone(), p.to_string_lossy().into_owned()));
+                    *self.op_start = true;
+                }
+            }
+            if !offline && menu::row(ui, None, "Refresh", "").clicked() {
+                self.state.linked.forget(&dir);
+            }
+            if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
+                let _ = std::process::Command::new("explorer").arg(&dir).spawn();
+            }
+            if !top {
+                return;
+            }
+            if menu::row(ui, None, "Rename", "").clicked() {
+                self.state.rename_folder = Some((child.clone(), last.to_string()));
+            }
+            ui.separator();
+            if !offline
+                && menu::row(ui, Some(Glyph::ImportArrow), "Convert to regular bin", "")
+                    .on_hover_text("Import every file in it now; the bin stops following the folder")
+                    .clicked()
+            {
+                self.resp.convert_bin = Some(child.clone());
+            }
+            if menu::row(ui, Some(Glyph::Cross), "Unlink", "").on_hover_text("Files already used stay in the project").clicked() {
+                self.ops.push(LibOp::UnlinkBin(child.clone()));
+                *self.op_start = true;
+            }
+        });
+        self.drop_asset(&r, child);
+        let tip = if offline { format!("{} - not found", dir.display()) } else { dir.display().to_string() };
+        r.on_hover_text(tip);
+        !offline && self.is_open(key, false)
+    }
+
     /// A folder as a full-width row (with its disclosure arrow) or a gallery card, the same size and hit
     /// area as a file, in the same selection: click selects, double-click opens / closes it.
     #[allow(clippy::too_many_arguments)]
@@ -2332,13 +2507,15 @@ impl Tree<'_, '_> {
         depth: usize,
         dflt: bool,
         kids: bool,
+        badge: Option<(Glyph, egui::Color32, &str)>,
     ) -> egui::Response {
         let sel = self.state.has(&pick);
         let (id, palette, zoom) = (egui::Id::new(("folder", key)), self.palette, self.state.zoom);
         let mut arrow = None;
         let r = if self.state.view == 1 {
             let art = Art::Icon(Glyph::Folder);
-            tile(ui, id, (), sel, "Folder", name, palette.text, palette, art, TILE * zoom, None).0
+            let tag = badge.map_or("Folder", |b| b.2);
+            tile(ui, id, (), sel, tag, name, palette.text, palette, art, TILE * zoom, None).0
         } else {
             // ONE widget for the whole row - indent, arrow, icon and name - so a double-click anywhere on
             // it opens / closes the folder; a click on the arrow's slot toggles instead of selecting
@@ -2350,6 +2527,10 @@ impl Tree<'_, '_> {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
                 paint_art(ui, rect, Art::Icon(Glyph::Folder), palette);
                 ui.label(if sel { RichText::new(name).strong() } else { RichText::new(name) });
+                if let Some((g, c, _)) = badge {
+                    let (b, _) = ui.allocate_exact_size(egui::vec2(14.0, 12.0), egui::Sense::hover());
+                    draw_glyph(ui.painter(), b, g, c);
+                }
             })
             .0;
             arrow = kids.then_some(slot);
@@ -2924,7 +3105,7 @@ impl Tree<'_, '_> {
     fn dir_head(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, root: bool, label: Option<&str>) -> bool {
         let key = dir_key(path);
         let name = label.unwrap_or(dir_name(path)).to_string();
-        let r = self.folder_item(ui, Pick::Path(path.to_string()), &key, &name, depth, false, true);
+        let r = self.folder_item(ui, Pick::Path(path.to_string()), &key, &name, depth, false, true, None);
         menu::context(&r, |ui| {
             if menu::row(ui, None, "Refresh", "").clicked() {
                 self.state.dirs.retain(|(p, _)| !p.starts_with(path));
@@ -2934,7 +3115,7 @@ impl Tree<'_, '_> {
             }
             // the folder (every folder in the selection, when this one is part of it) becomes a bin
             if menu::row(ui, Some(Glyph::ImportArrow), "Import folder as bin", "")
-                .on_hover_text("Every media file in it, sub-folders as nested bins")
+                .on_hover_text("Links it to the Library at once; files become assets when you use them")
                 .clicked()
             {
                 let sel = &self.state.sel_paths;
@@ -3014,6 +3195,13 @@ impl Tree<'_, '_> {
         let (palette, thumbs, h) = (self.palette, &mut *self.thumbs, ROW_H * self.state.zoom);
         let id = egui::Id::new(("file", depth, recent, path));
         let payload = drag_payload(self.state, Pick::Path(path.to_string()));
+        // a linked file's length: probed in the background, and only for rows on screen
+        let dur = (self.linked_rows && matches!(ext_class(path), 1 | 2) && row_visible(ui, h))
+            .then(|| match self.state.linked.duration(path) {
+                None => "…".to_string(),
+                Some(Some(d)) => duration_text(d),
+                Some(None) => " - ".to_string(),
+            });
         let (r, _) = row(ui, id, payload, selected, None, |ui| {
             ui.add_space(indent(depth) + ARROW);
             if let Some(c) = tint {
@@ -3026,6 +3214,9 @@ impl Tree<'_, '_> {
                 None => ui.label(&name),
             };
             ui.weak(kind_tag_for_class(ext_class(path)));
+            if let Some(d) = &dur {
+                ui.weak(d);
+            }
             if recent {
                 ui.add(egui::Label::new(RichText::new(&dir).weak().small()).truncate());
             }
@@ -3083,7 +3274,11 @@ impl Tree<'_, '_> {
                 self.resp.add_paths.extend(paths.iter().map(PathBuf::from));
             }
             ui.separator();
-            if menu::row(ui, Some(Glyph::ImportArrow), "Add to the project", "").clicked() {
+            if self.linked_rows {
+                if menu::row(ui, Some(Glyph::ImportArrow), "Add to the project", "").clicked() {
+                    self.resp.import_paths.extend(paths.iter().map(PathBuf::from));
+                }
+            } else if menu::row(ui, Some(Glyph::ImportArrow), "Add to the project", "").clicked() {
                 self.resp.open_paths.extend(paths.iter().map(PathBuf::from));
                 // a folder selected alongside comes in as a bin
                 let sel = self.state.sel_paths.iter().filter(|p| std::path::Path::new(p).is_dir());
@@ -4178,6 +4373,163 @@ mod tests {
 
     /// The idle-CPU-0% gate: a populated, non-searching Library pane (offline badge, a subclip, a
     /// smart bin, both views) requests no repaint after it has settled.
+    /// A scratch folder for the linked-bin tests (removed on drop).
+    struct LinkTmp(std::path::PathBuf);
+    impl LinkTmp {
+        fn new(tag: &str) -> Self {
+            let p = std::env::temp_dir().join(format!("se-lib-linked-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&p);
+            std::fs::create_dir_all(&p).unwrap();
+            LinkTmp(p)
+        }
+        fn file(&self, rel: &str) {
+            let p = self.0.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"x").unwrap();
+        }
+    }
+    impl Drop for LinkTmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Run frames until the linked listings have landed (the worker wakes the context; a test just waits).
+    fn linked_frames(
+        ctx: &egui::Context,
+        state: &mut LibraryState,
+        project: &mut Project,
+        settings: &mut Settings,
+    ) -> Vec<egui::epaint::ClippedShape> {
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let mut shapes = Vec::new();
+        for _ in 0..200 {
+            let out = ctx.run(tall(1200.0), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| {};
+                    show(ui, state, project, settings, None, &palette, false, &mut undo);
+                });
+            });
+            shapes = out.shapes;
+            if text_rect(&shapes, "Listing…").is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        shapes
+    }
+
+    /// A linked bin starts closed and unread; opening it lists its sub-folders as nested bins and its
+    /// files as rows (no assets), and a sub-bin opens the same way, one level at a time.
+    #[test]
+    fn expanding_a_linked_bin_lists_nested_bins_and_files() {
+        let t = LinkTmp::new("expand");
+        t.file("clip1.mp4");
+        t.file("clip10.mp4");
+        t.file("clip2.mp4");
+        t.file("SFX/boom.wav");
+        t.file("SFX/Impacts/crash.mp3");
+        let mut project = Project::new();
+        let bin = project.link_bin(&t.0.to_string_lossy(), Some("Assets"));
+        let mut settings = Settings::default();
+        let ctx = headless_ctx();
+        let mut state = LibraryState::default();
+
+        let shapes = linked_frames(&ctx, &mut state, &mut project, &mut settings);
+        assert!(text_rect(&shapes, "Assets").is_some(), "the bin is drawn");
+        assert!(text_rect(&shapes, "clip1.mp4").is_none(), "closed: nothing listed");
+        assert!(state.linked.listed().is_empty(), "a closed linked bin is never read");
+
+        state.flipped.push(format!("f:{bin}"));
+        let shapes = linked_frames(&ctx, &mut state, &mut project, &mut settings);
+        let y = |s: &str| text_rect(&shapes, s).unwrap_or_else(|| panic!("{s} not drawn")).top();
+        assert!(y("SFX") < y("clip1.mp4"), "sub-bins first");
+        assert!(y("clip2.mp4") < y("clip10.mp4"), "natural order");
+        assert!(text_rect(&shapes, "boom.wav").is_none(), "the sub-bin is not read until it opens");
+        assert!(project.assets.is_empty());
+
+        state.flipped.push(format!("f:{bin}/SFX"));
+        let shapes = linked_frames(&ctx, &mut state, &mut project, &mut settings);
+        assert!(text_rect(&shapes, "boom.wav").is_some());
+        assert!(text_rect(&shapes, "Impacts").is_some(), "the next level down is a bin too");
+        assert!(project.assets.is_empty(), "listing never imports");
+
+        // a file that has been used draws once, as its asset
+        let used = t.0.join("clip2.mp4").to_string_lossy().into_owned();
+        project.add_asset(crate::engine::import::placeholder(&used));
+        let shapes = linked_frames(&ctx, &mut state, &mut project, &mut settings);
+        let n = shapes
+            .iter()
+            .filter(|c| matches!(&c.shape, egui::epaint::Shape::Text(x) if x.galley.text() == "clip2.mp4"))
+            .count();
+        assert_eq!(n, 1, "an asset row, not an asset row plus a file row");
+    }
+
+    /// A file row in a linked bin drags as a file path - the same payload the timeline turns into ONE asset
+    /// (`App::import_files` reuses a path already in the library).
+    #[test]
+    fn a_linked_file_drags_as_its_path() {
+        let state = LibraryState::default();
+        let p = r"C:\Assets\boom.wav".to_string();
+        assert!(matches!(drag_payload(&state, Pick::Path(p.clone())), DragPayload::Path(x) if x == p));
+    }
+
+    /// A linked bin whose folder is gone shows offline (warning, no arrow) instead of an empty bin.
+    #[test]
+    fn a_missing_linked_folder_shows_offline() {
+        let t = LinkTmp::new("offline");
+        let gone = t.0.join("unplugged");
+        let mut project = Project::new();
+        let bin = project.link_bin(&gone.to_string_lossy(), Some("Drive"));
+        let ok = project.link_bin(&t.0.to_string_lossy(), Some("Here"));
+        let mut settings = Settings::default();
+        let ctx = headless_ctx();
+        let mut state = LibraryState::default();
+        linked_frames(&ctx, &mut state, &mut project, &mut settings);
+        state.linked.poll(); // what the watcher thread does every pass
+        linked_frames(&ctx, &mut state, &mut project, &mut settings);
+        let marked = |b: &str| ctx.data(|d| d.get_temp::<bool>(egui::Id::new(("lib_linked_offline", b)))).unwrap_or(false);
+        assert!(marked(&bin), "the missing folder's bin is offline");
+        assert!(!marked(&ok));
+        assert!(project.relink_bin(&bin, &t.0.to_string_lossy()));
+        state.linked.set_roots(project.linked_bins.iter().map(|b| b.path.as_str()));
+        state.linked.poll();
+        linked_frames(&ctx, &mut state, &mut project, &mut settings);
+        assert!(!marked(&bin), "relinked: online again");
+    }
+
+    /// The idle-CPU-0% gate with an open linked bin: once its listing and the probes have landed, the
+    /// pane draws nothing new and asks for no repaint.
+    #[test]
+    fn assert_no_idle_repaint_library_linked_bin() {
+        let t = LinkTmp::new("idle");
+        for i in 0..20 {
+            t.file(&format!("clip{i}.mp4"));
+        }
+        t.file("Sub/a.wav");
+        let mut project = Project::new();
+        let bin = project.link_bin(&t.0.to_string_lossy(), None);
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let ctx = headless_ctx();
+        let mut state = LibraryState { linked: crate::engine::linked_bins::Cache::new(&["mp4", "wav"], |_| Some(1.0)), ..Default::default() };
+        state.flipped.push(format!("f:{bin}"));
+        // let the listing and the duration probes land
+        for _ in 0..100 {
+            linked_frames(&ctx, &mut state, &mut project, &mut settings);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for _ in 0..30 {
+            let _ = ctx.run(tall(1200.0), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| panic!("no undo without edits");
+                    show(ui, &mut state, &mut project, &mut settings, None, &palette, false, &mut undo);
+                });
+            });
+        }
+        assert!(!ctx.has_requested_repaint(), "an idle linked bin requested a repaint");
+    }
+
     #[test]
     fn assert_no_idle_repaint_library_pane() {
         let mut project = Project::new();

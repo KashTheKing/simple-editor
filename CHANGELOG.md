@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Library
+- **Linked bins: Import folder as bin is instant now.** A folder comes in as a bin that points at it: nothing is
+  copied, scanned or probed up front, its sub-folders show as nested bins, and each bin lists its files when you
+  open it (durations and thumbnails fill in for what is on screen). New or removed files show up by themselves. A
+  file becomes a project asset the moment you use it (drag it to the timeline, add it from its menu). The project
+  saves only the folder. Right-click the bin for Refresh, Relink…, Convert to regular bin (the old import every
+  file) and Unlink; a folder that is missing shows as offline. `media.import_folder` links by default
+  (`linked: false` imports every file), and `media.linked_bin` lists, refreshes, relinks, converts and unlinks.
+
 ## 1.3.1
 
 ### Pages

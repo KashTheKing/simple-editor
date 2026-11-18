@@ -39,10 +39,7 @@ use std::time::{Duration, Instant};
 windows::core::link!("user32.dll" "system" fn GetCursorPos(p: *mut windows::Win32::Foundation::POINT) -> windows::core::BOOL);
 
 const PROJECT_EXT: &str = "sedit";
-const MEDIA_EXTS: &[&str] = &[
-    "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "ts", "m2ts", "mts", "flv", "3gp", "mpg", "mpeg", "gif", "mp3",
-    "wav", "m4a", "aac", "flac", "ogg", "opus", "wma", "png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff",
-];
+const MEDIA_EXTS: &[&str] = crate::engine::folder_import::MEDIA_EXTS;
 
 mod actions;
 // ---- ws:pro-schema ----
@@ -1076,7 +1073,8 @@ impl App {
         }
         // ---- ws:media-library ----: a frame of a numbered still run bakes as one clip instead
         let paths = media_sync::intercept_sequences(self, &paths);
-        if self.project.is_empty() && self.project.assets.is_empty() && paths.len() == 1 {
+        // (a project with a linked bin is not empty: opening the file as the project would drop the bin)
+        if self.project.is_empty() && self.project.assets.is_empty() && self.project.linked_bins.is_empty() && paths.len() == 1 {
             self.open_media(&paths[0]);
             return Vec::new();
         }
