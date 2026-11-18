@@ -294,3 +294,28 @@ mod tests {
                    (Some("decode"), Some("X"), Some(10), Some(3), Some(2)));
     }
 }
+
+/// Time since this process was created (the OS's own creation time, so it includes loading the exe
+/// and everything before `main`) - the player's and the editor's launch-to-first-frame figure.
+pub fn since_process_start() -> std::time::Duration {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
+    use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
+    let ft = |f: FILETIME| ((f.dwHighDateTime as u64) << 32) | f.dwLowDateTime as u64;
+    unsafe {
+        let (mut created, mut a, mut b, mut c) = Default::default();
+        if GetProcessTimes(GetCurrentProcess(), &mut created, &mut a, &mut b, &mut c).is_err() {
+            return std::time::Duration::ZERO;
+        }
+        let now = ft(GetSystemTimePreciseAsFileTime());
+        std::time::Duration::from_nanos(now.saturating_sub(ft(created)) * 100)
+    }
+}
+
+/// `SE_STARTUP_TRACE=1`: print `<label> <ms since process start>` at each startup milestone (stderr).
+pub fn startup_mark(label: &str) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ON.get_or_init(|| std::env::var_os("SE_STARTUP_TRACE").is_some()) {
+        eprintln!("startup {label:<28} {:7.1} ms", since_process_start().as_secs_f64() * 1000.0);
+    }
+}

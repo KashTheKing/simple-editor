@@ -360,6 +360,27 @@ fn fonts() -> egui::FontDefinitions {
     f
 }
 
+/// The player's fonts: Segoe UI and the icon font only - no Consolas / Segoe UI Symbol to read before
+/// the first frame (the editor swaps in the full set when it is built).
+pub fn player_fonts() -> egui::FontDefinitions {
+    let mut f = egui::FontDefinitions::empty();
+    let dir =
+        std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| r"C:\Windows".into())).join("Fonts");
+    add_family(&mut f, &dir, egui::FontFamily::Proportional, "Segoe UI", &SANS_CANDIDATES);
+    if let Some(sans) = f.families.get(&egui::FontFamily::Proportional).cloned() {
+        f.families.insert(egui::FontFamily::Monospace, sans);
+    }
+    let chain = f.families.entry(icons()).or_default();
+    if let Some(bytes) = find_font(&dir, &ICON_CANDIDATES) {
+        f.font_data.insert("Segoe Icons".into(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+        chain.push("Segoe Icons".into());
+    }
+    if f.font_data.contains_key("Segoe UI") {
+        chain.push("Segoe UI".into());
+    }
+    f
+}
+
 /// Real fonts for a headless test `egui::Context`. Dropping eframe's `default_fonts` feature
 /// (size-diet) means `egui::FontDefinitions::default()` is now empty crate-wide, so a bare
 /// `egui::Context::default()` that never calls `set_fonts` has NO glyphs at all - harmless for tests

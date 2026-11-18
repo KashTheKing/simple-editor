@@ -957,6 +957,10 @@ impl Settings {
 
     /// %APPDATA%\SimpleEditor
     pub fn dir() -> PathBuf {
+        #[cfg(test)]
+        if let Some(d) = TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return d;
+        }
         let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
         base.join("SimpleEditor")
     }
@@ -1069,6 +1073,11 @@ impl Settings {
         self.recent_projects.truncate(20);
     }
 }
+
+/// A test that builds a whole `App` points `Settings::dir()` here for its duration (a scratch folder),
+/// so it never reads or writes the real profile.
+#[cfg(test)]
+pub static TEST_DIR: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
 #[cfg(test)]
 mod tests {

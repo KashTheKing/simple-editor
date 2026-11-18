@@ -6,7 +6,7 @@ use std::io::ErrorKind;
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
-const VIDEO_EXTS: &[&str] = &[
+pub(crate) const VIDEO_EXTS: &[&str] = &[
     "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "ts", "m2ts", "mts", "flv", "3gp", "mpg", "mpeg", "gif", "ogv",
     "vob", "divx", "asf", "f4v", "dv", "mxf",
 ];

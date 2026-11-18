@@ -2869,7 +2869,7 @@ mod tests {
 
 /// Real-driver checks: a legacy WGL context on a hidden window (compatibility profiles accept
 /// `#version 330 core`). Skips, loudly, on a machine with no OpenGL driver.
-mod interop; // #158: zero-copy decode, D3D11 textures shared into GL
+pub(crate) mod interop; // #158: zero-copy decode, D3D11 textures shared into GL
 #[cfg(test)]
 mod browser_tests; // ws:browser-layer: the browser clip and polygon masks on the real driver
 #[cfg(test)]

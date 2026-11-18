@@ -24,6 +24,25 @@ pub(crate) fn run(app: &mut App) {
     first_run(app);
 }
 
+/// `SE_BENCH_FIRST_FRAME=<file>`: write launch -> first painted frame (ms since the process was created)
+/// there and close - `player::tests::bench_player_launch` / `scripts/launch-bench.ps1` time startup with it.
+pub(crate) fn bench_armed() -> bool {
+    std::env::var_os("SE_BENCH_FIRST_FRAME").is_some()
+}
+
+pub(crate) fn bench_first_frame(ctx: &egui::Context) {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if DONE.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    DONE.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(out) = std::env::var_os("SE_BENCH_FIRST_FRAME") {
+        let ms = crate::perf::since_process_start().as_secs_f64() * 1000.0;
+        let _ = std::fs::write(out, format!("{ms}"));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+}
+
 /// Arm the wizard, or apply the consented context-menu re-point - never both, never silently.
 fn first_run(app: &mut App) {
     if crate::winpos::quiet() {

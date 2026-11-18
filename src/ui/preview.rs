@@ -297,8 +297,11 @@ pub struct PreviewState {
     poly: Vec<(f32, f32)>,
     /// Select tool: index of the polygon vertex being dragged.
     point_drag: Option<usize>,
-    /// Last pointer movement (fullscreen hides the cursor after 2 s of stillness).
-    moved_at: Option<std::time::Instant>,
+    /// Fullscreen: the overlay transport's show / fade / hide state (`ui::autohide`), on its own clock,
+    /// and where the bar was drawn last frame (the pointer over it keeps it up).
+    hide: crate::ui::autohide::AutoHide,
+    hide_clock: std::time::Instant,
+    fs_bar: Option<Rect>,
     /// The transport's centred play buttons, last frame.
     transport: Rect,
     // ---- ws:viewer-surface ----
@@ -343,7 +346,9 @@ impl Default for PreviewState {
             tool_drag: None,
             poly: Vec::new(),
             point_drag: None,
-            moved_at: None,
+            hide: crate::ui::autohide::AutoHide::hidden(),
+            hide_clock: std::time::Instant::now(),
+            fs_bar: None,
             transport: Rect::ZERO,
             options: Rect::NOTHING,
             fit_px: 0.0,
@@ -468,13 +473,34 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
     let mut r = PreviewResponse::default();
     if c.fullscreen {
         video(ui, state, &mut c, &mut r);
-        // transport overlay: summoned by mouse movement, gone ~2 s after the mouse stops.
-        // `moved_at` is pointer-only (see video()), so spacebar play/pause never reveals the bar.
-        if state.moved_at.is_some_and(|t| t.elapsed().as_secs_f32() < 2.0) {
-            egui::Area::new(ui.id().with("fs_transport"))
+        // transport overlay: summoned by mouse movement (pointer-only, so spacebar play/pause never
+        // reveals it), gone 2.5 s after the mouse stops - and at once when the pointer leaves the video
+        let full = ui.max_rect();
+        let (pointer, moved) = ui.input(|i| {
+            let moved = i.events.iter().any(|e| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. }));
+            (i.pointer.hover_pos(), moved)
+        });
+        let input = crate::ui::autohide::Input {
+            now: state.hide_clock.elapsed().as_secs_f64(),
+            pointer_in: pointer.is_some_and(|p| full.contains(p)),
+            moved,
+            keep: pointer.is_some_and(|p| state.fs_bar.is_some_and(|b| b.contains(p))),
+            hold: false,
+        };
+        let out = state.hide.step(input);
+        if out.hide_cursor {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+        }
+        if let Some(s) = out.repaint_in {
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(s));
+        }
+        state.fs_bar = None;
+        if out.opacity > 0.0 {
+            let shown = egui::Area::new(ui.id().with("fs_transport"))
                 .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -24.0))
                 .order(egui::Order::Foreground)
                 .show(ui.ctx(), |ui| {
+                    ui.set_opacity(out.opacity);
                     egui::Frame::popup(ui.style()).fill(c.palette.panel.gamma_multiply(0.92)).show(ui, |ui| {
                         ui.set_width(560.0);
                         ui.vertical(|ui| {
@@ -483,12 +509,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
                             r.seek = seek.or(r.seek);
                             transport(ui, state, &c, &mut r);
                         });
-                        // hovering the bar keeps it alive past the 2 s fade
-                        if ui.ui_contains_pointer() {
-                            state.moved_at = Some(std::time::Instant::now());
-                        }
                     });
                 });
+            state.fs_bar = Some(shown.response.rect);
         }
         return r;
     }
@@ -1421,20 +1444,14 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
         if resp.double_clicked() {
             r.actions.push(Action::Fullscreen);
         }
-        // hide the cursor after 2 s without movement
-        let moved = ui.input(|i| i.pointer.delta() != Vec2::ZERO || i.pointer.any_down());
-        if moved || state.moved_at.is_none() {
-            state.moved_at = Some(std::time::Instant::now());
-        }
-        if state.moved_at.map(|t| t.elapsed().as_secs_f32() > 2.0).unwrap_or(false) {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
-        } else {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
-        }
+        // the cursor hides with the transport (`show`'s auto-hide)
         state.drag = None;
         return;
     }
-    state.moved_at = None;
+    if state.hide.shown() || state.fs_bar.is_some() {
+        state.hide = crate::ui::autohide::AutoHide::hidden();
+        state.fs_bar = None;
+    }
     prerender_badge(ui, &painter, lb, c);
 
     // ---- ws:pro-monitor ----
@@ -2039,6 +2056,7 @@ mod tests {
         guide_chip: Vec<Rect>,
         /// ---- ws:play-gate ---- the Buffering pill (and its spinner) shown over the video.
         buffer_note: Option<String>,
+        fullscreen: bool,
     }
 
     impl H {
@@ -2062,6 +2080,7 @@ mod tests {
                 settings: crate::settings::Settings::default(),
                 guide_chip: Vec::new(),
                 buffer_note: None,
+                fullscreen: false,
             }
         }
         fn frame(&mut self, events: Vec<Event>) -> PreviewResponse {
@@ -2092,6 +2111,7 @@ mod tests {
                 settings,
                 guide_chip,
                 buffer_note,
+                fullscreen,
                 ..
             } = self;
             let mut out = PreviewResponse::default();
@@ -2107,7 +2127,7 @@ mod tests {
                             selection,
                             playhead: 1.0,
                             playing: false,
-                            fullscreen: false,
+                            fullscreen: *fullscreen,
                             palette: &pal,
                             undo: &mut undo,
                             frame: None,
@@ -2761,6 +2781,34 @@ mod tests {
         let z = apply_view(lb, (2.0, vec2(5.0, 0.0)));
         assert_eq!(z.size(), lb.size() * 2.0);
         assert_eq!(z.center(), lb.center() + vec2(5.0, 0.0));
+    }
+
+    /// Fullscreen: a mouse move brings the overlay transport up; the pointer leaving the video takes it
+    /// away at once (no 2 s wait), and then the preview sits idle.
+    #[test]
+    fn assert_no_idle_repaint_fullscreen_transport_hides_when_the_pointer_leaves() {
+        let mut h = H::new();
+        h.with_asset();
+        h.fullscreen = true;
+        h.frame(vec![]);
+        assert!(!h.state.hide.shown(), "no transport until the mouse moves");
+        h.frame(vec![Event::PointerMoved(h.panel.center())]);
+        assert!(h.state.hide.shown() && h.state.fs_bar.is_some(), "a move shows it");
+        h.frame(vec![Event::PointerGone]);
+        assert!(!h.state.hide.shown(), "leaving hides it the same frame");
+        h.state.hide_clock -= std::time::Duration::from_secs(1); // past the fade
+        h.frame(vec![]);
+        assert!(h.state.fs_bar.is_none(), "faded out");
+        for _ in 0..5 {
+            h.frame(vec![]);
+        }
+        assert!(!h.ctx.has_requested_repaint(), "fullscreen, pointer gone, transport hidden: idle");
+        // resting over the video hides it after the idle time too
+        h.frame(vec![Event::PointerMoved(h.panel.center() + vec2(5.0, 0.0))]);
+        assert!(h.state.hide.shown());
+        h.state.hide_clock -= std::time::Duration::from_secs(5);
+        h.frame(vec![]);
+        assert!(!h.state.hide.shown(), "idle over the video: hidden");
     }
 
     /// Idle frames with the handles (and crop ring) on screen request no repaint - the "idle CPU 0%"
