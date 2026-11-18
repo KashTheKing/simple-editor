@@ -198,17 +198,10 @@ pub(crate) fn wants_repaint(queued: usize, baking: usize) -> bool {
     queued > 0 || baking > 0
 }
 
-/// What Quick Export re-runs: the last export, else the first preset card (the built-in
-/// "Max quality").
+/// What Quick Export re-runs: the last export, else an mp4 at the project's size with the Export pane's
+/// quality (ws:export-size: it used to fall back to Max quality, a file 3-4x the size).
 pub(crate) fn quick_target(settings: &Settings) -> Result<ExportPresetRef, &'static str> {
-    if let Some(last) = &settings.last_export {
-        return Ok(last.clone());
-    }
-    settings
-        .all_export_presets()
-        .first()
-        .map(|p| ExportPresetRef::Preset(p.name.clone()))
-        .ok_or("No export presets - open Export (Ctrl+E) once, or add tiles in settings.json")
+    Ok(settings.last_export.clone().unwrap_or(ExportPresetRef::Custom { ext: "mp4".into(), width: 0, height: 0 }))
 }
 
 /// Build the `ExportChoice` a target describes, plus a short label for the toast. `settings` is
@@ -656,6 +649,7 @@ pub(super) fn draw_pane(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if edited {
         app.after_edit();
     }
+    size_probe_tick(app, main);
     match choice {
         Some((c, false)) => {
             app.start_export_choice(c);
@@ -673,6 +667,27 @@ pub(super) fn draw_pane(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         None => {}
     }
     true
+}
+
+// ---- ws:export-size ----
+/// Keep the Export pane's measured size estimate current (`engine::size_probe`): re-measured when the
+/// settings or the project change; not while an export runs, for a lossless cut, or in Target size
+/// mode (whose size is the target).
+fn size_probe_tick(app: &App, main: Option<Project>) {
+    use crate::engine::size_probe;
+    let st = &app.export_ui;
+    if app.export.is_some() || st.lossless || app.settings.export_target_bytes().is_some() || app.timeline_is_empty() {
+        return;
+    }
+    let ext = if st.ext.is_empty() { "mp4" } else { st.ext.as_str() };
+    let project = main.as_ref().unwrap_or(&app.project);
+    let mut c = export_ui::build_choice(st, project, &app.settings, format!("estimate.{ext}").into());
+    let rev = format!("{}:{}:{:?}", app.undo.len(), app.redo.len(), app.undo.last().map(|e| e.at));
+    if size_probe::current(&size_probe::key(&c.opts), &rev) {
+        return;
+    }
+    c.opts.frames = app.export_frames();
+    size_probe::request(rev, project, &c.opts, &app.text);
 }
 
 /// The palette's "Quick export": the save dialog (the Export pane's remembered folder and name), then
@@ -1237,33 +1252,33 @@ mod tests {
     }
 
     #[test]
-    fn quick_export_falls_back_to_first_preset() {
+    fn quick_export_falls_back_to_the_default_quality() {
         let mut s = Settings::default();
-        // the first card is the built-in "Max quality"
-        assert_eq!(quick_target(&s), Ok(ExportPresetRef::Preset(export::PRESET_MAX_QUALITY.into())));
+        let project_mp4 = ExportPresetRef::Custom { ext: "mp4".into(), width: 0, height: 0 };
+        assert_eq!(quick_target(&s), Ok(project_mp4.clone()));
         let custom = ExportPresetRef::Custom { ext: "webm".into(), width: 640, height: 360 };
         s.last_export = Some(custom.clone());
         assert_eq!(quick_target(&s), Ok(custom.clone()));
-        // with no platform tiles left the built-ins are still there
         s.export_presets.clear();
         s.last_export = None;
-        assert_eq!(quick_target(&s), Ok(ExportPresetRef::Preset(export::PRESET_MAX_QUALITY.into())));
+        assert_eq!(quick_target(&s), Ok(project_mp4));
 
-        // the fallback preset really drives the options (the toast names it via `label`)
+        // the fallback really drives the options: project size, the default quality, auto encoder
         let s = Settings::default();
         let mut p = Project::new();
         p.width = 1280;
         p.height = 720;
         let (choice, label) = quick_choice(&quick_target(&s).unwrap(), &p, &s, "out.mp4".into()).unwrap();
-        assert_eq!(label, export::PRESET_MAX_QUALITY);
+        assert_eq!(label, "mp4 · project size");
         assert_eq!(choice.opts.out_size, None, "the project's own size");
-        assert_eq!(choice.opts.crf, export::CRF_BEST as u32);
+        assert_eq!(choice.opts.crf, export::DEFAULT_CRF);
+        assert_eq!(choice.opts.encoder, "auto");
         let (choice, label) =
             quick_choice(&ExportPresetRef::Preset("YouTube 1080p".into()), &p, &s, "out.mp4".into()).unwrap();
         assert_eq!(label, "YouTube 1080p");
         assert_eq!(choice.opts.out_size, Some((1920, 1080)));
         assert!(choice.opts.letterbox && choice.opts.loudnorm);
-        assert_eq!(choice.opts.crf, 18);
+        assert_eq!(choice.opts.crf, export::DEFAULT_CRF - 2);
         assert_eq!(choice.last, ExportPresetRef::Preset("YouTube 1080p".into()));
         let (c2, _) = quick_choice(&custom, &p, &s, "out.webm".into()).unwrap();
         assert_eq!(c2.opts.out_size, Some((640, 360)));

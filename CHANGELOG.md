@@ -13,6 +13,8 @@
 
 ## 1.3.1
 
+### Export size
+- **Exports are about 3x smaller**: the graphics-card encoder now uses lookahead, B-frames and adaptive quality, its quality scale is matched to x264's, and the default quality is a little lower (a 2:12 720p60 visualizer went from 267 MB to ~86 MB). Quick Export uses the same default instead of Max quality, a keyframe lands every 2 s, and the size in the Export output bar is measured from short samples of your timeline. New **Target size** (e.g. 50 MB) aims the file at a size instead of a quality.
 ### Pages
 - **The Cut page is now the Plan page** (Alt+2, opens with the Select tool): Planner, Moodboard, Markers, Subtitles, Voiceover, Transcript and Clips beside Source | Preview and the Inspector, a small Library | Media Browser beside Timeline | Beat Aligner. New default layouts for Edit (Clips beside the Inspector), Color (a big Preview beside Inspector | Nodes | Gallery, Clips | Timeline across the middle, Color Wheels · Curves · Scopes below) and Audio (Library | Media Browser | Gallery · Preview · Voiceover | Transcript | Subtitles · Inspector over Timeline | Beat Aligner · Mixer). Saved page layouts are kept: Window ▸ Layout ▸ Reset Page Layout gets the new ones. **File ▸ Open Project…** (Ctrl+Shift+O) is now in the File menu.
 ### Audio Only and visualizers

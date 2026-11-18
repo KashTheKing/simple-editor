@@ -543,6 +543,14 @@ pub struct Settings {
     pub export_speed: String,
     /// Copy unchanged GOPs instead of re-encoding them (ships off until it is proven).
     pub export_smart_render: bool,
+    // ---- ws:export-size ----
+    /// Target size in MB (the Export pane's Target size field); 0 = off, quality (`crf`) decides.
+    pub export_target_mb: f64,
+    /// Which export defaults this file has seen: below `EXPORT_DEFAULTS_V`, `migrate_export_defaults`
+    /// moves a still-untouched old default (CRF 18, the shipped tiles' CRFs) to the new one once.
+    /// Field-level default 0: a file from before it migrates, a fresh install starts current.
+    #[serde(default)]
+    pub export_defaults_v: u32,
     // ---- ws:play-decode-path ----
     // ---- ws:play-render-thread ----
     // ---- ws:play-source-monitor ----
@@ -686,7 +694,7 @@ impl Default for Settings {
             ytdlp_dir: String::new(),
             download_dir: String::new(),
             encoder: "auto".into(),
-            crf: 18,
+            crf: crate::engine::export::DEFAULT_CRF,
             // "auto" follows `export_speed`; a stored explicit preset (old files: "veryfast") keeps winning
             preset: "auto".into(),
             confirm_overwrite: true,
@@ -867,6 +875,9 @@ impl Default for Settings {
             export_stem_by: "track".into(),
             export_speed: "balanced".into(),
             export_smart_render: false,
+            // ---- ws:export-size ----
+            export_target_mb: 0.0,
+            export_defaults_v: EXPORT_DEFAULTS_V,
             // ---- ws:play-decode-path ----
             // ---- ws:play-render-thread ----
             // ---- ws:play-source-monitor ----
@@ -927,7 +938,36 @@ impl Default for Settings {
 /// plain function every cache module can call.
 static CACHE_FOLDER: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 
+// ---- ws:export-size ----
+/// Bumped when the shipped export quality defaults change (see `migrate_export_defaults`).
+pub const EXPORT_DEFAULTS_V: u32 = 1;
+
 impl Settings {
+    /// Target size in bytes when the Target size field is on.
+    pub fn export_target_bytes(&self) -> Option<u64> {
+        (self.export_target_mb > 0.0).then(|| (self.export_target_mb * 1_000_000.0) as u64)
+    }
+
+    /// v0 -> v1: the old defaults (CRF 18 everywhere, 20 for the vertical/square tiles) made NVENC
+    /// exports 5x bigger than needed. Values still at the old shipped number move to the new default;
+    /// anything the user changed stays.
+    pub fn migrate_export_defaults(&mut self) {
+        if self.export_defaults_v >= EXPORT_DEFAULTS_V {
+            return;
+        }
+        if self.crf == 18 {
+            self.crf = crate::engine::export::DEFAULT_CRF;
+        }
+        let shipped = crate::engine::export::default_export_presets();
+        for p in &mut self.export_presets {
+            let old = if p.name.starts_with("YouTube") { 18 } else { 20 };
+            if let Some(new) = shipped.iter().find(|n| n.name == p.name).filter(|_| p.crf == old) {
+                p.crf = new.crf;
+            }
+        }
+        self.export_defaults_v = EXPORT_DEFAULTS_V;
+    }
+
     /// Every export preset card in order: built-ins, platform tiles, the user's own.
     pub fn all_export_presets(&self) -> Vec<crate::engine::export::ExportPreset> {
         crate::engine::export::all_export_presets(&self.export_presets, &self.export_user_presets)
@@ -1008,6 +1048,7 @@ impl Settings {
         match serde_json::from_str::<Settings>(&text) {
             Ok(mut s) => {
                 s.rename_cut_page();
+                s.migrate_export_defaults();
                 (s, None)
             }
             Err(e) => {
@@ -1095,6 +1136,36 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- ws:export-size ----
+    #[test]
+    fn old_export_defaults_migrate_once_and_keep_user_choices() {
+        use crate::engine::export::DEFAULT_CRF;
+        let tiles = |crf_yt: u32, crf_short: u32| {
+            serde_json::json!([
+                {"name": "YouTube 1080p", "ext": "mp4", "width": 1920, "height": 1080, "crf": crf_yt, "loudnorm": true},
+                {"name": "Shorts / Reels / TikTok", "ext": "mp4", "width": 1080, "height": 1920, "crf": crf_short, "loudnorm": true}
+            ])
+        };
+        let old = serde_json::json!({"crf": 18, "export_presets": tiles(18, 20)}).to_string();
+        let mut s: Settings = serde_json::from_str(&old).unwrap();
+        assert_eq!(s.export_defaults_v, 0, "a file from before the field reads as v0");
+        s.migrate_export_defaults();
+        assert_eq!(s.crf, DEFAULT_CRF);
+        assert_eq!((s.export_presets[0].crf, s.export_presets[1].crf), (DEFAULT_CRF - 2, DEFAULT_CRF));
+        // a user's own numbers stay, and it only ever runs once
+        let mine = serde_json::json!({"crf": 26, "export_presets": tiles(17, 30)}).to_string();
+        let mut s: Settings = serde_json::from_str(&mine).unwrap();
+        s.migrate_export_defaults();
+        assert_eq!((s.crf, s.export_presets[0].crf, s.export_presets[1].crf), (26, 17, 30));
+        s.crf = 18;
+        s.migrate_export_defaults();
+        assert_eq!(s.crf, 18, "v1 never migrates again");
+        assert_eq!(Settings::default().export_defaults_v, EXPORT_DEFAULTS_V);
+        assert_eq!(Settings::default().export_target_bytes(), None);
+        let t = Settings { export_target_mb: 50.0, ..Settings::default() };
+        assert_eq!(t.export_target_bytes(), Some(50_000_000));
+    }
 
     /// ws:neutral-web: Settings ▸ General ▸ Cache folder only works if every cache path is built from
     /// `Settings::cache_dir()`: no other file may spell out the cache folder itself.

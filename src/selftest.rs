@@ -249,6 +249,7 @@ pub fn run(args: &[String]) -> i32 {
         stem_by: Default::default(),
         overlay: None,
         fps: None,
+        target_bytes: None,
     };
     let trimmed = |a: f64, b: f64| -> Result<Project, String> {
         let mut p = Project::from_media(probe()?);
