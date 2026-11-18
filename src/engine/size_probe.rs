@@ -32,7 +32,7 @@ fn lock() -> std::sync::MutexGuard<'static, Option<State>> {
 /// Export pane can look a result up without knowing it).
 pub fn key(o: &ExportOptions) -> String {
     format!(
-        "{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}",
+        "{}|{}|{}|{}|{:?}|{:?}|{:?}|{:?}|{:?}",
         export::ext_of(&o.out_path),
         o.encoder,
         o.crf,
@@ -40,7 +40,8 @@ pub fn key(o: &ExportOptions) -> String {
         o.out_size,
         o.range,
         o.audio,
-        o.stem_by
+        o.stem_by,
+        o.fps
     )
 }
 

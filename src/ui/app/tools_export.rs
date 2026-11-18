@@ -640,10 +640,15 @@ pub(super) fn draw_pane(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     app.detect_encoders_once();
     // the export always renders the MAIN timeline - show its size/lossless state, not the open sequence's
     let main = app.project.editing.is_some().then(|| app.export_project());
-    let choice = {
-        let App { project, settings, export_ui: st, encoders, export, .. } = app;
-        export_ui::body(ui, st, main.as_ref().unwrap_or(project), settings, encoders, export.is_some())
+    let (choice, edited) = {
+        let App { project, settings, export_ui: st, encoders, export, undo, redo, .. } = app;
+        // the project settings form edits the live project (one undo step per change, like the Inspector)
+        let mut push = |p: &Project| super::push_undo_json(undo, redo, p.to_json());
+        export_ui::body(ui, st, project, main.as_ref(), settings, encoders, export.is_some(), &mut push)
     };
+    if edited {
+        app.after_edit();
+    }
     size_probe_tick(app, main);
     match choice {
         Some((c, false)) => {
@@ -683,6 +688,34 @@ fn size_probe_tick(app: &App, main: Option<Project>) {
     }
     c.opts.frames = app.export_frames();
     size_probe::request(rev, project, &c.opts, &app.text);
+}
+
+/// The palette's "Quick export": the save dialog (the Export pane's remembered folder and name), then
+/// the Export pane's current settings - started now, or queued behind a running export. The file opens
+/// in the media player when it is done, like every Quick Export.
+pub(super) fn quick_export_pane(app: &mut App) {
+    if app.ffmpeg_missing() || app.timeline_is_empty() {
+        return;
+    }
+    app.detect_encoders_once();
+    let main = app.project.editing.is_some().then(|| app.export_project());
+    let choice = {
+        let App { project, settings, export_ui: st, .. } = app;
+        export_ui::quick_pick(st, main.as_ref().unwrap_or(project), settings)
+    };
+    let Some(c) = choice else { return };
+    if files::refuses_source(&app.project, &c.opts.out_path) {
+        app.toast("That file is a source of this project - use Overwrite Original Video (Ctrl+S) instead");
+        return;
+    }
+    let out = c.opts.out_path.clone();
+    if app.export.is_some() || !app.bake_jobs.is_empty() {
+        app.export_queue.push_back(c);
+        let n = app.export_queue.len();
+        app.toast(format!("Added to the render queue ({n} waiting)"));
+    } else if app.start_export_choice(c).is_some() {
+        app.quick_open = Some(out);
+    }
 }
 
 pub(super) fn act(app: &mut App, a: Action) -> bool {

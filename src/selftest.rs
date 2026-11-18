@@ -248,6 +248,7 @@ pub fn run(args: &[String]) -> i32 {
         audio: Default::default(),
         stem_by: Default::default(),
         overlay: None,
+        fps: None,
         target_bytes: None,
     };
     let trimmed = |a: f64, b: f64| -> Result<Project, String> {

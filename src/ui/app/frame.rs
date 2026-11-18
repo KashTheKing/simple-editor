@@ -96,22 +96,22 @@ mod tests {
     #[test]
     fn auto_surface_only_in_dynamic_mode() {
         let now = Instant::now();
-        // Granular: Voiceover (behind Mixer on the Audio page) glows, Mixer stays in front
+        // Granular: Library (behind the Gallery on the Audio page) glows, the Gallery stays in front
         let mut l = Layout::audio_layout();
-        assert!(in_front(&l, Pane::Mixer));
-        assert_eq!(layout_ctl::react(&mut l, false, Pane::Voiceover, now), Surfaced::Pinned);
-        assert!(in_front(&l, Pane::Mixer), "Granular must never switch tabs");
-        assert_eq!(l.glow.iter().map(|(p, _)| *p).collect::<Vec<_>>(), vec![Pane::Voiceover]);
+        assert!(in_front(&l, Pane::Presets));
+        assert_eq!(layout_ctl::react(&mut l, false, Pane::Library, now), Surfaced::Pinned);
+        assert!(in_front(&l, Pane::Presets), "Granular must never switch tabs");
+        assert_eq!(l.glow.iter().map(|(p, _)| *p).collect::<Vec<_>>(), vec![Pane::Library]);
         // Dynamic: the same change switches, no glow
         let mut l = Layout::audio_layout();
-        assert_eq!(layout_ctl::react(&mut l, true, Pane::Voiceover, now), Surfaced::Shown);
-        assert!(in_front(&l, Pane::Voiceover));
+        assert_eq!(layout_ctl::react(&mut l, true, Pane::Library, now), Surfaced::Shown);
+        assert!(in_front(&l, Pane::Library));
         assert!(l.glow.is_empty());
         // Dynamic with the active sibling pinned: glow instead of switching
         let mut l = Layout::audio_layout();
-        l.set_pinned(Pane::Mixer, true);
-        assert_eq!(layout_ctl::react(&mut l, true, Pane::Voiceover, now), Surfaced::Pinned);
-        assert!(in_front(&l, Pane::Mixer));
+        l.set_pinned(Pane::Presets, true);
+        assert_eq!(layout_ctl::react(&mut l, true, Pane::Library, now), Surfaced::Pinned);
+        assert!(in_front(&l, Pane::Presets));
         assert_eq!(l.glow.len(), 1);
         // a hidden / absent pane is reported and glows nothing in either mode
         let mut l = Layout::audio_layout();
@@ -121,8 +121,8 @@ mod tests {
         assert!(l.glow.is_empty());
         // re-glowing a pane refreshes its entry rather than duplicating it
         let mut l = Layout::audio_layout();
-        layout_ctl::react(&mut l, false, Pane::Voiceover, now);
-        layout_ctl::react(&mut l, false, Pane::Voiceover, now + Duration::from_millis(300));
+        layout_ctl::react(&mut l, false, Pane::Library, now);
+        layout_ctl::react(&mut l, false, Pane::Library, now + Duration::from_millis(300));
         assert_eq!(l.glow.len(), 1);
         assert_eq!(l.glow[0].1, now + Duration::from_millis(300));
     }

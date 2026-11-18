@@ -161,6 +161,7 @@ fn command_kind(cmd: &palette::Command) -> &'static str {
         palette::Command::Tool(_) => "tool",
         palette::Command::Script(_) => "script",
         palette::Command::Setting(..) => "setting",
+        palette::Command::QuickExport => "export",
         palette::Command::GoTo(t) => match t {
             palette::Target::Clip { .. } => "clip",
             palette::Target::Timeline(_) => "timeline",

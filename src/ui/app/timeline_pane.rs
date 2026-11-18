@@ -212,6 +212,17 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         }
         app.after_edit();
     }
+    // ws:preview-audio-only: Ctrl+Shift drops - songs with a linked visualizer, the rest placed as usual
+    for (payload, t) in resp.dropped_with_visualizer {
+        let ids = match payload {
+            DragPayload::Asset(id) => vec![id],
+            DragPayload::Assets(ids) => ids,
+            DragPayload::Path(p) => super::audio_actions::import_now(app, &[p]),
+            DragPayload::Paths(ps) => super::audio_actions::import_now(app, &ps),
+            _ => Vec::new(),
+        };
+        super::audio_actions::add_media_with_visualizer(app, &ids, t);
+    }
     let mut aims = resp.dropped_aims.into_iter();
     for (payload, t, track) in resp.dropped_other {
         let aim = aims.next().flatten();
