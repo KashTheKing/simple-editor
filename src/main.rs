@@ -5,6 +5,7 @@
 //! `--size 1600x900`   start with this window inner size in points (reproducible screenshots)
 //! `simple-editor --dump-hotkeys out.md`   write the shortcut list (F1) as Markdown for the docs site
 //! `SE_BACKGROUND=1`   (env) open at the saved window rect without taking focus - for automation
+//! `--mcp-full-access` / `SE_MCP_FULL_ACCESS=1`   every MCP call runs, nothing asks (default on for debug and worktree builds; =0 turns it off)
 //! `--quiet` / `SE_QUIET=1`   no What's New, welcome wizard or recover-autosave prompt (implied by SE_BACKGROUND)
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -35,6 +36,9 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--quiet") {
         std::env::set_var("SE_QUIET", "1"); // before any thread starts; read by winpos::quiet
+    }
+    if args.iter().any(|a| a == "--mcp-full-access") {
+        std::env::set_var("SE_MCP_FULL_ACCESS", "1"); // read by mcp::perms::full_access
     }
     if args.first().map(|s| s.as_str()) == Some("--selftest") {
         std::process::exit(selftest::run(&args[1..]));

@@ -564,6 +564,12 @@ pub struct Settings {
     /// Hold an agent's MCP calls that leave the project (export, open/new project, settings, scripts,
     /// convert) until the user clicks Allow.
     pub assistant_guard: bool,
+    // ---- ws:mcp-permissions ----
+    /// Settings ▸ Permissions: the user's per-tool states (tool name, or `ui.action:<id>`); a tool not
+    /// listed has its default (`mcp::perms::default_perm`). Only the user's clicks write it.
+    pub mcp_perms: BTreeMap<String, crate::mcp::perms::Perm>,
+    /// The permission mode for MCP clients other than an Assistant chat (each chat has its own).
+    pub mcp_client_mode: crate::mcp::perms::Mode,
     // ---- ws:browser-layer ----
     /// Most megapixels one zoomed part of a web page is drawn with (browser layer ▸ sharp zoom).
     /// Set in settings.json.
@@ -891,6 +897,8 @@ impl Default for Settings {
             // ---- ws:assistant-pane ----
             assistant_quick: default_assistant_quick(),
             assistant_guard: true,
+            mcp_perms: BTreeMap::new(),
+            mcp_client_mode: Default::default(),
             page_zoom_megapixels: 16.0,
             assistant_key_env: "OPENAI_API_KEY".into(),
             assistant_sessions: BTreeMap::new(),

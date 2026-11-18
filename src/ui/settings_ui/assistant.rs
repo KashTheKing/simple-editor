@@ -100,8 +100,8 @@ pub(super) fn assistant_tab(ui: &mut egui::Ui, s: &mut Settings) -> bool {
 
         ui.label("Guard");
         changed |= ui
-            .checkbox(&mut s.assistant_guard, "Ask before an agent exports, opens a project, changes settings or skills, or runs scripts")
-            .on_hover_text("Applies to every MCP client, including UI actions that do the same")
+            .checkbox(&mut s.assistant_guard, "Ask before tools set to Ask")
+            .on_hover_text("Off: tools set to Ask in Settings ▸ Permissions run without asking (blocked ones still never run). Applies to every MCP client.")
             .changed();
         ui.end_row();
 

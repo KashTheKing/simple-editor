@@ -20,6 +20,7 @@ use super::list_rows::{RowSpec, Rows};
 use super::menu;
 use super::tools::{draw_glyph, glyph_text_button, Glyph};
 use crate::engine::skills::{self, Skill, Source};
+use crate::mcp::perms::Mode;
 use crate::theme::Palette;
 use eframe::egui;
 use std::collections::HashMap;
@@ -301,6 +302,10 @@ pub struct View<'a> {
     pub queued: usize,
     /// The docked panes on screen (the capture menu's "Screenshot a panel").
     pub panes: &'a [Pane],
+    /// ws:mcp-permissions: every MCP call runs (`mcp::perms::full_access`): the header shows a badge.
+    pub full_access: bool,
+    /// The running chat's access questions: (held call index, question, reason).
+    pub asks: &'a [(usize, String, String)],
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -326,6 +331,10 @@ pub enum Out {
     /// "Handle my comments" switched on (true) or off.
     Comments(bool),
     Skill(SkillOut),
+    /// ws:mcp-permissions: held call `.0` answered: 0 Allow once, 1 Always allow, 2 Deny.
+    Answer(usize, u8),
+    /// The shown chat's permission mode.
+    Mode(Mode),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -518,12 +527,25 @@ fn top_bar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, wide: bool, 
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             more_menu(ui, state, v, out);
+            if v.full_access {
+                full_access_badge(ui);
+            }
             if glyph_text_button(ui, Glyph::Letter('+'), "").on_hover_text("New chat").clicked() {
                 state.new_chat();
             }
         });
     });
     ui.add_space(2.0);
+}
+
+/// ws:mcp-permissions: "Full access" while every MCP call runs without asking.
+pub fn full_access_badge(ui: &mut egui::Ui) {
+    let c = ui.visuals().warn_fg_color;
+    egui::Frame::new().stroke(egui::Stroke::new(1.0, c)).corner_radius(8u8).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
+        ui.label(egui::RichText::new("Full access").small().color(c));
+    })
+    .response
+    .on_hover_text("Every MCP call runs without asking, blocked ones too (a development build, --mcp-full-access or                     SE_MCP_FULL_ACCESS=1). SE_MCP_FULL_ACCESS=0 turns it off.");
 }
 
 /// `⋯`: the agent, Tasks, Skills, "Handle my comments", import / export.
@@ -575,27 +597,6 @@ fn more_menu(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut 
     .on_hover_text("More: agent, tasks, skills, import and export");
 }
 
-/// How hard the model thinks, for agents that take it: a small picker beside Send.
-fn effort_picker(ui: &mut egui::Ui, v: &View, out: &mut Out) {
-    if v.backend != "claude" {
-        return;
-    }
-    let shown = EFFORTS.iter().find(|(id, _)| *id == v.effort).map_or("Effort", |(_, l)| l);
-    menu::button(ui, egui::RichText::new(format!("{shown} ▾")).small().weak(), |ui| {
-        if menu::check(ui, v.effort.is_empty(), "Default effort", "").clicked() {
-            *out = Out::Effort(String::new());
-        }
-        ui.separator();
-        for &(id, label) in EFFORTS {
-            if menu::check(ui, v.effort == id, label, "").clicked() {
-                *out = Out::Effort(id.to_string());
-            }
-        }
-    })
-    .response
-    .on_hover_text("Effort: how hard the model thinks. Higher is slower and more thorough.");
-}
-
 /// Ask where, then write `chats` there (the download).
 fn save_chats_dialog(name: &str, chats: &[&Conversation]) {
     if let Some(p) = rfd::FileDialog::new().add_filter("Chats", &["json"]).set_file_name(format!("{name}.json")).save_file() {
@@ -603,30 +604,54 @@ fn save_chats_dialog(name: &str, chats: &[&Conversation]) {
     }
 }
 
+/// The model menu under the composer: the latest models (keys 1-4 pick one while it is open, a tick on
+/// the current one), Effort, More models (every listed version, the agent's default, Other…).
 fn model_picker(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out) {
     match v.backend {
         "external" => {}
         "claude" if !state.model_other && (v.model.is_empty() || CLAUDE_MODELS.iter().any(|(id, _)| *id == v.model)) => {
-            let shown = if v.model.is_empty() { "Default model" } else { model_label(v.model) };
-            menu::button(ui, egui::RichText::new(format!("{shown} ▾")).small().weak(), |ui| {
-                if menu::check(ui, v.model.is_empty(), "Default model", "").clicked() {
-                    *out = Out::Model(String::new());
-                }
-                for (i, &(id, label)) in CLAUDE_MODELS.iter().enumerate() {
-                    if i == 0 || i == CLAUDE_ALIASES {
-                        ui.separator();
-                    }
-                    if menu::check(ui, v.model == id, label, "").clicked() {
+            let shown = if v.model.is_empty() { "Default model" } else { model_label(v.model).trim_end_matches(" (latest)") };
+            menu::button(ui, egui::RichText::new(shown).small(), |ui| {
+                const KEYS: [egui::Key; 4] = [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4];
+                for (i, &(id, label)) in CLAUDE_MODELS[..CLAUDE_ALIASES].iter().enumerate() {
+                    let num = (i + 1).to_string();
+                    let label = label.trim_end_matches(" (latest)");
+                    let hit = ui.input(|inp| inp.key_pressed(KEYS[i]));
+                    if menu::row(ui, None, label, if v.model == id { "✓" } else { num.as_str() }).clicked() || hit {
                         *out = Out::Model(id.to_string());
+                        ui.close();
                     }
                 }
                 ui.separator();
-                if menu::row(ui, None, "Other…", "").clicked() {
-                    state.model_other = true;
-                }
+                menu::sub(ui, None, "Effort", |ui| {
+                    if menu::check(ui, v.effort.is_empty(), "Default", "").clicked() {
+                        *out = Out::Effort(String::new());
+                    }
+                    for &(id, label) in EFFORTS {
+                        if menu::check(ui, v.effort == id, label, "").clicked() {
+                            *out = Out::Effort(id.to_string());
+                        }
+                    }
+                })
+                ;
+                menu::sub(ui, None, "More models", |ui| {
+                    if menu::check(ui, v.model.is_empty(), "Default model", "").clicked() {
+                        *out = Out::Model(String::new());
+                    }
+                    ui.separator();
+                    for &(id, label) in &CLAUDE_MODELS[CLAUDE_ALIASES..] {
+                        if menu::check(ui, v.model == id, label, "").clicked() {
+                            *out = Out::Model(id.to_string());
+                        }
+                    }
+                    ui.separator();
+                    if menu::row(ui, None, "Other…", "").clicked() {
+                        state.model_other = true;
+                    }
+                });
             })
             .response
-            .on_hover_text("Model");
+            .on_hover_text("Model and effort");
         }
         _ => {
             let mut m = v.model.to_string();
@@ -1468,9 +1493,31 @@ const PROMPT_ROWS: f32 = 8.0;
 
 fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palette, out: &mut Out) {
     ui.add_space(4.0);
+    // ws:mcp-permissions: the running chat's questions ("Allow media.import for this chat?")
+    for (i, q, detail) in v.asks {
+        egui::Frame::new()
+            .fill(pal.panel)
+            .stroke(egui::Stroke::new(1.0, pal.accent))
+            .corner_radius(10u8)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(egui::RichText::new(q).strong());
+                if !detail.is_empty() {
+                    ui.weak(detail.as_str());
+                }
+                if let Some(c) = answer_buttons(ui) {
+                    *out = Out::Answer(*i, c);
+                }
+            });
+        ui.add_space(4.0);
+    }
+    let mode = state.conv().map_or(Mode::default(), |c| c.mode);
+    let warn = ui.visuals().warn_fg_color;
+    let border = if mode == Mode::Bypass { warn } else { pal.border };
     egui::Frame::new()
         .fill(pal.bg)
-        .stroke(egui::Stroke::new(1.0, pal.border))
+        .stroke(egui::Stroke::new(1.0, border))
         .corner_radius(14u8)
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
@@ -1529,7 +1576,7 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
                         egui::TextEdit::multiline(&mut state.prompt)
                             .id(id)
                             .frame(false)
-                            .desired_rows(1)
+                            .desired_rows(2)
                             .desired_width(f32::INFINITY)
                             .hint_text("Ask anything…  (/ for skills)")
                             .return_key(egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter))
@@ -1551,16 +1598,7 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                let clip = glyph_text_button(ui, Glyph::Link, "").on_hover_text("Attach files (or drop them here, or paste a picture)");
-                if clip.clicked() {
-                    *out = Out::Attach(Attach::File);
-                }
-                capture_menu(ui, state, v, out);
-                let mic = glyph_text_button(ui, Glyph::Mic, if state.mic_wanted { "Stop" } else { "" });
-                let mic = mic.on_hover_text(if state.mic_wanted { "Stop dictating" } else { "Dictate the request" });
-                if mic.clicked() {
-                    state.mic_wanted = !state.mic_wanted;
-                }
+                attach_menu(ui, state, v, out);
                 if !state.mic_status.is_empty() {
                     ui.weak(state.mic_status.as_str());
                 }
@@ -1570,24 +1608,76 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
                             *out = Out::Stop;
                         }
                     } else {
-                        let send = egui::Button::new(egui::RichText::new("↑").strong()).corner_radius(12u8).min_size(egui::vec2(28.0, 24.0));
+                        let send = egui::Button::new(egui::RichText::new("↵").strong()).corner_radius(12u8).min_size(egui::vec2(28.0, 24.0));
                         let r = ui.add_enabled(can_send, send).on_hover_text("Send (Enter)").on_disabled_hover_text("Type a request first");
                         if r.clicked() {
                             *out = Out::Send;
                         }
                     }
-                    effort_picker(ui, v, out);
-                    model_picker(ui, state, v, out);
+                    let mic = glyph_text_button(ui, Glyph::Mic, if state.mic_wanted { "Stop" } else { "" });
+                    let mic = mic.on_hover_text(if state.mic_wanted { "Stop dictating" } else { "Dictate the request" });
+                    if mic.clicked() {
+                        state.mic_wanted = !state.mic_wanted;
+                    }
                 });
             });
         });
+    // under the box, on the right: model, effort, permission mode
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            mode_picker(ui, mode, out);
+            if v.backend == "claude" {
+                let e = EFFORTS.iter().find(|(id, _)| *id == v.effort).map_or("", |(_, l)| l);
+                if !e.is_empty() {
+                    ui.weak(egui::RichText::new(e).small()).on_hover_text("Effort: pick it in the model menu");
+                }
+            }
+            model_picker(ui, state, v, out);
+        });
+    });
     ui.add_space(2.0);
 }
 
-/// The camera menu: the frame at the playhead, a screenshot of a panel, an area of the window, the
+/// ws:mcp-permissions: Allow once / Always allow / Deny (the chat's questions and the approval window).
+pub fn answer_buttons(ui: &mut egui::Ui) -> Option<u8> {
+    let mut pick = None;
+    ui.horizontal(|ui| {
+        if ui.button("Allow once").clicked() {
+            pick = Some(0);
+        }
+        if ui.button("Always allow").on_hover_text("Saved in Settings ▸ Permissions").clicked() {
+            pick = Some(1);
+        }
+        if ui.button("Deny").clicked() {
+            pick = Some(2);
+        }
+    });
+    pick
+}
+
+/// The chat's permission mode: Ask / Accept edits / Bypass. Bypass shows in the warning colour.
+fn mode_picker(ui: &mut egui::Ui, mode: Mode, out: &mut Out) {
+    let text = egui::RichText::new(mode.label()).small();
+    let text = if mode == Mode::Bypass { text.color(ui.visuals().warn_fg_color) } else { text.weak() };
+    menu::button(ui, text, |ui| {
+        for m in Mode::ALL {
+            if menu::check(ui, m == mode, m.label(), "").on_hover_text(m.hint()).clicked() {
+                *out = Out::Mode(m);
+            }
+        }
+    })
+    .response
+    .on_hover_text(format!("{}. Blocked tools never run; set them in Settings ▸ Permissions.", mode.hint()));
+}
+
+/// The `+` menu: files, the frame at the playhead, a screenshot of a panel, an area of the window, the
 /// timeline range, and the selection / In-Out as context.
-fn capture_menu(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out) {
-    let r = menu::button(ui, (egui::Atom::custom(ui.id().with("cam_glyph"), egui::vec2(16.0, 16.0)), "▾"), |ui| {
+fn attach_menu(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut Out) {
+    let r = menu::button(ui, egui::RichText::new(" + ").strong(), |ui| {
+        if menu::row(ui, Some(Glyph::Link), "Files…", "").on_hover_text("Or drop them here, or paste a picture").clicked() {
+            *out = Out::Attach(Attach::File);
+        }
         if menu::row(ui, Some(Glyph::FilmStrip), "Current frame", "").clicked() {
             *out = Out::Attach(Attach::Frame);
         }
@@ -1612,10 +1702,7 @@ fn capture_menu(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &m
             *out = Out::Attach(Attach::Pin(Pin::Range));
         }
     });
-    let rect = r.response.rect;
-    let at = egui::Rect::from_min_size(egui::pos2(rect.left() + 6.0, rect.center().y - 8.0), egui::vec2(16.0, 16.0));
-    draw_glyph(ui.painter(), at, Glyph::Camera, ui.style().interact(&r.response).text_color());
-    r.response.on_hover_text("Capture the editor: the frame, a panel, an area, the timeline range");
+    r.response.on_hover_text("Attach files or capture the editor: the frame, a panel, an area, the timeline range");
 }
 
 /// ws:skills: the `/` list above a prompt box (`text`, widget `id`) while a skill name is typed:
@@ -1722,6 +1809,8 @@ mod tests {
             effort: "high",
             queued: 0,
             panes: &[],
+            full_access: false,
+            asks: &[],
         };
         state.images.push(Attachment::file(std::path::Path::new("C:\\notes.txt")));
         for tab in [Tab::Tasks, Tab::Chat, Tab::Skills] {
@@ -1806,6 +1895,8 @@ mod tests {
             effort: "",
             queued: 0,
             panes: &[],
+            full_access: false,
+            asks: &[],
         }
     }
 

@@ -828,3 +828,9 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - Slow all-states device tests run on `sample_devices` (smallest + largest of each picker group), not all 101.
 - Export (Device Emulator button, `emulator.export`): `raster::device_export` is a `FrameOverlay` whose second field is the size it returns (`export.rs` feeds ffmpeg that size and stops recycling buffers). The moving ops are found once by building the layout at the start and the end and diffing; everything else is drawn once into `Layers` (under the video, still overlay and corner mask as premultiplied colour + coverage from a black and a white pass). Each frame = copy, blit, blends, the moving ops. Live: 8 s Shorts on an SE took 76 s on a machine pegged at 100 % by other builds, where a plain Quick Export of the same project took over 280 s.
 - Fixed (fix/emulator-scrim): full-width scrims, bars and progress bars stopped 4 dp short of both screen edges (`Map::axis` applied the 4 dp side margin to every edge); an edge on the reference screen's own edge now stays on the screen edge, buttons keep the margin.
+- MCP permissions (2026-11-18, feat/mcp-permissions): `mcp/perms.rs` (Allow/Ask/Block per tool, defaults from ToolKind;
+  modes Ask / Accept edits / Bypass; `--mcp-full-access` / `SE_MCP_FULL_ACCESS`, on by default for debug and worktree
+  builds, `=0` off). Settings ▸ Permissions tab; per-chat mode in the composer; the agent's MCP URL carries `?chat=<token>`
+  so only that chat's calls get its mode; `permissions.list` / `permissions.request` (answered only by the user's click,
+  inline in the chat). Note: `media.import` and others are registered as `ToolKind::Read`, so they default to Allow.
+  Not live-checked: a real claude/codex agent calling permissions.request (tested with a curl "custom" agent).

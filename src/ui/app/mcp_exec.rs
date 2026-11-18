@@ -209,7 +209,7 @@ impl App {
     pub(super) fn handle_tool(&mut self, call: mcp::ToolCall) {
         // ---- ws:assistant-pane ---- calls that leave the project wait for the user's Allow
         let Some(call) = assistant_ctl::guard(self, call) else { return };
-        let mcp::ToolCall { name, args, reply } = call;
+        let mcp::ToolCall { name, args, reply, .. } = call;
         // ---- ws:mcp-context ---- any call keeps an open undo group alive (it closes after 30 s idle)
         if let Some(g) = self.mcp_ctx.group.as_mut() {
             g.last_call = Instant::now();

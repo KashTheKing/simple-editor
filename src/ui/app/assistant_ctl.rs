@@ -12,9 +12,11 @@ use super::tools_helpers::*;
 use super::*;
 use crate::engine::agent::{self, Event};
 use crate::engine::skills::{self, Skill, Source};
+use crate::mcp::perms::{self, Mode, Perm};
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 use crate::ui::assistant_ui::{self as aui, Attach, Line, Out, Pin, TaskStatus, View};
 use std::collections::VecDeque;
+use std::hash::BuildHasher;
 use std::sync::mpsc::TryRecvError;
 
 /// While a request is in flight the tick drains the agent's events at this cadence.
@@ -40,16 +42,7 @@ pub(super) fn leaves_project(tool: &str, args: &Value) -> bool {
     mcp::tools::leaves_project(tool, args) || matches!(tool, "skills.save" | "skills.delete")
 }
 
-/// How long the MCP client waits for a held call before it gives up.
-fn held_wait(tool: &str, args: &Value) -> Duration {
-    if mcp::tools::leaves_project(tool, args) {
-        mcp::HELD_WAIT
-    } else {
-        Duration::from_secs(60)
-    }
-}
-
-/// What "Always allow this session" remembers: the tool, or `ui.action:<id>` for one Action.
+/// What "Always allow" writes and "Allow once" remembers: the tool, or `ui.action:<id>` for one Action.
 fn allow_key(tool: &str, args: &Value) -> String {
     match args.get("id").and_then(Value::as_str) {
         Some(id) if tool == "ui.action" => format!("ui.action:{id}"),
@@ -57,18 +50,55 @@ fn allow_key(tool: &str, args: &Value) -> String {
     }
 }
 
-/// Whether `guard` would hold a call to `tool` (also what `edit.batch` refuses to run inside a batch).
-pub(super) fn needs_approval(app: &App, tool: &str, args: &Value) -> bool {
+/// ---- ws:mcp-permissions ---- A tool's state with no override (Settings ▸ Permissions shows it).
+pub(super) fn default_perm(tool: &str, args: &Value) -> Perm {
+    let kind = mcp::tools::find(tool).map_or(ToolKind::Mutate, |t| t.kind);
+    perms::default_perm(tool, kind, leaves_project(tool, args))
+}
+
+/// The permission mode of the caller: the running chat's for calls on its agent's URL, else the one
+/// for other MCP clients.
+fn mode_of(app: &App, client: &str) -> Mode {
     let rt = &app.assistant_rt;
+    if !client.is_empty() && client == rt.token && rt.run.is_some() {
+        if let Some(c) = app.assistant.run_conv.and_then(|id| app.assistant.convs.iter().find(|c| c.id == id)) {
+            return c.mode;
+        }
+    }
+    app.settings.mcp_client_mode
+}
+
+/// What a call from `client` to `tool` gets right now.
+pub(super) fn decide(app: &App, tool: &str, args: &Value, client: &str) -> Perm {
+    let rt = &app.assistant_rt;
+    let key = allow_key(tool, args);
+    // a call the user just let through (the approval's Allow, an "Allow once")
+    if rt.bypass || rt.once.contains(&key) {
+        return Perm::Allow;
+    }
     // ws:skills: the user ran /create-skill, so saving its result is what they asked for.
     // ponytail: the server doesn't know which client calls; another MCP client saving during that run
     // passes too
-    let creating = tool == "skills.save" && rt.run.is_some() && rt.skill.as_deref() == Some(skills::CREATE);
-    !rt.bypass
-        && app.settings.assistant_guard
-        && leaves_project(tool, args)
-        && !creating
-        && !rt.always.iter().any(|t| *t == allow_key(tool, args))
+    if tool == "skills.save" && rt.run.is_some() && rt.skill.as_deref() == Some(skills::CREATE) {
+        return Perm::Allow;
+    }
+    let edit = mcp::tools::find(tool).is_some_and(|t| matches!(t.kind, ToolKind::Mutate | ToolKind::Job)) && !leaves_project(tool, args);
+    let p = perms::resolve(&app.settings.mcp_perms, &key, tool, default_perm(tool, args), mode_of(app, client), edit, full_access());
+    // the old master switch: off = nothing asks (Block still holds)
+    if p == Perm::Ask && !app.settings.assistant_guard {
+        return Perm::Allow;
+    }
+    p
+}
+
+/// `perms::full_access`, off in unit tests (a test build is a debug build) so they see the guard.
+fn full_access() -> bool {
+    !cfg!(test) && perms::full_access()
+}
+
+/// Whether `guard` would not run a call to `tool` at once (what `edit.batch` refuses inside a batch).
+pub(super) fn needs_approval(app: &App, tool: &str, args: &Value) -> bool {
+    decide(app, tool, args, &app.assistant_rt.client.clone()) != Perm::Allow
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -113,8 +143,12 @@ pub(super) struct AssistantRt {
     /// MCP calls held until the user answers the approval window, with when each was held (the
     /// client gives up after `mcp::HELD_WAIT`; an Allow after that must not run it).
     held: Vec<(mcp::ToolCall, Instant)>,
-    /// Tools the user allowed for the rest of the session.
-    always: Vec<String>,
+    /// ws:mcp-permissions: keys an "Allow once" let through, each for its next call.
+    once: Vec<String>,
+    /// The running chat's token (its agent's MCP URL has `?chat=<token>`): fresh per request.
+    token: String,
+    /// The client of the call running now (a batch's inner calls are judged as the batch's).
+    client: String,
     /// Set while a released call runs, so the guard lets it through.
     bypass: bool,
     /// A task script is running (tasks.* refuse re-entry from inside it).
@@ -477,10 +511,12 @@ fn start_queued(app: &mut App) {
     };
     app.assistant.run_conv = Some(req.conv);
     let resume = if backend == agent::Backend::Claude { app.assistant.target_mut().session.clone() } else { None };
+    // ws:mcp-permissions: the agent's calls carry this chat's token, so its permission mode applies to them
+    let token = format!("{:016x}", std::collections::hash_map::RandomState::new().hash_one(Instant::now()));
     let spec = agent::Spec {
         backend,
         prompt: req.full,
-        mcp_url: url,
+        mcp_url: format!("{url}?chat={token}"),
         model: s.assistant_model.clone(),
         effort: s.assistant_effort.clone(),
         resume,
@@ -495,6 +531,8 @@ fn start_queued(app: &mut App) {
     (rt.split, rt.ok) = (false, false);
     rt.attachments = req.images;
     rt.skill = req.skill;
+    rt.token = token;
+    rt.once.clear();
     rt.run = Some(agent::start(spec));
 }
 
@@ -879,13 +917,120 @@ fn sync_store(app: &mut App) {
 // ---------------------------------------------------------------------------------------------------
 // MCP guard
 
-/// `handle_tool`'s first step: None = the call is held for the user's approval.
+/// `handle_tool`'s first step: None = the call is held for the user's approval (or refused).
 pub(super) fn guard(app: &mut App, call: mcp::ToolCall) -> Option<mcp::ToolCall> {
-    if !needs_approval(app, &call.name, &call.args) {
-        return Some(call);
+    if call.name == "permissions.request" {
+        request(app, call);
+        return None;
     }
-    app.assistant_rt.held.push((call, Instant::now()));
-    None
+    match decide(app, &call.name, &call.args, &call.client) {
+        Perm::Allow => {
+            let key = allow_key(&call.name, &call.args);
+            let rt = &mut app.assistant_rt;
+            rt.once.retain(|k| *k != key);
+            rt.client.clone_from(&call.client);
+            Some(call)
+        }
+        Perm::Block => {
+            let _ = call.reply.send(Err(format!("'{}' is blocked in Settings ▸ Permissions; only the user can change that", call.name)));
+            None
+        }
+        Perm::Ask => {
+            app.assistant_rt.held.push((call, Instant::now()));
+            None
+        }
+    }
+}
+
+/// ws:mcp-permissions: `permissions.request {tool, reason}` - answered at once when the tool already runs
+/// or is blocked, else held until the user answers the question in the chat (or the approval window).
+fn request(app: &mut App, call: mcp::ToolCall) {
+    let Some(tool) = call.args.get("tool").and_then(Value::as_str).map(str::to_string) else {
+        let _ = call.reply.send(Err("permissions.request: missing 'tool'".into()));
+        return;
+    };
+    if mcp::tools::find(&tool).is_none() {
+        let _ = call.reply.send(Err(format!("permissions.request: unknown tool '{tool}'")));
+        return;
+    }
+    let state = match decide(app, &tool, &Value::Null, &call.client) {
+        Perm::Allow => "allow",
+        Perm::Block => "block",
+        Perm::Ask => {
+            app.assistant_rt.held.push((call, Instant::now()));
+            return;
+        }
+    };
+    let _ = call.reply.send(Ok(mcp::ToolReply::Json(json!({"tool": tool, "granted": state == "allow", "state": state}))));
+}
+
+/// The question a held call asks, e.g. ("Allow media.import for this chat?", its reason or arguments).
+pub(super) fn question(c: &mcp::ToolCall) -> (String, String) {
+    let what = match (c.name.as_str(), c.args.get("id").and_then(Value::as_str).and_then(Action::from_id)) {
+        ("permissions.request", _) => c.args.get("tool").and_then(Value::as_str).unwrap_or("?").to_string(),
+        ("ui.action", Some(a)) => format!("ui.action: {}", a.label()),
+        _ => c.name.clone(),
+    };
+    let detail = match c.name.as_str() {
+        "permissions.request" => c.args.get("reason").and_then(Value::as_str).unwrap_or("").to_string(),
+        _ => aui::short(&c.args.to_string(), 120),
+    };
+    (format!("Allow {what} for this chat?"), detail)
+}
+
+/// Whether a held call came from the running chat's agent (its question is shown in the chat).
+fn from_chat(app: &App, c: &mcp::ToolCall) -> bool {
+    !c.client.is_empty() && c.client == app.assistant_rt.token && app.assistant_rt.run.is_some()
+}
+
+/// The running chat's questions: (index into the held calls, question, detail).
+fn chat_asks(app: &App) -> Vec<(usize, String, String)> {
+    let held = &app.assistant_rt.held;
+    (0..held.len()).filter(|&i| from_chat(app, &held[i].0)).map(|i| {
+        let (q, d) = question(&held[i].0);
+        (i, q, d)
+    }).collect()
+}
+
+/// The user answered held call `i`: 0 Allow once, 1 Always allow (writes Settings ▸ Permissions), 2 Deny.
+/// The only way a permission changes: no tool writes them.
+pub(super) fn answer(app: &mut App, i: usize, choice: u8) {
+    if i >= app.assistant_rt.held.len() {
+        return;
+    }
+    let (call, held_at) = app.assistant_rt.held.remove(i);
+    if call.name == "permissions.request" {
+        let tool = call.args.get("tool").and_then(Value::as_str).unwrap_or_default().to_string();
+        match choice {
+            0 => app.assistant_rt.once.push(tool.clone()),
+            1 => always_allow(app, &tool),
+            _ => {}
+        }
+        let state = ["once", "always", "denied"][choice.min(2) as usize];
+        let _ = call.reply.send(Ok(mcp::ToolReply::Json(json!({"tool": tool, "granted": choice < 2, "state": state}))));
+        return;
+    }
+    if choice >= 2 {
+        let _ = call.reply.send(Err(format!("the user denied '{}'", call.name)));
+        return;
+    }
+    if held_at.elapsed() >= mcp::held_wait(&call.name) {
+        // the agent was already told it timed out: running it now would surprise everyone
+        app.toast(format!("'{}' waited too long - the agent gave up on it; nothing was run", call.name));
+        return;
+    }
+    if choice == 1 {
+        always_allow(app, &allow_key(&call.name, &call.args));
+    }
+    app.assistant_rt.bypass = true;
+    app.handle_tool(call);
+    app.assistant_rt.bypass = false;
+}
+
+fn always_allow(app: &mut App, key: &str) {
+    app.settings.mcp_perms.insert(key.to_string(), Perm::Allow);
+    #[cfg(not(test))] // ponytail: tests must not write the user's settings.json
+    app.settings.save();
 }
 
 /// Answer every held call with an error (the user stopped the request, the app closed).
@@ -895,67 +1040,39 @@ pub(super) fn deny_held(app: &mut App, why: &str) {
     }
 }
 
-/// WINDOW_DRAWERS entry: one row per held call - Allow / Always allow this session / Deny. Non-modal;
-/// the agent's call simply waits (or times out on its side).
+/// WINDOW_DRAWERS entry: one row per held call that is not the running chat's (those ask inside the
+/// chat) - Allow once / Always allow / Deny. Non-modal; the agent's call simply waits (or times out).
 pub(super) fn approvals(app: &mut App, ctx: &egui::Context) {
-    if app.assistant_rt.held.is_empty() {
+    let rows: Vec<usize> = (0..app.assistant_rt.held.len()).filter(|&i| !from_chat(app, &app.assistant_rt.held[i].0)).collect();
+    if rows.is_empty() {
         return;
     }
     let mut pick: Option<(usize, u8)> = None;
-    // ponytail: the MCP server doesn't track which client sent a call; name it by what is running
-    let who = if app.assistant_rt.run.is_some() {
-        "The Assistant (or another connected MCP client) asks"
-    } else {
-        "A connected MCP client asks"
-    };
-    egui::Window::new("An agent wants to leave the project")
+    egui::Window::new("An agent asks for access")
         .id(egui::Id::new("assistant_approvals"))
         .collapsible(false)
         .resizable(false)
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::RIGHT_TOP, [-12.0, 60.0])
         .show(ctx, |ui| {
-            ui.label(who);
-            for (i, (c, _)) in app.assistant_rt.held.iter().enumerate() {
-                let what = match c.args.get("id").and_then(Value::as_str).and_then(Action::from_id) {
-                    Some(a) if c.name == "ui.action" => format!("ui.action: {}", a.label()),
-                    _ => c.name.clone(),
-                };
-                ui.label(egui::RichText::new(what).strong());
-                ui.weak(aui::short(&c.args.to_string(), 120));
-                ui.horizontal(|ui| {
-                    if ui.button("Allow").clicked() {
-                        pick = Some((i, 0));
-                    }
-                    if ui.button("Always allow this session").clicked() {
-                        pick = Some((i, 1));
-                    }
-                    if ui.button("Deny").clicked() {
-                        pick = Some((i, 2));
-                    }
-                });
+            ui.label("A connected MCP client asks");
+            for &i in &rows {
+                let (q, detail) = question(&app.assistant_rt.held[i].0);
+                ui.label(egui::RichText::new(q.replace(" for this chat?", "?")).strong());
+                if !detail.is_empty() {
+                    ui.weak(detail);
+                }
+                if let Some(c) = aui::answer_buttons(ui) {
+                    pick = Some((i, c));
+                }
                 ui.separator();
             }
-            ui.weak("Turn this check off in Settings ▸ Assistant.");
+            ui.weak("Change what asks in Settings ▸ Permissions.");
         });
-    let Some((i, choice)) = pick else { return };
-    let (call, held_at) = app.assistant_rt.held.remove(i);
-    if choice == 2 {
-        let _ = call.reply.send(Err(format!("the user denied '{}'", call.name)));
-        return;
+    if let Some((i, choice)) = pick {
+        answer(app, i, choice);
+        ctx.request_repaint();
     }
-    if held_at.elapsed() >= held_wait(&call.name, &call.args) {
-        // the agent was already told it timed out: running it now would surprise everyone
-        app.toast(format!("'{}' waited too long - the agent gave up on it; nothing was run", call.name));
-        return;
-    }
-    if choice == 1 {
-        app.assistant_rt.always.push(allow_key(&call.name, &call.args));
-    }
-    app.assistant_rt.bypass = true;
-    app.handle_tool(call);
-    app.assistant_rt.bypass = false;
-    ctx.request_repaint();
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -975,6 +1092,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     let queued = queued_comments(app);
     let all = skills::all();
     let panes: Vec<Pane> = app.layout.rects.iter().map(|(p, _)| *p).filter(|p| *p != Pane::Assistant).collect();
+    let asks = chat_asks(app);
     let out = {
         let s = &app.settings;
         let v = View {
@@ -988,6 +1106,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             effort: &s.assistant_effort,
             queued,
             panes: &panes,
+            full_access: perms::full_access(),
+            asks: &asks,
         };
         aui::draw(ui, &mut app.assistant, &v)
     };
@@ -1009,6 +1129,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         Out::Effort(e) => {
             app.settings.assistant_effort = e;
             app.settings.save();
+        }
+        Out::Answer(i, choice) => answer(app, i, choice),
+        Out::Mode(m) => {
+            app.assistant.conv_mut().mode = m;
+            app.assistant.dirty = true;
         }
         Out::AddTask => add_task(app),
         Out::Run(only) => {
@@ -1308,6 +1433,55 @@ fn no_reentry(app: &App) -> Result<(), String> {
     Ok(())
 }
 
+// ---- ws:mcp-permissions ----
+/// One row of `permissions.list` (and Settings ▸ Permissions): the tool, its area, its state now (with
+/// the user's override, if any) and its default.
+pub(super) fn perm_rows(app: &App) -> Vec<(&'static str, Perm, Perm)> {
+    mcp::tools::all().map(|t| {
+        let d = perms::default_for(t.name);
+        (t.name, app.settings.mcp_perms.get(t.name).copied().unwrap_or(d), d)
+    }).collect()
+}
+
+pub const PERM_TOOLS: &[ToolDef] = &[
+    ToolDef {
+        name: "permissions.list",
+        desc: "Every tool with its permission: allow (runs without asking), ask (waits for the user's Allow) or block \
+               (never runs), as set in Settings ▸ Permissions, plus the permission mode of the running chat and of other \
+               MCP clients (ask | accept_edits: edits run, what leaves the project asks | bypass: ask runs, block never) \
+               and whether full access is on (everything runs). Ask for a tool you need with permissions.request.",
+        args: &["query:string:false:only tools whose name contains this", "group:string:false:only this area, e.g. media"],
+        kind: ToolKind::Read,
+        run: |app, args| {
+            let q = arg_str(args, "query").unwrap_or("");
+            let g = arg_str(args, "group");
+            let tools: Vec<Value> = perm_rows(app)
+                .into_iter()
+                .filter(|(n, ..)| n.contains(q) && g.is_none_or(|g| perms::group(n) == g))
+                .map(|(n, p, d)| json!({"tool": n, "group": perms::group(n), "state": p, "default": d}))
+                .collect();
+            let chat = app.assistant.run_conv.and_then(|id| app.assistant.convs.iter().find(|c| c.id == id)).map(|c| c.mode);
+            Ok(ToolOutcome::Done(json!({
+                "full_access": perms::full_access(),
+                "chat_mode": chat,
+                "client_mode": app.settings.mcp_client_mode,
+                "tools": tools,
+            })))
+        },
+    },
+    ToolDef {
+        name: "permissions.request",
+        desc: "Ask the user for access to a tool that is set to ask: the question shows in the chat (\"Allow media.import \
+               for this chat?\") with Allow once / Always allow / Deny, and this call waits for the answer. Returns \
+               {tool, granted, state: allow (already runs) | block (blocked: only the user can change it in Settings) | once \
+               (its next call runs) | always | denied}. Only the user's click changes a permission. MCP only.",
+        args: &["tool:string:true:the tool's name, e.g. media.import", "reason:string:false:one line on why you need it, shown to the user"],
+        kind: ToolKind::Job,
+        // the guard answers it (`request`); this only runs from a script or the palette
+        run: |_, _| Err("permissions.request only works over MCP: the user answers it in the chat".into()),
+    },
+];
+
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "assistant.send",
@@ -1554,6 +1728,105 @@ mod tests {
         assert!(!preamble(&c, &[]).contains("assistant.attachment"));
     }
 
+    // ---- ws:mcp-permissions ----
+    fn perm_app() -> App {
+        let scratch = std::env::temp_dir().join(format!("se-perms-test-{}", std::process::id()));
+        *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(scratch);
+        // ponytail: another test may reset TEST_DIR meanwhile; `always_allow` never saves in tests anyway
+        let app = App::build(&egui::Context::default(), None, None);
+        *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        app
+    }
+
+    fn call(name: &str, args: Value) -> (mcp::ToolCall, std::sync::mpsc::Receiver<Result<mcp::ToolReply, String>>) {
+        let (reply, rx) = std::sync::mpsc::channel();
+        (mcp::ToolCall { name: name.into(), args, reply, client: String::new() }, rx)
+    }
+
+    fn json_of(r: Result<mcp::ToolReply, String>) -> Value {
+        match r {
+            Ok(mcp::ToolReply::Json(v)) => v,
+            Ok(_) => panic!("an image"),
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    /// Only the user's click changes a permission: the agent's request waits, settings.set can't write them,
+    /// and "Always allow" writes the setting.
+    #[test]
+    fn always_allow_writes_the_setting_and_an_agent_cant_grant_itself() {
+        let mut app = perm_app();
+        app.settings.mcp_client_mode = Mode::Ask;
+        assert_eq!(decide(&app, "timeline.trim", &json!({}), ""), Perm::Ask, "an edit asks in Ask mode");
+        let (c, _rx) = call("timeline.trim", json!({}));
+        assert!(guard(&mut app, c).is_none(), "held for the user");
+        // the agent can't write the permissions itself
+        let set = mcp::tools::find("settings.set").unwrap();
+        assert!((set.run)(&mut app, &json!({"key": "mcp_perms", "value": "{}"})).is_err());
+        let (c, rx) = call("permissions.request", json!({"tool": "timeline.trim", "reason": "to add your clip"}));
+        assert!(guard(&mut app, c).is_none());
+        assert_eq!(app.assistant_rt.held.len(), 2);
+        assert!(app.settings.mcp_perms.is_empty(), "asking grants nothing");
+        assert_eq!(question(&app.assistant_rt.held[1].0).0, "Allow timeline.trim for this chat?");
+        answer(&mut app, 1, 1); // the user's Always allow
+        let v = json_of(rx.recv().unwrap());
+        assert_eq!((v["granted"].as_bool(), v["state"].as_str()), (Some(true), Some("always")));
+        assert_eq!(app.settings.mcp_perms.get("timeline.trim"), Some(&Perm::Allow));
+        assert_eq!(decide(&app, "timeline.trim", &json!({}), ""), Perm::Allow);
+        // a request for a tool that already runs answers at once
+        let (c, rx) = call("permissions.request", json!({"tool": "timeline.list"}));
+        assert!(guard(&mut app, c).is_none());
+        assert_eq!(json_of(rx.recv().unwrap())["state"], "allow");
+        // permissions.list reports it
+        let list = (mcp::tools::find("permissions.list").unwrap().run)(&mut app, &json!({"query": "timeline.trim"})).unwrap();
+        let ToolOutcome::Done(list) = list else { panic!() };
+        assert_eq!(list["tools"][0]["state"], "allow");
+        assert_eq!(list["tools"][0]["default"], "ask");
+        deny_held(&mut app, "test over");
+    }
+
+    #[test]
+    fn allow_once_lets_one_call_through_and_deny_refuses() {
+        let mut app = perm_app();
+        app.settings.mcp_client_mode = Mode::Ask;
+        let (c, rx) = call("permissions.request", json!({"tool": "timeline.split"}));
+        assert!(guard(&mut app, c).is_none());
+        answer(&mut app, 0, 0);
+        assert_eq!(json_of(rx.recv().unwrap())["state"], "once");
+        assert!(app.settings.mcp_perms.is_empty(), "once is not saved");
+        assert!(guard(&mut app, call("timeline.split", json!({})).0).is_some(), "its next call runs");
+        assert!(guard(&mut app, call("timeline.split", json!({})).0).is_none(), "the one after asks again");
+        let (c, rx) = call("permissions.request", json!({"tool": "timeline.trim"}));
+        assert!(guard(&mut app, c).is_none());
+        let i = app.assistant_rt.held.len() - 1;
+        answer(&mut app, i, 2);
+        assert_eq!(json_of(rx.recv().unwrap())["granted"], false);
+        deny_held(&mut app, "test over");
+    }
+
+    #[test]
+    fn bypass_skips_ask_but_never_block() {
+        let mut app = perm_app();
+        app.settings.mcp_client_mode = Mode::Bypass;
+        assert!(guard(&mut app, call("project.new", json!({})).0).is_some(), "Ask runs in Bypass");
+        app.settings.mcp_perms.insert("project.new".into(), Perm::Block);
+        let (c, rx) = call("project.new", json!({}));
+        assert!(guard(&mut app, c).is_none());
+        assert!(rx.recv().unwrap().is_err_and(|e| e.contains("blocked")), "Block refuses at once");
+        assert!(app.assistant_rt.held.is_empty(), "nothing waits");
+        // and a request for a blocked tool is refused, not asked
+        let (c, rx) = call("permissions.request", json!({"tool": "project.new"}));
+        assert!(guard(&mut app, c).is_none());
+        assert_eq!(json_of(rx.recv().unwrap())["state"], "block");
+        // Accept edits: an edit runs, what leaves the project asks
+        app.settings.mcp_client_mode = Mode::AcceptEdits;
+        assert_eq!(decide(&app, "timeline.split", &json!({}), ""), Perm::Allow);
+        assert_eq!(decide(&app, "export.video", &json!({}), ""), Perm::Ask);
+        // the chat's token is only honoured for the running chat's agent
+        app.assistant_rt.token = "abc".into();
+        assert_eq!(decide(&app, "export.video", &json!({}), "abc"), Perm::Ask, "no chat is running: the client mode");
+    }
+
     #[test]
     fn guarded_tools() {
         let none = json!({});
@@ -1572,9 +1845,8 @@ mod tests {
         ] {
             assert!(leaves_project(t, &none), "{t}");
         }
-        assert_eq!(held_wait("skills.save", &none), mcp::HELD_WAIT);
-        assert_eq!(held_wait("timeline.cut", &none), Duration::from_secs(60));
-        assert_eq!(held_wait("export.video", &none), mcp::HELD_WAIT);
+        assert_eq!(mcp::held_wait("skills.save"), mcp::HELD_WAIT);
+        assert_eq!(mcp::held_wait("timeline.split"), mcp::HELD_WAIT, "any tool can be set to Ask");
         for t in ["timeline.cut", "editor.context", "markers.add", "project.summary", "ui.action", "tasks.add", "tasks.list", "skills.list", "skills.get"] {
             assert!(!leaves_project(t, &none), "{t}");
         }
