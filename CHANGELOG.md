@@ -2,6 +2,9 @@
 
 ## 1.3.1
 
+### Inspector
+- **Compact Inspector properties**: a visual clip shows Transform and Blend and fades (Opacity there) instead of one Properties fold; every keyframable property in the Inspector (Transform, effects, text, shapes, masks, visualizer camera, HTML parameters) is one row of a fixed-width name, the value and ◀ ◆ ▶ right after it, so long names and numbers never move the controls. Scale is Scale X / Scale Y, linked by default (editing one sets the other); Position X / Y are not linked by default; the link sits between the two rows. Speed is one row, in Transform (visual clips) or Audio (audio clips), with no separate Speed, Sound or Speed folds, a video clip shows its linked audio's Volume, Pan and the rest, several text clips edit together (Mixed where they differ), and the clip menu reads Hide Animations while the Animator is shown.
+
 ### Beat Aligner
 - **New Beat Aligner panel** (the tab beside the Timeline on the Audio page, a tab on the Cut page, anywhere from a tab bar's +): pick a song, Detect finds the BPM, beat grid and downbeats (from the cached song analysis) under a bar ruler over a big waveform; fix it with BPM, ½ / ×2, Tap tempo, offset and beats per bar. Tap Space, B or M while it plays to drop marks (calibrated latency, optional snap to the beat with a strength), or let Continuous / Fill grid mark the grid. Drag marks (snapping to beats or sub-beats), select stretches into named, coloured sections (Intro, Verse, Chorus, Drop ...) and drag their chips to move or resize them. Then turn them into timeline markers, cut the picture at the marks, put a Library sound on each mark, snap clip edges to them or apply a Zoom Punch / Shake / any Animator block on each beat; export and import CSV, Resolve marker EDL and YouTube chapters. Voice mode marks a voiceover's phrases and pauses instead. Tools: `beats.*`.
 

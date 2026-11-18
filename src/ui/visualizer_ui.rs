@@ -159,14 +159,18 @@ pub fn camera_section(ui: &mut egui::Ui, project: &mut Project, id: Id, lt: f64,
             ("Target Z", &mut cam.target_z, 0.05, "", (-1000.0, 1000.0)),
         ];
         for (name, a, speed, suffix, (lo, hi)) in rows {
-            ui.label(name);
-            let mut v = a.at(lt);
-            let r = ui.add(egui::DragValue::new(&mut v).speed(speed).suffix(suffix).range(lo..=hi).max_decimals(2));
-            g.note(&r);
-            if r.changed() {
-                a.set_at(lt, v);
-            }
-            crate::ui::key_buttons(ui, a, lt, palette, &mut g, &format!("camera {name}"), &[]);
+            crate::ui::prop_label(ui, name);
+            ui.horizontal(|ui| {
+                crate::ui::prop_value(ui, a, lt, palette, &mut g, &format!("camera {name}"), &[], |ui, a| {
+                    let mut v = a.at(lt);
+                    let dv = egui::DragValue::new(&mut v).speed(speed).suffix(suffix).range(lo..=hi).max_decimals(2);
+                    let r = crate::ui::fill(ui, dv);
+                    if r.changed() {
+                        a.set_at(lt, v);
+                    }
+                    r
+                });
+            });
             ui.end_row();
         }
     });

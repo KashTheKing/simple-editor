@@ -18,13 +18,13 @@
 //! Returns true if the project changed.
 
 use crate::hotkeys::Action;
-use crate::model::{Animated, ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle};
+use crate::model::{ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle};
 use crate::settings::{Settings, TextPreset};
 use crate::theme::Palette;
 use crate::ui::inspector_text::{set_span, span_draft_at};
 use crate::ui::markers_ui::x_button;
 use crate::ui::tools::Glyph;
-use crate::ui::{edit_start, key_buttons, key_menu, mask_grid, menu, timecode, Gesture};
+use crate::ui::{edit_start, mask_grid, menu, timecode, Gesture};
 use eframe::egui::{self, DragValue, Grid, Response, RichText};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -750,7 +750,13 @@ fn clip_section(
     // Every selected id that is still a live clip. The first is the "representative" - its widgets
     // drive the section - and edits to the bulk-editable fields propagate to the rest with
     // diff-against-original, absolute-overwrite semantics (mirrors `transition_section`).
-    let clip_ids: Vec<Id> = selection.iter().copied().filter(|&i| project.clip(i).is_some()).collect();
+    let mut clip_ids: Vec<Id> = selection.iter().copied().filter(|&i| project.clip(i).is_some()).collect();
+    // a video clip's linked audio: its sound rows (Volume, Pan, ...) show with the video's, and it does not
+    // count as a second selected clip
+    let on_audio = |i: Id| crate::ui::inspector_audio::on_audio_track(project, i);
+    let visual: Vec<Id> = clip_ids.iter().copied().filter(|&i| !on_audio(i)).collect();
+    let linked_audio: Vec<Id> = project.expand_links(&visual).into_iter().filter(|&i| on_audio(i)).collect();
+    clip_ids.retain(|i| !linked_audio.contains(i));
     let n_selected = clip_ids.len();
     let Some(&id) = clip_ids.first() else {
         return false;
@@ -949,54 +955,26 @@ fn clip_section(
     // `inspector_text::section`'s signature has no room for.
     let mut text_changed = false;
     if clip.kind == ClipKind::Text {
+        // every selected text clip at once (one undo step); the presets act on the first
+        let text_ids: Vec<Id> =
+            clip_ids.iter().copied().filter(|&i| project.clip(i).is_some_and(|c| c.kind == ClipKind::Text)).collect();
         fold(ui, &mut folds, "text", "Text", None, |ui| {
+            text_changed = crate::ui::inspector_text::section(ui, project, &text_ids, playhead, fonts, palette, undo);
             ui.add_enabled_ui(!multi, |ui| {
-                text_changed =
-                    crate::ui::inspector_text::section(ui, project, &clip_ids, playhead, fonts, palette, undo);
                 text_changed |= text_presets(ui, project, id, settings, undo, &mut save_settings);
             });
         });
     }
 
-    // Transform + Opacity & blend, or Audio - bulk-editable, committed by inspector_audio itself.
-    let audio_changed =
-        crate::ui::inspector_audio::section(ui, project, &clip_ids, playhead, palette, &mut folds, undo);
-
-    // Speed: every selected clip (and what's linked to them), through `Project::set_speed`
-    let mut speed_changed = false;
-    if clip.uses_asset() {
-        // wide enough that "Freeze Frame at Playhead" + its shortcut stays on one line
-        let retime_menu = |ui: &mut egui::Ui| {
-            ui.set_min_width(240.0);
-            menu::action_menu(ui, &[Some(Action::Retime), Some(Action::FreezeFrame)]);
-        };
-        let mut speed_menu = retime_menu;
-        let (mut pct, mut reverse) = (clip.speed * 100.0, clip.reverse);
-        let mut sg = Gesture::default();
-        fold(ui, &mut folds, "speed", "Speed", Some(&mut speed_menu), |ui| {
-            Grid::new("inspector_speed").num_columns(2).show(ui, |ui| {
-                ui.label("Speed");
-                let r = ui.add(DragValue::new(&mut pct).range(1.0..=10000.0).suffix(" %").speed(1.0));
-                mark(ui, "speed", &r);
-                sg.note(&r);
-                menu::context(&r.on_hover_text("Right-click: Retime…, Freeze frame"), retime_menu);
-                ui.end_row();
-                ui.label("Reverse");
-                sg.note(&ui.checkbox(&mut reverse, ""));
-                ui.end_row();
-                if let Some(f) = clip.freeze {
-                    ui.label("Freeze");
-                    ui.weak(format!("holds the frame at source {}", crate::ui::duration_text(f)));
-                    ui.end_row();
-                }
-            });
-        });
-        if sg.changed {
-            if sg.start {
-                undo(project);
-            }
-            speed_changed = project.set_speed(&clip_ids, pct / 100.0, reverse);
-        }
+    // Transform + Blend and fades, or Audio - bulk-editable, committed by inspector_audio itself.
+    let mut audio_changed =
+        crate::ui::inspector_audio::section(ui, project, &clip_ids, playhead, palette, &mut folds, true, undo);
+    if !linked_audio.is_empty() {
+        // open like an audio clip's own Audio section (the same fold state)
+        let primary = std::mem::replace(&mut folds.primary, "audio");
+        audio_changed |=
+            crate::ui::inspector_audio::section(ui, project, &linked_audio, playhead, palette, &mut folds, false, undo);
+        folds.primary = primary;
     }
 
     // Color: Primaries/Curves/Levels/HueShift/Vignette, added lazily on first touch - nothing to grade
@@ -1079,56 +1057,37 @@ fn clip_section(
             // shape style
             if let Some(sh) = &mut clip.shape {
                 fold(ui, &mut folds, "shape", "Shape", None, |ui| {
-                    Grid::new("inspector_shape").num_columns(2).show(ui, |ui| {
-                        ui.label("Kind");
-                        egui::ComboBox::from_id_salt("shape_kind").selected_text(sh.kind.name()).show_ui(ui, |ui| {
-                            for k in ShapeKind::ALL {
-                                g.note(&ui.selectable_value(&mut sh.kind, k, k.name()));
-                            }
-                        });
-                        ui.end_row();
-                        ui.label("Fill");
-                        g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.fill));
-                        ui.end_row();
-                        ui.label("Stroke");
-                        ui.horizontal(|ui| {
-                            g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.stroke));
-                            g.note(&ui.add(DragValue::new(&mut sh.stroke_width).range(0.0..=200.0).speed(0.2)));
-                        });
-                        ui.end_row();
-                        ui.label("Sides");
-                        g.note(&ui.add(DragValue::new(&mut sh.sides).range(3..=64)));
-                        ui.end_row();
-                        ui.label("Corner");
-                        g.note(&ui.add(DragValue::new(&mut sh.corner).range(0.0..=500.0).speed(0.5)));
-                        ui.end_row();
-                        for label in ["Width", "Height"] {
-                            ui.label(label);
-                            ui.horizontal(|ui| {
-                                let a: &mut Animated = if label == "Width" { &mut sh.w } else { &mut sh.h };
-                                let mut v = a.at(lt);
-                                let r = ui.add(DragValue::new(&mut v).range(1.0..=20000.0).speed(1.0));
-                                if r.changed() {
-                                    a.set_at(lt, v);
+                    use crate::ui::{prop_field, prop_field_val, prop_row, PROP_VAL_W};
+                    prop_field(ui, "Kind", |ui| {
+                        egui::ComboBox::from_id_salt("shape_kind")
+                            .selected_text(sh.kind.name())
+                            .width(PROP_VAL_W)
+                            .show_ui(ui, |ui| {
+                                for k in ShapeKind::ALL {
+                                    g.note(&ui.selectable_value(&mut sh.kind, k, k.name()));
                                 }
-                                g.note(&r);
-                                menu::context(&r, |ui| key_menu(ui, a, lt, &mut g, label, &[]));
-                                key_buttons(ui, a, lt, palette, &mut g, label, &[]);
                             });
-                            ui.end_row();
-                        }
-                        if sh.kind == ShapeKind::Draw {
-                            ui.label("Draw rate");
-                            ui.horizontal(|ui| {
-                                g.note(&ui.add(DragValue::new(&mut sh.draw_rate).range(0.0..=8.0).speed(0.05)));
-                                ui.weak(format!("{} strokes · {:.1} s", sh.strokes.len(), sh.draw_duration()));
-                            });
-                            ui.end_row();
-                            ui.label("Page");
-                            g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.page));
-                            ui.end_row();
-                        }
                     });
+                    prop_field(ui, "Fill", |ui| g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.fill)));
+                    prop_field(ui, "Stroke", |ui| {
+                        g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.stroke));
+                        g.note(&ui.add(DragValue::new(&mut sh.stroke_width).range(0.0..=200.0).speed(0.2)));
+                    });
+                    g.note(&prop_field_val(ui, "Sides", DragValue::new(&mut sh.sides).range(3..=64)));
+                    g.note(&prop_field_val(ui, "Corner", DragValue::new(&mut sh.corner).range(0.0..=500.0).speed(0.5)));
+                    prop_row(ui, "Width", &mut sh.w, lt, palette, &mut g, &[], |v| {
+                        DragValue::new(v).range(1.0..=20000.0).speed(1.0)
+                    });
+                    prop_row(ui, "Height", &mut sh.h, lt, palette, &mut g, &[], |v| {
+                        DragValue::new(v).range(1.0..=20000.0).speed(1.0)
+                    });
+                    if sh.kind == ShapeKind::Draw {
+                        prop_field(ui, "Draw rate", |ui| {
+                            g.note(&ui.add(DragValue::new(&mut sh.draw_rate).range(0.0..=8.0).speed(0.05)));
+                            ui.weak(format!("{} strokes · {:.1} s", sh.strokes.len(), sh.draw_duration()));
+                        });
+                        prop_field(ui, "Page", |ui| g.note(&ui.color_edit_button_srgba_unmultiplied(&mut sh.page)));
+                    }
                 });
             } else if clip.kind == ClipKind::Shape && ui.button("Add shape style").clicked() {
                 clip.shape = Some(ShapeStyle::default());
@@ -1366,7 +1325,6 @@ fn clip_section(
         || path_op.is_some()
         || audio_changed
         || text_changed
-        || speed_changed
         || effects_changed
         || html_changed // ws:html-layer
         || visualizer_changed // ws:audio-visualizer
@@ -2077,9 +2035,7 @@ mod tests {
     /// Settings with every clip section open, primary or not - for tests about a section's contents.
     fn open_all() -> Settings {
         let mut s = Settings::default();
-        for id in
-            ["transform", "opacity", "audio", "speed", "color", "effects", "text", "shape", "mask", "path", "asset"]
-        {
+        for id in ["transform", "opacity", "audio", "color", "effects", "text", "shape", "mask", "path", "asset"] {
             s.inspector_folds.insert(id.into(), true);
             s.inspector_folds.insert(format!("{id}*"), true);
         }
@@ -2099,6 +2055,8 @@ mod tests {
         playhead: f64,
         settings: Settings,
         shapes: Vec<egui::epaint::ClippedShape>,
+        /// More selected clips after `id`.
+        extra: Vec<Id>,
     }
 
     impl H {
@@ -2106,7 +2064,8 @@ mod tests {
             let ctx = egui::Context::default();
             ctx.set_fonts(crate::theme::test_fonts());
             let (sel_trans, none, undos, time, playhead) = (Vec::new(), false, 0, 0.0, 1.0);
-            Self { ctx, project, id, sel_trans, none, undos, time, playhead, settings: open_all(), shapes: Vec::new() }
+            let (settings, shapes, extra) = (open_all(), Vec::new(), Vec::new());
+            Self { ctx, project, id, sel_trans, none, undos, time, playhead, settings, shapes, extra }
         }
         fn shape_clip() -> Self {
             let mut project = Project::new();
@@ -2157,8 +2116,13 @@ mod tests {
                 ..Default::default()
             };
             let pal = Palette::new(true, egui::Color32::WHITE);
-            let H { ctx, project, id, sel_trans, none, undos, playhead, settings, .. } = self;
-            let sel: &[Id] = if sel_trans.is_empty() && !*none { &[*id] } else { &[] };
+            let H { ctx, project, id, sel_trans, none, undos, playhead, settings, extra, .. } = self;
+            let sel: Vec<Id> = if sel_trans.is_empty() && !*none {
+                std::iter::once(*id).chain(extra.iter().copied()).collect()
+            } else {
+                vec![]
+            };
+            let sel = &sel[..];
             let mut changed = false;
             let out = ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
@@ -2196,6 +2160,29 @@ mod tests {
         }
         fn click(&mut self, pos: egui::Pos2) -> bool {
             self.press(pos, egui::PointerButton::Primary)
+        }
+        /// Drag from `pos` to the right by `dx` (a DragValue edit). True if anything edited the project.
+        fn drag(&mut self, pos: egui::Pos2, dx: f32) -> bool {
+            self.time += 1.0;
+            let press = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let mut e = self.frame(vec![egui::Event::PointerMoved(pos)]);
+            e |= self.frame(vec![press(true)]);
+            for i in 1..=4 {
+                e |= self.frame(vec![egui::Event::PointerMoved(pos + egui::vec2(dx * i as f32 / 4.0, 0.0))]);
+            }
+            e | self.frame(vec![press(false)])
+        }
+        /// How many painted texts read exactly `label`.
+        fn count_text(&self, label: &str) -> usize {
+            self.shapes
+                .iter()
+                .filter(|c| matches!(&c.shape, egui::epaint::Shape::Text(t) if t.galley.text() == label))
+                .count()
         }
         /// Right-click `pos`, let the menu draw, then click its `row`. True if anything edited the project.
         fn menu_pick(&mut self, pos: egui::Pos2, row: &str) -> bool {
@@ -2289,7 +2276,7 @@ mod tests {
         assert_eq!(p.clip(cid).unwrap().label, 0, "the clip falls back to no label");
     }
 
-    /// The Speed section: right-click the field for Retime… / Freeze (queued like any menu Action -
+    /// The Speed row (in Transform): right-click the field for Retime… / Freeze (queued like any menu Action -
     /// the old "Retime… Ctrl+R" button is gone), and dragging it retimes the clip with one undo.
     #[test]
     fn speed_menu_queues_retime_and_the_field_retimes() {
@@ -2297,7 +2284,8 @@ mod tests {
         h.frame(vec![]);
         let _ = crate::ui::menu::take_queued();
         let field = h.rect("speed").center();
-        assert!(!h.menu_pick(field, Action::Retime.label()), "opening Retime is not an edit");
+        let name = egui::pos2(h.rect("speed").left() - 40.0, field.y);
+        assert!(!h.menu_pick(name, Action::Retime.label()), "opening Retime is not an edit");
         assert_eq!(crate::ui::menu::take_queued(), vec![Action::Retime]);
         assert_eq!(h.undos, 0);
 
@@ -2449,10 +2437,7 @@ mod tests {
             c.rotation.value = 3.0;
         }
         h.frame(vec![]);
-        let scale_xy = h.rect("scale_xy").center();
-        h.click(scale_xy); // Scale X / Y rows too
-        h.frame(vec![]);
-        let labels = ["Position X", "Position Y", "Scale", "Scale X", "Scale Y", "Rotation", "Opacity"];
+        let labels = ["Position X", "Position Y", "Scale X", "Scale Y", "Rotation", "Opacity"];
         let col = |h: &H, what: &str| -> Vec<(f32, f32)> {
             labels.iter().map(|l| h.rect(&format!("{what}_{l}"))).map(|r| (r.left(), r.right())).collect()
         };
@@ -2462,9 +2447,15 @@ mod tests {
         }
         let (val, kf) = (col(&h, "val")[0], col(&h, "kf")[0]);
         assert!(val.1 <= kf.0 && val.1 - val.0 > 60.0, "the value box ends before the controls: {val:?} {kf:?}");
-        // the chain slot is the last column on its two rows, right of the key column
+        // the value box starts right after the fixed name column, the keys right after it: nothing pushed right
+        assert!(val.0 - h.rect("sec_transform*").left() < crate::ui::PROP_LABEL_W + 40.0, "{val:?}");
+        assert!(kf.0 - val.1 < 30.0, "the keys follow the value box: {val:?} {kf:?}");
+        // the link sits between its two rows, right of the controls, the same column for both pairs
         assert_eq!(h.rect("pos_xy").left(), h.rect("scale_xy").left());
         assert!(h.rect("pos_xy").left() > kf.1);
+        let (px, py) = (h.rect("val_Position X"), h.rect("val_Position Y"));
+        let link = h.rect("pos_xy");
+        assert!(link.top() <= px.center().y + 1.0 && link.bottom() >= py.center().y - 1.0, "{link:?}");
         // a double-click on the name (left of the value box) keys the property at the playhead
         let row = h.rect("val_Rotation");
         let name = egui::pos2(row.left() - 60.0, row.center().y);
@@ -2473,6 +2464,178 @@ mod tests {
         h.click(name);
         let rot = &h.project.clip(h.id).unwrap().rotation;
         assert!(rot.has_key_at(1.0) && rot.keys.len() == 1, "{:?}", rot.keys);
+    }
+
+    /// A row's controls start at the same x whatever its name: a long name is cut short ("…"), never
+    /// pushing the value or the keys right.
+    #[test]
+    fn prop_rows_align_whatever_the_name() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let pal = Palette::new(true, egui::Color32::WHITE);
+        let mut rects = Vec::new();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let mut g = crate::ui::Gesture::default();
+                for name in ["X", "Rotation", "A property name far too long for the name column of the Inspector"] {
+                    let mut a = crate::model::Animated::new(1.0);
+                    rects.push(crate::ui::prop_row(ui, name, &mut a, 0.0, &pal, &mut g, &[], |v| DragValue::new(v)));
+                }
+            });
+        });
+        let xs: Vec<(f32, f32)> = rects.iter().map(|(v, k)| (v.rect.left(), k.rect.left())).collect();
+        assert!(xs.iter().all(|x| *x == xs[0]), "{xs:?}");
+    }
+
+    /// A visual clip's properties are two sections, Transform and Blend and fades (Opacity there), with no
+    /// "Properties" fold and no single Scale row.
+    #[test]
+    fn transform_and_blend_sections_only() {
+        let mut h = H::video_clip();
+        h.frame(vec![]);
+        assert!(h.maybe_rect("sec_transform*").is_some() && h.maybe_rect("sec_opacity").is_some());
+        assert!(h.text_at("Transform").is_some() && h.text_at("Blend and fades").is_some());
+        assert!(h.text_at("Properties").is_none() && h.text_at("Scale").is_none());
+        let (op, sec) = (h.rect("val_Opacity"), h.rect("sec_opacity"));
+        assert!(op.top() > sec.top(), "Opacity is in Blend and fades");
+    }
+
+    /// Scale X / Y are linked by default (editing one sets the other, through the uniform scale); unlinked
+    /// each edits its own axis. Position X / Y are not linked by default; linked, a key on X lands on Y too.
+    #[test]
+    fn scale_links_by_default_position_does_not() {
+        let mut h = H::video_clip();
+        h.frame(vec![]);
+        assert!(!h.project.clip(h.id).unwrap().scale_unlinked && !h.project.clip(h.id).unwrap().pos_linked);
+        let sx = h.rect("val_Scale X").center();
+        assert!(h.drag(sx, 40.0));
+        let c = h.project.clip(h.id).unwrap().clone();
+        assert!(c.scale.value > 1.0 && c.scale_x.value == 1.0 && c.scale_y.value == 1.0, "linked: the uniform scale");
+        assert_eq!(h.undos, 1);
+        // unlink: Scale X moves alone
+        let link = h.rect("scale_xy").center();
+        assert!(h.click(link));
+        assert!(h.project.clip(h.id).unwrap().scale_unlinked);
+        let sx = h.rect("val_Scale X").center();
+        let s0 = h.project.clip(h.id).unwrap().scale.value;
+        assert!(h.drag(sx, 40.0));
+        let c = h.project.clip(h.id).unwrap().clone();
+        assert!(c.scale_x.value > 1.0 && c.scale_y.value == 1.0 && c.scale.value == s0, "unlinked: X alone");
+        // Position: a key on X stays on X
+        let ky = |h: &H| h.project.clip(h.id).unwrap().y.is_animated();
+        let kx = h.rect("kf_Position X").center();
+        h.click(kx); // removes the key at the playhead? no key at 1 s: adds one
+        assert!(!ky(&h), "Position is not linked by default");
+        let link = h.rect("pos_xy").center();
+        h.click(link);
+        assert!(h.project.clip(h.id).unwrap().pos_linked);
+        let kx = h.rect("kf_Position X").center();
+        h.time += 1.0;
+        h.click(kx);
+        let y = &h.project.clip(h.id).unwrap().y;
+        let x = &h.project.clip(h.id).unwrap().x;
+        assert_eq!(x.has_key_at(1.0), y.has_key_at(1.0), "linked: Y follows X's key");
+    }
+
+    /// An old project's uniform scale reads as linked Scale X = Scale Y.
+    #[test]
+    fn old_uniform_scale_reads_as_linked_x_and_y() {
+        let mut p = Project::new();
+        let id = p.new_id();
+        let mut c = Clip::new(id, ClipKind::Video, "v", 0.0, 3.0);
+        c.scale.value = 2.0;
+        p.tracks[0].clips.push(c);
+        let json = p.to_json();
+        assert!(!json.contains("scale_unlinked") && !json.contains("pos_linked"), "defaults are not written");
+        let p = Project::from_json(&json).unwrap();
+        let mut h = H::with(p, id);
+        h.frame(vec![]);
+        assert!(!h.project.clip(id).unwrap().scale_unlinked);
+        // the value boxes format with decimals ("2.00"), so match the number, not the text
+        let twos = h
+            .shapes
+            .iter()
+            .filter(|c| matches!(&c.shape, egui::epaint::Shape::Text(t) if t.galley.text().trim().parse::<f64>() == Ok(2.0)))
+            .count();
+        assert!(twos >= 2, "Scale X and Scale Y both read 2");
+    }
+
+    /// An audio clip has exactly one Speed row and no Speed (or Sound) fold.
+    #[test]
+    fn audio_clip_has_one_speed_row() {
+        let mut h = H::audio_clip();
+        h.frame(vec![]);
+        assert_eq!(h.count_text("Speed"), 1, "one Speed row");
+        assert!(h.maybe_rect("sec_speed").is_none() && h.maybe_rect("sec_speed*").is_none());
+        assert!(h.text_at("Sound").is_none());
+        assert!(h.maybe_rect("speed").is_some());
+    }
+
+    /// A video clip with linked audio shows the audio's Volume / Pan with it, the pair counts as one clip,
+    /// and there is still one Speed row (the video's, which retimes both).
+    #[test]
+    fn linked_audio_props_show_with_the_video() {
+        let mut p = Project::new();
+        let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
+        let ai = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Audio).unwrap();
+        let (v, a) = (p.new_id(), p.new_id());
+        let mut vc = Clip::new(v, ClipKind::Video, "v", 0.0, 3.0);
+        let mut ac = Clip::new(a, ClipKind::Audio, "a", 0.0, 3.0);
+        vc.link = 99;
+        ac.link = 99;
+        p.tracks[vi].clips.push(vc);
+        p.tracks[ai].clips.push(ac);
+        for extra in [vec![], vec![a]] {
+            let mut h = H::with(p.clone(), v);
+            h.extra = extra;
+            h.frame(vec![]);
+            assert!(h.maybe_rect("sec_transform*").is_some(), "the video's Transform");
+            assert!(h.maybe_rect("sec_audio*").is_some(), "and the linked audio's Audio section");
+            assert!(h.ctx.data(|d| d.get_temp::<egui::Id>(egui::Id::new("test_pan_slider"))).is_some());
+            assert_eq!(h.count_text("Speed"), 1, "the one Speed row, in Transform");
+            assert!(h.maybe_rect("sec_speed").is_none() && h.maybe_rect("sec_speed*").is_none());
+            let name = h.ctx.data(|d| d.get_temp::<bool>(egui::Id::new("test_name_field_enabled")));
+            assert_eq!(name, Some(true), "the pair is one clip");
+            // a Volume edit lands on the audio clip, one undo
+            let vol = h.rect("val_Volume").center();
+            assert!(h.drag(vol, -40.0));
+            assert!(h.project.clip(a).unwrap().volume.value < 1.0);
+            assert_eq!(h.undos, 1);
+        }
+    }
+
+    /// Two text clips selected: a style edit applies to both with one undo, and a field they disagree on
+    /// reads "Mixed" until it is changed.
+    #[test]
+    fn multi_text_edit_applies_to_all() {
+        let mut p = Project::new();
+        let vi = p.tracks.iter().position(|t| t.kind == crate::model::TrackKind::Video).unwrap();
+        let (a, b) = (p.new_id(), p.new_id());
+        for (id, at, size, words) in [(a, 0.0, 40.0, "one"), (b, 4.0, 90.0, "two")] {
+            let mut c = Clip::new(id, ClipKind::Text, "t", at, 3.0);
+            let mut st = crate::model::TextStyle::default();
+            st.text = words.into();
+            st.size = crate::model::Animated::new(size);
+            c.text = Some(st);
+            p.tracks[vi].clips.push(c);
+        }
+        let mut h = H::with(p, a);
+        h.extra = vec![b];
+        h.frame(vec![]);
+        assert!(h.count_text("Mixed") >= 2, "size and text read Mixed");
+        // Bold on: both
+        let bold = h.text_at("Bold").unwrap() - egui::vec2(20.0, 0.0);
+        assert!(h.click(bold));
+        let st = |h: &H, id: Id| h.project.clip(id).unwrap().text.clone().unwrap();
+        assert!(st(&h, a).bold && st(&h, b).bold);
+        assert_eq!(h.undos, 1, "one undo for both");
+        // the size: one value for both after a drag
+        let size = h.rect("text_size").center();
+        assert!(h.drag(size, 30.0));
+        assert_eq!(st(&h, a).size, st(&h, b).size);
+        assert_eq!(h.undos, 2);
+        assert_eq!(st(&h, a).text, "one", "the wording stays each clip's own");
+        assert_eq!(st(&h, b).text, "two");
     }
 
     /// The header is label dot · name · enable: the dot's menu sets the label, the eye switches the

@@ -96,6 +96,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     let autocut_shown = app.pane_drawn(Pane::AutoCut);
+    let animator_shown = app.pane_drawn(Pane::Animator);
     let resp = {
         let App {
             project,
@@ -182,6 +183,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 realtime: &realtime_bar,
                 views: &settings.timeline_views,
                 wave_detailed: settings.timeline_waveform == "detailed",
+                animator_shown,
             },
         )
     };

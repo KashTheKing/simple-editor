@@ -959,16 +959,17 @@ pub fn mouse_section(
         ui.weak("Keyframe where it is and when it is pressed. Hover styles and their transitions play for real; links go nowhere.");
         egui::Grid::new("html_mouse").num_columns(2).show(ui, |ui| {
             for (label, a, max) in [("Mouse X", &mut m.x, vw as f64), ("Mouse Y", &mut m.y, vh as f64), ("Pressed", &mut m.down, 1.0)] {
-                ui.label(label);
+                crate::ui::prop_label(ui, label);
                 ui.horizontal(|ui| {
-                    let mut v = a.at(at);
-                    let dv = egui::DragValue::new(&mut v).range(0.0..=max).speed(if max > 1.0 { 2.0 } else { 1.0 });
-                    let r = ui.add(if max > 1.0 { dv } else { dv.fixed_decimals(0) });
-                    if r.changed() {
-                        a.set_at(at, v);
-                    }
-                    g.note(&r);
-                    crate::ui::key_buttons(ui, a, at, palette, &mut g, label, &[]);
+                    crate::ui::prop_value(ui, a, at, palette, &mut g, label, &[], |ui, a| {
+                        let mut v = a.at(at);
+                        let dv = egui::DragValue::new(&mut v).range(0.0..=max).speed(if max > 1.0 { 2.0 } else { 1.0 });
+                        let r = crate::ui::fill(ui, if max > 1.0 { dv } else { dv.fixed_decimals(0) });
+                        if r.changed() {
+                            a.set_at(at, v);
+                        }
+                        r
+                    });
                 });
                 ui.end_row();
             }
@@ -1013,21 +1014,22 @@ pub fn params_section(
     ui.weak("Each is a CSS variable: var(--name). Keyframe it to animate the layer.");
     egui::Grid::new("html_params").num_columns(2).show(ui, |ui| {
         for p in &tpl.params {
-            ui.label(crate::engine::shaderlib::label(&p.name));
+            crate::ui::prop_label(ui, &crate::engine::shaderlib::label(&p.name));
             let default = p.default.trim().parse::<f64>().unwrap_or(0.0);
             let a = tracks.entry(p.name.clone()).or_insert_with(|| crate::model::Animated::new(default));
             ui.horizontal(|ui| {
-                let mut v = a.at(at);
-                let mut dv = egui::DragValue::new(&mut v);
-                if let (Some(lo), Some(hi)) = (p.min, p.max) {
-                    dv = dv.range(lo..=hi).speed(((hi - lo) / 300.0).max(0.001));
-                }
-                let r = ui.add(dv);
-                if r.changed() {
-                    a.set_at(at, v);
-                }
-                g.note(&r);
-                crate::ui::key_buttons(ui, a, at, palette, &mut g, &p.name, &[]);
+                crate::ui::prop_value(ui, a, at, palette, &mut g, &p.name, &[], |ui, a| {
+                    let mut v = a.at(at);
+                    let mut dv = egui::DragValue::new(&mut v);
+                    if let (Some(lo), Some(hi)) = (p.min, p.max) {
+                        dv = dv.range(lo..=hi).speed(((hi - lo) / 300.0).max(0.001));
+                    }
+                    let r = crate::ui::fill(ui, dv);
+                    if r.changed() {
+                        a.set_at(at, v);
+                    }
+                    r
+                });
             });
             ui.end_row();
         }
