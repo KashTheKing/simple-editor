@@ -14,12 +14,15 @@ on the left of the Edit page (<kbd>Ctrl+1</kbd> shows or hides it).
 - Or drag files from Explorer onto the Library.
 - **Import a whole folder as a bin**: drag a folder from Explorer onto the window, click the folder button
   next to **+ Import**, or choose **File ▸ Import ▸ Import Folder as Bin…** (also in the
-  <kbd>Ctrl+P</kbd> palette and the empty-spot menu). The folder becomes a bin named after it, holding every
-  video, audio and image file inside, in name order (`take2` before `take10`); sub-folders become nested
-  bins (up to 8 levels). Hidden and system files and anything Simple Editor can't import are skipped, and
-  the toast tells you how many ("Imported 84 files into 'SFX' (3 skipped)"). Files already in the Library
-  are reused, not added twice, and stay in the bin they were in. It's one **Undo** step, runs in the
-  background, and asks first above 500 files. In **Browse**, right-click a folder ▸ **Import folder as bin**.
+  <kbd>Ctrl+P</kbd> palette and the empty-spot menu). It comes in at once as a **linked bin** named after the
+  folder: nothing is copied or scanned up front, so even a huge folder is instant. Its sub-folders show as
+  nested bins, and a bin lists its files (in name order, `take2` before `take10`) when you open it; durations
+  and thumbnails fill in for the rows you can see. Files added to or removed from the folder show up by
+  themselves. A file becomes part of the project the moment you use it (drag it to the timeline, or
+  right-click ▸ **Add to the project**), and stays filed under its bin. Right-click the bin for **Refresh**,
+  **Relink…** (the folder moved), **Convert to regular bin** (import every file now, the old way: one **Undo**
+  step, asks first above 500 files) and **Unlink** (files you already used stay). A bin whose folder is
+  missing shows a warning sign until you relink it. In **Browse**, right-click a folder ▸ **Import folder as bin**.
 - **Right-click an empty spot ▸ Import from URL…** downloads a video from YouTube, TikTok, X, Vimeo or a
   direct link. This needs [yt-dlp](https://github.com/yt-dlp/yt-dlp) (`winget install yt-dlp.yt-dlp`);
   the item only appears once it's found. **File ▸ Import ▸ From URL…** does the same.

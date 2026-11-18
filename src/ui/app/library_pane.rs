@@ -63,6 +63,16 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
             app.library.tab = 0;
         }
     }
+    // linked bins: a file made an asset from its menu, and Convert to regular bin
+    if !resp.import_paths.is_empty() {
+        let ids = app.import_files(&resp.import_paths);
+        if !ids.is_empty() {
+            app.library.selected = ids.last().copied();
+        }
+    }
+    if let Some(bin) = resp.convert_bin {
+        app.convert_linked_bin(&bin);
+    }
     if !resp.remove.is_empty() {
         app.push_undo();
         let n = resp.remove.len();

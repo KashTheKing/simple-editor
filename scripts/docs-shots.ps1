@@ -65,7 +65,7 @@ $Shots = @(
     @{ name = 'edit-page'; crop = ''; steps = @('select pattern', 'seek 10.5') }
     # the interface
     @{ name = 'page-media'; crop = ''; steps = @('page Media', 'open fractal 3') }
-    @{ name = 'page-cut'; crop = ''; steps = @('page Cut', 'select pattern', 'seek 10.5') }
+    @{ name = 'page-cut'; crop = ''; steps = @('page Plan', 'select pattern', 'seek 10.5') }
     @{ name = 'page-color'; crop = ''; steps = @('page Color', 'select pattern', 'seek 10.5') }
     @{ name = 'page-audio'; crop = ''; steps = @('page Audio', 'select music', 'seek 10.5') }
     @{ name = 'page-export'; crop = ''; steps = @('page Export', 'seek 10.5') }

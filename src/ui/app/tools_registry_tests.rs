@@ -12,6 +12,9 @@ use super::*;
 const OP_TOOLS: &[(&str, &str)] = &[
     ("add_asset", "media.import"),
     ("add_subclip", "media.subclip"),
+    ("link_bin", "media.import_folder"),
+    ("unlink_bin", "media.linked_bin"),
+    ("relink_bin", "media.linked_bin"),
     ("auto_cut", "timeline.auto_cut"),
     // ---- ws:beat-aligner ----
     ("set_beat_source", "beats.source"),
@@ -221,6 +224,7 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/editing.rs"),
     include_str!("../../model/ops/effects.rs"),
     include_str!("../../model/ops/graph.rs"),
+    include_str!("../../model/ops/linked_bins.rs"),
     include_str!("../../model/ops/markers.rs"),
     // ---- ws:pro-monitor ----
     include_str!("../../model/ops/multicam.rs"),

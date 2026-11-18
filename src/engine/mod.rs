@@ -23,6 +23,7 @@ pub mod gallery;
 pub mod gallery_sync;
 pub mod gpu;
 pub mod folder_import;
+pub mod linked_bins; // linked bins: a folder on disk browsed as a library bin
 pub mod import;
 pub mod lut;
 pub mod mixer;

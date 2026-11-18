@@ -11,6 +11,7 @@ mod editing;
 mod effects;
 mod graph;
 mod keyblocks;
+mod linked_bins;
 mod stacks; // ws:animator
 pub mod spans; // ws:animator (`MIN_SPAN`)
 mod markers;
