@@ -112,6 +112,85 @@ fn pointer_moves_over_a_paused_picture_never_move_it() {
     assert!(!app.engine.is_playing());
 }
 
+/// Run frames for `ms` milliseconds, the way the window would.
+fn run_for(ctx: &egui::Context, app: &mut PlayerApp, ms: u64, mut each: impl FnMut(&PlayerApp)) {
+    let end = Instant::now() + Duration::from_millis(ms);
+    while Instant::now() < end {
+        run(ctx, app, vec![]);
+        each(app);
+        std::thread::sleep(Duration::from_millis(8));
+    }
+}
+
+/// Reverse plays backwards from the playhead - the clock runs down and the picture follows it,
+/// never stepping forwards - and toggled off, forwards again.
+#[test]
+fn reverse_runs_the_clock_and_the_picture_backwards() {
+    let Some((ctx, mut app)) = player(3.0) else { return };
+    until_picture(&ctx, &mut app);
+    app.toggle_reverse();
+    assert!(app.engine.is_reverse() && app.engine.is_playing());
+    let mut shown = Vec::new();
+    run_for(&ctx, &mut app, 1500, |a| shown.push(a.video.pts));
+    let t = app.engine.time();
+    assert!((1.2..2.0).contains(&t), "3 s, then 1.5 s backwards: at {t}");
+    let pts = app.video.pts;
+    assert!((t - 0.15..t + 0.25).contains(&pts), "the picture ({pts}) follows the clock ({t})");
+    assert!(shown.windows(2).all(|w| w[1] <= w[0] + 1e-9), "stepped forwards while reversing: {shown:?}");
+    assert!(app.engine.dropped() <= 3, "{} frames dropped reversing", app.engine.dropped());
+    app.toggle_reverse();
+    assert!(!app.engine.is_reverse());
+    let t0 = app.engine.time();
+    run_for(&ctx, &mut app, 500, |_| {});
+    assert!(app.engine.time() > t0 + 0.2, "forwards again: {t0} -> {}", app.engine.time());
+}
+
+/// Loop on: the end of the file goes round to the start and keeps playing.
+#[test]
+fn loop_wraps_at_the_end_and_keeps_playing() {
+    let Some(f) = two_audio_one_sub() else { return };
+    let ctx = egui::Context::default();
+    let mut app = PlayerApp::new(&ctx, Engine::start(&f, 3.2, true, false));
+    app.set_loop(true);
+    assert!(app.looping());
+    let (mut late, mut wrapped) = (false, false);
+    let end = Instant::now() + Duration::from_secs(6);
+    while !wrapped && Instant::now() < end {
+        run(&ctx, &mut app, vec![]);
+        let t = app.engine.time();
+        late |= t > 3.5;
+        wrapped = late && t < 1.0;
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(wrapped, "never went round: at {}", app.engine.time());
+    assert!(app.engine.is_playing() && !app.ended);
+}
+
+/// The speed scales the clock: 2x covers twice the file time, 0.5x half; 4x (too fast to hear, so on
+/// the wall clock) four times.
+#[test]
+fn speed_scales_the_clock() {
+    let Some((ctx, mut app)) = player(0.2) else { return };
+    until_picture(&ctx, &mut app);
+    for (rate, ms, lo, hi) in [(2.0, 600, 0.85, 1.45), (0.5, 600, 0.18, 0.42), (4.0, 300, 0.9, 1.5)] {
+        app.engine.set_rate(rate);
+        app.engine.set_playing(true);
+        // the clock waits for the sound to start (picture follows sound): measure once it runs
+        let start = app.engine.time();
+        let end = Instant::now() + Duration::from_secs(3);
+        while app.engine.time() <= start + 0.02 && Instant::now() < end {
+            run(&ctx, &mut app, vec![]);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let t0 = app.engine.time();
+        run_for(&ctx, &mut app, ms, |_| {});
+        let dt = app.engine.time() - t0;
+        app.engine.set_playing(false);
+        assert!((lo..hi).contains(&dt), "{rate}x for {ms} ms moved the clock {dt} s");
+        app.seek(0.2);
+    }
+}
+
 #[test]
 fn esc_builds_the_editor_with_the_file_on_the_timeline_at_the_current_time() {
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());

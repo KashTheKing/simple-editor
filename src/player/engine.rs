@@ -9,6 +9,12 @@
 //!   is heard)`, so the picture follows what is actually coming out of the speakers.
 //! - No audio (or no output device): a wall clock.
 //!
+//! - **Reverse** (`set_reverse`): the video thread decodes `REV_CHUNK` seconds at a time backwards -
+//!   seek to the chunk's start, decode forward to where the last chunk began, queue those frames newest
+//!   first - and the clock runs down on the wall clock. Sound is muted while reversing, as the editor's
+//!   reverse shuttle does.
+//! - **Audio tracks** (`set_audio_streams`): every ticked stream is decoded and mixed into the ring.
+//!
 //! The UI thread only asks `time()`, takes the frame due (`frame_due`) and sleeps until the next one
 //! is (`next_due`). Nothing here runs between frames or while paused, except the decode-ahead filling
 //! up once.
@@ -31,6 +37,14 @@ pub const QUEUE: usize = 6;
 const RING_SECS: f64 = 0.35;
 /// Audio is decoded in blocks of this many frames.
 const BLOCK: usize = 1024;
+/// Seconds of video decoded per backwards step while reversing. Each step seeks (decodes from the
+/// keyframe before it), so longer chunks waste less; the queue holds up to one chunk + `QUEUE` frames.
+pub const REV_CHUNK: f64 = 0.5;
+/// While reversing the picture is decoded at most this wide: a chunk of frames is held at once.
+// ponytail: fixed cap; size it from free VRAM if reverse at 4K ever looks soft
+const REV_MAX_W: u32 = 1920;
+/// Above this rate the sound is muted (no pitch-keeping time stretch here), as in the editor.
+pub const MAX_AUDIBLE_RATE: f64 = 2.0;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -62,6 +76,10 @@ struct Video {
     want: (u32, u32),
     /// A frame went on screen since the last seek (or the start): paused, nothing more is taken.
     shown: bool,
+    /// Decoding backwards: the queue runs newest first.
+    reverse: bool,
+    /// Seconds per frame (from the file's rate; reverse needs it to know when a frame is due).
+    frame_dur: f64,
 }
 
 #[derive(Default)]
@@ -72,7 +90,8 @@ struct Audio {
     gen: u64,
     seek_to: Option<f64>,
     eof: bool,
-    stream: usize,
+    /// The streams mixed together; None = all of the file's (the default).
+    streams: Option<Vec<usize>>,
     /// Fractional read position (source frames) into `ring`, for rates other than 1.
     frac: f64,
     /// Last few hundred output samples (mono), for the audio-only visualizer.
@@ -82,6 +101,8 @@ struct Audio {
 struct Clock {
     playing: bool,
     rate: f64,
+    /// Running backwards (down to 0) on the wall clock; `limit` does not apply.
+    reverse: bool,
     /// Source time `t` is heard at instant `at`; `limit` caps it (the end of what is queued to play).
     t: f64,
     at: Instant,
@@ -94,6 +115,9 @@ impl Clock {
             return self.t;
         }
         let dt = now.saturating_duration_since(self.at).as_secs_f64();
+        if self.reverse {
+            return (self.t - dt * self.rate).max(0.0);
+        }
         (self.t + dt * self.rate).min(self.limit)
     }
     fn set(&mut self, t: f64) {
@@ -148,7 +172,7 @@ impl Engine {
             video_cv: Condvar::new(),
             audio: Mutex::new(Audio { head_t: at, seek_to: Some(at), ..Default::default() }),
             audio_cv: Condvar::new(),
-            clock: Mutex::new(Clock { playing: play, rate: 1.0, t: at, at: Instant::now(), limit: f64::INFINITY }),
+            clock: Mutex::new(Clock { playing: play, rate: 1.0, reverse: false, t: at, at: Instant::now(), limit: f64::INFINITY }),
             audio_clock: AtomicBool::new(false),
             quit: AtomicBool::new(false),
             volume: AtomicU32::new(1.0f32.to_bits()),
@@ -234,9 +258,10 @@ impl Engine {
     }
 
     /// With the device driving the clock, time waits at `t` until the first buffer from there is
-    /// queued to play (the callback re-anchors it) - the picture never runs ahead of the sound.
+    /// queued to play (the callback re-anchors it) - the picture never runs ahead of the sound. Not
+    /// while reversing or too fast to hear: the wall clock runs then.
     fn hold_for_audio(&self, c: &mut Clock) {
-        if self.s.audio_clock.load(Ordering::Relaxed) {
+        if self.s.audio_clock.load(Ordering::Relaxed) && !c.reverse && c.rate <= MAX_AUDIBLE_RATE {
             c.limit = c.t;
         }
     }
@@ -248,8 +273,35 @@ impl Engine {
     pub fn set_rate(&self, rate: f64) {
         let mut c = lock(&self.s.clock);
         let t = c.now(Instant::now());
+        let was_quiet = c.rate > MAX_AUDIBLE_RATE;
         c.rate = rate.clamp(0.25, 4.0);
         c.set(t);
+        self.hold_for_audio(&mut c);
+        let quiet = c.rate > MAX_AUDIBLE_RATE;
+        drop(c);
+        if was_quiet != quiet && !self.is_reverse() {
+            self.reset_audio(t); // the sound stopped (or starts) here: decode from here
+        }
+    }
+
+    pub fn is_reverse(&self) -> bool {
+        lock(&self.s.clock).reverse
+    }
+
+    /// Play backwards from the current time (on), or forwards again (off). The decoders restart from
+    /// here in the new direction.
+    pub fn set_reverse(&self, on: bool) {
+        let t = {
+            let mut c = lock(&self.s.clock);
+            if c.reverse == on {
+                return;
+            }
+            let t = c.now(Instant::now());
+            c.reverse = on;
+            t
+        };
+        lock(&self.s.video).reverse = on;
+        self.seek(t);
     }
 
     pub fn volume(&self) -> f32 {
@@ -288,6 +340,11 @@ impl Engine {
             v.shown = false;
         }
         self.s.video_cv.notify_all();
+        self.reset_audio(t);
+    }
+
+    /// The audio decoder starts over at `t`.
+    fn reset_audio(&self, t: f64) {
         {
             let mut a = lock(&self.s.audio);
             a.gen += 1;
@@ -305,18 +362,17 @@ impl Engine {
         self.seek(skip_target(self.time(), by, self.duration()));
     }
 
-    /// Play another audio stream of the file from the current time.
-    pub fn set_audio_stream(&self, n: usize) {
+    /// Mix these audio streams (0-based among the file's audio streams) from the current time on;
+    /// None = all of them.
+    pub fn set_audio_streams(&self, streams: Option<Vec<usize>>) {
         let t = self.time();
-        {
-            let mut a = lock(&self.s.audio);
-            a.stream = n;
-        }
+        lock(&self.s.audio).streams = streams;
         self.seek(t);
     }
 
-    pub fn audio_stream(&self) -> usize {
-        lock(&self.s.audio).stream
+    /// The streams being mixed; None = all.
+    pub fn audio_streams(&self) -> Option<Vec<usize>> {
+        lock(&self.s.audio).streams.clone()
     }
 
     /// The size (physical pixels) the picture is drawn at: the GPU video processor scales to it.
@@ -333,7 +389,10 @@ impl Engine {
         let mut v = lock(&self.s.video);
         let mut out = None;
         let mut skipped = 0u64;
-        while v.queue.front().is_some_and(|f| f.pts <= t + 0.002) {
+        // forwards a frame is due once the clock reaches it; backwards (newest first) once the clock
+        // has come down into it
+        let (rev, d) = (v.reverse, v.frame_dur);
+        while v.queue.front().is_some_and(|f| if rev { f.pts + d > t + 0.002 } else { f.pts <= t + 0.002 }) {
             if out.is_some() {
                 skipped += 1;
             }
@@ -356,9 +415,11 @@ impl Engine {
         out
     }
 
-    /// Source time of the next queued frame (None: nothing queued yet).
+    /// Clock time the next queued frame is due at (None: nothing queued yet); reversing, that is the
+    /// end of its frame interval.
     pub fn next_due(&self) -> Option<f64> {
-        lock(&self.s.video).queue.front().map(|f| f.pts)
+        let v = lock(&self.s.video);
+        v.queue.front().map(|f| if v.reverse { f.pts + v.frame_dur } else { f.pts })
     }
 
     /// The video ran out and everything decoded has been shown (audio: the clock passed the end).
@@ -370,6 +431,8 @@ impl Engine {
         let has_video = matches!(&*lock(&self.s.info), Some(Ok(i)) if i.has_video);
         if has_video {
             video_done
+        } else if self.is_reverse() {
+            self.time() <= 0.0
         } else {
             dur > 0.0 && self.time() >= dur - 0.01
         }
@@ -531,7 +594,10 @@ fn video_thread(s: Arc<Shared>) {
     };
     crate::media::bg::raise_thread();
     let dur = 1.0 / fps;
+    lock(&s.video).frame_dur = dur;
     let mut next_t = 0.0;
+    // reversing: where the chunk decoded last began (the next one ends there)
+    let mut rev_hi = f64::NAN;
     let mut last_pts = f64::NEG_INFINITY;
     let mut spare: Vec<Frame> = Vec::new();
     let mut pending = None;
@@ -550,6 +616,7 @@ fn video_thread(s: Arc<Shared>) {
                     next_t = t;
                     last_pts = f64::NEG_INFINITY;
                     retried = false;
+                    rev_hi = t + dur * 0.5; // the frame showing at t is in the first chunk
                 }
                 if !v.eof && v.queue.len() < QUEUE {
                     break;
@@ -558,6 +625,10 @@ fn video_thread(s: Arc<Shared>) {
             }
             (v.gen, v.want)
         };
+        if lock(&s.video).reverse {
+            rev_hi = reverse_chunk(&s, src.as_mut(), gen, want, info.size, rev_hi, dur, &mut spare);
+            continue;
+        }
         if let Some(v) = take_upgrade(&up, &mut pending, &s, next_t, dur) {
             src = v;
             up = None;
@@ -607,6 +678,49 @@ fn video_thread(s: Arc<Shared>) {
     }
 }
 
+/// Reversing: decode the `REV_CHUNK` seconds before `hi` forwards and queue them newest first. Returns
+/// where the next chunk ends (this one's first frame); at the start of the file, marks the end.
+#[allow(clippy::too_many_arguments)]
+fn reverse_chunk(s: &Shared, src: &mut dyn VideoSource, gen: u64, want: (u32, u32), native: (u32, u32), hi: f64, dur: f64, spare: &mut Vec<Frame>) -> f64 {
+    let (mut w, mut h) = if want.0 > 0 && want.1 > 0 { want } else { native };
+    if w > REV_MAX_W {
+        h = ((h as u64 * REV_MAX_W as u64 / w as u64) as u32).max(2) & !1;
+        w = REV_MAX_W;
+    }
+    let lo = (hi - REV_CHUNK).max(0.0);
+    let mut frames: Vec<Arc<Frame>> = Vec::new();
+    let mut t = lo;
+    while t < hi && hi > 0.0 {
+        if lock(&s.video).gen != gen || s.quit.load(Ordering::Relaxed) {
+            return hi; // a seek or a direction change: the video thread starts over
+        }
+        let Some(f) = src.frame_gpu(t, w, h).or_else(|| src.frame_shared(t, w, h, spare)) else { break };
+        if f.pts >= hi - 1e-6 {
+            break;
+        }
+        t = f.pts.max(t) + dur;
+        if frames.last().is_none_or(|l| f.pts > l.pts + 1e-6) {
+            frames.push(f);
+        }
+    }
+    let mut v = lock(&s.video);
+    if v.gen != gen {
+        return hi;
+    }
+    let first = frames.first().map(|f| f.pts);
+    let was_empty = v.queue.is_empty();
+    v.queue.extend(frames.into_iter().rev());
+    if lo <= 0.0 || first.is_none() {
+        v.eof = true; // this chunk reached the start of the file
+    }
+    drop(v);
+    s.video_cv.notify_all();
+    if was_empty {
+        s.wake();
+    }
+    first.unwrap_or(0.0)
+}
+
 fn audio_thread(s: Arc<Shared>) {
     use cpal::traits::StreamTrait;
     crate::media::mf::init_thread();
@@ -614,7 +728,14 @@ fn audio_thread(s: Arc<Shared>) {
     let stream = open_output(s.clone());
     s.audio_clock.store(stream.is_some(), Ordering::Relaxed);
     let mut stream_playing = false;
-    let mut src: Option<(usize, Box<dyn AudioSource>)> = None;
+    // the open sources, one per stream mixed
+    let mut srcs: Vec<(usize, Box<dyn AudioSource>)> = Vec::new();
+    let mut opened: Option<Vec<usize>> = None;
+    let mut mixed = vec![0f32; BLOCK * 2];
+    let n_streams = match &*lock(&s.info) {
+        Some(Ok(i)) => i.audio_streams.len().max(1),
+        _ => 1,
+    };
     let mut next_t = 0.0;
     let mut gen = u64::MAX;
     let mut block = vec![0f32; BLOCK * 2];
@@ -623,7 +744,10 @@ fn audio_thread(s: Arc<Shared>) {
         if s.quit.load(Ordering::Relaxed) {
             return;
         }
-        let playing = lock(&s.clock).playing;
+        let (playing, quiet) = {
+            let c = lock(&s.clock);
+            (c.playing, c.reverse || c.rate > MAX_AUDIBLE_RATE)
+        };
         if let Some(st) = &stream {
             // a paused player keeps no audio device busy
             if playing != stream_playing {
@@ -631,32 +755,41 @@ fn audio_thread(s: Arc<Shared>) {
                 let _ = if playing { st.play() } else { st.pause() };
             }
         }
-        let stream_n = {
+        let want = {
             let mut a = lock(&s.audio);
             if let Some(t) = a.seek_to.take() {
                 next_t = t;
                 gen = a.gen;
             }
-            if a.ring.len() >= ahead || a.eof {
+            // reversing / too fast to hear: nothing to decode (the callback plays silence)
+            if a.ring.len() >= ahead || a.eof || quiet {
                 let _ = s.audio_cv.wait_timeout(a, Duration::from_millis(100));
                 continue;
             }
-            a.stream
+            a.streams.clone().unwrap_or_else(|| (0..n_streams).collect())
         };
-        if src.as_ref().is_none_or(|(n, _)| *n != stream_n) {
-            src = media::open_audio(&p, stream_n, Backend::Auto).ok().map(|a| (stream_n, a));
+        if opened.as_ref() != Some(&want) {
+            srcs = want.iter().filter_map(|&n| media::open_audio(&p, n, Backend::Auto).ok().map(|a| (n, a))).collect();
+            opened = Some(want);
         }
-        let Some((_, a_src)) = src.as_mut() else {
-            lock(&s.audio).eof = true;
-            continue;
-        };
-        let duration = a_src.duration();
-        a_src.read_at(next_t, &mut block);
+        // the ticked streams, summed (none ticked: silence, and time still runs)
+        mixed.fill(0.0);
+        let mut duration = 0.0f64;
+        for (_, a_src) in srcs.iter_mut() {
+            duration = duration.max(a_src.duration());
+            a_src.read_at(next_t, &mut block);
+            for (m, x) in mixed.iter_mut().zip(&block) {
+                *m += x;
+            }
+        }
+        if srcs.is_empty() {
+            duration = lock(&s.info).as_ref().and_then(|i| i.as_ref().ok()).map_or(0.0, |i| i.duration);
+        }
         let mut a = lock(&s.audio);
         if a.gen != gen {
             continue;
         }
-        a.ring.extend(block.iter().copied());
+        a.ring.extend(mixed.iter().copied());
         next_t += BLOCK as f64 / SAMPLE_RATE as f64;
         if duration > 0.0 && next_t >= duration {
             a.eof = true;
@@ -687,14 +820,14 @@ fn fill(s: &Shared, out: &mut [f32], info: &cpal::OutputCallbackInfo) {
     let ts = info.timestamp();
     let latency = ts.playback.duration_since(ts.callback);
     let heard_at = Instant::now() + latency;
-    let (playing, rate) = {
+    let (playing, rate, quiet) = {
         let c = lock(&s.clock);
-        (c.playing, c.rate)
+        (c.playing, c.rate, c.reverse || c.rate > MAX_AUDIBLE_RATE)
     };
     let gain = if s.muted.load(Ordering::Relaxed) { 0.0 } else { f32::from_bits(s.volume.load(Ordering::Relaxed)) };
     let mut a = lock(&s.audio);
     let frames = out.len() / 2;
-    if !playing {
+    if !playing || quiet {
         out.fill(0.0);
         return;
     }
@@ -718,7 +851,8 @@ fn fill(s: &Shared, out: &mut [f32], info: &cpal::OutputCallbackInfo) {
         for c in 0..2 {
             let x0 = a.ring[idx * 2 + c];
             let x1 = a.ring[(idx + 1) * 2 + c];
-            out[i * 2 + c] = (x0 + (x1 - x0) * k) * gain;
+            // several tracks summed can pass full scale
+            out[i * 2 + c] = ((x0 + (x1 - x0) * k) * gain).clamp(-1.0, 1.0);
         }
         a.frac += rate;
         played += 1;
@@ -748,6 +882,50 @@ fn fill(s: &Shared, out: &mut [f32], info: &cpal::OutputCallbackInfo) {
 mod tests {
     use super::*;
 
+    /// Amplitude of the `f` Hz component of interleaved stereo `x` (Goertzel on the mono mix).
+    fn tone(x: &[f32], f: f32) -> f32 {
+        let mono: Vec<f32> = x.chunks_exact(2).map(|c| (c[0] + c[1]) * 0.5).collect();
+        let w = std::f32::consts::TAU * f / SAMPLE_RATE as f32;
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for v in &mono {
+            let s0 = v + 2.0 * w.cos() * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        let power = s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2;
+        2.0 * power.max(0.0).sqrt() / mono.len() as f32
+    }
+
+    /// The audio heard is exactly the ticked streams mixed: the test file's stream 0 is a 440 Hz tone,
+    /// stream 1 an 880 Hz one.
+    #[test]
+    fn the_audio_selection_mixes_exactly_the_ticked_streams() {
+        let Some(f) = crate::player::tracks::tests::two_audio_one_sub() else { return };
+        let ring = |sel: Option<Vec<usize>>| -> Vec<f32> {
+            let e = Engine::start(&f, 1.0, false, false);
+            if sel.is_some() {
+                e.set_audio_streams(sel);
+            }
+            // paused, the audio thread still decodes its ring ahead once
+            let end = Instant::now() + Duration::from_secs(8);
+            while lock(&e.s.audio).ring.len() < 16384 && Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let x: Vec<f32> = lock(&e.s.audio).ring.iter().copied().take(16384).collect();
+            x
+        };
+        for (sel, a440, a880) in [(None, true, true), (Some(vec![0]), true, false), (Some(vec![1]), false, true), (Some(vec![0, 1]), true, true)] {
+            let x = ring(sel.clone());
+            assert_eq!(x.len(), 16384, "{sel:?}: no audio decoded");
+            let (m440, m880) = (tone(&x, 440.0), tone(&x, 880.0));
+            assert_eq!(m440 > 0.03, a440, "{sel:?}: 440 Hz at {m440}");
+            assert_eq!(m880 > 0.03, a880, "{sel:?}: 880 Hz at {m880}");
+        }
+        // nothing ticked: silence (and time still runs)
+        let x = ring(Some(vec![]));
+        assert!(x.len() == 16384 && x.iter().all(|v| v.abs() < 1e-4), "silence when no track is ticked");
+    }
+
     #[test]
     fn skip_stays_inside_the_file() {
         assert_eq!(skip_target(5.0, -10.0, 60.0), 0.0);
@@ -759,7 +937,7 @@ mod tests {
     #[test]
     fn paused_clock_holds_and_playing_clock_runs_at_rate() {
         let at = Instant::now();
-        let mut c = Clock { playing: false, rate: 1.0, t: 4.0, at, limit: f64::INFINITY };
+        let mut c = Clock { playing: false, rate: 1.0, reverse: false, t: 4.0, at, limit: f64::INFINITY };
         assert_eq!(c.now(at + Duration::from_secs(3)), 4.0);
         c.playing = true;
         c.rate = 2.0;

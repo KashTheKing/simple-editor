@@ -1,8 +1,8 @@
 //! The player's look: Simple Editor's own theme (the palette, Look and accent picked in Settings ▸
 //! Appearance, read by `PlayerApp::new`) on a media player's layout - the picture edge to edge, a
 //! title strip on top (Editor button, title, window buttons) and a bottom bar over the video: a thick
-//! scrub bar, the timecode, the editor's five play buttons with skip 10 / 30 s in place of frame steps,
-//! then subtitles and audio, volume, full screen, mini player and more. Both fade with the pointer
+//! scrub bar, the timecode, Reverse - previous - back 10 s - play - forward 30 s - next - Loop, then
+//! speed, subtitles and audio tracks, volume, full screen, mini player and more. Both fade with the pointer
 //! (`ui::autohide`). Every control is a big target: 48-52 pt buttons, a 64 pt play button, a scrub
 //! bar that grabs anywhere in its 28 pt height.
 //!
@@ -23,6 +23,8 @@ pub mod icon {
     pub const NEXT: char = '\u{F8AD}'; // Glyph::Jump(Right)
     pub const PLAY: char = '\u{F5B0}'; // Glyph::Play
     pub const PAUSE: char = '\u{F8AE}'; // Glyph::Pause
+    pub const REVERSE: char = '\u{EDD9}'; // Glyph::Tri(Left)
+    pub const LOOP: char = '\u{E8EE}'; // RepeatAll
     pub const BACK10: char = '\u{ED3C}';
     pub const FORWARD30: char = '\u{ED3D}';
     pub const CAPTIONS: char = '\u{E7F0}'; // Glyph::Subtitles
@@ -41,8 +43,8 @@ pub mod icon {
     pub const FOLDER: char = '\u{E8B7}'; // Glyph::Folder
     pub const INFO: char = '\u{E946}';
     pub const CHECK: char = '\u{E73E}';
-    pub const ALL: [char; 26] = [
-        EDIT, PREVIOUS, NEXT, PLAY, PAUSE, BACK10, FORWARD30, CAPTIONS, VOLUME[0], VOLUME[1], VOLUME[2], VOLUME[3], MUTE,
+    pub const ALL: [char; 28] = [
+        EDIT, PREVIOUS, NEXT, PLAY, PAUSE, REVERSE, LOOP, BACK10, FORWARD30, CAPTIONS, VOLUME[0], VOLUME[1], VOLUME[2], VOLUME[3], MUTE,
         FULLSCREEN, EXIT_FULLSCREEN, MINI, UNMINI, MORE, MINIMIZE, MAXIMIZE, RESTORE, CLOSE, MUSIC, FOLDER, INFO, CHECK,
     ];
 }
@@ -385,8 +387,11 @@ fn bottom_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, bottom: Rect) {
     // controls row: timecode | the five play buttons | tracks, volume, full screen, mini, more
     let cy = (scrub_rect.bottom() + bar.bottom()) / 2.0 + 2.0;
     let p = ui.painter().clone();
+    // narrow: the timecode without the length, a shorter volume slider
+    let wide = bar.width() >= 1180.0;
     let now_g = p.layout_no_wrap(tc(app, t), FontId::proportional(16.0), pal.text);
-    let dur_g = p.layout_no_wrap(format!(" / {}", tc(app, dur)), FontId::proportional(16.0), pal.text_dim);
+    let dur_text = if wide { format!(" / {}", tc(app, dur)) } else { String::new() };
+    let dur_g = p.layout_no_wrap(dur_text, FontId::proportional(16.0), pal.text_dim);
     let x = bar.left() + 18.0;
     let tc_right = x + now_g.size().x + dur_g.size().x;
     p.galley(pos2(x, cy - now_g.size().y / 2.0), now_g.clone(), pal.text);
@@ -404,7 +409,8 @@ fn bottom_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, bottom: Rect) {
     if icon_button(ui, pal, side(2.0), fc, 18.0, false, ftip).clicked() {
         app.toggle_fullscreen(&ctx);
     }
-    let slider = Rect::from_min_max(pos2(side(2.0).left() - 8.0 - 120.0, cy - 20.0), pos2(side(2.0).left() - 8.0, cy + 20.0));
+    let sw = if wide { 120.0 } else { 80.0 };
+    let slider = Rect::from_min_max(pos2(side(2.0).left() - 8.0 - sw, cy - 20.0), pos2(side(2.0).left() - 8.0, cy + 20.0));
     volume_slider(app, ui, pal, slider);
     let speaker = Rect::from_center_size(pos2(slider.left() - SIDE / 2.0, cy), vec2(SIDE, SIDE));
     let mtip = if app.engine.muted() { "Unmute (M)" } else { "Mute (M)" };
@@ -417,13 +423,26 @@ fn bottom_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, bottom: Rect) {
         toggle(app, Flyout::Tracks);
         app.tracks();
     }
-    ANCHORS.with(|a| a.set([tracks, more]));
+    let speed = Rect::from_center_size(pos2(tracks.left() - 32.0, cy), vec2(60.0, SIDE));
+    if speed_button(ui, pal, speed, app.engine.rate(), app.flyout == Some(Flyout::Speed)).clicked() {
+        toggle(app, Flyout::Speed);
+    }
+    ANCHORS.with(|a| a.set([speed, tracks, more]));
 
     // the play buttons, centred - pushed right of the timecode / left of the right group when narrow
-    let w = 4.0 * BTN + PLAY + 4.0 * 8.0;
-    let cx = bar.center().x.min(tracks.left() - 12.0 - w / 2.0).max(tc_right + 12.0 + w / 2.0);
+    let w = 6.0 * BTN + PLAY + 6.0 * 8.0;
+    let cx = bar.center().x.min(speed.left() - 12.0 - w / 2.0).max(tc_right + 12.0 + w / 2.0);
     let sq = |dx: f32| Rect::from_center_size(pos2(cx + dx, cy), vec2(BTN, BTN));
     let (near, far) = (PLAY / 2.0 + 8.0 + BTN / 2.0, PLAY / 2.0 + 16.0 + BTN * 1.5);
+    let outer = PLAY / 2.0 + 24.0 + BTN * 2.5;
+    let rev = app.engine.is_reverse();
+    if icon_button(ui, pal, sq(-outer), icon::REVERSE, 24.0, rev, if rev { "Reverse: on" } else { "Reverse" }).clicked() {
+        app.toggle_reverse();
+    }
+    let looping = app.looping();
+    if icon_button(ui, pal, sq(outer), icon::LOOP, 20.0, looping, if looping { "Loop: on" } else { "Loop" }).clicked() {
+        app.set_loop(!looping);
+    }
     if icon_button(ui, pal, sq(-far), icon::PREVIOUS, 20.0, false, "Previous (Ctrl+Left)").clicked() {
         app.prev(&ctx);
     }
@@ -462,8 +481,34 @@ fn volume_slider(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect) {
 }
 
 thread_local! {
-    /// Where the flyout buttons were drawn this frame: tracks, more.
-    static ANCHORS: std::cell::Cell<[Rect; 2]> = const { std::cell::Cell::new([Rect::NOTHING; 2]) };
+    /// Where the flyout buttons were drawn this frame: speed, tracks, more.
+    static ANCHORS: std::cell::Cell<[Rect; 3]> = const { std::cell::Cell::new([Rect::NOTHING; 3]) };
+}
+
+/// "1×", "0.25×" ...
+pub fn speed_label(rate: f64) -> String {
+    format!("{}×", (rate * 100.0).round() / 100.0)
+}
+
+/// The speed button: the current rate as text, in the accent when it is not 1×.
+fn speed_button(ui: &mut Ui, pal: &Palette, rect: Rect, rate: f64, open: bool) -> Response {
+    let r = ui.interact(rect, ui.id().with("speed"), Sense::click()).on_hover_text("Playback speed");
+    let p = ui.painter();
+    let down = r.is_pointer_button_down_on();
+    if down {
+        p.rect_filled(rect.shrink(2.0), radius(ui), pal.accent);
+    } else if r.hovered() || open {
+        p.rect_filled(rect.shrink(2.0), radius(ui), ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let fg = if down {
+        on_accent(pal.accent)
+    } else if (rate - 1.0).abs() > 1e-6 {
+        pal.accent
+    } else {
+        pal.text
+    };
+    p.text(rect.center(), Align2::CENTER_CENTER, speed_label(rate), FontId::proportional(16.0), fg);
+    r
 }
 
 fn toggle(app: &mut PlayerApp, f: Flyout) {
@@ -581,16 +626,16 @@ fn chips(ui: &mut Ui, pal: &Palette, labels: &[String], on: usize) -> Option<usi
     hit
 }
 
-pub const SPEEDS: [f64; 7] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
+pub const SPEEDS: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0];
 
 fn flyouts(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette, full: Rect) {
     let Some(f) = app.flyout else { return };
-    let [tracks_at, more_at] = ANCHORS.with(|a| a.get());
-    let anchor = match f {
-        Flyout::Tracks => tracks_at,
-        Flyout::More => more_at,
+    let [speed_at, tracks_at, more_at] = ANCHORS.with(|a| a.get());
+    let (anchor, width) = match f {
+        Flyout::Speed => (speed_at, 160.0),
+        Flyout::Tracks => (tracks_at, 320.0),
+        Flyout::More => (more_at, 300.0),
     };
-    let width = 300.0;
     if anchor == Rect::NOTHING {
         app.flyout = None;
         return;
@@ -604,6 +649,7 @@ fn flyouts(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette, full: Rect) 
             flyout_frame(pal, ctx).show(ui, |ui| {
                 ui.set_width(width - 12.0);
                 match f {
+                    Flyout::Speed => speed_flyout(app, ui, pal),
                     Flyout::Tracks => tracks_flyout(app, ui, pal),
                     Flyout::More => more_flyout(app, ui, pal),
                 }
@@ -616,8 +662,31 @@ fn flyouts(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette, full: Rect) 
     }
 }
 
+/// One row per speed, ticked at the current one.
+fn speed_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
+    let rate = app.engine.rate();
+    for s in SPEEDS {
+        let label = if s == 1.0 { "Normal".to_string() } else { speed_label(s) };
+        if flyout_row(ui, pal, Some((s - rate).abs() < 1e-6), None, &label).clicked() {
+            app.engine.set_rate(s);
+            app.flyout = None;
+        }
+    }
+}
+
+/// "Stereo", "Mono", "5.1" ...
+fn channels(n: u32) -> String {
+    match n {
+        0 => String::new(),
+        1 => "Mono".into(),
+        2 => "Stereo".into(),
+        6 => "5.1".into(),
+        8 => "7.1".into(),
+        n => format!("{n} ch"),
+    }
+}
+
 fn tracks_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
-    let current_audio = app.engine.audio_stream();
     let current_sub = app.subtitle.as_ref().map(|(n, _)| *n);
     let Some(t) = app.tracks().cloned() else {
         ui.horizontal(|ui| {
@@ -626,13 +695,20 @@ fn tracks_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
         });
         return;
     };
+    // audio: every stream the file has, each ticked one mixed in (all of them at first)
     heading(ui, pal, "Audio");
-    if t.audio.is_empty() {
+    let streams = app.info.as_ref().map(|i| i.audio_streams.clone()).unwrap_or_default();
+    if streams.is_empty() {
         flyout_row(ui, pal, None, None, "No audio");
     }
-    for a in &t.audio {
-        if flyout_row(ui, pal, Some(a.index == current_audio), None, &a.label).clicked() && a.index != current_audio {
-            app.engine.set_audio_stream(a.index);
+    let on = app.engine.audio_streams();
+    for (n, a) in streams.iter().enumerate() {
+        let name = t.audio.get(n).map_or_else(|| a.label(), |tr| tr.label.clone());
+        let ch = channels(a.channels);
+        let label = if ch.is_empty() { name } else { format!("{name} · {ch}") };
+        let ticked = on.as_ref().is_none_or(|v| v.contains(&n));
+        if flyout_row(ui, pal, Some(ticked), None, &label).clicked() {
+            app.set_audio_track(n, !ticked, streams.len());
         }
     }
     ui.add_space(4.0);
@@ -649,13 +725,6 @@ fn tracks_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
 }
 
 fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
-    heading(ui, pal, "Playback speed");
-    let rate = app.engine.rate();
-    let labels: Vec<String> = SPEEDS.iter().map(|s| if *s == 1.0 { "Normal".into() } else { format!("{s}×") }).collect();
-    let on = SPEEDS.iter().position(|s| (s - rate).abs() < 1e-6).unwrap_or(3);
-    if let Some(i) = chips(ui, pal, &labels, on) {
-        app.engine.set_rate(SPEEDS[i]);
-    }
     if app.info.as_ref().is_some_and(|i| i.has_video) {
         heading(ui, pal, "Zoom");
         let labels: Vec<String> = Zoom::ALL.iter().map(|z| z.label().to_string()).collect();
@@ -670,13 +739,10 @@ fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
     if flyout_row(ui, pal, Some(shuffle), None, "Shuffle").clicked() {
         app.set_shuffle(!shuffle);
     }
-    let repeat = match app.playlist.repeat {
-        Repeat::Off => "Repeat",
-        Repeat::All => "Repeat all",
-        Repeat::One => "Repeat one",
-    };
-    if flyout_row(ui, pal, Some(app.playlist.repeat != Repeat::Off), None, repeat).clicked() {
-        app.cycle_repeat();
+    // the whole folder, round and round (Loop on the bar repeats the one file)
+    let all = app.playlist.repeat == Repeat::All;
+    if flyout_row(ui, pal, Some(all), None, "Repeat folder").clicked() {
+        app.set_repeat_folder(!all);
     }
     ui.separator();
     if flyout_row(ui, pal, None, Some(icon::INFO), "Media info").clicked() {

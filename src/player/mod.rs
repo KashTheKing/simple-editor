@@ -10,7 +10,8 @@
 //! The chrome (`chrome`) wears the editor's theme - Settings ▸ Appearance's theme, palette, Look and
 //! accent, the one thing read from the editor's settings - on a media player's layout: a title strip
 //! with an Editor button, a bottom bar over the video with the scrub bar, the timecode, previous - back
-//! 10 s - play - forward 30 s - next, then tracks, volume, full screen, mini player and More. Esc or the
+//! 10 s - play - forward 30 s - next between Reverse and Loop, then speed, tracks (audio tracks mixed,
+//! any combination), volume, full screen, mini player and More. Esc or the
 //! Editor button builds the editor in this process (`Root`), with the file on the timeline at the
 //! current time.
 
@@ -67,9 +68,10 @@ impl Zoom {
     }
 }
 
-/// The tracks / More flyouts.
+/// The speed / tracks / More flyouts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flyout {
+    Speed,
     Tracks,
     More,
 }
@@ -91,12 +93,19 @@ struct Prefs {
     muted: bool,
     shuffle: bool,
     repeat: u8,
+    /// Audio tracks ticked per file (lower-case path); a file not listed plays all of them.
+    // ponytail: grows by one entry per file whose tracks were changed; prune if it ever gets big
+    audio: std::collections::HashMap<String, Vec<usize>>,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0 }
+        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default() }
     }
+}
+
+fn file_key(p: &Path) -> String {
+    p.to_string_lossy().to_lowercase()
 }
 
 fn prefs_path() -> PathBuf {
@@ -171,6 +180,9 @@ impl PlayerApp {
             std::fs::read(prefs_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         engine.set_volume(prefs.volume);
         engine.set_muted(prefs.muted);
+        if let Some(v) = prefs.audio.get(&file_key(engine.path())) {
+            engine.set_audio_streams(Some(v.clone()));
+        }
         let repeat = match prefs.repeat {
             1 => Repeat::All,
             2 => Repeat::One,
@@ -245,9 +257,47 @@ impl PlayerApp {
     pub fn toggle_play(&mut self) {
         if self.ended && !self.engine.is_playing() {
             self.ended = false;
-            self.engine.seek(0.0);
+            // played out: again from the start (backwards: from the end)
+            self.engine.seek(if self.engine.is_reverse() { self.engine.duration() } else { 0.0 });
         }
         self.engine.set_playing(!self.engine.is_playing());
+    }
+
+    /// Reverse: play backwards from here (playing), or forwards again.
+    pub fn toggle_reverse(&mut self) {
+        self.ended = false;
+        self.engine.set_reverse(!self.engine.is_reverse());
+        self.engine.set_playing(true);
+    }
+
+    pub fn looping(&self) -> bool {
+        self.playlist.repeat == Repeat::One
+    }
+
+    /// Loop: the file repeats (both ways); remembered.
+    pub fn set_loop(&mut self, on: bool) {
+        self.playlist.repeat = if on { Repeat::One } else { Repeat::Off };
+        self.prefs.repeat = self.playlist.repeat as u8;
+        self.prefs_dirty = true;
+    }
+
+    /// Tick / untick audio track `n` (of `count`); the ticked ones are mixed. Remembered per file.
+    pub fn set_audio_track(&mut self, n: usize, on: bool, count: usize) {
+        let mut v = self.engine.audio_streams().unwrap_or_else(|| (0..count).collect());
+        v.retain(|&m| m != n);
+        if on {
+            v.push(n);
+            v.sort_unstable();
+        }
+        let key = file_key(self.path());
+        let all = v == (0..count).collect::<Vec<_>>();
+        if all {
+            self.prefs.audio.remove(&key);
+        } else {
+            self.prefs.audio.insert(key, v.clone());
+        }
+        self.prefs_dirty = true;
+        self.engine.set_audio_streams((!all).then_some(v));
     }
 
     pub fn skip(&mut self, by: f64) {
@@ -267,6 +317,9 @@ impl PlayerApp {
         self.engine.set_volume(vol);
         self.engine.set_muted(muted);
         self.engine.set_rate(rate);
+        if let Some(v) = self.prefs.audio.get(&file_key(path)) {
+            self.engine.set_audio_streams(Some(v.clone()));
+        }
         let c = ctx.clone();
         self.engine.set_wake(Arc::new(move || c.request_repaint()));
         self.info = None;
@@ -309,8 +362,9 @@ impl PlayerApp {
         self.prefs_dirty = true;
     }
 
-    pub fn cycle_repeat(&mut self) {
-        self.playlist.repeat = self.playlist.repeat.next();
+    /// Repeat the folder (on) or not.
+    pub fn set_repeat_folder(&mut self, on: bool) {
+        self.playlist.repeat = if on { Repeat::All } else { Repeat::Off };
         self.prefs.repeat = self.playlist.repeat as u8;
         self.prefs_dirty = true;
     }
@@ -468,12 +522,24 @@ impl PlayerApp {
             return None;
         }
         let next = self.engine.next_due()?;
-        Some(((next - t) / self.engine.rate()).max(0.0))
+        // (backwards the next frame is due below `t`)
+        Some(((next - t).abs() / self.engine.rate()).max(0.0))
     }
 
     /// The file played out: repeat / next per the playlist, else stop on the last frame.
     fn handle_end(&mut self, ctx: &egui::Context) {
         if !self.engine.is_playing() || !self.engine.at_end() || self.scrub.is_some() {
+            return;
+        }
+        if self.engine.is_reverse() {
+            // back at the start: Loop goes round from the end, else stop on the first frame
+            if self.looping() {
+                self.seek(self.engine.duration());
+            } else {
+                self.engine.set_playing(false);
+                self.ended = true;
+                self.hide.poke(self.now());
+            }
             return;
         }
         let cur = self.path().to_path_buf();
@@ -593,6 +659,27 @@ impl PlayerApp {
         ctx.request_repaint_after(Duration::from_millis(30));
     }
 
+    /// `SE_PLAYER_SHOT_SETUP=at=20,reverse,loop,rate=2,flyout=tracks` (visual checks, with `SE_PLAYER_SHOT`):
+    /// the state to picture, set once the window shows - the player has no MCP to set it with.
+    fn shot_setup(&mut self) {
+        let Some(spec) = self.shot.as_ref().and(std::env::var("SE_PLAYER_SHOT_SETUP").ok()) else { return };
+        for item in spec.split(',').map(str::trim) {
+            match item.split_once('=') {
+                Some(("rate", r)) => self.engine.set_rate(r.parse().unwrap_or(1.0)),
+                Some(("at", t)) => self.seek(t.parse().unwrap_or(0.0)),
+                Some(("flyout", "speed")) => self.flyout = Some(Flyout::Speed),
+                Some(("flyout", "tracks")) => {
+                    self.flyout = Some(Flyout::Tracks);
+                    self.tracks();
+                }
+                Some(("flyout", "more")) => self.flyout = Some(Flyout::More),
+                _ if item == "reverse" => self.toggle_reverse(),
+                _ if item == "loop" => self.playlist.repeat = Repeat::One,
+                _ => {}
+            }
+        }
+    }
+
     /// The click on the video only hid the controls (`autohide::Output::dismissed`): no play/pause.
     pub(crate) fn cancel_click(&mut self) {
         self.pending_click = None;
@@ -644,6 +731,7 @@ impl eframe::App for PlayerApp {
         if just {
             // the clock starts with the picture: no frames skipped, no sound before the window
             self.engine.set_playing(true);
+            self.shot_setup();
             self.window_shown = true;
             self.shown_at_frame = self.frames;
             ctx.request_repaint(); // the next update is the first one after a present
