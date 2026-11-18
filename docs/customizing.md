@@ -30,6 +30,39 @@ be allowed to make the editor feel like it hitched.
   `curl` against the MCP endpoint directly.
 - `editor.event` — set only inside a fired `-- @on` hook, to the event's JSON payload.
 
+### Assistant scripts (`scripts.eval`)
+
+The Assistant (or any MCP client) can run a Luau script **straight away** with `scripts.eval {code, purpose}`
+(`src/ui/app/script_ctl.rs`, runner `scripting::run_api`). It is how an agent organises a library of hundreds of
+assets, audits a timeline or makes many edits in one go without reading 60 KB of JSON.
+
+- **One undo step**, labelled `Script: <purpose>` (inside an Assistant request it joins the request's step). If the
+  script errors, every edit it made is undone. `dry_run: true` runs it, reports, then undoes it.
+- **Output**: `print(...)` (tables print as JSON) and the chunk's `return` value come back, capped at `max_output`
+  characters (default 16 000) with a "truncated: refine your query" note.
+- **API** (the prelude in `src/scripting.rs`): `editor.tool(name, args)` for any project / library tool,
+  `library.assets(filter)` (every field: id, name, path, ext, kind, duration, width, height, fps, codec, size, tags,
+  label, folder, description, used, uses), `library.get / summary / set / update / move / tag`, `library.bins /
+  create_bin / rename_bin / move_bin / delete_bin`, `library.linked / linked_files` (read-only listing of linked
+  folders), `project.get / summary / timeline / clips / tracks / markers / subtitles / sequences / spans / blocks`,
+  and `query.filter / find / map / pluck / ids / sort / group_by / count_by / sum / keys / has`.
+- **Sandbox**: no `io`, no `require` / `package` (mlua's Luau `require` would read files), no `loadstring` /
+  `getfenv` / `setfenv`, an `os` cut down to `clock / time / date / difftime`. `editor.tool` admits project and
+  library tools only (`script_may_call`): Read / Mutate tools, none that take a path, folder-on-disk or URL argument,
+  none of `export.*`, `project.open / new / save`, `settings.*`, `scripts.*`, `tasks.*`, `skills.*`, `assistant.*`,
+  `ui.*`, the content library's downloads, imports / exports to files. The only file-system effect is listing a
+  linked folder the user added (`media.linked`), read only, never outside it. Asset paths are strings.
+- **Budgets**: `budget_ms` wall-clock (default 10 s, at most 60 s), 20 million interpreter steps, 256 MB of memory.
+- **Guard**: because a script cannot leave the project, `scripts.eval` is **not** held for the Allow prompt even with
+  Settings ▸ Assistant's guard on - the user asked for library-wide scripting without a prompt per run. Scripts with
+  full access stay held: `scripts.run` (the user's own script files) and `tasks.run`.
+
+The library tools work without a script too: `media.summary` (counts by kind / extension / bin / used, the bin tree,
+in a few KB), `media.list {kind, folder, nested, used, query, tags, label, ext, untagged, ids, fields, sort, limit,
+offset}`, `media.bulk_set {ids | filter, folder, tags, add_tags, remove_tags, label, description}` and
+`library.bins {action: list | create | rename | move | delete, bin, to}`. The built-in skill `/organize-library`
+uses them end to end.
+
 **Header metadata** (parsed without starting the VM, so it's cheap to list every script):
 ```
 -- @name My Hook
@@ -87,7 +120,8 @@ were written per feature as it landed; if a row disagrees with `tools/list`, `to
 > `transcribe.run`) are listed below.
 > With `Settings.assistant_guard` on (default), `export.*`, `project.open`, `project.new`,
 > `settings.set`, `scripts.run`, `tasks.run`, `media.convert` and `media.batch_convert` called over MCP
-> wait for the user's Allow (`ui/app/assistant_ctl.rs`, `leaves_project`; `profile.fetch` too). The Assistant redesign added
+> wait for the user's Allow (`ui/app/assistant_ctl.rs`, `leaves_project`; `profile.fetch` too). `scripts.eval` is not
+> held: it reaches the project and library only (see "Assistant scripts" above). The Assistant redesign added
 > `assistant.add_selection`, `assistant.attachments`, `assistant.attachment` and the five `tasks.*` tools.
 
 > **Creator Kit (1.2.0).** `skills.save` and `skills.delete`
@@ -351,10 +385,11 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `layout.surface` | Ui | force, pane | Reveal a pane now, the pin-aware way (result: Shown \| Pinned \| Hidden \| Absent — Pinned/Hidden mean the tab was NOT switched); force=true ignores pins and re-opens a hidden pane like the View menu. |
 | `layout.workspace` | Ui | name | Switch to a named workspace (see layout.list's 'workspaces') — the same undo-preserving swap as Alt+1..6 / the menu-bar strip. |
 
-**`library.*`** (2 tools)
+**`library.*`** (3 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
+| `library.bins` | Mutate | action, bin, to | Media library bins (nested by `/`): `list` (default) every bin as `{bin, assets, total}`; `create`; `rename` (`to` = new name); `move` (`to` = new parent, `""` = top level; onto an existing bin it merges); `delete` (its assets go to the root, never deleted). |
 | `library.columns` | Ui | columns | Get/set Settings.library_columns — the cells a list row shows after the name, in order. |
 | `library.select` | Ui | ids, paths | Set the library selection (asset ids and/or file paths); omit both to clear it. |
 
@@ -377,7 +412,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `markers.remove` | Mutate | id | Remove a marker by id. |
 | `markers.set` | Mutate | author, done, duration, icon, id, label, name, note, t | Edit a marker: only the fields given change (done=true ticks a comment off). t: timeline seconds (timeline markers only). |
 
-**`media.*`** (15 tools)
+**`media.*`** (19 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -388,7 +423,10 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `media.import_folder` | Job | path, bin_name, linked, recursive, extensions | Import a folder as a library bin named after it (`bin_name` overrides). `linked` (default true) links it instantly: nothing scanned or probed, sub-folders show as nested bins, files are listed when a bin opens and become assets when used; the project saves only folder + bin. `linked: false` imports every supported file now, sorted naturally, sub-folders as nested bins (up to 8 deep, `recursive` false = top level only), `extensions` filters (`["wav","mp3"]`), skipping and counting hidden/system/unsupported files, reusing files already in the library; replies when applied ("Imported 84 files into 'SFX' (3 skipped)"). One undo step either way. |
 | `media.linked_bin` | Read | action, bin, path | Linked bins: `list` (default; with `bin` also that folder's sub-bins and files, each with its asset id once used), `unlink` (used files stay as assets), `relink` (to `path`), `refresh`, `convert` (import every file under it and make it a regular bin, in the background). One undo step per change. |
 | `media.import_sequence` | Job | fps, path | Detect the numbered still run `path` belongs to (3+ frames, same prefix/extension) and bake it to one video asset in the background; fires the `import` hook once when it lands. |
-| `media.list` | Read | - | Library assets (id, path, kind, duration, size, tags, label, folder, description, used). |
+| `media.bulk_set` | Mutate | ids, filter, folder, tags, add_tags, remove_tags, label, description | File, tag or label many assets in one undo step: the assets in `ids`, or every asset `filter` matches (media.list's filter keys; `{}` = all). `folder` is a bin path, created when missing. Never deletes. |
+| `media.linked` | Read | bin, sub | Linked folders `{bin, path}`; with `bin`, one level of that folder (`sub` below it): sub-folders and media files with their asset ids. Read only, never outside a linked folder. |
+| `media.list` | Read | kind, folder, nested, used, query, tags, label, ext, untagged, ids, fields, sort, limit, offset | No arguments on a library of up to 100 assets: the plain array of every asset. Otherwise a page `{total, offset, count, next_offset, assets, note?}` of the matching assets with just `fields` (default id, name, kind, folder, duration, used, tags, label; `"all"` adds path, ext, width, height, fps, codec, size, audio_streams, description, uses, parent, range, proxy). |
+| `media.summary` | Read | - | The library in a few KB: counts by kind, extension, bin and used / unused, untagged / unlabelled, top tags, the bin tree `{bin, assets, total}`, linked folders, smart bins, sequences. |
 | `media.relink` | Mutate | dir, ids | Relink offline assets: by file name, then by duration within one frame, inside dir (+ one level of subfolders); returns {relinked, still_missing}. |
 | `media.scene_cuts` | Mutate | as_markers, clip_id, split, threshold | ffmpeg select='gt(scene,T)' shot-change detection over the clip's source. Neither flag: pure detection, returns cut times (source secs). as_markers adds one point marker (duration 0) per cut and fires marker_added; split cuts the clip at each one. Synchronous (blocks the UI thread for the ffmpeg pass) — documented ceiling. A cut reported at the very first frame is dropped. |
 | `media.set` | Mutate | description, folder, id, label, tags | Edit asset metadata. |
@@ -496,10 +534,11 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `scopes.read` | Read | kind | Current-frame histogram/percentile/mean statistics (waveform/parade/vectorscope share the same summary — see the tool's own note). |
 
-**`scripts.*`** (2 tools)
+**`scripts.*`** (3 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
+| `scripts.eval` | Ui | code, purpose, dry_run, budget_ms, max_output | Run a Luau script now against the project and library, as one undo step `Script: <purpose>` (undone if it errors); sandboxed to project / library tools, so not held for Allow. See "Assistant scripts" above. |
 | `scripts.list` | Read | - | Luau scripts with @name/@desc/@hotkey/@on metadata. |
 | `scripts.run` | Mutate | event, name | Run a script by name (file stem). Pass 'event' to test-run it as if an @on hook fired with that JSON payload (its own @budget_ms applies); omit 'event' to queue a plain run, same as picking it from the Scripts menu. |
 

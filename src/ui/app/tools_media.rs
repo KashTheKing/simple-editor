@@ -16,23 +16,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 let ids = app.import_files(&paths);
                 Ok(json!({"ok": true, "asset_ids": ids}))
             }
-            "media.list" => {
-                let used = app.project.used_assets();
-                let list: Vec<Value> = app
-                    .project
-                    .assets
-                    .iter()
-                    .map(|a| {
-                        json!({
-                            "id": a.id, "path": a.path, "kind": format!("{:?}", a.kind),
-                            "duration": a.duration, "width": a.width, "height": a.height,
-                            "tags": a.tags, "label": a.label, "folder": a.folder,
-                            "description": a.description, "used": used.contains(&a.id),
-                        })
-                    })
-                    .collect();
-                Ok(json!(list))
-            }
+            "media.list" => super::media_api::list(&app.project, args), // ws:assistant-luau
             "media.set" => {
                 let id = req(arg_u64(args, "id"), "id")?;
                 let a = app.project.asset_mut(id).ok_or("no such asset")?;
@@ -105,7 +89,7 @@ pub const TOOLS: &[ToolDef] = &[
         kind: ToolKind::Read,
         run: |app, args| linked_bin_tool(app, args),
     },
-    row!("media.list", ToolKind::Read, "Library assets (id, path, kind, duration, size, tags, label, folder, description, used).", &[]),
+    row!("media.list", ToolKind::Read, "Library assets. With no arguments on a library of up to 100 assets: the array of every asset (id, name, path, kind, duration, width, height, tags, label, folder, description, used). Otherwise a page {total, offset, count, next_offset, assets} of the assets matching the filters, each with just `fields` (default id, name, kind, folder, duration, used, tags, label; \"all\" for every field: also path, ext, width, height, fps, codec, size, audio_streams, description, uses, parent, range, proxy). Read media.summary first on a big library.", &["kind:string:false:video | audio | image | html (a list or comma string for several)", "folder:string:false:a bin path; \"\" = the root", "nested:boolean:false:with folder: include sub-bins (default true)", "used:boolean:false:true = on a timeline, false = unused", "query:string:false:words that must all appear in the name, path, tags or description", "tags:array:false:must have all of these", "label:integer:false:0..8", "ext:string:false:file extensions, e.g. \"wav,mp3\"", "untagged:boolean:false:only assets without tags", "ids:array:false:only these", "fields:array:false:field names, or \"all\"", "sort:string:false:id | name | duration | kind | folder | ext | uses | label | size; '-name' = descending", "limit:integer:false:default 100, at most 5000", "offset:integer:false:skip this many"]),
     row!("media.set", ToolKind::Mutate, "Edit asset metadata.", &["id:integer:true:", "description:string:false:", "tags:array:false:strings", "label:integer:false:0..8", "folder:string:false:", "proxy:string:false:auto | on | off (per-source proxy; auto builds one only when decoding is too slow for real time)"]),
     // Job-kind: never routed through `dispatch` (they don't mutate the project directly, they write a
     // file) - `App::handle_tool` starts the job via `start_tool_job` and replies when it finishes.

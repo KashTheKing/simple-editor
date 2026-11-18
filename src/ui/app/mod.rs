@@ -176,6 +176,8 @@ mod voiceover_pane;
 mod template_ctl; // ws:animator-templates
 mod beats_ctl; // ws:beat-aligner
 mod audio_only; // ws:preview-audio-only
+mod media_api; // ws:assistant-luau
+mod script_ctl; // ws:assistant-luau
 #[path = "windows.rs"]
 mod windows_dlg;
 
@@ -1774,6 +1776,9 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     beats_ctl::TOOLS,
     // ---- ws:preview-audio-only ----
     audio_only::TOOLS,
+    // ---- ws:assistant-luau ----
+    media_api::TOOLS,
+    script_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
