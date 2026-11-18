@@ -162,6 +162,9 @@ pub enum Pane {
     /// The running export: progress, ETA, the queue, Cancel, and the last finished file (was the
     /// Exporting… window; `ui::app::render_pane`).
     Rendering,
+    // ---- ws:beat-aligner ----
+    /// Mark a song's beats / a voiceover's phrases, tap along, name sections and cut to them (`ui::beat_aligner`).
+    BeatAligner,
 }
 
 impl Pane {
@@ -239,6 +242,8 @@ impl Pane {
         Pane::Voiceover,
         Pane::Transcript,
         Pane::Rendering,
+        // ---- ws:beat-aligner ----
+        Pane::BeatAligner,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -276,6 +281,7 @@ impl Pane {
             Pane::Voiceover => Glyph::Mic,
             Pane::Transcript => Glyph::Transcript,
             Pane::Rendering => Glyph::Queue,
+            Pane::BeatAligner => Glyph::Waveform,
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -318,6 +324,7 @@ impl Pane {
             Pane::Voiceover => "Voiceover",
             Pane::Transcript => "Transcript",
             Pane::Rendering => "Rendering",
+            Pane::BeatAligner => "Beat Aligner",
         }
     }
 }
@@ -462,7 +469,7 @@ impl Layout {
     /// The Cut page (fast assembly and planning): [Library over Planner | Moodboard | Markers | Subtitles]
     /// · [Source | Preview] · [Inspector] over the Timeline.
     pub fn cut_layout() -> Self {
-        let plan = [Pane::Planner, Pane::Moodboard, Pane::Markers, Pane::Subtitles];
+        let plan = [Pane::Planner, Pane::Moodboard, Pane::Markers, Pane::Subtitles, Pane::BeatAligner];
         Self::viewer_over_timeline(&[Pane::Library], &plan, [0.25, 0.5, 0.25])
     }
 
@@ -539,11 +546,9 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Audio page's timeline slot: the Timeline, then the Beat Aligner when this build has one (found
-    /// by title, so this compiles with or without `feat/beat-aligner`'s pane).
+    /// The Audio page's timeline slot: the Timeline with the Beat Aligner as the tab beside it.
     fn timeline_tabs() -> Vec<Pane> {
-        let aligner = Pane::ALL.iter().copied().find(|p| p.title() == "Beat Aligner");
-        std::iter::once(Pane::Timeline).chain(aligner).collect()
+        vec![Pane::Timeline, Pane::BeatAligner]
     }
 
     /// The Animate page: [Gallery] · [Preview] · [Inspector] over a thin Timeline (the edit, for picking clips)
@@ -1968,11 +1973,11 @@ mod tests {
         use Pane::*;
         let shown: [(&str, &[Pane]); 7] = [
             ("Media", &[Library, MediaBrowser, Source]),
-            ("Cut", &[Library, Planner, Moodboard, Markers, Subtitles, Source, Preview, Inspector, Timeline]),
+            ("Cut", &[Library, Planner, Moodboard, Markers, Subtitles, BeatAligner, Source, Preview, Inspector, Timeline]),
             ("Edit", &[Library, Presets, Source, Preview, Inspector, Timeline]),
             ("Animate", &[Presets, Preview, Inspector, Timeline, Animator]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
-            ("Audio", &[Library, Presets, Preview, Mixer, Voiceover, Transcript, Inspector, Timeline]),
+            ("Audio", &[Library, Presets, Preview, Mixer, Voiceover, Transcript, Inspector, Timeline, BeatAligner]),
             ("Export", &[Export, Preview, Inspector, Jobs, Timeline]),
         ];
         assert_eq!(PAGES, shown.map(|(p, _)| p), "the pages in order (Alt+1..6 are the first six)");

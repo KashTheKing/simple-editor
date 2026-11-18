@@ -64,6 +64,8 @@ impl Project {
             // ---- ws:text-titles ----
             // ---- ws:docs-refresh ----
             quick_export: None, // ws:quick-export
+            // ---- ws:beat-aligner ----
+            beats: Default::default(),
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);

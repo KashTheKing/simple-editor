@@ -99,6 +99,10 @@ pub struct Project {
     /// The last (folder, extension) a normal Quick Export saved to; the next dialog starts there.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub quick_export: Option<(String, String)>,
+    // ---- ws:beat-aligner ----
+    /// The Beat Aligner's song, grid, marks and sections (`model::beats`).
+    #[serde(skip_serializing_if = "crate::model::beats::is_empty")]
+    pub beats: BeatSheet,
 }
 
 impl Default for Project {

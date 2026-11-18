@@ -13,6 +13,13 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("add_asset", "media.import"),
     ("add_subclip", "media.subclip"),
     ("auto_cut", "timeline.auto_cut"),
+    // ---- ws:beat-aligner ----
+    ("set_beat_source", "beats.source"),
+    ("beats_to_markers", "beats.apply"),
+    ("beats_cut", "beats.apply"),
+    ("beats_sfx", "beats.apply"),
+    ("beats_snap_clips", "beats.apply"),
+    ("beats_effect", "beats.apply"),
     ("add_bus", "audio.add_bus"),
     ("insert_asset_clips", "timeline.add_clip"),
     ("add_text_clip", "timeline.add_clip"),
@@ -198,6 +205,7 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/assets.rs"),
     include_str!("../../model/ops/attrs.rs"),
     include_str!("../../model/ops/browser.rs"),
+    include_str!("../../model/ops/beats.rs"), // ws:beat-aligner
     include_str!("../../model/ops/autocut.rs"),
     include_str!("../../model/ops/buses.rs"),
     include_str!("../../model/ops/editing.rs"),

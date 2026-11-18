@@ -655,6 +655,8 @@ pub(crate) fn dh() -> f32 {
 }
 
 mod asset;
+// ---- ws:beat-aligner ----
+pub mod beats;
 mod audio;
 mod browser;
 mod clip;
@@ -678,6 +680,7 @@ mod transition;
 mod tests;
 
 pub use asset::*;
+pub use beats::{BeatMap, BeatMark, BeatSheet, MarkKind}; // ws:beat-aligner
 pub use audio::*;
 pub use browser::*;
 pub use clip::*;
