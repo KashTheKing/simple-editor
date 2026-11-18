@@ -6,6 +6,7 @@ pub mod animator; // ws:animator
 pub mod app;
 pub mod autocut_ui;
 pub mod beat_aligner; // ws:beat-aligner
+pub mod music_ui; // ws:music-burn
 pub mod capture_ui;
 pub mod voiceover_ui; // ws:panels-multiscreen
 pub mod screens; // ws:panels-multiscreen

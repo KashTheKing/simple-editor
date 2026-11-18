@@ -66,6 +66,8 @@ impl Project {
             quick_export: None, // ws:quick-export
             // ---- ws:beat-aligner ----
             beats: Default::default(),
+            // ---- ws:music-burn ----
+            playlists: Vec::new(),
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);

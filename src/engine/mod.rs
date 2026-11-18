@@ -56,6 +56,10 @@ pub mod transcribe;
 // ---- ws:transcript-captions ----
 pub mod tts;
 pub mod visualizer; // ws:audio-visualizer
+// ---- ws:music-burn ----
+pub mod disc;
+pub mod mixvideo;
+pub mod tags;
 // ---- ws:voice-input ----
 pub mod voice;
 pub mod xmeml;

@@ -18,6 +18,7 @@ mod markers;
 mod multicam;
 mod paths;
 mod planner;
+pub mod playlists; // ws:music-burn (`spaced_length`)
 mod queries;
 mod sequences;
 mod shapes;

@@ -20,6 +20,15 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("beats_sfx", "beats.apply"),
     ("beats_snap_clips", "beats.apply"),
     ("beats_effect", "beats.apply"),
+    // ---- ws:music-burn ----
+    ("add_playlist", "playlist.create"),
+    ("rename_playlist", "playlist.rename"),
+    ("delete_playlist", "playlist.delete"),
+    ("playlist_add", "playlist.add"),
+    ("playlist_remove", "playlist.remove"),
+    ("playlist_move", "playlist.move"),
+    ("playlist_set_spacing", "playlist.set"),
+    ("playlist_to_timeline", "playlist.to_timeline"),
     ("add_bus", "audio.add_bus"),
     ("insert_asset_clips", "timeline.add_clip"),
     ("add_text_clip", "timeline.add_clip"),
@@ -205,6 +214,7 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/assets.rs"),
     include_str!("../../model/ops/attrs.rs"),
     include_str!("../../model/ops/browser.rs"),
+    include_str!("../../model/ops/playlists.rs"), // ws:music-burn
     include_str!("../../model/ops/beats.rs"), // ws:beat-aligner
     include_str!("../../model/ops/autocut.rs"),
     include_str!("../../model/ops/buses.rs"),

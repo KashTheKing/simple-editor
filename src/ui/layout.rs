@@ -165,6 +165,9 @@ pub enum Pane {
     // ---- ws:beat-aligner ----
     /// Mark a song's beats / a voiceover's phrases, tap along, name sections and cut to them (`ui::beat_aligner`).
     BeatAligner,
+    // ---- ws:music-burn ----
+    /// Playlists of library songs: order, play, to the timeline, visualizer video, .m3u8, burn (`ui::music_ui`).
+    Playlists,
 }
 
 impl Pane {
@@ -244,6 +247,8 @@ impl Pane {
         Pane::Rendering,
         // ---- ws:beat-aligner ----
         Pane::BeatAligner,
+        // ---- ws:music-burn ----
+        Pane::Playlists,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -282,6 +287,7 @@ impl Pane {
             Pane::Transcript => Glyph::Transcript,
             Pane::Rendering => Glyph::Queue,
             Pane::BeatAligner => Glyph::Waveform,
+            Pane::Playlists => Glyph::MusicNote,
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -325,6 +331,7 @@ impl Pane {
             Pane::Transcript => "Transcript",
             Pane::Rendering => "Rendering",
             Pane::BeatAligner => "Beat Aligner",
+            Pane::Playlists => "Playlists",
         }
     }
 }
@@ -451,7 +458,7 @@ impl Layout {
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
         let library = Self::tabs(t, &[Pane::Library], 0);
-        let browser = Self::tabs(t, &[Pane::MediaBrowser], 0);
+        let browser = Self::tabs(t, &[Pane::MediaBrowser, Pane::Playlists], 0); // ws:music-burn: Playlists
         let left = Self::linear(t, egui_tiles::LinearDir::Vertical, &[(library, 0.5), (browser, 0.5)]);
         let source = t.insert_pane(Pane::Source);
         // in a tab group of its own: simplify's auto-wrap of a lone pane gives the PANE a new id, and the
@@ -1972,7 +1979,7 @@ mod tests {
     fn every_page_contains_every_pane() {
         use Pane::*;
         let shown: [(&str, &[Pane]); 7] = [
-            ("Media", &[Library, MediaBrowser, Source]),
+            ("Media", &[Library, MediaBrowser, Playlists, Source]),
             ("Cut", &[Library, Planner, Moodboard, Markers, Subtitles, BeatAligner, Source, Preview, Inspector, Timeline]),
             ("Edit", &[Library, Presets, Source, Preview, Inspector, Timeline]),
             ("Animate", &[Presets, Preview, Inspector, Timeline, Animator]),
