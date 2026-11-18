@@ -53,9 +53,10 @@ impl std::fmt::Debug for FrameSource {
 }
 
 /// Drawn over every exported frame at its timeline time `t`, at project size, before ffmpeg (the
-/// burnt-in social guide). Runs on the export thread, never on playback.
+/// burnt-in social guide). Runs on the export thread, never on playback. The size is the frames it
+/// returns when that is not the project's (the Device Emulator's export puts each frame inside a device).
 #[derive(Clone)]
-pub struct FrameOverlay(pub Arc<dyn Fn(Frame, f64) -> Frame + Send + Sync>);
+pub struct FrameOverlay(pub Arc<dyn Fn(Frame, f64) -> Frame + Send + Sync>, pub Option<(u32, u32)>);
 
 impl std::fmt::Debug for FrameOverlay {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -678,8 +679,11 @@ fn run_export_with(
     // 3. ffmpeg
     let mut cmd = ffpipe::command(&ffmpeg);
     cmd.args(["-y", "-hide_banner", "-loglevel", "error"]);
-    cmd.args(input_args(video, (w, h), fps, &ports, main_audio));
-    let (vf, af) = output_filters(opts, (w, h), !inputs.is_empty(), &args);
+    // what ffmpeg is fed: the project's frames, or the overlay's own size
+    let fed = opts.overlay.as_ref().and_then(|o| o.1).unwrap_or((w, h));
+    let recycle = fed == (w, h);
+    cmd.args(input_args(video, fed, fps, &ports, main_audio));
+    let (vf, af) = output_filters(opts, fed, !inputs.is_empty(), &args);
     let (vf, colour_tags) = rgba_bt709(vf, video == Some(VideoIn::Rgba), &args);
     let vf = if is_gif {
         let pre = if vf.is_empty() { String::new() } else { format!("{vf},") };
@@ -756,7 +760,10 @@ fn run_export_with(
                     if pipe.write_all(&f.rgba).is_err() {
                         return; // ffmpeg died - its stderr tells why
                     }
-                    let _ = back_tx.send(f);
+                    // (a resized frame is no buffer for the next render)
+                    if recycle {
+                        let _ = back_tx.send(f);
+                    }
                 }
             });
             let mut comp = Compositor::new();
@@ -2517,6 +2524,39 @@ pub(crate) mod tests {
         assert_eq!(wait_done(&prog).as_deref(), Some(CANCELLED));
         assert_eq!(std::fs::read(&cancel).unwrap(), b"keep");
         assert!(!dir.join(".cancel.simple-editor-tmp.mp4").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The Device Emulator's Export: the file is the device frame's size (even) and the project's length,
+    /// with the project's audio; the frame inside it is the device (its body round the video, not the video
+    /// scaled up).
+    #[test]
+    fn device_export_has_the_frame_size_and_the_duration() {
+        let dir = temp_dir("device");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        let p = Project::from_media(asset(&src.to_string_lossy(), 2));
+        let s = crate::settings::Settings::default();
+        let ov = crate::ui::social::raster::device_export(&s, &p, "yt_shorts", "iphone_se_3rd_gen", false, Default::default(), None).expect("a platform");
+        let (w, h) = ov.1.expect("its own size");
+        assert!(w % 2 == 0 && h % 2 == 0 && h > w && (w, h) != (p.width, p.height), "{w}x{h}");
+        // the frame the overlay returns is that size, and its corners are the backdrop, not video
+        let f = (ov.0)(Frame::new(p.width, p.height), 0.5);
+        assert_eq!((f.width, f.height), (w, h));
+        assert_eq!(&f.rgba[..3], &[22, 22, 26]);
+        let out = dir.join("se.mp4");
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        assert_eq!(wait_done(&start_export(p.clone(), ExportOptions { overlay: Some(ov), ..opts_for(out.clone()) }, text)), None);
+        let o = ffpipe::command(&ffpipe::ffprobe_exe().unwrap())
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0"])
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&o.stdout).trim(), format!("{w},{h}"));
+        let d = probe_duration(&out).expect("probe");
+        assert!((d - p.duration()).abs() < 0.15, "{d} vs {}", p.duration());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -21,6 +21,7 @@ Open it from **right-click the Preview ▸ Emulator**, from **Window ▸ Device 
 | **Captions** | Shows or hides your project's subtitles, the same switch as the player's **CC** button. |
 | **Gallery** | Every device and platform at once, each playing your video. Click one, or pick a device, platform or orientation, to bring it up large. |
 | **Screenshot** | Saves a picture of the device to `Pictures\Simple Editor`. |
+| **Export** | Exports the timeline, or the In/Out range, as a video inside the device: the device frame and the platform UI round the playing video (its progress bar and time follow the video), with the project audio. It runs as a background export (Jobs pane, Cancel), the file is the device frame's size, and it opens in your media player when it is done. |
 
 The pane remembers the device, platform and orientation **for each project**.
 
@@ -68,6 +69,7 @@ avatar is clipped to its circle.
 
 - `emulator.open {device, platform, orientation, gallery, sheet, view}` shows the pane on a device and
   platform (anything left out stays as it is).
+- `emulator.export {device, platform, orientation}` starts that export as a job and returns the file.
 - `emulator.screenshot {device, platform, orientation, sheet, view, menu, buffering, width}` returns a
   picture of it with the frame at the playhead.
 
