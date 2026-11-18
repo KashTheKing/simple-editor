@@ -526,29 +526,30 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Audio page (ws:panels-multiscreen): [music: Library | Gallery] · [a small Preview] · [Mixer |
-    /// Voiceover | Transcript] · [Inspector] over the Timeline, with the Beat Aligner tabbed beside it
-    /// (Timeline in front). `layout_ctl::switch_page` turns the Library to audio and the Gallery to its
-    /// Audio side on the way in. A saved Audio layout is kept: Window ▸ Layout ▸ Reset Page Layout gets this.
+    /// The Audio page: every sound pane visible at once, none hidden behind a tab -
+    /// [music: Library | Gallery] · [a small Preview] · [Mixer] · [Inspector]
+    /// [Voiceover] · [Transcript] · [Subtitles]
+    /// [Beat Aligner] over the [Timeline].
+    /// `layout_ctl::switch_page` turns the Library to audio and the Gallery to its Audio side on the way in.
+    /// A saved Audio layout is kept: Window ▸ Layout ▸ Reset Page Layout gets this.
     pub fn audio_layout() -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
         let music = Self::tabs(t, &[Pane::Library, Pane::Presets], 0);
         let preview = Self::tabs(t, &[Pane::Preview], 0);
-        let mix = Self::tabs(t, &[Pane::Mixer, Pane::Voiceover, Pane::Transcript], 0);
+        let mixer = t.insert_pane(Pane::Mixer);
         let inspector = t.insert_pane(Pane::Inspector);
-        let row = [(music, 0.28), (preview, 0.24), (mix, 0.26), (inspector, 0.22)];
-        let top = Self::linear(t, Horizontal, &row);
-        let timeline = Self::tabs(t, &Self::timeline_tabs(), 0);
-        let root = Self::linear(t, Vertical, &[(top, 0.45), (timeline, 0.55)]);
+        let top = Self::linear(t, Horizontal, &[(music, 0.26), (preview, 0.22), (mixer, 0.30), (inspector, 0.22)]);
+        let voiceover = t.insert_pane(Pane::Voiceover);
+        let transcript = t.insert_pane(Pane::Transcript);
+        let subtitles = t.insert_pane(Pane::Subtitles);
+        let middle = Self::linear(t, Horizontal, &[(voiceover, 0.30), (transcript, 0.40), (subtitles, 0.30)]);
+        let beats = t.insert_pane(Pane::BeatAligner);
+        let timeline = t.insert_pane(Pane::Timeline);
+        let root = Self::linear(t, Vertical, &[(top, 0.34), (middle, 0.22), (beats, 0.16), (timeline, 0.28)]);
         Self::stack_unplaced(t, music);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
-    }
-
-    /// The Audio page's timeline slot: the Timeline with the Beat Aligner as the tab beside it.
-    fn timeline_tabs() -> Vec<Pane> {
-        vec![Pane::Timeline, Pane::BeatAligner]
     }
 
     /// The Animate page: [Gallery] · [Preview] · [Inspector] over a thin Timeline (the edit, for picking clips)
@@ -1977,7 +1978,7 @@ mod tests {
             ("Edit", &[Library, Presets, Source, Preview, Inspector, Timeline]),
             ("Animate", &[Presets, Preview, Inspector, Timeline, Animator]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
-            ("Audio", &[Library, Presets, Preview, Mixer, Voiceover, Transcript, Inspector, Timeline, BeatAligner]),
+            ("Audio", &[Library, Presets, Preview, Mixer, Voiceover, Transcript, Subtitles, Inspector, Timeline, BeatAligner]),
             ("Export", &[Export, Preview, Inspector, Jobs, Timeline]),
         ];
         assert_eq!(PAGES, shown.map(|(p, _)| p), "the pages in order (Alt+1..6 are the first six)");
@@ -2019,19 +2020,18 @@ mod tests {
     fn the_audio_page_has_every_sound_pane() {
         use Pane::*;
         let l = Layout::audio_layout();
-        let group = |p: Pane| l.tree.tiles.parent_of(l.tree.tiles.find_pane(&p).unwrap()).unwrap();
-        assert!(in_front(&l, Library) && in_front(&l, Preview) && in_front(&l, Mixer) && in_front(&l, Timeline));
-        assert_eq!(group(Library), group(Presets), "the music area is Library | Gallery");
-        assert_eq!(group(Mixer), group(Voiceover));
-        assert_eq!(group(Mixer), group(Transcript));
-        let egui_tiles::Container::Tabs(tl) = l.tree.tiles.get_container(group(Timeline)).unwrap() else {
-            panic!("the Timeline sits in a tab group (room for the Beat Aligner)")
-        };
-        assert_eq!(tl.active, l.tree.tiles.find_pane(&Timeline), "the Timeline is the group's front tab");
-        if let Some(&ba) = Pane::ALL.iter().find(|p| p.title() == "Beat Aligner") {
-            assert_eq!(group(ba), group(Timeline), "the Beat Aligner is tabbed with the Timeline");
+        // every sound pane is visible at once: each one is in front of its own group
+        for p in [Library, Preview, Mixer, Voiceover, Transcript, Subtitles, BeatAligner, Timeline, Inspector] {
+            assert!(in_front(&l, p), "{p:?} is visible on the Audio page");
         }
-        assert_eq!(group(Subtitles), group(Library), "panes the page doesn't show hide behind the music");
+        let group = |p: Pane| l.tree.tiles.parent_of(l.tree.tiles.find_pane(&p).unwrap()).unwrap();
+        assert_eq!(group(Library), group(Presets), "the music area is Library | Gallery");
+        // none of the sound panes shares a tab group with another pane
+        for p in [Mixer, Voiceover, Transcript, Subtitles, BeatAligner, Timeline] {
+            if let Some(egui_tiles::Container::Tabs(tabs)) = l.tree.tiles.get_container(group(p)) {
+                assert_eq!(tabs.children.len(), 1, "{p:?} is not stacked behind another tab");
+            }
+        }
         // a small preview: narrower than the music area
         let row = l.tree.tiles.parent_of(group(Preview)).unwrap();
         let egui_tiles::Container::Linear(lin) = l.tree.tiles.get_container(row).unwrap() else { panic!() };
@@ -2445,20 +2445,20 @@ mod tests {
     #[test]
     fn reveal_auto_respects_pinned_sibling() {
         let mut l = Layout::audio_layout();
-        // Mixer | Voiceover share a group on the Audio page, Mixer in front
-        assert!(in_front(&l, Pane::Mixer));
-        assert_eq!(l.reveal_auto(Pane::Voiceover), Surfaced::Shown);
-        assert!(in_front(&l, Pane::Voiceover) && !in_front(&l, Pane::Mixer));
-        assert_eq!(l.reveal_auto(Pane::Voiceover), Surfaced::Shown, "already in front is still Shown");
+        // Library | Gallery (Presets) share a group on the Audio page, Library in front
+        assert!(in_front(&l, Pane::Library));
+        assert_eq!(l.reveal_auto(Pane::Presets), Surfaced::Shown);
+        assert!(in_front(&l, Pane::Presets) && !in_front(&l, Pane::Library));
+        assert_eq!(l.reveal_auto(Pane::Presets), Surfaced::Shown, "already in front is still Shown");
 
-        assert!(l.toggle_pin(Pane::Voiceover));
-        assert_eq!(l.reveal_auto(Pane::Mixer), Surfaced::Pinned);
-        assert!(in_front(&l, Pane::Voiceover), "the pinned tab stays in front");
-        assert_eq!(l.reveal_auto(Pane::Voiceover), Surfaced::Pinned, "a pinned pane is never auto-switched to");
+        assert!(l.toggle_pin(Pane::Presets));
+        assert_eq!(l.reveal_auto(Pane::Library), Surfaced::Pinned);
+        assert!(in_front(&l, Pane::Presets), "the pinned tab stays in front");
+        assert_eq!(l.reveal_auto(Pane::Presets), Surfaced::Pinned, "a pinned pane is never auto-switched to");
         // a pin in one group does not affect another
         assert_eq!(l.reveal_auto(Pane::Inspector), Surfaced::Shown);
-        assert!(!l.toggle_pin(Pane::Voiceover));
-        assert_eq!(l.reveal_auto(Pane::Mixer), Surfaced::Shown);
+        assert!(!l.toggle_pin(Pane::Presets));
+        assert_eq!(l.reveal_auto(Pane::Library), Surfaced::Shown);
 
         // closed from its tab: auto-surface must not re-open it (only the Window menu / `+` do)
         l.toggle(Pane::Preview);
