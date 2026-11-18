@@ -1,21 +1,22 @@
 //! Platform marks for the Export pane's preset cards (YouTube, TikTok, Instagram, …). The pictures are
 //! Simple Icons' CC0 SVG paths, rasterised ahead of time to 64 px white-on-transparent PNGs
 //! (`scripts/brand-icons.sh`, sources and notice in `library/icons/brands/`) and embedded here, so the
-//! exe needs no SVG renderer. Each is tinted at paint time with the brand's colour (or the text colour
-//! for the black marks). The marks only identify the platform; the trademarks belong to their owners.
+//! exe needs no SVG renderer. Each is tinted at paint time in the caller's colour (the Export pane
+//! paints them in its text colour, one calm tone). The marks only identify the platform; the trademarks
+//! belong to their owners.
 
 use eframe::egui::{self, Color32};
 
-/// (key, PNG bytes, brand colour - None = draw in the text colour).
-const BRANDS: &[(&str, &[u8], Option<[u8; 3]>)] = &[
-    ("youtube", include_bytes!("../../library/icons/brands/youtube.png"), Some([0xFF, 0x00, 0x00])),
-    ("youtubeshorts", include_bytes!("../../library/icons/brands/youtubeshorts.png"), Some([0xFF, 0x00, 0x00])),
-    ("tiktok", include_bytes!("../../library/icons/brands/tiktok.png"), None),
-    ("instagram", include_bytes!("../../library/icons/brands/instagram.png"), Some([0xFF, 0x00, 0x69])),
-    ("x", include_bytes!("../../library/icons/brands/x.png"), None),
-    ("facebook", include_bytes!("../../library/icons/brands/facebook.png"), Some([0x08, 0x66, 0xFF])),
-    ("vimeo", include_bytes!("../../library/icons/brands/vimeo.png"), Some([0x1A, 0xB7, 0xEA])),
-    ("twitch", include_bytes!("../../library/icons/brands/twitch.png"), Some([0x91, 0x46, 0xFF])),
+/// (key, PNG bytes).
+const BRANDS: &[(&str, &[u8])] = &[
+    ("youtube", include_bytes!("../../library/icons/brands/youtube.png")),
+    ("youtubeshorts", include_bytes!("../../library/icons/brands/youtubeshorts.png")),
+    ("tiktok", include_bytes!("../../library/icons/brands/tiktok.png")),
+    ("instagram", include_bytes!("../../library/icons/brands/instagram.png")),
+    ("x", include_bytes!("../../library/icons/brands/x.png")),
+    ("facebook", include_bytes!("../../library/icons/brands/facebook.png")),
+    ("vimeo", include_bytes!("../../library/icons/brands/vimeo.png")),
+    ("twitch", include_bytes!("../../library/icons/brands/twitch.png")),
 ];
 
 /// Every brand key, in picker order.
@@ -28,17 +29,9 @@ pub fn is_brand(key: &str) -> bool {
     BRANDS.iter().any(|b| b.0 == key)
 }
 
-/// The brand's own colour, or `text` for the black marks (TikTok, X).
-pub fn color(key: &str, text: Color32) -> Color32 {
-    match BRANDS.iter().find(|b| b.0 == key).and_then(|b| b.2) {
-        Some([r, g, b]) => Color32::from_rgb(r, g, b),
-        None => text,
-    }
-}
-
 /// The mark's texture, decoded and uploaded once per context (kept in the context's temp data).
 pub fn texture(ctx: &egui::Context, key: &str) -> Option<egui::TextureHandle> {
-    let (key, bytes, _) = BRANDS.iter().find(|b| b.0 == key)?;
+    let (key, bytes) = BRANDS.iter().find(|b| b.0 == key)?;
     let id = egui::Id::new(("brand_icon", *key));
     if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
         return Some(t);
@@ -88,7 +81,7 @@ mod tests {
 
     #[test]
     fn every_mark_decodes_to_a_64px_alpha_mask() {
-        for (key, bytes, _) in BRANDS {
+        for (key, bytes) in BRANDS {
             let f = crate::engine::html::decode_png(bytes).unwrap_or_else(|e| panic!("{key}: {e}"));
             assert_eq!((f.width, f.height), (64, 64), "{key}");
             // white glyph on a transparent ground: some pixels on, some off

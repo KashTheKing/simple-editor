@@ -936,6 +936,8 @@ impl Settings {
     /// An export preset by name (case-insensitive), wherever it lives - what the Export pane, Quick
     /// Export and the `export.*` tools look presets up with.
     pub fn export_preset(&self, name: &str) -> Option<crate::engine::export::ExportPreset> {
+        use crate::engine::export::{PRESET_MAX_QUALITY, PRESET_MAX_QUALITY_OLD};
+        let name = if name == PRESET_MAX_QUALITY_OLD { PRESET_MAX_QUALITY } else { name };
         self.all_export_presets().into_iter().find(|p| p.name.eq_ignore_ascii_case(name))
     }
 

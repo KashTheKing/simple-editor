@@ -1,10 +1,10 @@
 //! Dockable editor layout (egui_tiles), one tree per page (`PAGES`: Media / Cut / Edit / Color / Audio /
-//! Export, the Resolve-style switcher in the menu bar); every page's default puts the Inspector top
-//! right. Panes can be split, tabbed, hidden/shown, popped out into their own OS windows (egui immediate
-//! viewports, which reopen where they were) and saved/loaded as profiles (JSON - also written to / read
-//! from `.sedit-layout` files so profiles can be shared). Every builder ends with `stack_unplaced`,
-//! so every pane exists in every page, hidden behind one group until the Window menu or a tab bar's `+`
-//! brings it in. Hidden panes stay in the tree (egui_tiles visibility), so they come back where they were.
+//! Export, the Resolve-style switcher in the menu bar); every page's default but Media and Export
+//! puts the Inspector top right. Panes can be split, tabbed, hidden/shown, popped out into their own
+//! OS windows (egui immediate viewports, which reopen where they were) and saved/loaded as profiles
+//! (JSON - also written to / read from `.sedit-layout` files so profiles can be shared). Every builder
+//! ends with `stack_unplaced`, so every pane exists in every page, hidden behind one group until the
+//! Window menu or a tab bar's `+` brings it in. Hidden panes stay in the tree (egui_tiles visibility), so they come back where they were.
 //!
 //! Panels are unlocked by default: a tab drags to re-dock (`Chrome::locked`, Window ▸ Layout ▸ Lock
 //! panels, makes a tab click-only); split dividers resize either way and Undock always works from a
@@ -580,18 +580,17 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Export page: [Export settings] · [Preview] · [Inspector over Jobs, the render queue] over the
-    /// Timeline.
+    /// The Export page: [Export settings] · [Preview] · [Jobs, the render queue] over the Timeline. No
+    /// Inspector: the Export pane shows the project settings itself (the `+` / Window menu brings the
+    /// Inspector back, hidden behind the Export tab).
     pub fn export_layout() -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
         let export = Self::tabs(t, &[Pane::Export], 0);
         let preview = t.insert_pane(Pane::Preview);
-        let inspector = t.insert_pane(Pane::Inspector);
         let jobs = t.insert_pane(Pane::Jobs);
-        let side = Self::linear(t, Vertical, &[(inspector, 0.55), (jobs, 0.45)]);
-        let top = Self::linear(t, Horizontal, &[(export, 0.3), (preview, 0.45), (side, 0.25)]);
+        let top = Self::linear(t, Horizontal, &[(export, 0.32), (preview, 0.48), (jobs, 0.2)]);
         let timeline = t.insert_pane(Pane::Timeline);
         let root = Self::linear(t, Vertical, &[(top, 0.6), (timeline, 0.4)]);
         Self::stack_unplaced(t, export);
@@ -1979,7 +1978,7 @@ mod tests {
             ("Animate", &[Presets, Preview, Inspector, Timeline, Animator]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
             ("Audio", &[Library, Presets, Preview, Mixer, Voiceover, Transcript, Subtitles, Inspector, Timeline, BeatAligner]),
-            ("Export", &[Export, Preview, Inspector, Jobs, Timeline]),
+            ("Export", &[Export, Preview, Jobs, Timeline]),
         ];
         assert_eq!(PAGES, shown.map(|(p, _)| p), "the pages in order (Alt+1..6 are the first six)");
         for (name, visible) in shown {
@@ -2010,6 +2009,16 @@ mod tests {
         assert!(in_front(&Layout::color_layout(), Nodes) && in_front(&Layout::audio_layout(), Mixer));
         assert!(in_front(&Layout::cut_layout(), Preview) && !in_front(&Layout::cut_layout(), Source));
         assert!(in_front(&Layout::cut_layout(), Planner), "Cut: Planner fronts the planning group");
+    }
+
+    /// The Export page's default has no Inspector: the Export pane carries the project settings.
+    #[test]
+    fn export_page_has_no_inspector() {
+        let l = Layout::export_layout();
+        assert!(!l.is_visible(Pane::Inspector), "the Export page hides the Inspector");
+        for p in [Pane::Export, Pane::Preview, Pane::Jobs, Pane::Timeline] {
+            assert!(l.is_visible(p), "{p:?} is shown on the Export page");
+        }
     }
 
     // ---- ws:panels-multiscreen ----
@@ -2063,8 +2072,8 @@ mod tests {
                 };
             }
         }
-        // Media hides its Inspector by default (the `+` / Window menu brings it back, top-right)
-        for &name in PAGES.iter().filter(|&&p| p != "Media") {
+        // Media and Export hide their Inspector by default (the Export pane has the project settings)
+        for &name in PAGES.iter().filter(|&&p| p != "Media" && p != "Export") {
             let mut l = page_layout(name).unwrap()();
             assert_eq!(top_right(&l), Some(Pane::Inspector), "{name} as built");
             l.tree
@@ -2309,7 +2318,7 @@ mod tests {
             let mut l = page_layout(name).unwrap()();
             assert_eq!(group_of(&l, Pane::Assistant), group_of(&l, Pane::Inspector), "{name}");
             assert!(!l.is_visible(Pane::Assistant), "{name}: hidden until toggled");
-            if name != "Media" {
+            if name != "Media" && name != "Export" {
                 assert!(in_front(&l, Pane::Inspector), "{name}: the Inspector stays in front");
             }
             l.toggle(Pane::Assistant);
