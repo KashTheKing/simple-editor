@@ -173,6 +173,7 @@ pub fn probe(path: &str) -> Result<Asset, String> {
             std::mem::swap(&mut a.width, &mut a.height);
         }
         a.codec = str_of(s, "codec_name").to_string();
+        remember_transfer(path, str_of(s, "color_transfer")); // ws:project-color-fps
         a.fps = parse_rate(str_of(s, "avg_frame_rate"));
         if a.fps <= 0.0 {
             a.fps = parse_rate(str_of(s, "r_frame_rate"));
@@ -261,6 +262,8 @@ fn kill(child: &mut Option<(Child, ChildStdout)>) {
 
 struct VideoPipe {
     path: String,
+    /// ws:project-color-fps: an HDR (PQ / HLG) source, tone-mapped to SDR Rec.709 on decode.
+    tonemap: bool,
     size: (u32, u32),
     fps: f64,
     duration: f64,
@@ -286,7 +289,7 @@ impl VideoPipe {
         self.skey = (-1, 0, 0);
         // Half a millisecond early so rounding never lands just past frame `idx` (ffmpeg drops frames < T).
         let t = (idx as f64 / self.fps - 0.0005).max(0.0);
-        let args = [
+        let mut args = vec![
             "-ss".into(),
             format!("{t:.6}"),
             "-i".into(),
@@ -307,6 +310,9 @@ impl VideoPipe {
             "-sn".into(),
             "pipe:1".into(),
         ];
+        if self.tonemap {
+            args.splice(6..6, ["-vf".to_string(), TONEMAP.to_string()]);
+        }
         match spawn(&args) {
             Ok(c) => {
                 self.child = Some(c);
@@ -605,6 +611,7 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
     let fps = if a.fps > 0.0 { a.fps } else { 30.0 };
     Ok(Box::new(VideoPipe {
         path: path.to_string(),
+        tonemap: is_hdr(path),
         size: (a.width, a.height),
         fps,
         duration: a.duration,
@@ -617,6 +624,49 @@ pub fn open_video(path: &str) -> Result<Box<dyn VideoSource>, String> {
         scaled: Vec::new(),
         skey: (-1, 0, 0),
     }))
+}
+
+// ---- ws:project-color-fps ----
+/// HDR (PQ / HLG, BT.2020) -> SDR Rec.709: linear light at 100 nits, Hable curve, back to BT.709.
+/// Used by the decode pipe and the proxy builder, so the compositor only ever sees SDR pixels.
+/// Ends in gamma-encoded RGB, so the pipe's `-pix_fmt rgba` is a plain repack (no YUV matrix guess).
+pub const TONEMAP: &str =
+    "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709,format=gbrp";
+/// The proxy builder's form: BT.709 limited-range 4:2:0 for its encoder.
+pub const TONEMAP_YUV: &str =
+    "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p";
+
+static TRANSFERS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+fn remember_transfer(path: &str, trc: &str) {
+    TRANSFERS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(path.to_string(), trc.to_string());
+}
+
+/// The source's `color_transfer` (ffprobe's name, "" when untagged). Cached per path: an imported file
+/// was already probed, anything else costs one small ffprobe the first time it is asked about.
+pub fn transfer_of(path: &str) -> String {
+    if let Some(t) = TRANSFERS.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(path)) {
+        return t.clone();
+    }
+    let trc = (!is_image_path(path))
+        .then(ffprobe_exe)
+        .flatten()
+        .and_then(|exe| {
+            command(&exe)
+                .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_transfer", "-of", "csv=p=0", path])
+                .stdin(Stdio::null())
+                .output()
+                .ok()
+        })
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    remember_transfer(path, &trc);
+    trc
+}
+
+/// A PQ or HLG source (tone-mapped on decode; the import prompt offers an HDR project for it).
+pub fn is_hdr(path: &str) -> bool {
+    crate::model::ColorSpace::of_transfer(&transfer_of(path)).is_hdr()
 }
 
 // ---------------------------------------------------------------- audio
@@ -1113,5 +1163,40 @@ pub(crate) mod tests {
         let mut v = open_video(&test_png()).unwrap();
         assert_eq!((v.size(), v.bytes()), ((64, 48), 64 * 48 * 4));
         assert_eq!(v.still(16, 12).map(|f| (f.width, f.height)), Some((16, 12)));
+    }
+
+    // ---- ws:project-color-fps ----
+    /// A PQ source (white at 203 nits) is detected as HDR and decodes tone-mapped: brighter than the
+    /// same PQ code values read as if they were BT.709 (the washed-out grey an untouched decode gives).
+    #[test]
+    fn hdr_source_is_detected_and_tone_mapped_on_decode() {
+        let dir = std::env::temp_dir().join(format!("simple-editor-hdr-decode-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let pq = dir.join("pq.mp4");
+        let st = Command::new("ffmpeg")
+            .args(["-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=white:s=64x64:d=0.5:r=10"])
+            .args(["-vf", "format=rgba,zscale=tin=bt709:pin=bt709:rin=full:t=smpte2084:p=bt2020:m=bt2020nc:r=tv:npl=203,format=yuv420p10le"])
+            .args(["-c:v", "libx265", "-x265-params", "log-level=error:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"])
+            .args(["-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc"])
+            .arg(&pq)
+            .status();
+        if !st.is_ok_and(|s| s.success()) {
+            eprintln!("ffmpeg/libx265 missing - skipped");
+            return;
+        }
+        let pq = pq.to_string_lossy().into_owned();
+        assert!(is_hdr(&pq));
+        assert!(!is_hdr(&test_mp4()), "an SDR clip is not HDR");
+        let mut v = crate::media::open_video(&pq, crate::media::Backend::Auto).unwrap();
+        let mut f = Frame::default();
+        assert!(v.frame_at(0.1, 32, 32, &mut f));
+        let mapped = f.rgba[0];
+        let raw = Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error", "-i", &pq, "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", "32x32", "pipe:1"])
+            .output()
+            .unwrap()
+            .stdout;
+        assert!(mapped > raw[0] + 20, "tone-mapped {mapped} vs raw {}", raw[0]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

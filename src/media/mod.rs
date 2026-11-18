@@ -231,7 +231,8 @@ fn open_known(
             && backend != Backend::Ffmpeg
             && mf::zero_copy()
             && !is_image_path(path)
-            && !proxy::is_stacked(std::path::Path::new(path)) =>
+            && !proxy::is_stacked(std::path::Path::new(path))
+            && !ffpipe::is_hdr(path) =>
         {
             mf::open_video_gpu(path).or_else(|e| {
                 static ONCE: std::sync::Once = std::sync::Once::new();
@@ -248,6 +249,8 @@ pub fn open_video(path: &str, backend: Backend) -> Result<Box<dyn VideoSource>, 
         return ffpipe::open_video(path);
     }
     let v = match backend {
+        // ws:project-color-fps: HDR sources decode through ffmpeg, tone-mapped to SDR (`ffpipe::TONEMAP`)
+        _ if ffpipe::is_hdr(path) => ffpipe::open_video(path),
         Backend::Ffmpeg => ffpipe::open_video(path),
         Backend::Mf => mf::open_video(path),
         Backend::Auto => mf::open_video(path).or_else(|e| ffpipe::open_video(path).map_err(|e2| format!("{e}; {e2}"))),

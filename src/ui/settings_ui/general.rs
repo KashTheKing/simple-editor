@@ -143,6 +143,10 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         changed = true;
     }
     changed |= ui.checkbox(&mut s.auto_close_gaps, "Auto close gaps (magnetic timeline)").changed();
+    changed |= ui
+        .checkbox(&mut s.match_import, "Ask to match the project to imported videos")
+        .on_hover_text("When a video's size, frame rate or HDR differs from the project's")
+        .changed();
     changed |= ui.checkbox(&mut s.confirm_overwrite, "Confirm before overwriting files").changed();
     let save = match crate::ui::menu::shortcut(crate::hotkeys::Action::Save) {
         k if k.is_empty() => "Save".to_string(),

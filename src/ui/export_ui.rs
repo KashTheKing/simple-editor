@@ -1244,6 +1244,9 @@ fn output_bar(
     } else {
         parts.push(format!("{w}×{h}"));
         parts.push(format!("{} fps", fps_text(out_fps(state.fps, project).unwrap_or(project.fps))));
+        if project.color.is_hdr() {
+            parts.push(format!("{} 10-bit", project.color.short())); // ws:project-color-fps
+        }
     }
     parts.push(duration_text(export_dur));
     if !state.lossless && !export::AUDIO_EXTS.contains(&ext.as_str()) {
@@ -1331,8 +1334,13 @@ fn output_bar(
         ui.end_row();
     });
     ui.add_space(6.0);
+    // ---- ws:project-color-fps: an HDR project can't go to GIF / AVI or an 8-bit encoder ----
+    let refusal = export::color_refusal(project.color, &ext, &settings.encoder).filter(|_| !state.lossless);
+    if let Some(why) = &refusal {
+        ui.colored_label(ui.visuals().error_fg_color, why);
+    }
     ui.horizontal(|ui| {
-        let can = !exporting && !project.is_empty();
+        let can = !exporting && !project.is_empty() && refusal.is_none();
         let r = ui
             .add_enabled(can, accent_button(ui, "Export…"))
             .on_hover_text("Pick where to save, then export now. It runs in the Jobs list while you keep working.");
@@ -1345,7 +1353,7 @@ fn output_bar(
         }
         // ws:export-deliver: queue while one runs (the queue drains in order, one at a time)
         if ui
-            .add_enabled(!project.is_empty(), egui::Button::new("Add to Queue").min_size(egui::vec2(0.0, 28.0)))
+            .add_enabled(!project.is_empty() && refusal.is_none(), egui::Button::new("Add to Queue").min_size(egui::vec2(0.0, 28.0)))
             .on_hover_text("Pick a file now; it renders after whatever is running or queued.")
             .clicked()
         {

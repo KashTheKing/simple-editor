@@ -31,7 +31,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 }
                 let (done, total) = count_plan(&p.plan);
                 Ok(json!({
-                    "name": p.name, "width": p.width, "height": p.height, "fps": p.fps,
+                    "name": p.name, "width": p.width, "height": p.height, "fps": p.fps, "color": p.color.short(),
                     "duration": p.duration(), "tracks": clips_per_track,
                     "assets": p.assets.len(), "sequences": p.sequences.len(),
                     "subtitles": p.subtitles.len(), "plan_done": done, "plan_total": total,
@@ -45,7 +45,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 let mut p = Project::new();
                 p.width = arg_u64(args, "width").map(|w| w as u32).unwrap_or(1920);
                 p.height = arg_u64(args, "height").map(|h| h as u32).unwrap_or(1080);
-                p.fps = arg_f64(args, "fps").unwrap_or(30.0);
+                p.fps = crate::model::clean_fps(arg_f64(args, "fps").unwrap_or(30.0));
                 app.set_project(p, None);
                 Ok(json!({"ok": true}))
             }
@@ -90,7 +90,11 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     app.project.height = h as u32;
                 }
                 if let Some(f) = arg_f64(args, "fps") {
-                    app.project.fps = f.max(1.0);
+                    app.project.fps = crate::model::clean_fps(f);
+                }
+                // ---- ws:project-color-fps ----
+                if let Some(c) = arg_str(args, "color") {
+                    app.project.color = crate::model::ColorSpace::parse(c).ok_or("color: sdr, hdr10 or hlg")?;
                 }
                 // ---- ws:max-duration: null / 0 clears it ----
                 if let Some(v) = args.get("max_duration") {
@@ -349,7 +353,7 @@ pub const TOOLS: &[ToolDef] = &[
     row!("project.new", ToolKind::Read, "New empty project (discards unsaved changes).", &["width:integer:false:default 1920", "height:integer:false:default 1080", "fps:number:false:default 30"]),
     row!("project.open", ToolKind::Read, "Open a .sedit project or a media file (creates a project around it).", &["path:string:true:absolute path"]),
     row!("project.save", ToolKind::Read, "Save the project (.sedit). Without a path: the current project file (error if none).", &["path:string:false:.sedit path"]),
-    row!("project.set", ToolKind::Mutate, "Change project format/name/Max length (of the timeline being edited, or sequence_id's).", &["name:string:false:", "width:integer:false:", "height:integer:false:", "fps:number:false:", "max_duration:number:false:seconds; 0 or null = no limit", "sequence_id:integer:false:set that sequence's max_duration"]),
+    row!("project.set", ToolKind::Mutate, "Change project format/name/colour space/Max length (of the timeline being edited, or sequence_id's).", &["name:string:false:", "width:integer:false:", "height:integer:false:", "fps:number:false:rounded to 3 decimals, 1..240", "color:string:false:sdr | hdr10 | hlg", "max_duration:number:false:seconds; 0 or null = no limit", "sequence_id:integer:false:set that sequence's max_duration"]),
     row!("timeline.list", ToolKind::Read, "Tracks and clips of the timeline being edited (main or the open sequence): ids, kind, asset, start, duration, src_in, speed, effects, label. On a big timeline filter it (any argument turns on paging: total, next_offset): track (index or name), from/to (timeline s, overlapping), kind, clip_ids, has_keyframes, has_blocks, fields (id, kind, name, asset, sequence, start, duration, end, src_in, speed, reverse, freeze, enabled, label, link, track, effects, keys = prop -> {n, hand}, blocks = [name, t, dur]), limit (default 200) / offset. For keyframes, blocks and transitions over the whole timeline use animate.audit instead.", &["track:string:false:track index or name (V1)", "from:number:false:timeline s", "to:number:false:timeline s", "kind:string:false:Video | Audio | Image | Text | ...", "clip_ids:array:false:", "has_keyframes:boolean:false:", "has_blocks:boolean:false:", "fields:array:false:field names, default the ones above", "limit:integer:false:default 200", "offset:integer:false:"]),
     row!("timeline.add_clip", ToolKind::Mutate, "Place an asset, a sequence, or a new text clip at a time.", &["asset_id:integer:false:", "sequence_id:integer:false:", "text:string:false:creates a text clip", "at:number:true:timeline seconds", "track:integer:false:video track index", "duration:number:false:text/image length"]),
     row!("timeline.split", ToolKind::Mutate, "Split clips at t (all clips crossing t when clip_ids is omitted).", &["t:number:true:", "clip_ids:array:false:"]),

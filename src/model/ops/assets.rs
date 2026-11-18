@@ -72,6 +72,8 @@ impl Project {
             audio_only_preview: false,
             // ---- ws:max-duration ----
             max_duration: None,
+            // ---- ws:project-color-fps ----
+            color: ColorSpace::Sdr,
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);
@@ -85,7 +87,7 @@ impl Project {
             p.width = asset.width;
             p.height = asset.height;
             if asset.kind == ClipKind::Video && asset.fps > 1.0 {
-                p.fps = asset.fps;
+                p.fps = snap_fps(asset.fps);
             }
         }
         p.name = Path::new(&asset.path)

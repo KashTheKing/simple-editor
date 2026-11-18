@@ -121,6 +121,97 @@ pub struct Project {
     /// the timeline shades past it and exports stop at it (`limit_range`) unless the user includes the rest.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_duration: Option<f64>,
+    // ---- ws:project-color-fps ----
+    /// The colour space the project renders and exports in (Inspector ▸ Color). SDR in old files.
+    #[serde(skip_serializing_if = "ColorSpace::is_sdr")]
+    pub color: ColorSpace,
+}
+
+// ---- ws:project-color-fps ----
+/// A project's render/export colour space. The compositor works on SDR-referred pixels either way:
+/// HDR sources are tone-mapped on decode, and an HDR export maps SDR white to 203 nits (BT.2408) in a
+/// 10-bit BT.2020 PQ / HLG file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ColorSpace {
+    #[default]
+    Sdr,
+    Hdr10,
+    Hlg,
+}
+
+impl ColorSpace {
+    pub const ALL: [ColorSpace; 3] = [ColorSpace::Sdr, ColorSpace::Hdr10, ColorSpace::Hlg];
+    pub fn is_sdr(&self) -> bool {
+        *self == ColorSpace::Sdr
+    }
+    pub fn is_hdr(self) -> bool {
+        !self.is_sdr()
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            ColorSpace::Sdr => "SDR Rec.709",
+            ColorSpace::Hdr10 => "HDR10 (Rec.2100 PQ)",
+            ColorSpace::Hlg => "HDR HLG",
+        }
+    }
+    /// Short form for summaries: "SDR" / "HDR10" / "HLG".
+    pub fn short(self) -> &'static str {
+        match self {
+            ColorSpace::Sdr => "SDR",
+            ColorSpace::Hdr10 => "HDR10",
+            ColorSpace::Hlg => "HLG",
+        }
+    }
+    /// From a probed `color_transfer` (ffprobe names): PQ / HLG, else SDR.
+    pub fn of_transfer(trc: &str) -> Self {
+        match trc {
+            "smpte2084" => ColorSpace::Hdr10,
+            "arib-std-b67" => ColorSpace::Hlg,
+            _ => ColorSpace::Sdr,
+        }
+    }
+    /// From the MCP / Luau string: "sdr" | "hdr10" | "pq" | "hlg".
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "sdr" | "rec709" | "bt709" => Some(ColorSpace::Sdr),
+            "hdr10" | "hdr" | "pq" => Some(ColorSpace::Hdr10),
+            "hlg" => Some(ColorSpace::Hlg),
+            _ => None,
+        }
+    }
+}
+
+/// Frame rates a project can pick from a list (Inspector, the match prompt's snap targets).
+pub const STANDARD_FPS: &[f64] = &[23.976, 24.0, 25.0, 29.97, 30.0, 48.0, 50.0, 59.94, 60.0, 90.0, 120.0, 144.0, 240.0];
+
+/// A typed / stored rate made clean: at most 3 decimals, within 1..=240 (NaN -> 30).
+pub fn clean_fps(f: f64) -> f64 {
+    if !f.is_finite() {
+        return 30.0;
+    }
+    ((f.clamp(1.0, 240.0)) * 1000.0).round() / 1000.0
+}
+
+/// A MEASURED source rate (variable-frame-rate phone and screen recordings report 26.0221...): the
+/// nearest standard rate when within 3 %, else `clean_fps`. 29.97002997 -> 29.97, 59.94 stays.
+pub fn snap_fps(f: f64) -> f64 {
+    let f = clean_fps(f);
+    STANDARD_FPS
+        .iter()
+        .copied()
+        .min_by(|a, b| (a - f).abs().total_cmp(&(b - f).abs()))
+        .filter(|s| (s - f).abs() <= s * 0.03)
+        .unwrap_or(f)
+}
+
+/// What a loaded file's rate becomes: a clean value (<= 3 decimals) is kept as typed; a raw measured
+/// float (an older build copied the source's rate as-is) is snapped.
+pub fn normalize_fps(f: f64) -> f64 {
+    if f.is_finite() && (f * 1000.0 - (f * 1000.0).round()).abs() < 1e-6 && (1.0..=240.0).contains(&f) {
+        f
+    } else {
+        snap_fps(f)
+    }
 }
 
 impl Default for Project {

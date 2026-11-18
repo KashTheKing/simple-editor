@@ -426,6 +426,9 @@ fn run_with(src: &str, dst: &PathBuf, height: u32, prog: &Progress, encode: &[&s
     cmd.arg("-i").arg(src);
     // -2 keeps aspect at an even width; -g 1 = all-intra; no audio (the original supplies it)
     let mut vf = format!("scale=-2:{}", height.max(2)); // ws:html-layer: callers pick the height (`height_for`)
+    if ffpipe::is_hdr(src) {
+        vf = format!("{},{vf}", ffpipe::TONEMAP_YUV); // ws:project-color-fps: proxies are SDR like every decode
+    }
     if is_stacked(dst) {
         vf = stacked_filter(height);
         // the proxy this source got before proxies kept alpha: same name without the `-a`

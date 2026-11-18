@@ -385,7 +385,7 @@ fn read_xmeml(text: &str, b: &mut Build) -> Result<(), String> {
     if !name.is_empty() {
         b.project.name = name.to_string();
     }
-    b.project.fps = fps;
+    b.project.fps = crate::model::snap_fps(fps);
     if let Some(sc) = seq.path(&["media", "video", "format", "samplecharacteristics"]) {
         let (w, h) = (sc.num("width").unwrap_or(0.0) as u32, sc.num("height").unwrap_or(0.0) as u32);
         if w > 0 && h > 0 {
@@ -737,7 +737,7 @@ fn read_edl(text: &str, b: &mut Build) {
         v.parse::<f64>().ok().filter(|f| f.is_finite() && *f > 0.0)
     });
     let fps = stated.unwrap_or(if drop_frame { 30.0 * 1000.0 / 1001.0 } else { 30.0 });
-    b.project.fps = fps;
+    b.project.fps = crate::model::snap_fps(fps);
     let msg = if stated.is_some() {
         format!("an EDL stores no picture size; {fps:.3} fps from its FPS comment, default size")
     } else {

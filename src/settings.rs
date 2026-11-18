@@ -658,6 +658,10 @@ pub struct Settings {
     // ---- ws:device-emulator ----
     /// The Device Emulator's device / platform / orientation, per project file ("" = an unsaved project).
     pub emulator: BTreeMap<String, crate::ui::emulator::Prefs>,
+    // ---- ws:project-color-fps ----
+    /// Ask "Match project to this video?" when an import differs from the project.
+    #[serde(default = "default_true")]
+    pub match_import: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -935,6 +939,7 @@ impl Default for Settings {
             audio_layout_offered: false,
             // ---- ws:device-emulator ----
             emulator: BTreeMap::new(),
+            match_import: true, // ws:project-color-fps
         }
     }
 }

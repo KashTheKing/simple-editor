@@ -183,6 +183,7 @@ mod media_api; // ws:assistant-luau
 mod script_ctl; // ws:assistant-luau
 #[path = "windows.rs"]
 mod windows_dlg;
+mod project_match; // ws:project-color-fps
 
 enum ExportKind {
     File { path: PathBuf },
@@ -537,6 +538,9 @@ pub struct App {
     emulator: crate::ui::emulator::EmuState,
     /// The Device Emulator's own copy of the picture when the Preview pane is hidden (nobody else uploads it).
     emulator_tex: Option<egui::TextureHandle>,
+    // ---- ws:project-color-fps ----
+    /// "Match project to this video?" waiting for an answer (`project_match`).
+    match_offer: Option<project_match::MatchOffer>,
     // ---- ws:pro-schema ----
     /// The Assistant pane's prompt / pending requests / log (`ui::assistant_ui`).
     pub(crate) assistant: crate::ui::assistant_ui::AssistantState,
@@ -1057,6 +1061,7 @@ impl App {
             path_armed: false,
             emulator: Default::default(), // ws:device-emulator
             emulator_tex: None,
+            match_offer: None, // ws:project-color-fps
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -2106,6 +2111,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     template_ctl::windows,
     // ---- ws:music-burn ----
     music_ctl::windows,
+    // ---- ws:project-color-fps ----
+    project_match::window,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[

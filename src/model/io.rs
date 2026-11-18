@@ -60,6 +60,14 @@ impl Project {
         if !(p.fps >= 1.0 && p.fps <= 1000.0) {
             p.fps = 30.0;
         }
+        // ws:project-color-fps: a raw measured rate (26.0221...) from older builds becomes a clean one
+        p.fps = normalize_fps(p.fps);
+        for s in &mut p.sequences {
+            s.fps = normalize_fps(if s.fps >= 1.0 { s.fps } else { 30.0 });
+        }
+        if let Some(st) = p.main_stash.as_mut() {
+            st.fps = normalize_fps(st.fps);
+        }
         p.width = p.width.max(16);
         p.height = p.height.max(16);
         for t in &mut p.tracks {

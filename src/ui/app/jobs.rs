@@ -14,9 +14,13 @@ impl App {
             }
         });
         let mut any = false;
+        let mut first_video: Option<crate::model::Asset> = None;
         for p in landed {
             match p.asset {
                 Ok(a) => {
+                    if first_video.is_none() && a.kind == crate::model::ClipKind::Video {
+                        first_video = Some(a.clone());
+                    }
                     any |= crate::engine::import::adopt(&mut self.project, p.id, a);
                     self.settings.touch_recent(&p.path);
                 }
@@ -28,17 +32,10 @@ impl App {
             }
         }
         if any {
-            // first media into an empty project: adopt its format (only knowable now)
-            if self.project.is_empty() {
-                if let Some(a) = self.project.assets.first().cloned() {
-                    if a.has_video() && a.width > 0 {
-                        self.project.width = a.width;
-                        self.project.height = a.height;
-                        if a.fps > 1.0 {
-                            self.project.fps = a.fps;
-                        }
-                    }
-                }
+            // ws:project-color-fps: a video whose format differs (or the first into an empty project)
+            // asks "Match project to this video?" - the first video of a batch decides
+            if let Some(a) = first_video {
+                self.offer_match(&a);
             }
             self.settings.save();
             self.after_edit();

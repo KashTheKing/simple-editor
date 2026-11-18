@@ -8,6 +8,18 @@
   and hatches everything past it (clips included) and shows "over by 0:04"; Zoom to Fit and the scrollbar span it.
   Nothing is cut: exports stop at the limit, with a one-line note in the Export panel to include the rest.
   `project.set {max_duration, sequence_id}`, `sequence.list` and `export.video {overflow}` expose it.
+- **Clean frame rates.** A project's frame rate is always a clean number: a measured source rate (phone and screen
+  recordings report things like 26.0221348…) snaps to the nearest standard rate within 3 % (23.976, 24, 25, 29.97, 30,
+  48, 50, 59.94, 60, 90, 120, 144, 240) or is rounded to 3 decimals; custom rates round too, and older projects are
+  fixed when they open. Sequences get the same.
+- **Match project to this video?** Importing a video whose size, frame rate or HDR differs from the project (or the
+  first video into an empty project) shows a small card: Match (size, snapped rate and, for HDR sources, the colour
+  space, as one undo step), Keep, or Don't ask again (Settings ▸ General turns it back on). A batch asks once.
+- **Color: SDR Rec.709, HDR10 or HDR HLG.** A new Color row in project settings. HDR exports are 10-bit HEVC Main10
+  (libx265, with HDR10 mastering display and content light metadata for PQ) or AV1 for WebM, tagged BT.2020 + PQ /
+  HLG; graphics and SDR footage sit at 203 nits. HDR sources are tone-mapped to SDR on decode (the Preview, proxies,
+  thumbnails and SDR exports), so they no longer look washed out. The Export panel shows the colour space and blocks
+  GIF / AVI or an 8-bit encoder with a message. `project.set {color}`.
 
 ### Library
 - **Linked bins: Import folder as bin is instant now.** A folder comes in as a bin that points at it: nothing is

@@ -395,7 +395,8 @@ pub(crate) fn project_section(
     settings: &mut Settings,
     undo: &mut dyn FnMut(&Project),
 ) -> bool {
-    use crate::ui::guides::{scale_to_tier, FPS_PRESETS, PRESETS, RES_TIERS};
+    use crate::model::{clean_fps, STANDARD_FPS as FPS_PRESETS};
+    use crate::ui::guides::{scale_to_tier, PRESETS, RES_TIERS};
     let mut edited = false;
     // resolution before any of this frame's widgets can touch it - diffed at the bottom to offer the
     // rescale prompt once, regardless of which control changed it.
@@ -471,7 +472,7 @@ pub(crate) fn project_section(
                     ui.separator();
                 }
                 for t in &settings.project_templates {
-                    let text = format!("{}×{} · {} fps", t.width, t.height, t.fps);
+                    let text = format!("{}×{} · {} fps", t.width, t.height, fps_label(t.fps));
                     if menu::row(ui, Some(Glyph::Template), &t.name, &text).clicked() {
                         (size, fps_pick) = (Some((t.width, t.height)), Some(t.fps));
                     }
@@ -537,7 +538,7 @@ pub(crate) fn project_section(
         ui.data_mut(|d| d.insert_temp(custom_id, want_custom && size.is_none()));
 
         ui.label("Frame rate");
-        let fps_text = |f: f64| if f.fract() == 0.0 { format!("{f:.0} fps") } else { format!("{f} fps") };
+        let fps_text = |f: f64| format!("{} fps", fps_label(f));
         let preset_fps = FPS_PRESETS.iter().any(|&f| (project.fps - f).abs() < 0.001);
         let mut want_fps: bool = ui.data(|d| d.get_temp(fps_custom_id)).unwrap_or(false);
         let fps_custom = want_fps || !preset_fps;
@@ -562,18 +563,45 @@ pub(crate) fn project_section(
             if fps_custom {
                 ui.label("");
                 let mut f = project.fps;
-                let r = ui.add(DragValue::new(&mut f).range(1.0..=240.0).speed(0.1).suffix(" fps"));
+                let r = ui.add(DragValue::new(&mut f).range(1.0..=240.0).speed(0.1).max_decimals(3).suffix(" fps"));
                 if edit_start(&r) {
                     undo(project);
                 }
                 if r.changed() {
-                    project.fps = f;
+                    project.fps = clean_fps(f);
                     edited = true;
                 }
                 ui.end_row();
             }
         }
         ui.data_mut(|d| d.insert_temp(fps_custom_id, want_fps && fps_pick.is_none()));
+
+        // ---- ws:project-color-fps ----
+        ui.label("Color");
+        {
+            use crate::model::ColorSpace;
+            let tip = |c: ColorSpace| match c {
+                ColorSpace::Sdr => "Standard video: looks the same on every screen and site",
+                ColorSpace::Hdr10 => "10-bit HEVC or AV1 with PQ and HDR10 metadata, for HDR TVs, phones and YouTube HDR. Graphics sit at 203 nits; the Preview shows it tone-mapped",
+                ColorSpace::Hlg => "10-bit HEVC or AV1 with HLG: broadcast HDR that still plays as SDR on SDR screens. The Preview shows it tone-mapped",
+            };
+            let r = egui::ComboBox::from_id_salt("project_color")
+                .selected_text(project.color.name())
+                .width(170.0)
+                .show_ui(ui, |ui| {
+                    ui.visuals_mut().button_frame = false;
+                    for c in ColorSpace::ALL {
+                        if menu::check(ui, project.color == c, c.name(), "").on_hover_text(tip(c)).clicked() && project.color != c {
+                            undo(project);
+                            project.color = c;
+                            edited = true;
+                        }
+                    }
+                });
+            mark(ui, "project_color", &r.response);
+            r.response.on_hover_text(tip(project.color));
+        }
+        ui.end_row();
 
         // ---- ws:max-duration ----
         ui.label("Max length");
@@ -644,7 +672,7 @@ pub(crate) fn project_section(
             (project.width, project.height) = (w, h);
         }
         if let Some(f) = fps_pick {
-            project.fps = f;
+            project.fps = clean_fps(f);
         }
         edited = true;
     }
@@ -676,6 +704,13 @@ pub(crate) fn project_section(
     }
 
     edited
+}
+
+// ---- ws:project-color-fps ----
+/// "29.97" / "60" / "26.022": at most 3 decimals, trailing zeros dropped (never a long float).
+pub(crate) fn fps_label(f: f64) -> String {
+    let s = format!("{f:.3}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 // ---- ws:max-duration ----

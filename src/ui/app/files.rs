@@ -15,8 +15,9 @@ impl App {
         let p = path.to_string_lossy().into_owned();
         match media::probe(&p, self.backend()) {
             Ok(asset) => {
-                let project = Project::from_media(asset);
+                let project = Project::from_media(asset.clone());
                 self.set_project(project, None);
+                self.offer_match(&asset); // ws:project-color-fps: an HDR file offers an HDR project
                 self.settings.touch_recent(&p);
                 self.settings.save();
             }

@@ -8,7 +8,7 @@ use crate::engine::compose::Compositor;
 use crate::engine::mixer::Mixer;
 use crate::engine::text::TextRasterizer;
 use crate::media::{ffpipe, Backend, DecoderPool, Frame, SAMPLE_RATE};
-use crate::model::{ClipKind, Project, Track};
+use crate::model::{ClipKind, ColorSpace, Project, Track};
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -404,7 +404,7 @@ fn output_filters(opts: &ExportOptions, project: (u32, u32), audio: bool, args: 
         None => String::new(),
     };
     let (fw, fh) = scale.unwrap_or(project);
-    if (fw % 2 == 1 || fh % 2 == 1) && args.iter().any(|a| a == "yuv420p" || a == "nv12") {
+    if (fw % 2 == 1 || fh % 2 == 1) && args.iter().any(|a| matches!(a.as_str(), "yuv420p" | "nv12" | "yuv420p10le" | "p010le")) {
         if !vf.is_empty() {
             vf.push(',');
         }
@@ -425,8 +425,99 @@ fn rgba_bt709(mut vf: String, rgba_in: bool, args: &[String]) -> (String, Vec<St
     if !vf.is_empty() {
         vf.push(',');
     }
-    vf.push_str(&format!("scale=out_color_matrix=bt709:out_range=tv,format={pf}"));
+    // setparams: ffmpeg 7 takes the encoder's colour tags from the frames, so `-color_trc` etc. alone left
+    // primaries / transfer "unknown" (ws:project-color-fps)
+    vf.push_str(&format!(
+        "scale=out_color_matrix=bt709:out_range=tv,format={pf},setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+    ));
     let tags = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"];
+    (vf, tags.map(String::from).to_vec())
+}
+
+// ---- ws:project-color-fps ----
+/// Why an export can't be written in the project's colour space (None = it can). HDR needs a 10-bit
+/// HEVC / AV1 file: no GIF, AVI or MPEG, and no 8-bit-only encoder picked by hand.
+pub fn color_refusal(color: ColorSpace, ext: &str, encoder: &str) -> Option<String> {
+    if color.is_sdr() || AUDIO_EXTS.contains(&ext) {
+        return None;
+    }
+    let name = color.short();
+    if !matches!(ext, "mp4" | "mov" | "mkv" | "m4v" | "webm") {
+        return Some(format!(
+            "{} can't hold {name} video. Pick MP4, MOV, MKV or WebM, or set the project's Color to SDR.",
+            ext.to_uppercase()
+        ));
+    }
+    let eight_bit = encoder.contains("264") || matches!(encoder, "libvpx-vp9" | "mpeg4");
+    eight_bit.then(|| {
+        let codec = if encoder.contains("264") { "H.264" } else { encoder };
+        format!("{codec} is 8-bit SDR only. {name} needs HEVC or AV1: set Encoder to Auto, or set the project's Color to SDR.")
+    })
+}
+
+/// The encoder an HDR export runs: the user's HEVC / AV1 pick when the container takes it, else
+/// libx265 (it writes the HDR10 mastering metadata), or AV1 for WebM.
+pub fn hdr_encoder(ext: &str, encoder: &str, available: &[String]) -> String {
+    let has = |n: &str| available.is_empty() || available.iter().any(|a| a == n);
+    let av1 = encoder.contains("av1");
+    let hevc = encoder.starts_with("hevc") || encoder == "libx265";
+    let fits = match ext {
+        "webm" => av1,
+        "mov" => hevc,
+        _ => av1 || hevc,
+    };
+    if fits && has(encoder) {
+        return encoder.to_string();
+    }
+    if ext == "webm" {
+        return if has("libsvtav1") { "libsvtav1" } else { "libaom-av1" }.into();
+    }
+    "libx265".into()
+}
+
+/// BT.2100 tags of a colour space: (primaries, transfer, matrix).
+fn hdr_tags(color: ColorSpace) -> [&'static str; 3] {
+    let trc = if color == ColorSpace::Hlg { "arib-std-b67" } else { "smpte2084" };
+    ["bt2020", trc, "bt2020nc"]
+}
+
+/// HDR10 mastering display (P3-D65 in a BT.2020 container, 1000 / 0.0001 nits) and content light level.
+const MASTER_DISPLAY: &str = "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)";
+const MAX_CLL: &str = "1000,400";
+
+/// `codec_args` made HDR: a 10-bit pixel format, Main10, the BT.2020 VUI, and (libx265, PQ) the HDR10
+/// SEI with mastering display and content light level.
+pub fn hdr_args(mut args: Vec<String>, encoder: &str, color: ColorSpace) -> Vec<String> {
+    let hw = ["nvenc", "qsv", "amf"].iter().any(|h| encoder.contains(h));
+    let pf = if hw { "p010le" } else { "yuv420p10le" };
+    match args.iter().position(|a| a == "-pix_fmt") {
+        Some(i) if i + 1 < args.len() => args[i + 1] = pf.into(),
+        _ => args.extend(["-pix_fmt".into(), pf.into()]),
+    }
+    if encoder.starts_with("hevc") || encoder == "libx265" {
+        args.extend(["-profile:v".into(), "main10".into()]);
+    }
+    let [p, t, m] = hdr_tags(color);
+    if encoder == "libx265" {
+        let mut x = format!("log-level=error:colorprim={p}:transfer={t}:colormatrix={m}:range=limited");
+        if color == ColorSpace::Hdr10 {
+            x.push_str(&format!(":hdr10=1:repeat-headers=1:master-display={MASTER_DISPLAY}:max-cll={MAX_CLL}"));
+        }
+        args.extend(["-x265-params".into(), x]);
+    }
+    args
+}
+
+/// The HDR export's picture conversion (appended to `vf`) and output tags: the SDR-referred RGBA
+/// composite into BT.2020 PQ / HLG at 10 bits, SDR white placed at 203 nits (BT.2408 reference white).
+fn hdr_vf(mut vf: String, args: &[String], color: ColorSpace) -> (String, Vec<String>) {
+    let pf = args.iter().skip_while(|a| *a != "-pix_fmt").nth(1).cloned().unwrap_or_else(|| "yuv420p10le".into());
+    let [p, t, m] = hdr_tags(color);
+    if !vf.is_empty() {
+        vf.push(',');
+    }
+    vf.push_str(&format!("zscale=tin=bt709:pin=bt709:rin=full:t={t}:p={p}:m={m}:r=tv:npl=203,format={pf}"));
+    let tags = ["-colorspace", m, "-color_primaries", p, "-color_trc", t, "-color_range", "tv"];
     (vf, tags.map(String::from).to_vec())
 }
 
@@ -605,6 +696,11 @@ fn run_export_with(
     let fps = opts.fps.filter(|f| *f > 0.0).unwrap_or(project.fps).max(1.0);
     // ws:export-deliver: a range export renders [start, start+dur) instead of the whole timeline
     let (start, dur, n) = frame_plan(project.duration(), fps, opts.range)?;
+    // ---- ws:project-color-fps: an HDR project writes 10-bit HEVC / AV1, never 8-bit or a GIF ----
+    let hdr = project.color.is_hdr() && !audio_only;
+    if let Some(why) = color_refusal(project.color, &ext, &opts.encoder) {
+        return Err(why);
+    }
     let (w, h) = (project.width.max(1), project.height.max(1));
     let mut pool = DecoderPool::new(opts.backend);
     let backend = opts.backend;
@@ -647,10 +743,12 @@ fn run_export_with(
     // ws:export-encoders: "auto" → probed hardware encoder; a stale explicit choice falls back to auto
     let is_retry = retry.is_some();
     let (encoder, note) = match retry {
+        _ if hdr => (hdr_encoder(&ext, &opts.encoder, &detect_encoders()), None),
         Some(n) => ("auto".to_string(), Some(n)),
         None => resolve_encoder(&ext, &opts.encoder),
     };
     let auto_hw = !is_retry
+        && !hdr
         && (opts.encoder.is_empty() || opts.encoder == "auto" || note.is_some())
         && crate::engine::encoders::CANDIDATES.contains(&encoder.as_str());
     // carried on every progress line (like the audio notes) so the first update does not erase it
@@ -659,6 +757,9 @@ fn run_export_with(
         prog.set(0.0, enc_note.trim_start_matches(" · "));
     }
     let mut args = codec_args(&ext, &encoder, opts.crf.max(CRF_BEST as u32), &opts.preset, &detect_encoders());
+    if hdr {
+        args = hdr_args(args, &encoder, project.color);
+    }
     args.extend(gop_args(&ext, fps));
     if let Some(bytes) = opts.target_bytes.filter(|_| !audio_only && !is_gif) {
         args = target_args(args, target_video_kbps(bytes, dur, &ext, main_audio as u32));
@@ -668,6 +769,7 @@ fn run_export_with(
         FrameSource::Cpu => None,
     };
     let nv12 = NV12_READBACK
+        && !hdr
         && opts.overlay.is_none()
         && gpu_tx.is_some()
         && w % 2 == 0
@@ -680,7 +782,7 @@ fn run_export_with(
     cmd.args(["-y", "-hide_banner", "-loglevel", "error"]);
     cmd.args(input_args(video, (w, h), fps, &ports, main_audio));
     let (vf, af) = output_filters(opts, (w, h), !inputs.is_empty(), &args);
-    let (vf, colour_tags) = rgba_bt709(vf, video == Some(VideoIn::Rgba), &args);
+    let (vf, colour_tags) = if hdr { hdr_vf(vf, &args, project.color) } else { rgba_bt709(vf, video == Some(VideoIn::Rgba), &args) };
     let vf = if is_gif {
         let pre = if vf.is_empty() { String::new() } else { format!("{vf},") };
         format!("{pre}fps=15,scale='min(iw,720)':-2:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle")
@@ -2263,10 +2365,10 @@ pub(crate) mod tests {
     fn rgba_path_is_bt709_limited_and_tagged() {
         let x264 = codec_args("mp4", "libx264", 18, "medium", &[]);
         let (vf, tags) = rgba_bt709("pad=ceil(iw/2)*2:ceil(ih/2)*2".into(), true, &x264);
-        assert_eq!(vf, "pad=ceil(iw/2)*2:ceil(ih/2)*2,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p");
+        assert_eq!(vf, "pad=ceil(iw/2)*2:ceil(ih/2)*2,scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv");
         assert_eq!(tags.join(" "), "-colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv");
         let (vf, _) = rgba_bt709(String::new(), true, &codec_args("mp4", "h264_qsv", 18, "medium", &[]));
-        assert_eq!(vf, "scale=out_color_matrix=bt709:out_range=tv,format=nv12");
+        assert_eq!(vf, "scale=out_color_matrix=bt709:out_range=tv,format=nv12,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv");
         assert_eq!(rgba_bt709(String::new(), false, &x264), (String::new(), Vec::new()), "NV12 input is already 709");
         let gif = codec_args("gif", "auto", 18, "medium", &[]);
         assert_eq!(rgba_bt709(String::new(), true, &gif), (String::new(), Vec::new()));
@@ -2517,6 +2619,80 @@ pub(crate) mod tests {
         assert_eq!(wait_done(&prog).as_deref(), Some(CANCELLED));
         assert_eq!(std::fs::read(&cancel).unwrap(), b"keep");
         assert!(!dir.join(".cancel.simple-editor-tmp.mp4").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- ws:project-color-fps ----
+    fn probe_streams(path: &Path) -> String {
+        let o = ffpipe::command(&ffpipe::ffprobe_exe().unwrap())
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
+            .args(["stream=pix_fmt,profile,color_space,color_transfer,color_primaries,color_range", "-of", "default=nw=1"])
+            .arg(path)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout).replace('\r', "")
+    }
+
+    #[test]
+    fn hdr_refuses_gif_and_8_bit_encoders() {
+        assert_eq!(color_refusal(ColorSpace::Sdr, "gif", "libx264"), None);
+        assert!(color_refusal(ColorSpace::Hdr10, "gif", "auto").unwrap().starts_with("GIF can't hold HDR10"));
+        assert!(color_refusal(ColorSpace::Hlg, "avi", "auto").is_some());
+        assert!(color_refusal(ColorSpace::Hdr10, "mp4", "h264_nvenc").unwrap().starts_with("H.264 is 8-bit"));
+        assert_eq!(color_refusal(ColorSpace::Hdr10, "mp4", "auto"), None);
+        assert_eq!(color_refusal(ColorSpace::Hdr10, "mkv", "hevc_nvenc"), None);
+        assert_eq!(color_refusal(ColorSpace::Hdr10, "mp3", "auto"), None, "sound only");
+        assert_eq!(hdr_encoder("mp4", "auto", &[]), "libx265");
+        assert_eq!(hdr_encoder("mp4", "hevc_nvenc", &[]), "hevc_nvenc");
+        assert_eq!(hdr_encoder("mov", "av1_nvenc", &[]), "libx265", "mov takes no AV1");
+        assert_eq!(hdr_encoder("webm", "auto", &["libaom-av1".into()]), "libaom-av1");
+        let a = hdr_args(codec_args("mp4", "hevc_nvenc", 20, "medium", &[]), "hevc_nvenc", ColorSpace::Hdr10).join(" ");
+        assert!(a.contains("-pix_fmt p010le") && a.contains("-profile:v main10") && !a.contains("yuv420p "), "{a}");
+    }
+
+    /// HDR10 / HLG exports are 10-bit HEVC with BT.2020 + PQ / HLG tags and (PQ) HDR10 mastering
+    /// metadata; an SDR export keeps BT.709 8-bit. Read back with ffprobe.
+    #[test]
+    fn hdr_export_is_10_bit_bt2020_and_sdr_stays_709() {
+        let dir = temp_dir("hdr");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        let mut p = Project::from_media(asset(&src.to_string_lossy(), 2));
+        let out = dir.join("sdr.mp4");
+        let x264 = ExportOptions { encoder: "libx264".into(), ..opts_for(out.clone()) };
+        assert_eq!(wait_done(&start_export(p.clone(), x264, text.clone())), None);
+        let sdr = probe_streams(&out);
+        assert!(sdr.contains("pix_fmt=yuv420p\n") && sdr.contains("color_transfer=bt709") && sdr.contains("color_primaries=bt709"), "{sdr}");
+
+        p.color = ColorSpace::Hdr10;
+        let out = dir.join("hdr10.mp4");
+        assert_eq!(wait_done(&start_export(p.clone(), opts_for(out.clone()), text.clone())), None);
+        let hdr = probe_streams(&out);
+        for want in ["pix_fmt=yuv420p10le", "profile=Main 10", "color_space=bt2020nc", "color_transfer=smpte2084", "color_primaries=bt2020", "color_range=tv"] {
+            assert!(hdr.contains(want), "{want} missing: {hdr}");
+        }
+        let o = ffpipe::command(&ffpipe::ffprobe_exe().unwrap())
+            .args(["-v", "error", "-select_streams", "v:0", "-read_intervals", "%+#1", "-show_frames", "-show_entries", "frame_side_data"])
+            .arg(&out)
+            .output()
+            .unwrap();
+        let side = String::from_utf8_lossy(&o.stdout);
+        assert!(side.contains("Mastering display metadata") && side.contains("Content light level"), "{side}");
+
+        p.color = ColorSpace::Hlg;
+        let out = dir.join("hlg.mkv");
+        assert_eq!(wait_done(&start_export(p.clone(), opts_for(out.clone()), text.clone())), None);
+        let hlg = probe_streams(&out);
+        assert!(hlg.contains("pix_fmt=yuv420p10le") && hlg.contains("color_transfer=arib-std-b67"), "{hlg}");
+
+        // refused before anything is written
+        p.color = ColorSpace::Hdr10;
+        let gif = dir.join("no.gif");
+        assert!(wait_done(&start_export(p, opts_for(gif.clone()), text)).unwrap().contains("GIF"));
+        assert!(!gif.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

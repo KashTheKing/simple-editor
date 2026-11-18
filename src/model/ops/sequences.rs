@@ -11,6 +11,7 @@ impl Project {
     /// New empty sequence (V1 + A1) with the given format; returns its id.
     pub fn new_sequence(&mut self, name: impl Into<String>, width: u32, height: u32, fps: f64) -> Id {
         let id = self.new_id();
+        let fps = clean_fps(fps);
         let mut seq = Sequence { id, name: name.into(), width, height, fps, tracks: Vec::new(), max_duration: None };
         let mut v = Track::new(self.new_id(), TrackKind::Video, "V1");
         let mut a = Track::new(self.new_id(), TrackKind::Audio, "A1");

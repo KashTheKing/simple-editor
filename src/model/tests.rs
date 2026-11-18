@@ -2081,3 +2081,48 @@ fn max_duration_undo_restores_the_value() {
     p.max_duration = Some(180.0);
     assert_eq!(Project::from_json(&before).unwrap().max_duration, Some(60.0));
 }
+
+// ---- ws:project-color-fps ----
+#[test]
+fn fps_is_snapped_from_sources_and_clean_everywhere() {
+    assert_eq!(snap_fps(26.022134821183574), 26.022, "no standard rate within 3 %: rounded");
+    assert_eq!(snap_fps(29.97002997), 29.97);
+    assert_eq!(snap_fps(59.94), 59.94);
+    assert_eq!(snap_fps(59.94005994), 59.94);
+    assert_eq!(snap_fps(24.3), 24.0);
+    assert_eq!(snap_fps(30.0), 30.0);
+    assert_eq!(snap_fps(1000.0), 240.0);
+    assert_eq!(clean_fps(24.56789), 24.568);
+    assert_eq!(clean_fps(f64::NAN), 30.0);
+    assert_eq!(clean_fps(0.2), 1.0);
+    // from_media snaps the measured rate
+    let mut a = asset(0, 10.0, 1);
+    a.fps = 29.97002997;
+    assert_eq!(Project::from_media(a).fps, 29.97);
+    let mut p = Project::new();
+    p.new_sequence("s", 1920, 1080, 59.940059940059);
+    assert_eq!(p.sequences[0].fps, 59.94);
+}
+
+#[test]
+fn old_projects_get_clean_fps_and_sdr_on_load() {
+    let mut p = Project::new();
+    p.fps = 26.022134821183574;
+    p.new_sequence("s", 1920, 1080, 30.0);
+    p.sequences[0].fps = 29.97002997;
+    let mut v = serde_json::to_value(&p).unwrap();
+    v.as_object_mut().unwrap().remove("color");
+    let dir = std::env::temp_dir().join(format!("se-fps-load-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("old.sedit");
+    std::fs::write(&f, v.to_string()).unwrap();
+    let q = Project::load(&f).unwrap();
+    assert_eq!((q.fps, q.sequences[0].fps, q.color), (26.022, 29.97, ColorSpace::Sdr));
+    // a clean custom rate is kept as typed; the colour space round-trips
+    p.fps = 24.5;
+    p.color = ColorSpace::Hlg;
+    p.save(&f).unwrap();
+    let q = Project::load(&f).unwrap();
+    assert_eq!((q.fps, q.color), (24.5, ColorSpace::Hlg));
+    let _ = std::fs::remove_dir_all(&dir);
+}
