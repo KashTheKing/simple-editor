@@ -11,6 +11,7 @@ mod editing;
 mod effects;
 mod graph;
 mod keyblocks;
+pub mod convert; // ws:animator: whole-timeline audit, keys -> blocks, transitions -> spans
 mod stacks; // ws:animator
 pub mod spans; // ws:animator (`MIN_SPAN`)
 mod markers;

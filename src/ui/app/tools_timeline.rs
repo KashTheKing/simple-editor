@@ -94,31 +94,8 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 }
                 Ok(json!({"ok": true}))
             }
-            "timeline.list" => {
-                let p = &app.project;
-                let tracks: Vec<Value> = p
-                    .tracks
-                    .iter()
-                    .map(|t| {
-                        let clips: Vec<Value> = t
-                            .clips
-                            .iter()
-                            .map(|c| {
-                                json!({
-                                    "id": c.id, "kind": format!("{:?}", c.kind), "name": c.name,
-                                    "asset": c.asset, "sequence": c.sequence, "start": c.start,
-                                    "duration": c.duration, "src_in": c.src_in, "speed": c.speed,
-                                    "reverse": c.reverse, "freeze": c.freeze, "enabled": c.enabled,
-                                    "label": p.clip_label(c), "link": c.link,
-                                    "effects": c.effects.iter().map(|e| e.name()).collect::<Vec<_>>(),
-                                })
-                            })
-                            .collect();
-                        json!({"id": t.id, "name": t.name, "kind": format!("{:?}", t.kind), "clips": clips})
-                    })
-                    .collect();
-                Ok(json!({"editing_sequence": p.editing, "duration": p.duration(), "tracks": tracks}))
-            }
+            // ws:animator: filters, fields and pages (`tools_animate_bulk::list_json`)
+            "timeline.list" => Ok(super::tools_animate_bulk::list_json(&app.project, args)),
             "timeline.add_clip" => {
                 let at = req(arg_f64(args, "at"), "at")?;
                 let track = arg_u64(args, "track").map(|t| t as usize);
@@ -365,7 +342,7 @@ pub const TOOLS: &[ToolDef] = &[
     row!("project.open", ToolKind::Read, "Open a .sedit project or a media file (creates a project around it).", &["path:string:true:absolute path"]),
     row!("project.save", ToolKind::Read, "Save the project (.sedit). Without a path: the current project file (error if none).", &["path:string:false:.sedit path"]),
     row!("project.set", ToolKind::Mutate, "Change project format/name.", &["name:string:false:", "width:integer:false:", "height:integer:false:", "fps:number:false:"]),
-    row!("timeline.list", ToolKind::Read, "Tracks and clips of the timeline being edited (main or the open sequence): ids, kind, asset, start, duration, src_in, speed, effects, label.", &[]),
+    row!("timeline.list", ToolKind::Read, "Tracks and clips of the timeline being edited (main or the open sequence): ids, kind, asset, start, duration, src_in, speed, effects, label. On a big timeline filter it (any argument turns on paging: total, next_offset): track (index or name), from/to (timeline s, overlapping), kind, clip_ids, has_keyframes, has_blocks, fields (id, kind, name, asset, sequence, start, duration, end, src_in, speed, reverse, freeze, enabled, label, link, track, effects, keys = prop -> {n, hand}, blocks = [name, t, dur]), limit (default 200) / offset. For keyframes, blocks and transitions over the whole timeline use animate.audit instead.", &["track:string:false:track index or name (V1)", "from:number:false:timeline s", "to:number:false:timeline s", "kind:string:false:Video | Audio | Image | Text | ...", "clip_ids:array:false:", "has_keyframes:boolean:false:", "has_blocks:boolean:false:", "fields:array:false:field names, default the ones above", "limit:integer:false:default 200", "offset:integer:false:"]),
     row!("timeline.add_clip", ToolKind::Mutate, "Place an asset, a sequence, or a new text clip at a time.", &["asset_id:integer:false:", "sequence_id:integer:false:", "text:string:false:creates a text clip", "at:number:true:timeline seconds", "track:integer:false:video track index", "duration:number:false:text/image length"]),
     row!("timeline.split", ToolKind::Mutate, "Split clips at t (all clips crossing t when clip_ids is omitted).", &["t:number:true:", "clip_ids:array:false:"]),
     row!("timeline.delete", ToolKind::Mutate, "Delete clips (linked clips follow).", &["clip_ids:array:true:", "ripple:boolean:false:close the gap"]),
