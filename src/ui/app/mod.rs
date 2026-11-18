@@ -248,7 +248,11 @@ pub struct App {
     started: Instant,
     /// Window starts hidden (see main.rs); shown once the first frame has been painted.
     window_shown: bool,
+    /// Opening without a flash (`winpos::Reveal`).
+    reveal: crate::winpos::Reveal,
     first_frame_at: Option<Instant>,
+    /// Updates run so far, up to 4 (`SE_STARTUP_TRACE`).
+    startup_frames: u8,
     screenshot_requested: bool,
     close_confirmed: bool,
     /// Close was requested during an export: cancel it, then re-request the close once it has finished.
@@ -782,6 +786,9 @@ fn converted_path(src: &Path, ext: &str) -> PathBuf {
     out
 }
 
+/// Editors built in this process - the player test checks player mode builds none.
+pub(crate) static EDITORS_BUILT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, open: Option<PathBuf>, screenshot: Option<PathBuf>) -> Self {
         // eframe restores the window rect from the last session, which may be on another monitor
@@ -789,7 +796,36 @@ impl App {
         if !crate::winpos::background() {
             crate::winpos::place_on_cursor_monitor(cc);
         }
+        let mut app = Self::build(&cc.egui_ctx, cc.gl.clone(), screenshot);
+        // a media file from Explorer never gets here: `main` starts the player (`crate::player`) for it
+        if let Some(p) = open {
+            app.open_path(&p);
+        }
+        app
+    }
+
+    /// The editor the player (`crate::player::Root`) hands its window to: `path` on the timeline,
+    /// the playhead at `t`, paused - built at that moment, in this process.
+    pub fn from_player(ctx: &egui::Context, gl: Option<Arc<eframe::glow::Context>>, path: &std::path::Path, t: f64) -> Self {
+        let mut app = Self::build(ctx, gl, None);
+        app.open_path(path);
+        app.seek(t);
+        app
+    }
+
+    /// Test view of what the player handed over: the project and the playhead.
+    #[cfg(test)]
+    pub(crate) fn project_and_playhead(&self) -> (&Project, f64) {
+        (&self.project, self.playhead)
+    }
+
+    /// Everything `new` does but window placement and the command-line file: from a bare egui context
+    /// (and GL, when there is one) - so the player can build the editor late, and a test headless.
+    pub(crate) fn build(ctx: &egui::Context, gl: Option<Arc<eframe::glow::Context>>, screenshot: Option<PathBuf>) -> Self {
+        EDITORS_BUILT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        crate::perf::startup_mark("app: build");
         let (mut settings, settings_bad) = Settings::load_reporting();
+        crate::perf::startup_mark("app: settings loaded");
         // ---- ws:neutral-web ---- (before anything builds a cache path or opens a link)
         Settings::set_cache_folder(&settings.cache_folder);
         crate::engine::browsers::set_choice(&settings.web_browser);
@@ -797,7 +833,8 @@ impl App {
         layout_ctl::migrate_to_pages(&mut settings);
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
         media::ytdlp::set_dir(&settings.ytdlp_dir);
-        theme::apply(&cc.egui_ctx, &settings.theme, &settings.palette, &settings.ui_look);
+        theme::apply(ctx, &settings.theme, &settings.palette, &settings.ui_look);
+        crate::perf::startup_mark("app: theme + fonts");
         let backend = Backend::parse(&settings.decoder);
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         {
@@ -814,15 +851,16 @@ impl App {
         // settings.context_menu / no --screenshot / release build / not yet installed) now lives in
         // `boot::run`: a first run arms the welcome wizard, whose opt-in checkbox is the consent that
         // was missing; later launches keep the same guard, gated on that recorded consent.
-        let mut player = Player::new(cc.egui_ctx.clone(), backend, text.clone());
+        let mut player = Player::new(ctx.clone(), backend, text.clone());
+        crate::perf::startup_mark("app: player");
         player.set_cache_bytes(crate::playback::cache_budget_bytes(settings.cache_mb));
-        let waveforms = WaveformCache::new(cc.egui_ctx.clone(), backend);
-        let thumbs = ThumbCache::new(cc.egui_ctx.clone(), backend);
+        let waveforms = WaveformCache::new(ctx.clone(), backend);
+        let thumbs = ThumbCache::new(ctx.clone(), backend);
+        crate::perf::startup_mark("app: waveforms + thumbs");
         let hotkeys = Hotkeys::from_settings(&settings);
-        let palette = theme::palette_with(&cc.egui_ctx, &settings.palette);
+        let palette = theme::palette_with(ctx, &settings.palette);
         // GL belongs to this (UI) thread; the renderer itself is built on first use so a driver that
         // rejects the shaders only costs a toast.
-        let gl = cc.gl.clone();
         let gpu_name = gl
             .as_ref()
             .map(|gl| {
@@ -831,6 +869,7 @@ impl App {
             })
             .unwrap_or_else(|| "no OpenGL context".into());
         // the current page's tree; an old one without the round-3 panes resets to that page's default
+        crate::perf::startup_mark("app: gl name");
         let layout = Layout::from_json(&settings.layout).unwrap_or_else(|| layout_ctl::page_default(&settings.page));
         let layout_json = layout.to_json();
         let mut app = Self {
@@ -877,7 +916,9 @@ impl App {
             screenshot,
             started: Instant::now(),
             window_shown: false,
+            reveal: Default::default(),
             first_frame_at: None,
+            startup_frames: 0,
             screenshot_requested: false,
             close_confirmed: false,
             close_after_export: false,
@@ -1047,18 +1088,14 @@ impl App {
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
         }
-        app.detect_ytdlp(&cc.egui_ctx);
+        crate::perf::startup_mark("app: struct");
+        app.detect_ytdlp(ctx);
+        crate::perf::startup_mark("app: yt-dlp");
         app.refresh_presets();
+        crate::perf::startup_mark("app: presets");
         app.player.set_project(&app.project);
         app.gallery = crate::ui::gallery::GalleryState::from_settings(&app.settings); // ws:gallery-audio
-        if let Some(p) = open {
-            app.open_path(&p);
-            // launched from Explorer ("Open with"): behave like a player - full screen, rolling
-            if app.screenshot.is_none() && !app.project.tracks.iter().all(|t| t.clips.is_empty()) {
-                app.fullscreen = true;
-                app.play_gated(1.0);
-            }
-        }
+        crate::perf::startup_mark("app: built");
         app
     }
 
@@ -1237,15 +1274,24 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let _s = crate::perf::span("ui_frame");
+        if self.startup_frames < 4 {
+            self.startup_frames += 1;
+            crate::perf::startup_mark(&format!("update {} start", self.startup_frames));
+        }
         let perf_t0 = Instant::now(); // ws:perf-baseline: the HUD's UI frame time
+        // shown cloaked, maximised when it should be, and revealed once a frame at its final size is
+        // on screen (`winpos::Reveal`): no white flash, no jump
+        let just = self.reveal.step(ctx, _frame, !crate::winpos::background());
         if !self.window_shown {
-            // viewport commands apply after this frame is painted, so no white flash
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            if !crate::winpos::background() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            }
             self.window_shown = true;
             boot::run(self); // ws:forgiveness: offers crash recovery, if any
+        }
+        if just {
+            if boot::bench_armed() {
+                ctx.request_repaint(); // the next update follows the first present
+            }
+        } else if self.reveal.revealed() {
+            boot::bench_first_frame(ctx);
         }
         // ws:forgiveness: confirm_discard_then's continuation sets this once the (non-blocking) discard
         // prompt resolves - the original close was cancelled below to let that prompt run, so re-send it.

@@ -1,5 +1,5 @@
 //! Simple Editor - a tiny, fast video trimmer/editor for Windows.
-//! `simple-editor [file]`   open a video/project
+//! `simple-editor [file]`   play a video / sound file (player mode, `player`), or open a project
 //! `simple-editor --selftest [dir]`   headless engine check
 //! `simple-editor [file] --screenshot out.ppm`   render the UI once and save it (for visual checks)
 //! `--size 1600x900`   start with this window inner size in points (reproducible screenshots)
@@ -18,6 +18,7 @@ mod media;
 mod model;
 mod perf;
 mod playback;
+mod player;
 mod scripting;
 mod selftest;
 mod settings;
@@ -29,6 +30,7 @@ mod winpos;
 use std::path::PathBuf;
 
 fn main() {
+    perf::startup_mark("main");
     ui::app::recovery::install_panic_hook(); // ws:forgiveness: crash.log + a snapshot of the latest autosave
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--quiet") {
@@ -68,6 +70,12 @@ fn main() {
         i += 1;
     }
 
+    // a media file from Explorer / a file argument: the player, with no editor behind it until asked
+    if let Some(path) = open.as_ref().filter(|p| screenshot.is_none() && p.is_file() && player::folder::is_playable(p)) {
+        run_player(path.clone(), size);
+        return;
+    }
+
     // read once to seed the viewport; App::new does its own (cheap) re-read of the same file - not
     // worth threading a loaded Settings through eframe's boxed FnOnce for this one field.
     let seed = settings::Settings::load();
@@ -102,10 +110,51 @@ fn main() {
     // the UI thread shows every frame the player publishes: above normal, so a busy PC (parallel builds)
     // does not hold the picture back while the render thread keeps up (`bg::raise_thread`)
     media::bg::inherit(i32::MAX);
+    perf::startup_mark("run_native");
     if let Err(e) = eframe::run_native(
         "Simple Editor",
         options,
-        Box::new(move |cc| Ok(Box::new(ui::app::App::new(cc, open, screenshot)))),
+        Box::new(move |cc| {
+            perf::startup_mark("window + GL ready");
+            Ok(Box::new(ui::app::App::new(cc, open, screenshot)))
+        }),
+    ) {
+        eprintln!("failed to start: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// Player mode (`player`): the decoders start here, before the window, so opening the file and
+/// decoding its first frame overlap window and GL creation. No settings, no editor.
+fn run_player(path: PathBuf, size: Option<[f32; 2]>) {
+    perf::startup_mark("player: start");
+    let engine = player::engine::Engine::start(&path, 0.0, false, true); // plays once the window shows
+    let title = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_title(title)
+        .with_app_id("SimpleEditor")
+        .with_inner_size([1280.0, 720.0])
+        .with_min_inner_size([320.0, 180.0])
+        // Media Player's own title bar (`player::chrome`), over the picture
+        .with_decorations(false)
+        .with_visible(false);
+    if let Some(s) = size {
+        viewport = viewport.with_inner_size(s);
+    } else if winpos::background() {
+        // automation: where its saved rect puts it (a second screen), never stealing focus
+        viewport = winpos::apply_rect(viewport, settings::Settings::load().window_rect);
+    } else {
+        viewport = winpos::maximized_on_cursor_monitor(viewport);
+    }
+    if winpos::background() {
+        viewport = viewport.with_active(false);
+    }
+    let options = eframe::NativeOptions { viewport, persist_window: false, ..Default::default() };
+    media::bg::inherit(i32::MAX);
+    if let Err(e) = eframe::run_native(
+        "Simple Editor",
+        options,
+        Box::new(move |cc| Ok(Box::new(player::Root::Player(Box::new(player::PlayerApp::new(&cc.egui_ctx, engine)))))),
     ) {
         eprintln!("failed to start: {e}");
         std::process::exit(1);
