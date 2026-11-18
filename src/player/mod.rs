@@ -130,6 +130,9 @@ pub struct PlayerApp {
     /// Process start -> first frame on screen (`SE_BENCH_FIRST_FRAME`).
     pub(crate) first_present: Option<Duration>,
     bench: Option<PathBuf>,
+    /// `SE_PLAYER_SHOT=<png>[|<seconds>]` (visual checks): save the window `seconds` (default 1) after
+    /// it is revealed, then close. The player has no MCP, and screen capture sees no GL swap chain.
+    shot: Option<(PathBuf, f64, bool)>,
     shown_at_frame: u64,
     /// Opening without a flash (`winpos::Reveal`).
     reveal: crate::winpos::Reveal,
@@ -185,6 +188,10 @@ impl PlayerApp {
             window_shown: false,
             first_present: None,
             bench: std::env::var_os("SE_BENCH_FIRST_FRAME").map(PathBuf::from),
+            shot: std::env::var("SE_PLAYER_SHOT").ok().map(|v| {
+                let (p, s) = v.split_once('|').unwrap_or((&v, "1"));
+                (PathBuf::from(p), s.parse().unwrap_or(1.0), false)
+            }),
             shown_at_frame: 0,
             reveal: Default::default(),
             frames: 0,
@@ -547,6 +554,30 @@ impl PlayerApp {
         self.pending_click = Some(now);
     }
 
+    fn shot_tick(&mut self, ctx: &egui::Context) {
+        let Some((path, after, asked)) = self.shot.as_mut() else { return };
+        if !self.window_shown {
+            return;
+        }
+        let image = ctx.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+        });
+        if let Some(img) = image {
+            let [w, h] = img.size;
+            let rgba = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+            let f = crate::media::Frame { width: w as u32, height: h as u32, rgba, ..Default::default() };
+            let _ = std::fs::write(&*path, crate::mcp::png_encode(&f));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if !*asked && self.engine.started.elapsed().as_secs_f64() >= *after {
+            *asked = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+        }
+        ctx.request_repaint_after(Duration::from_millis(30));
+    }
+
     /// The click on the video only hid the controls (`autohide::Output::dismissed`): no play/pause.
     pub(crate) fn cancel_click(&mut self) {
         self.pending_click = None;
@@ -594,6 +625,7 @@ impl eframe::App for PlayerApp {
         } else {
             self.reveal.step(ctx, frame, !crate::winpos::background())
         };
+        self.shot_tick(ctx);
         if just {
             // the clock starts with the picture: no frames skipped, no sound before the window
             self.engine.set_playing(true);
