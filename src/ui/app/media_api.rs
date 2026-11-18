@@ -52,12 +52,35 @@ fn ext_of(path: &str) -> String {
 }
 
 /// `folder` is `bin` or nested under it ("" = the whole library when `nested`, else only the root).
+/// Compared by their trimmed forms: "A / B" (spaces around the '/', as older imports wrote it) and
+/// "A/B" are the same bin.
 fn in_bin(folder: &str, bin: &str, nested: bool) -> bool {
-    let bin = bin.trim().trim_matches('/');
+    let bin = clean_bin(bin);
+    let folder = clean_bin(folder);
     if bin.is_empty() {
         return nested || folder.is_empty();
     }
-    folder == bin || (nested && folder.len() > bin.len() && folder.starts_with(bin) && folder.as_bytes()[bin.len()] == b'/')
+    folder == bin || (nested && folder.len() > bin.len() && folder.starts_with(&bin) && folder.as_bytes()[bin.len()] == b'/')
+}
+
+/// The name a bin is stored under, for a path the caller wrote: an existing bin (or the start of one)
+/// whose trimmed form matches keeps its stored spelling, so filing into "A/B" joins an existing "A / B"
+/// instead of making a twin. A new bin is the trimmed path.
+fn resolve_bin(p: &Project, bin: &str) -> String {
+    let want = clean_bin(bin);
+    if want.is_empty() {
+        return want;
+    }
+    for f in p.folder_names() {
+        let segs: Vec<&str> = f.split('/').collect();
+        for k in (1..=segs.len()).rev() {
+            let prefix = segs[..k].join("/");
+            if clean_bin(&prefix) == want {
+                return prefix;
+            }
+        }
+    }
+    want
 }
 
 /// A parsed asset filter (the shape `media.list`, `media.bulk_set {filter}` and the Luau API share).
@@ -299,6 +322,7 @@ fn bin_tree(p: &Project) -> Node {
         if count {
             n.total += 1;
         }
+        let path = clean_bin(path);
         if path.is_empty() {
             if count {
                 n.direct += 1;
@@ -425,6 +449,7 @@ pub(super) fn bulk_set(p: &mut Project, args: &Value) -> Result<Value, String> {
             return Err(format!("no asset {bad}"));
         }
     }
+    let folder = folder.map(|f| resolve_bin(p, &f));
     let used = p.used_assets();
     let hits: Vec<Id> = p.assets.iter().filter(|a| filter.matches(p, a, &used)).map(|a| a.id).collect();
     if let Some(f) = folder.as_deref().filter(|f| !f.is_empty()) {
@@ -463,10 +488,12 @@ pub(super) fn bulk_set(p: &mut Project, args: &Value) -> Result<Value, String> {
 /// Rename / move a bin: every bin and asset under `old` follows to `new`. Linked bins whose bin is
 /// renamed keep pointing at their folder (see `linked_roots`).
 fn move_bin(p: &mut Project, old: &str, new: &str) {
+    let old = clean_bin(old);
     let swap = |s: &mut String| {
-        if s == old {
+        let c = clean_bin(s);
+        if c == old {
             *s = new.to_string();
-        } else if let Some(rest) = s.strip_prefix(&format!("{old}/")) {
+        } else if let Some(rest) = c.strip_prefix(&format!("{old}/")) {
             *s = format!("{new}/{rest}");
         }
     };
@@ -491,7 +518,7 @@ pub(super) fn bins(p: &mut Project, args: &Value) -> Result<Value, String> {
     if bin.is_empty() {
         return Err("bin: a bin path like \"Footage/Day 1\"".into());
     }
-    let exists = p.folder_names().iter().any(|f| *f == bin || f.starts_with(&format!("{bin}/")));
+    let exists = p.folder_names().iter().any(|f| in_bin(f, &bin, true));
     match action {
         "create" => {
             p.add_folder(&bin);
@@ -517,10 +544,11 @@ pub(super) fn bins(p: &mut Project, args: &Value) -> Result<Value, String> {
                 }
                 if to.is_empty() { leaf } else { format!("{to}/{leaf}") }
             };
-            if new != bin && p.folder_names().iter().any(|f| *f == new) {
+            if new != bin && p.folder_names().iter().any(|f| clean_bin(f) == new) {
                 // merging into an existing bin is what a user means by "move these together"
-                move_bin(p, &bin, &new);
-                return Ok(json!({"ok": true, "bin": new, "merged": true}));
+                let into = resolve_bin(p, &new);
+                move_bin(p, &bin, &into);
+                return Ok(json!({"ok": true, "bin": clean_bin(&into), "merged": true}));
             }
             move_bin(p, &bin, &new);
             Ok(json!({"ok": true, "bin": new}))
@@ -530,7 +558,10 @@ pub(super) fn bins(p: &mut Project, args: &Value) -> Result<Value, String> {
                 return Err(format!("no bin '{bin}'"));
             }
             let moved = p.assets.iter().filter(|a| in_bin(&a.folder, &bin, true)).count();
-            p.remove_folder(&bin);
+            p.folders.retain(|f| !in_bin(f, &bin, true));
+            for a in p.assets.iter_mut().filter(|a| in_bin(&a.folder, &bin, true)) {
+                a.folder.clear();
+            }
             Ok(json!({"ok": true, "moved_to_root": moved}))
         }
         a => Err(format!("action: list | create | rename | move | delete (not '{a}')")),
@@ -792,6 +823,24 @@ pub(super) mod tests {
         assert_eq!((p.assets.len(), p.asset(4).unwrap().folder.as_str()), (5, ""));
         let l = bins(&mut p, &json!({})).unwrap();
         assert_eq!(l["bins"], json!([{"bin": "Archive", "assets": 1, "total": 1}]));
+    }
+
+    /// Bins an older import named "A / B" (spaces around '/') are the same bins as "A/B" to every tool:
+    /// filing into "A/B" joins them, rename / move / delete reach them, no twin bins appear.
+    #[test]
+    fn spaced_bin_names_are_the_same_bin() {
+        let mut p = sample();
+        p.assets[0].folder = "2 Footage / GTA 5".into();
+        p.folders = vec!["2 Footage ".into()];
+        assert_eq!(list(&p, &json!({"folder": "2 Footage/GTA 5"})).unwrap()["total"], 1);
+        assert_eq!(list(&p, &json!({"folder": "2 Footage"})).unwrap()["total"], 1);
+        bulk_set(&mut p, &json!({"ids": [5], "folder": "2 Footage/GTA 5"})).unwrap();
+        assert_eq!(p.asset(5).unwrap().folder, "2 Footage / GTA 5"); // joined, not a twin
+        bins(&mut p, &json!({"action": "rename", "bin": "2 Footage", "to": "Footage"})).unwrap();
+        assert_eq!((p.asset(1).unwrap().folder.as_str(), p.asset(5).unwrap().folder.as_str()), ("Footage/GTA 5", "Footage/GTA 5"));
+        assert!(!p.folder_names().iter().any(|f| f.starts_with("2 Footage")));
+        bins(&mut p, &json!({"action": "delete", "bin": "Footage"})).unwrap();
+        assert_eq!(p.asset(1).unwrap().folder, "");
     }
 
     #[test]

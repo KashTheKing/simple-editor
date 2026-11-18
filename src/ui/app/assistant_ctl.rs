@@ -227,9 +227,12 @@ pub(super) fn preamble(ctx: &Value, atts: &[aui::Attachment]) -> String {
          is already one undo step: do not call edit.begin or edit.end.",
     );
     // ws:assistant-luau
-    s.push_str(
-        " For the library or any bulk work, read media.summary first and media.list with filters and fields          (never the whole list), then edit with media.bulk_set / library.bins, or run a Luau script with          scripts.eval{code, purpose} - it reaches the project and library only, needs no Allow, and is one          undo step. You have no shell or file access, and need none.",
-    );
+    s.push_str(concat!(
+        " For the library or any bulk work, read media.summary first and media.list with filters and fields",
+        " (never the whole list), then edit with media.bulk_set / library.bins, or run a Luau script with",
+        " scripts.eval{code, purpose} - it reaches the project and library only, needs no Allow, and is one",
+        " undo step. You have no shell or file access, and need none.",
+    ));
     if ctx.as_object().is_some_and(|o| !o.is_empty()) {
         s.push_str(&format!(
             " The context the user attached (editor.context JSON; `pinned` = what they added on purpose):\n{ctx}"

@@ -7,7 +7,7 @@ Organise the user's media library into clear bins with one Luau script. Never de
 
 1. Call `media.summary`. It gives the counts by kind, extension and bin, used / unused, and the bin tree. Do not call `media.list` without filters on a big library. If the library is empty, say so and stop.
 2. Adapt the script below to $ARGS if it asks for something (other bin names, other keywords, a different music length). Keep its rules otherwise:
-   - Video: Footage (Graphics when its name or bin says overlay, title, logo, graphics...). Audio: Voiceover (voice words), Music (music words, or 45 s and longer), else SFX. Images: Graphics (logos, icons, overlays, titles, GIF / SVG, HTML layers), else Images.
+   - Video: Footage (Graphics when its name or bin says overlay, title, logo, graphics...). Audio: Voiceover (voice words), SFX when it already sits in a sound-effects bin, Music (music words, or 45 s and longer), else SFX. Images: Graphics (logos, icons, overlays, titles, GIF / SVG, HTML layers), else Images.
    - An asset that no timeline uses goes under `Unused/<bin>` - except sounds: SFX and Music are a library to draw from, so they stay in their bin, tagged `unused`.
    - The user's own bins are kept inside the new ones (`Day 1` becomes `Footage/Day 1`); a bin whose name already says the category is folded into it (`7 Sound effects/Hits` becomes `SFX/Hits`). Assets already under one of the new bins stay where they are. Bins left empty afterwards are removed (bins only - their assets have all moved).
    - Every asset gets its bin's tag (`footage`, `sfx`, `music`, `voiceover`, `image`, `graphic`), plus `unused` when unused.
@@ -44,6 +44,7 @@ local function category(a)
   local t = words(a.name .. " " .. a.folder .. " " .. table.concat(a.tags, " ") .. " " .. a.description)
   if a.kind == "audio" then
     if any(t, WORDS.voice) then return "Voiceover" end
+    if any(words(a.folder), ALIASES.SFX) then return "SFX" end -- already in a sound-effects bin, however long
     if any(t, WORDS.music) or a.duration >= MUSIC_SECONDS then return "Music" end
     return "SFX"
   elseif a.kind == "video" then
