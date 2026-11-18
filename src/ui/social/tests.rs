@@ -1079,3 +1079,24 @@ fn platform_uis_fit_the_se_and_the_pro_max() {
         }
     }
 }
+
+/// Full-width scrims, bars and progress bars reach both screen edges on a phone (the 4 dp side margin is for
+/// buttons only): no undimmed strip at the edge of the video.
+#[test]
+fn full_width_scrims_reach_the_screen_edges() {
+    let m = Map::new([360.0, 640.0], vec2(375.0, 667.0), pos2(0.0, 0.0), 1.0).insets(20.0, 0.0, 4.0);
+    let full = m.dp([0.0, 0.0, 360.0, 96.0]);
+    assert_eq!((full[0], full[2]), (0.0, 375.0), "{full:?}");
+    let button = m.dp([312.1, 329.0, 344.2, 389.2]);
+    assert!(button[2] <= 375.0 - 4.0 - 15.0, "a button keeps its margin: {button:?}");
+    for (plat, dev) in [("yt_shorts", "iphone_se_3rd_gen"), ("tiktok", "iphone_16_pro_max"), ("ig_reels", "android")] {
+        let st = settings_with(plat, "device", dev);
+        let g = GuideView::new(&st, "t", 9.0 / 16.0, 3.0, 10.0).unwrap();
+        let sc = device::build(&g.device_view(None, 0.0), Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 1000.0)));
+        let grads: Vec<Rect> = sc.over.iter().filter_map(|o| if let Op::Grad { r, .. } = o { Some(*r) } else { None }).collect();
+        assert!(!grads.is_empty(), "{plat} has scrims");
+        for r in grads {
+            assert!((r.min.x - sc.screen.min.x).abs() < 0.5 && (r.max.x - sc.screen.max.x).abs() < 0.5, "{plat} on {dev}: scrim {r:?} spans the screen {:?}", sc.screen);
+        }
+    }
+}
