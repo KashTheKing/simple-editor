@@ -270,7 +270,10 @@ pub struct Settings {
     pub capture_fps: u32,
     pub capture_bitrate_kbps: u32,
     pub capture_mic: String,
+    /// Retired with WASAPI loopback (kept so old settings files still load; `capture_audio` replaces it).
     pub capture_desktop_audio: bool,
+    /// Screen recording sound: "system" | "mic" | "both" | "none" (`AudioMode::key`; "" = system).
+    pub capture_audio: String,
     pub capture_cursor: bool,
     /// Start/stop screen recording automatically when the editor loses/gains focus.
     pub capture_on_blur: bool,
@@ -564,6 +567,12 @@ pub struct Settings {
     /// Hold an agent's MCP calls that leave the project (export, open/new project, settings, scripts,
     /// convert) until the user clicks Allow.
     pub assistant_guard: bool,
+    // ---- ws:mcp-permissions ----
+    /// Settings ▸ Permissions: the user's per-tool states (tool name, or `ui.action:<id>`); a tool not
+    /// listed has its default (`mcp::perms::default_perm`). Only the user's clicks write it.
+    pub mcp_perms: BTreeMap<String, crate::mcp::perms::Perm>,
+    /// The permission mode for MCP clients other than an Assistant chat (each chat has its own).
+    pub mcp_client_mode: crate::mcp::perms::Mode,
     // ---- ws:browser-layer ----
     /// Most megapixels one zoomed part of a web page is drawn with (browser layer ▸ sharp zoom).
     /// Set in settings.json.
@@ -740,6 +749,7 @@ impl Default for Settings {
             capture_bitrate_kbps: 8000,
             capture_mic: String::new(),
             capture_desktop_audio: true,
+            capture_audio: String::new(),
             capture_cursor: true,
             capture_on_blur: false,
             capture_dir: String::new(),
@@ -895,6 +905,8 @@ impl Default for Settings {
             // ---- ws:assistant-pane ----
             assistant_quick: default_assistant_quick(),
             assistant_guard: true,
+            mcp_perms: BTreeMap::new(),
+            mcp_client_mode: Default::default(),
             page_zoom_megapixels: 16.0,
             assistant_key_env: "OPENAI_API_KEY".into(),
             assistant_sessions: BTreeMap::new(),
@@ -1449,5 +1461,12 @@ mod tests {
         assert_eq!(back.page_layouts.get("Edit").map(String::as_str), Some("{}"));
         assert_eq!(back.page_defaults.get("Cut").map(String::as_str), Some("[]"));
         assert_eq!(back.pages, ["Color", "Mine"], "order and custom pages persist");
+    }
+}
+
+impl Settings {
+    /// The screen recorder's audio choice (an unset or unknown value is system audio).
+    pub fn capture_audio_mode(&self) -> crate::engine::capture::AudioMode {
+        crate::engine::capture::AudioMode::from_key(self.capture_audio.trim()).unwrap_or_default()
     }
 }

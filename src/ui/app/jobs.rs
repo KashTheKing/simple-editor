@@ -55,6 +55,9 @@ impl App {
         if let Some(dir) = out.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
+        // the meter taps let go of the devices before the recording opens them
+        self.capture_ui.meter_taps.clear();
+        self.capture_ui.meter_key.clear();
         match guarded(|| crate::engine::capture::start_screen(opts)) {
             Some(Ok(c)) => self.screen_rec = Some((c, out)),
             Some(Err(e)) => self.toast(format!("Screen recording failed: {e}")),
@@ -64,10 +67,12 @@ impl App {
 
     pub(super) fn stop_screen_capture(&mut self) {
         let Some((c, out)) = self.screen_rec.take() else { return };
+        let done = c.progress();
         if guarded(move || c.stop()).is_none() {
             return;
         }
-        self.import_recording(out, None);
+        // imported once ffmpeg has finished, the pieces are muxed and the mp4 probes - not on "exists"
+        self.import_recording(out, None, Some(done));
     }
 
     /// Record a voiceover take at the playhead. `from_playhead` rolls the timeline under it (from the
@@ -96,12 +101,13 @@ impl App {
     pub(super) fn stop_voiceover(&mut self) {
         let Some((c, out, (at, rolling))) = self.voice_rec.take() else { return };
         let lead = c.lead_in();
+        let done = c.progress();
         self.player.pause();
         if guarded(move || c.stop()).is_none() {
             return;
         }
         self.capture_ui.last_take = Some((at, out.clone()));
-        self.import_recording(out, Some(take_placement(at, rolling, lead)));
+        self.import_recording(out, Some(take_placement(at, rolling, lead)), Some(done));
     }
 
     /// Retake: throw the last voiceover take away (its clips in one undo step; one still being finalised
@@ -121,8 +127,33 @@ impl App {
     /// A finished recording: import it and (for a voiceover) drop it on the timeline at `at`. ffmpeg
     /// finalises the container a moment after it is asked to stop, so the file is waited for by
     /// `poll_recordings` (per frame, up to 3 s) - never with a sleep on this thread.
-    pub(super) fn import_recording(&mut self, out: PathBuf, at: Option<f64>) {
-        self.pending_recordings.push(PendingRecording { out, at, deadline: Instant::now() + Duration::from_secs(3) });
+    pub(super) fn import_recording(&mut self, out: PathBuf, at: Option<f64>, done: Option<Arc<Progress>>) {
+        self.pending_recordings.push(PendingRecording {
+            out,
+            at,
+            deadline: Instant::now() + Duration::from_secs(3),
+            done,
+            recovered: false,
+        });
+    }
+
+    /// Screen recordings a crash or power cut left as pieces in the capture folder: finish each on a
+    /// background thread; `poll_recordings` imports the result (or says why it couldn't).
+    pub(super) fn recover_recordings(&mut self) {
+        let dir = capture_ui::capture_dir(&self.settings);
+        for json in guarded(|| crate::engine::capture::unfinished(&dir)).unwrap_or_default() {
+            let Some(parts) = crate::engine::capture::read_parts(&json) else { continue };
+            let p = Progress::new();
+            let q = p.clone();
+            std::thread::spawn(move || q.finish(crate::engine::capture::finalize(&json).err()));
+            self.pending_recordings.push(PendingRecording {
+                out: parts.out,
+                at: None,
+                deadline: Instant::now(),
+                done: Some(p),
+                recovered: true,
+            });
+        }
     }
 
     // ---- ws:job-completion-hitches ----
@@ -134,9 +165,30 @@ impl App {
         let now = Instant::now();
         let pending = std::mem::take(&mut self.pending_recordings);
         for r in pending {
-            match recording_step(r.out.exists(), now, r.deadline) {
+            // a capture with a progress is ready when it finished cleanly; its error is already plain words
+            let step = match &r.done {
+                Some(p) if !p.is_done() => RecordingStep::Wait,
+                Some(p) => match p.error() {
+                    Some(e) if e == crate::engine::export::CANCELLED => continue,
+                    Some(e) => {
+                        let dir = r.out.parent().map(PathBuf::from).unwrap_or_default();
+                        self.push_toast(feedback::Toast::with_folder(e, dir).kind(feedback::ToastKind::Error));
+                        continue;
+                    }
+                    None => recording_step(r.out.exists(), now, now + Duration::from_secs(1)),
+                },
+                None => recording_step(r.out.exists(), now, r.deadline),
+            };
+            match step {
                 RecordingStep::Wait => self.pending_recordings.push(r),
-                RecordingStep::Import => self.place_recording(r.out, r.at),
+                RecordingStep::Import => {
+                    let recovered = r.recovered;
+                    let name = r.out.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                    self.place_recording(r.out, r.at);
+                    if recovered {
+                        self.toast(format!("Recovered an unfinished screen recording: {name}"));
+                    }
+                }
                 RecordingStep::GiveUp => self.toast(format!("Recording not written: {}", r.out.display())),
             }
         }
@@ -193,19 +245,9 @@ impl App {
         self.audio_inputs.clone().unwrap_or_default()
     }
 
-    /// Screen-capture options for the record-on-blur path, which has no window response to take them
-    /// from. Same folder the Screen Recording window shows (`capture_ui::capture_dir`).
+    /// Screen-capture options for the record-on-blur path: what the pane's Record button would use.
     pub(super) fn blur_capture_options(&self) -> crate::engine::capture::ScreenCaptureOptions {
-        crate::engine::capture::ScreenCaptureOptions {
-            out: capture_ui::capture_dir(&self.settings).join(format!("screen-{}.mp4", Settings::now())),
-            fps: self.settings.capture_fps.clamp(1, 120),
-            bitrate_kbps: self.settings.capture_bitrate_kbps,
-            crf: self.settings.crf,
-            region: if self.capture_ui.area == "region" { self.capture_ui.region } else { None },
-            mic: self.settings.capture_mic.clone(),
-            desktop_audio: self.settings.capture_desktop_audio,
-            cursor: self.settings.capture_cursor,
-        }
+        capture_ui::new_screen_options(&self.settings, &self.capture_ui, &self.screens.monitors)
     }
 
     // ---------------- UI pieces ----------------
@@ -409,7 +451,12 @@ pub(super) struct PendingRecording {
     pub(super) out: PathBuf,
     /// Voiceover: place it on the timeline here. Screen recording: library only.
     pub(super) at: Option<f64>,
+    /// Only for a recording without `done`: how long to wait for the file to appear.
     pub(super) deadline: Instant,
+    /// The capture's progress: the file is imported once it is done without an error.
+    pub(super) done: Option<Arc<Progress>>,
+    /// Finished from a crash's leftover pieces (`recover_recordings`).
+    pub(super) recovered: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

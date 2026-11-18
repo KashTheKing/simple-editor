@@ -94,6 +94,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             Asked::Captions => toggle_captions(app),
             Asked::Saved => save_prefs(app, prefs.clone()),
             Asked::Screenshot => screenshot_to_file(app, &prefs),
+            Asked::Export => {
+                if let Err(e) = export_device(app, &prefs) {
+                    app.toast(e);
+                }
+            }
         }
     }
     true
@@ -134,6 +139,41 @@ fn screenshot_to_file(app: &mut App, p: &Prefs) {
         Ok(()) => app.toast_with_folder(format!("Saved {}", file.display()), file),
         Err(e) => app.toast(format!("Screenshot not saved: {e}")),
     }
+}
+
+/// The Export button: the timeline (or the In/Out range) as a video inside `p`'s device with the platform's
+/// UI round it, a normal background export (progress, Cancel, the Jobs pane, the project's audio) to a fresh
+/// file beside the other exports; it opens in the media player when it is done.
+fn export_device(app: &mut App, p: &Prefs) -> Result<(Arc<crate::engine::export::Progress>, PathBuf), String> {
+    if app.timeline_is_empty() {
+        return Err("Nothing to export - the timeline is empty".into());
+    }
+    if app.ffmpeg_missing() {
+        return Err("ffmpeg.exe not found".into());
+    }
+    if app.export.is_some() || !app.bake_jobs.is_empty() {
+        return Err("An export is running - try again when it finishes".into());
+    }
+    let range = match (app.project.in_point, app.project.out_point) {
+        (Some(a), Some(b)) if b > a => Some((a, b)),
+        _ => None,
+    };
+    let project = app.export_project();
+    let d = social::data();
+    let ov = raster::device_export(&app.settings, &project, &p.platform, &p.device, p.land, app.emulator.view, range)
+        .ok_or_else(|| format!("unknown platform '{}'", p.platform))?;
+    let name = format!("{} - {} on {}", project.name, d.platform(&p.platform).map_or(p.platform.as_str(), |x| x.n.as_str()), d.device(&p.device).n);
+    let out = super::tools_export::unique_path(&super::tools_export::default_out_dir(app), &name, "mp4");
+    let mut opts = app.export_opts(out.clone());
+    opts.range = range;
+    opts.overlay = Some(ov);
+    opts.audio = crate::engine::export::AudioLayout::Mix;
+    app.player.pause();
+    let prog = crate::engine::export::start_export(project, opts, app.text.clone());
+    app.export = Some((prog.clone(), ExportKind::File { path: out.clone() }));
+    app.quick_open = Some(out.clone());
+    app.toast(format!("Exporting {}", out.file_name().unwrap_or_default().to_string_lossy()));
+    Ok((prog, out))
 }
 
 /// `device`, `platform`, `orientation` (+ `gallery`) from tool arguments over `p`.
@@ -184,6 +224,22 @@ fn state_json(app: &App) -> Value {
 }
 
 pub(crate) const TOOLS: &[ToolDef] = &[
+    ToolDef {
+        name: "emulator.export",
+        desc: "The Device Emulator's Export: render the timeline (or the In/Out range) as a video inside the device with the platform's UI round it (playing, its progress bar following time), with the project's audio, as a background export job. Defaults to the pane's own choice; device / platform / orientation override it for this export. Opens in the media player when done.",
+        args: &[
+            "device:string:false:default = the pane's device",
+            "platform:string:false:default = the pane's platform",
+            "orientation:string:false:portrait|landscape",
+        ],
+        kind: ToolKind::Job,
+        run: |app, args| {
+            let mut p = prefs(app);
+            apply_args(&mut p, args)?;
+            let (prog, out) = export_device(app, &p)?;
+            Ok(ToolOutcome::Job(prog, out))
+        },
+    },
     ToolDef {
         name: "emulator.open",
         desc: "Show the Device Emulator pane on a device and platform: the project's video inside a real phone / tablet / browser / TV with the platform's UI. Any argument left out keeps the current choice (kept per project). Returns the choice and the ids to pick from.",

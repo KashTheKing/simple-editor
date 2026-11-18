@@ -89,6 +89,7 @@ pub(super) fn toggle_action(p: Pane) -> Option<Action> {
         // ---- ws:panels-multiscreen ----
         Pane::Voiceover => Voiceover,
         Pane::Transcript => ToggleTranscript,
+        Pane::ScreenRecording => ScreenCapture,
         _ => return None,
     })
 }

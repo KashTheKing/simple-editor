@@ -506,7 +506,14 @@ impl Map {
         if (0.4..=0.6).contains(&mid) && (r1 - r0) < rf * 0.7 {
             return (r0 + d * 0.5, r1 + d * 0.5);
         }
-        let edge = |v: f32| if v < rf * 0.5 { v + side } else { v + d - side };
+        // the side margin keeps buttons off a curved screen edge; an edge that is the reference screen's own edge
+        // (a full-width scrim, bar or progress bar) stays on the screen's edge
+        let edge = |v: f32| match v {
+            _ if v <= 0.0 => v,
+            _ if v >= rf => v + d,
+            _ if v < rf * 0.5 => v + side,
+            _ => v + d - side,
+        };
         (edge(r0), edge(r1))
     }
     /// dp rectangle on the target (before scaling).

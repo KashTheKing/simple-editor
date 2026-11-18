@@ -826,3 +826,37 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - New `Device` fields: `sc` (pixels per dp), `px` (real panel pixels when not w x h x sc: Plus models 1080x1920, minis 1080x2340, Macs' "looks like" sizes), `face` [side, forehead, chin] dp for home-button models (from body mm x the screen's pt per mm). `group()` drives the picker; `frame::insets` gives the body per side (turned: forehead on the left).
 - Phone platform UIs were inset by `st - 24` (they overlapped the status bar by 24 pt everywhere); the mobile-web references start under the bar, so the inset is now the whole `st`.
 - Slow all-states device tests run on `sample_devices` (smallest + largest of each picker group), not all 101.
+- Export (Device Emulator button, `emulator.export`): `raster::device_export` is a `FrameOverlay` whose second field is the size it returns (`export.rs` feeds ffmpeg that size and stops recycling buffers). The moving ops are found once by building the layout at the start and the end and diffing; everything else is drawn once into `Layers` (under the video, still overlay and corner mask as premultiplied colour + coverage from a black and a white pass). Each frame = copy, blit, blends, the moving ops. Live: 8 s Shorts on an SE took 76 s on a machine pegged at 100 % by other builds, where a plain Quick Export of the same project took over 280 s.
+- Fixed (fix/emulator-scrim): full-width scrims, bars and progress bars stopped 4 dp short of both screen edges (`Map::axis` applied the 4 dp side margin to every edge); an edge on the reference screen's own edge now stays on the screen edge, buttons keep the margin.
+- MCP permissions (2026-11-18, feat/mcp-permissions): `mcp/perms.rs` (Allow/Ask/Block per tool, defaults from ToolKind;
+  modes Ask / Accept edits / Bypass; `--mcp-full-access` / `SE_MCP_FULL_ACCESS`, on by default for debug and worktree
+  builds, `=0` off). Settings ▸ Permissions tab; per-chat mode in the composer; the agent's MCP URL carries `?chat=<token>`
+  so only that chat's calls get its mode; `permissions.list` / `permissions.request` (answered only by the user's click,
+  inline in the chat). Note: `media.import` and others are registered as `ToolKind::Read`, so they default to Allow.
+  Not live-checked: a real claude/codex agent calling permissions.request (tested with a curl "custom" agent).
+## Screen recording (2026-11-18, fix/screen-record)
+- Root cause of "moov atom not found" (user's screen-1795024517.mp4): the stop path was fine (`q` on stdin), but
+  `poll_recordings` imported as soon as `out.exists()`, which is true from the first mdat byte - before ffmpeg wrote
+  the moov. The user's file was finalised a moment later and plays (72.5 s, h264 + aac, decodes clean): nothing to recover.
+- Now: ffmpeg records video only (gdigrab, `-tune zerolatency`, `-g 2*fps`, `-cluster_time_limit 1000`,
+  `-flush_packets 1`) into `<name>.rec.mkv`; `engine::audio_tap` (cpal/WASAPI; loopback = input stream on the default
+  render device) writes raw f32 to `<name>.system.f32` / `.mic.f32`; `<name>.rec.json` holds paths, formats and start
+  times. gdigrab stamps frames with wall-clock µs (ffmpeg's `start:` line at -loglevel info), the taps stamp their
+  first sample on the same clock -> `adelay` / `atrim` in `capture::mux_args`. `finalize` muxes (video copy, AAC,
+  `-t <video length>`: `-shortest` never ends a graph with apad/anullsrc), probes, then deletes the pieces.
+  The app imports on the capture's Progress done + no error (`PendingRecording.done`), never on "exists".
+- Crash safety found by testing: x264's default frame threads held every frame of a 3.5 s recording in memory and
+  ffmpeg's write buffer held the rest (a killed MKV was 587 bytes) -> zerolatency + flush_packets. ffmpeg ignores
+  stdin closing, so after an app crash it kept recording forever -> `html::tie_to_us` (kill-on-close job). The
+  Chocolatey ffmpeg.exe is a shim: `Child::kill` kills only the shim -> the stop timeout uses `html::kill_tree`.
+- `unfinished(dir)` (pieces untouched for 30 s) runs at startup (`recover_recordings`); checked live: app killed
+  mid-recording -> relaunch -> mp4 rebuilt, imported, toast. Closing the window mid-recording stops, finishes,
+  imports, then closes.
+- Live (debug exe, scratch profile, port 7541, `capture.screen` MCP tool): 10 s in each mode with a 1 kHz tone
+  played; system and both have the tone at full level, mic only hears it acoustically (-34 dB), none has no audio
+  stream. NOT explained: in Both mode the tone's level varied run to run (-12 to -26 dB) while system-only stayed
+  at -12; the mux keeps levels (checked with a synthetic tone), so it is in Windows' playback chain - possibly
+  communications ducking when the mic opens (UserDuckingPreference is the default, reduce by 80 %).
+- gdigrab reached ~27 fps at 2560x1440 while other sessions were compiling. Tests that record for real write to
+  `SE_TEST_DIR` (else temp). Pre-existing on release/1.3.1: `library_index_matches_files` and
+  `connecting_loads_the_index_once` fail in CRLF worktree checkouts; `clear_forgets_rewritten_file` is flaky.

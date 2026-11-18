@@ -23,6 +23,8 @@ mod general;
 mod hotkeys;
 mod import;
 mod performance;
+// ---- ws:mcp-permissions ----
+pub(crate) mod permissions;
 // ---- ws:social-guides ----
 mod social;
 
@@ -74,6 +76,10 @@ pub struct SettingsUi {
     // ---- ws:panels-multiscreen ----
     /// Layout ▸ Screens… was clicked: the app (windows.rs) opens the screens setup.
     pub open_screens: bool,
+    // ---- ws:mcp-permissions ----
+    /// Permissions tab: the search text and the open groups.
+    pub(super) perms_search: String,
+    pub(super) perms_open: Vec<String>,
 }
 
 pub(super) struct Status {
@@ -166,6 +172,7 @@ pub fn show(
             ui.selectable_value(&mut state.tab, 5, "Appearance");
             ui.selectable_value(&mut state.tab, 6, "Assistant"); // ws:assistant-pane
             ui.selectable_value(&mut state.tab, 7, "Social"); // ws:social-guides
+            ui.selectable_value(&mut state.tab, 8, "Permissions"); // ws:mcp-permissions
         });
         ui.separator();
         // the tab row stays put; a tab taller than the window scrolls
@@ -179,6 +186,7 @@ pub fn show(
                 4 => hotkeys::hotkeys_tab(ui, state, hotkeys, settings),
                 6 => assistant::assistant_tab(ui, settings), // ws:assistant-pane
                 7 => social::social_tab(ui, &mut state.social, settings), // ws:social-guides
+                8 => permissions::permissions_tab(ui, &mut state.perms_search, &mut state.perms_open, settings), // ws:mcp-permissions
                 _ => appearance::appearance(ui, settings),
             })
             .inner;
