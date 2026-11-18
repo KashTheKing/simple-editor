@@ -2,6 +2,9 @@
 
 ## 1.3.1
 
+### Beat Aligner
+- **New Beat Aligner panel** (a tab on the Audio and Cut pages, anywhere from a tab bar's +): pick a song, Detect finds the BPM, beat grid and downbeats (from the cached song analysis) under a bar ruler over a big waveform; fix it with BPM, ½ / ×2, Tap tempo, offset and beats per bar. Tap Space, B or M while it plays to drop marks (calibrated latency, optional snap to the beat with a strength), or let Continuous / Fill grid mark the grid. Drag marks (snapping to beats or sub-beats), select stretches into named, coloured sections (Intro, Verse, Chorus, Drop ...). Then turn them into timeline markers, cut the picture at the marks, put a Library sound on each mark, snap clip edges to them or apply a Zoom Punch / Shake / any Animator block on each beat; export and import CSV, Resolve marker EDL and YouTube chapters. Voice mode marks a voiceover's phrases and pauses instead. Tools: `beats.*`.
+
 ### Ctrl+P: go to anything
 - **The command palette is now Ctrl+P and goes to things by name**: clips on any timeline (nested sequences too),
   timelines, Library media and bins, markers and comments, pages, panels and Gallery cards, grouped by type with

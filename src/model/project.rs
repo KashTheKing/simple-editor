@@ -92,6 +92,10 @@ pub struct Project {
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
+    // ---- ws:beat-aligner ----
+    /// The Beat Aligner's song, grid, marks and sections (`model::beats`).
+    #[serde(skip_serializing_if = "crate::model::beats::is_empty")]
+    pub beats: BeatSheet,
 }
 
 impl Default for Project {

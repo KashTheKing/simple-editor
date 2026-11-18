@@ -170,6 +170,7 @@ mod enhance_ctl;
 mod whatsnew;
 mod perf_ctl; // ws:perf-window
 mod animator_ctl; // ws:animator
+mod beats_ctl; // ws:beat-aligner
 #[path = "windows.rs"]
 mod windows_dlg;
 
@@ -502,6 +503,10 @@ pub struct App {
     perf: crate::ui::perf_ui::PerfWin,
     // ---- ws:animator ----
     animator: crate::ui::animator::AnimState,
+    // ---- ws:beat-aligner ----
+    beats: crate::ui::beat_aligner::AlignState,
+    /// Continuous marking has its undo step for this play.
+    beats_run_undo: bool,
     /// "Draw a motion path" is armed: the next Viewer stroke becomes a path the selection follows.
     path_armed: bool,
     // ---- ws:pro-schema ----
@@ -977,6 +982,8 @@ impl App {
             hud: Default::default(),
             perf: Default::default(), // ws:perf-window
             animator: Default::default(), // ws:animator
+            beats: Default::default(), // ws:beat-aligner
+            beats_run_undo: false,
             path_armed: false,
             // ---- ws:pro-schema ----
             assistant: Default::default(),
@@ -1703,6 +1710,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     perf_ctl::TOOLS,
     // ---- ws:animator ----
     animator_ctl::TOOLS,
+    // ---- ws:beat-aligner ----
+    beats_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1872,6 +1881,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     perf_ctl::tick,
     // ---- ws:animator ----
     animator_ctl::frame,
+    // ---- ws:beat-aligner ----
+    beats_ctl::frame,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -2006,6 +2017,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:online-library ----
     // ---- ws:animator ----
     animator_ctl::draw,
+    // ---- ws:beat-aligner ----
+    beats_ctl::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

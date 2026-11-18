@@ -1,0 +1,101 @@
+---
+title: Beat Aligner
+description: Mark out a song or a voiceover quickly - detected beats, tapping along, named sections - then cut, add sounds and effects on the marks.
+---
+
+![The Beat Aligner with a detected grid, tapped marks and sections](/img/tutorial/beat-aligner.png)
+
+The **Beat Aligner** panel marks out a song so you can cut to it. It finds the tempo and the beat grid, lets you tap
+marks while the song plays, and turns a stretch of the song into a named, coloured section (Intro, Verse, Chorus,
+Drop ...). Then it uses the marks: timeline markers, cuts, a sound on every mark, clip edges snapped to them, or a
+zoom punch on each beat.
+
+It is a tab on the **Audio** and **Cut** pages. On any other page, add it with a tab bar's **+** (Beat Aligner).
+
+## Pick the song
+
+Select an audio clip on the timeline, or pick a song from the list at the top left (every audio clip on the
+timeline and every audio file in the Library). **Music** finds beats; **Voice** marks a voiceover instead (below).
+
+A song from the Library that is not on the timeline yet can be marked and detected, but it cannot play there: press
+**Add to timeline** to put it on an audio track at the playhead.
+
+## Automatic beats
+
+**Detect** finds the tempo (BPM), the beat grid and the downbeats. It reads the same analysis of the song the
+audio visualizers use, worked out once in the background, so it never slows playback. The ruler over the waveform
+shows bar numbers on the downbeats and a tick on every beat (eighths and sixteenths when you zoom in).
+
+The grid is yours to correct:
+
+| Control | What it does |
+|---|---|
+| **BPM** | drag or type the tempo |
+| **½** / **×2** | half time / double time, when the detection heard the tempo at the wrong speed |
+| **Tap tempo** | click it on the beat a few times while the song plays: the tempo is the average of your clicks, and the last click becomes a downbeat |
+| **Offset** | where a downbeat is, in seconds into the song |
+| **Beats per bar** | 4 for most songs, 3 for a waltz |
+
+Scroll over the waveform to zoom, Shift+scroll to move along it. Click it to move the playhead there.
+
+## Tap along while it plays
+
+Turn on **Tap keys** and press **Play**. Every press of **Space**, **B** or **M** drops a mark where you are in
+the song (Space taps instead of pausing while Tap keys is on; use the Pause button to stop). The **Tap** button
+does the same with the mouse.
+
+A tap is the player's position when the key arrived, minus your **Latency**: the time between hearing a beat and
+the key reaching the editor. Press **Calibrate**, play the song and tap Space on the beat 8 times: the latency is
+set to how late your taps landed on the detected grid.
+
+- **Snap** pulls each tap toward the nearest grid line; the slider is how far (all the way = exactly on it), the
+  list picks beats, eighths (1/8) or sixteenths (1/16).
+- **Continuous** marks every beat of the grid as the song plays past it. **Fill grid** marks them all at once.
+
+## Fix the marks
+
+- Click a mark to select it; Ctrl+click adds to the selection; Ctrl+A selects them all. **Delete** (with the pointer over the waveform) removes
+  the selected marks.
+- Drag a mark to move it (the whole selection moves). With Snap on it lands on the grid; hold **Alt** to drag freely.
+- Drag across empty waveform to select a stretch of the song (and the marks in it).
+- Every tap, drag, delete or section is one step of **Undo**. A continuous run is one step for the whole play.
+
+## Sections
+
+Select a stretch (drag across the waveform, or select two marks) and press **Intro**, **Verse**, **Pre-chorus**,
+**Chorus**, **Drop**, **Bridge**, **Break** or **Outro**, or type any name and press **Add**. Each name has its own
+colour. The list under the buttons shows every section with its time; click one to rename it or change its colour,
+✕ deletes it.
+
+## Use the marks
+
+**Use every** picks every mark, every 2nd, every 4th ... for the buttons below.
+
+| Button | What it does |
+|---|---|
+| **To timeline markers** | a timeline marker per mark (coloured by kind: taps yellow, downbeats orange, beats grey, phrases green) and a range marker per section with its name and colour |
+| **Cut at marks** | splits the picture at the marks: **All video** cuts every video track, **Selected track** the track of the selected clip. The song itself is never cut |
+| **Add at marks** | puts the sound you pick (an audio file from your Library, e.g. a hit or a whoosh) on every mark, a hair early so it lands with the beat, each one stopped before the next, all on one audio track |
+| **Apply on marks** | an animation block on each mark: **Zoom Punch**, **Shake**, **Pulse**, **Flash** or any block from the Animator, on the selected clips (or every video clip under a mark), never longer than the gap to the next mark |
+| **Snap selected clips to marks** | moves each selected clip's start to the nearest mark and trims its end to the nearest mark (within a quarter second), as long as nothing else on the track is in the way |
+
+![Cut at every beat: the picture is split on the marks, the song is not](/img/tutorial/beat-aligner-cut.png)
+
+### Marker files
+
+**Export CSV** writes the marks and sections as `time,duration,name,note,label` (the Markers panel's own format, so
+**Import** in the Markers panel reads it too). **Export EDL** writes a marker EDL that DaVinci Resolve imports as
+timeline markers. **Export chapters** writes `00:01:23 Chorus` lines for a YouTube description (the sections, or the
+marks when there are none). **Import…** reads any of the three: ranges come back as sections, single times as marks.
+
+## Voiceovers
+
+Choose **Voice** and press **Detect**: instead of a beat grid you get a green **Phrase** mark where speech starts
+after a pause and a grey **Pause** mark where it stops. Tap, drag, sections and every button under **Use the marks**
+work the same, so you can cut or punch in on each phrase.
+
+## For agents
+
+Everything above is also an MCP tool: `beats.source`, `beats.detect`, `beats.grid`, `beats.tap`, `beats.get`,
+`beats.edit`, `beats.section`, `beats.apply` (markers, cut, sfx, snap_clips, effect), `beats.export`,
+`beats.import` and `beats.calibrate`. Times in and out are timeline seconds. The `/sync-to-beat` skill uses them.

@@ -62,6 +62,8 @@ impl Project {
             // ---- ws:pro-timeline ----
             // ---- ws:text-titles ----
             // ---- ws:docs-refresh ----
+            // ---- ws:beat-aligner ----
+            beats: Default::default(),
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);

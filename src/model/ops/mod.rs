@@ -1,5 +1,7 @@
 mod assets;
 mod attrs;
+// ws:beat-aligner: `CutScope` is named by the aligner's tools and pane
+pub mod beats;
 // ws:browser-layer: `CursorMove` is a free-standing type the tools name, hence `pub` (as `trim`)
 pub mod browser;
 mod autocut;

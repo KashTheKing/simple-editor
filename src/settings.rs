@@ -498,6 +498,9 @@ pub struct Settings {
     /// The Animate page has been added to `pages` once (a settings file from before it gets it after Edit;
     /// deleting it afterwards sticks).
     pub animate_page: bool,
+    // ---- ws:beat-aligner ----
+    /// Beat Aligner tap latency (ms taken off every tap; Calibrate measures it).
+    pub beat_latency_ms: f64,
     // ---- ws:perf-baseline ----
     // ---- ws:pro-schema ----
     // (no per-field `#[serde(default)]`: the container-level one back-fills a missing field from
@@ -820,6 +823,8 @@ impl Default for Settings {
             key_blocks: Vec::new(),
             // ---- ws:animator ----
             animate_page: false,
+            // ---- ws:beat-aligner ----
+            beat_latency_ms: 0.0,
             // ---- ws:perf-baseline ----
             // ---- ws:pro-schema ----
             hud: false,

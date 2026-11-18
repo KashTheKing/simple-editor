@@ -152,6 +152,9 @@ pub enum Pane {
     // ---- ws:animator ----
     /// Animation blocks, their curves and Flow (speed hand-offs) for the selected clips (`ui::animator`).
     Animator,
+    // ---- ws:beat-aligner ----
+    /// Mark a song's beats / a voiceover's phrases, tap along, name sections and cut to them (`ui::beat_aligner`).
+    BeatAligner,
 }
 
 impl Pane {
@@ -225,6 +228,8 @@ impl Pane {
         // ---- ws:docs-release ----
         // ---- ws:animator ----
         Pane::Animator,
+        // ---- ws:beat-aligner ----
+        Pane::BeatAligner,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -259,6 +264,7 @@ impl Pane {
             Pane::Clips => Glyph::FilmStrip,
             Pane::Assistant => Glyph::Assistant,
             Pane::Animator => Glyph::CurveIcon,
+            Pane::BeatAligner => Glyph::Waveform,
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -298,6 +304,7 @@ impl Pane {
             Pane::Clips => "Clips",
             Pane::Assistant => "Assistant",
             Pane::Animator => "Animator",
+            Pane::BeatAligner => "Beat Aligner",
         }
     }
 }
@@ -391,7 +398,7 @@ impl Layout {
     /// The Cut page (fast assembly and planning): [Library over Planner | Moodboard | Markers | Subtitles]
     /// · [Source | Preview] · [Inspector] over the Timeline.
     pub fn cut_layout() -> Self {
-        let plan = [Pane::Planner, Pane::Moodboard, Pane::Markers, Pane::Subtitles];
+        let plan = [Pane::Planner, Pane::Moodboard, Pane::Markers, Pane::Subtitles, Pane::BeatAligner];
         Self::viewer_over_timeline(&[Pane::Library], &plan, [0.25, 0.5, 0.25])
     }
 
@@ -454,7 +461,7 @@ impl Layout {
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
         let preview = t.insert_pane(Pane::Preview);
-        let mix = Self::tabs(t, &[Pane::Mixer, Pane::Subtitles], 0);
+        let mix = Self::tabs(t, &[Pane::Mixer, Pane::Subtitles, Pane::BeatAligner], 0);
         let inspector = t.insert_pane(Pane::Inspector);
         let top = Self::linear(t, Horizontal, &[(preview, 0.3), (mix, 0.4), (inspector, 0.3)]);
         let timeline = t.insert_pane(Pane::Timeline);
@@ -1547,11 +1554,11 @@ mod tests {
         use Pane::*;
         let shown: [(&str, &[Pane]); 7] = [
             ("Media", &[Library, MediaBrowser, Source]),
-            ("Cut", &[Library, Planner, Moodboard, Markers, Subtitles, Source, Preview, Inspector, Timeline]),
+            ("Cut", &[Library, Planner, Moodboard, Markers, Subtitles, BeatAligner, Source, Preview, Inspector, Timeline]),
             ("Edit", &[Library, Presets, Source, Preview, Inspector, Timeline]),
             ("Animate", &[Presets, Preview, Inspector, Timeline, Animator]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
-            ("Audio", &[Preview, Mixer, Subtitles, Inspector, Timeline]),
+            ("Audio", &[Preview, Mixer, Subtitles, BeatAligner, Inspector, Timeline]),
             ("Export", &[Export, Preview, Inspector, Jobs, Timeline]),
         ];
         assert_eq!(PAGES, shown.map(|(p, _)| p), "the pages in order (Alt+1..6 are the first six)");
