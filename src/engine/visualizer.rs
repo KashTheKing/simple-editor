@@ -488,24 +488,148 @@ pub fn bake(e: &mut Effect, an: &Analysis, fps: f64) -> usize {
     n
 }
 
-/// The audio clip a visualizer layer listens to: its linked song, else the audio-track clip
-/// overlapping it the most.
+/// The song a visualizer layer listens to: the audio clip it is linked to (Add with Audio Visualizer / Add
+/// Audio Visualizer link them). None = it listens to the timeline mix (a Gallery visualizer, or one the
+/// user switched to Timeline mix): `bake_mix`.
 pub fn source_of(p: &Project, vis: Id) -> Option<Id> {
-    // the song it is linked to, when it is (Add with Audio Visualizer / Add Audio Visualizer link them)
-    let linked = p.linked(vis).into_iter().find(|&id| id != vis && p.clip(id).is_some_and(|c| c.kind == ClipKind::Audio));
-    if linked.is_some() {
-        return linked;
+    p.linked(vis).into_iter().find(|&id| id != vis && p.clip(id).is_some_and(|c| c.kind == ClipKind::Audio))
+}
+
+// ---- ws:preview-audio-only ---- the timeline mix as a visualizer's source
+
+/// The timeline mixed exactly as playback and export mix it, read as one long song.
+pub struct MixSource {
+    pub project: Project,
+    mixer: crate::engine::mixer::Mixer,
+    pool: crate::media::DecoderPool,
+}
+
+impl MixSource {
+    pub fn new(project: Project, backend: Backend) -> Self {
+        Self { project, mixer: crate::engine::mixer::Mixer::new(), pool: crate::media::DecoderPool::new(backend) }
     }
-    let v = p.clip(vis)?;
-    let (a, b) = (v.start, v.start + v.duration);
+}
+
+impl AudioSource for MixSource {
+    fn duration(&self) -> f64 {
+        self.project.duration()
+    }
+    fn read_at(&mut self, t: f64, out: &mut [f32]) {
+        out.fill(0.0);
+        self.mixer.mix(&self.project, t, &mut self.pool, out);
+    }
+}
+
+/// What the timeline mix depends on (audio tracks, buses, nested sequences, media): when this changes the
+/// mix is analysed again. A visualizer's own keys (on a video track) never change it.
+pub fn mix_key(p: &Project) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let audio: Vec<&crate::model::Track> = p.tracks.iter().filter(|t| t.kind == TrackKind::Audio).collect();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    serde_json::to_string(&(audio, &p.buses, &p.sequences)).unwrap_or_default().hash(&mut h);
+    for a in &p.assets {
+        a.path.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// The latest timeline-mix analysis: (the `mix_key` it was made at, the analysis). Made in the background
+/// by the app after edits; the bakes below read it.
+static MIX: std::sync::Mutex<Option<(u64, std::sync::Arc<SongAnalysis>)>> = std::sync::Mutex::new(None);
+
+pub fn mix_cached() -> Option<(u64, std::sync::Arc<SongAnalysis>)> {
+    MIX.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+pub fn set_mix(key: u64, a: std::sync::Arc<SongAnalysis>) {
+    *MIX.lock().unwrap_or_else(|e| e.into_inner()) = Some((key, a));
+}
+
+/// Bake the timeline mix (`mix`, timeline seconds) over `vis`'s span into its visualizer effect.
+pub fn bake_mix(p: &mut Project, vis: Id, mix: &SongAnalysis) -> Result<usize, String> {
+    let v = p.clip_mut(vis).ok_or("no such clip")?;
+    let (start, len) = (v.start, v.duration);
+    let e = v.effects.iter_mut().find(|e| style_of(e).is_some()).ok_or("the clip has no visualizer effect")?;
+    let an = mix.mixed(&e.audio_mix.clone().unwrap_or_default()).span(start, len, 1.0, FPS);
+    Ok(bake(e, &an, FPS))
+}
+
+/// Every top-level visualizer that listens to the timeline mix.
+pub fn mix_visualizers(p: &Project) -> Vec<Id> {
     p.tracks
         .iter()
-        .filter(|t| t.kind == TrackKind::Audio)
+        .filter(|t| t.kind == TrackKind::Video)
         .flat_map(|t| &t.clips)
-        .map(|c| (c.id, (b.min(c.start + c.duration) - a.max(c.start)).max(0.0)))
-        .filter(|&(_, o)| o > 1e-6)
-        .max_by(|x, y| x.1.total_cmp(&y.1))
-        .map(|(id, _)| id)
+        .filter(|c| c.effects.iter().any(|e| style_of(e).is_some()))
+        .map(|c| c.id)
+        .filter(|&id| source_of(p, id).is_none())
+        .collect()
+}
+
+/// Bake `vis` from whatever it listens to: its song, else the cached timeline mix (nothing yet = left as
+/// is; the app bakes it when the mix analysis lands).
+pub fn rebake_any(p: &mut Project, vis: Id, backend: Backend) -> Result<usize, String> {
+    match source_of(p, vis) {
+        Some(a) => rebake(p, vis, a, backend),
+        None => match mix_cached() {
+            Some((_, m)) => bake_mix(p, vis, &m),
+            None => Ok(0),
+        },
+    }
+}
+
+/// A Gallery visualizer: a full-frame layer in `style` at `at` for `dur` seconds on video track `track`
+/// when it is free there (else the first free one), listening to the timeline mix. Returns the new clip.
+pub fn add_mix(p: &mut Project, at: f64, dur: f64, track: Option<usize>, style: &Style) -> Result<Id, String> {
+    let (at, dur) = (at.max(0.0), dur.max(0.1));
+    let id = p.add_shape_clip(crate::model::ShapeKind::Rect, at, dur);
+    if let Some(ti) = track.filter(|&ti| p.tracks.get(ti).is_some_and(|t| t.kind == TrackKind::Video)) {
+        let free = p.tracks[ti].clips.iter().all(|c| c.start + c.duration <= at + 1e-6 || c.start >= at + dur - 1e-6);
+        let from = p.tracks.iter().position(|t| t.clips.iter().any(|c| c.id == id));
+        if let (true, Some(from)) = (free, from) {
+            if from != ti {
+                let k = p.tracks[from].clips.iter().position(|c| c.id == id).unwrap_or(0);
+                let c = p.tracks[from].clips.remove(k);
+                p.tracks[ti].clips.push(c);
+                p.tracks[ti].sort();
+            }
+        }
+    }
+    let (w, h) = (p.width as f64 / 2.0, p.height as f64 / 2.0);
+    let c = p.clip_mut(id).ok_or("shape clip vanished")?;
+    c.name = "Audio Visualizer".into();
+    if let Some(s) = c.shape.as_mut() {
+        (s.w, s.h, s.fill) = (Animated::new(w), Animated::new(h), [0, 0, 0, 255]);
+    }
+    c.effects.push(Effect::from_shader(&style.src));
+    if let Some((_, m)) = mix_cached() {
+        bake_mix(p, id, &m)?;
+    }
+    Ok(id)
+}
+
+/// Stop following its song: `vis` leaves the link group and listens to the timeline mix from now on.
+pub fn follow_mix(p: &mut Project, vis: Id) {
+    if let Some(c) = p.clip_mut(vis) {
+        c.link = 0;
+    }
+}
+
+/// Check a GLSL file meant as a visualizer type: it must read audio (`level` / `band1..6` / beats) and pass
+/// the shader checker's lint. Returns its name (`@name`, else `fallback`).
+pub fn check_import(src: &str, fallback: &str) -> Result<String, String> {
+    if !is_visualizer(src) {
+        return Err("Not a visualizer: it must declare a `level` or `band1`..`band6` param".into());
+    }
+    // (the catalogue's own `@desc` / `@tags` lines are not needed for a file of your own)
+    let lint = crate::engine::shaderlib::lint(src, false);
+    if let Some(first) =
+        lint.into_iter().find(|l| !l.starts_with("missing `// @desc") && !l.starts_with("missing `// @tags"))
+    {
+        return Err(first);
+    }
+    let name = crate::engine::shaderlib::parse_meta(src).name;
+    Ok(if name.is_empty() { fallback.to_string() } else { name })
 }
 
 /// Keys per second the audio is baked at.
@@ -537,10 +661,7 @@ pub fn restyle(p: &mut Project, vis: Id, style: &Style, backend: Backend) -> Res
     e.audio_mix = c.effects[i].audio_mix.clone(); // the band mixer is how the song is heard, not the look
     e.camera = c.effects[i].camera.clone();
     c.effects[i] = e;
-    match source_of(p, vis) {
-        Some(a) => rebake(p, vis, a, backend).map(|_| ()),
-        None => Ok(()),
-    }
+    rebake_any(p, vis, backend).map(|_| ())
 }
 
 /// A full-frame black shape over audio clip `audio`'s span carrying `style`, baked from its sound: the
@@ -703,16 +824,17 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
 
     /// The visualizer listens to the audio-track clip it overlaps most.
     #[test]
-    fn source_is_the_audio_under_the_clip() {
+    fn source_is_the_linked_song_else_the_timeline_mix() {
+        // ws:preview-audio-only: an unlinked visualizer no longer picks the clip under it - it hears the mix
         let mut p = Project::new();
         let ati = *p.audio_tracks().first().unwrap();
         for (id, at) in [(500, 0.0), (501, 1.5)] {
             p.tracks[ati].clips.push(crate::model::Clip::new(id, ClipKind::Audio, "song", at, 2.0));
         }
         let v = p.add_shape_clip(crate::model::ShapeKind::Rect, 1.4, 2.0);
-        assert_eq!(source_of(&p, v), Some(501));
-        let lone = p.add_shape_clip(crate::model::ShapeKind::Rect, 9.0, 1.0);
-        assert_eq!(source_of(&p, lone), None);
+        assert_eq!(source_of(&p, v), None, "unlinked: the timeline mix");
+        link(&mut p, 501, v);
+        assert_eq!(source_of(&p, v), Some(501), "linked: its song");
     }
 
     /// A click every half second: beats on the clicks, 120 BPM, and the beat params bake as an exact
@@ -775,6 +897,87 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
         let mut a = crate::media::probe(&path.to_string_lossy(), Backend::Ffmpeg).expect("probe the test song");
         a.id = 0;
         p.add_asset(a)
+    }
+
+    // ---- ws:preview-audio-only ----
+    /// A Gallery visualizer is a layer of its own that reacts to whatever the timeline plays under it: the
+    /// song on a second audio track, loud from 1 s to 2 s, shows as silence / loud / quiet.
+    #[test]
+    fn a_gallery_visualizer_follows_the_timeline_mix_on_any_track() {
+        let wav = song_wav("mix");
+        let mut p = Project::new();
+        let asset = song_asset(&mut p, &wav);
+        let a2 = p.add_track(TrackKind::Audio);
+        assert!(!p.insert_asset_clips_ranged(asset, 1.0, None, Some(a2), None).is_empty());
+        let vis = add_mix(&mut p, 0.0, 4.0, None, &find(None).unwrap()).unwrap();
+        assert_eq!(p.tracks[p.track_of(vis).unwrap()].kind, TrackKind::Video);
+        assert_eq!(source_of(&p, vis), None, "not linked: it listens to the mix");
+        assert_eq!(mix_visualizers(&p), vec![vis]);
+        let mix = SongAnalysis::compute(&mut MixSource::new(p.clone(), Backend::Ffmpeg));
+        assert!(bake_mix(&mut p, vis, &mix).unwrap() > 0);
+        let level = |t: f64| p.clip(vis).unwrap().effects[0].at(0, t);
+        assert!(
+            level(0.5) < 0.2 && level(1.5) > 0.8 && level(2.6) < 0.2,
+            "{} {} {}",
+            level(0.5),
+            level(1.5),
+            level(2.6)
+        );
+        // the mix key ignores the visualizer's own keys, follows the audio
+        let k = mix_key(&p);
+        let _ = bake_mix(&mut p, vis, &mix);
+        assert_eq!(mix_key(&p), k);
+        p.tracks[a2].muted = true;
+        assert_ne!(mix_key(&p), k);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    /// A linked visualizer keeps following its song until it is switched to the timeline mix.
+    #[test]
+    fn a_linked_visualizer_can_switch_to_the_timeline_mix() {
+        let wav = song_wav("follow");
+        let mut p = Project::new();
+        let asset = song_asset(&mut p, &wav);
+        let (audio, vis) = add_song(&mut p, asset, 0.0, &find(None).unwrap(), Backend::Ffmpeg).unwrap();
+        assert_eq!(source_of(&p, vis), Some(audio));
+        assert!(mix_visualizers(&p).is_empty());
+        follow_mix(&mut p, vis);
+        assert_eq!(source_of(&p, vis), None);
+        assert_eq!(mix_visualizers(&p), vec![vis]);
+        let _ = std::fs::remove_file(wav);
+    }
+
+    /// The band weights shape what drives it: a band weighted 0 is silent, weighted up it is louder.
+    #[test]
+    fn band_weights_shape_the_response() {
+        let mut src = Tone(|t| (2.0 * std::f64::consts::PI * 100.0 * t).sin() as f32 * 0.8, 1.0);
+        let a = SongAnalysis::compute(&mut src);
+        let mut m = crate::model::AudioMix::default();
+        let at = |m: &crate::model::AudioMix| a.mixed(m).at(0.5);
+        let plain = at(&m)[2]; // band2 = Bass, where 100 Hz lives
+        assert!(plain > 0.3, "{plain}");
+        m.gains[1] = 0.0;
+        assert!(at(&m)[2] < 1e-3, "weighted 0: silent");
+        m.gains[1] = 0.4;
+        let low = at(&m)[2];
+        assert!(low < plain, "{low} {plain}");
+    }
+
+    /// Import shader: a visualizer that passes the checker is taken (without the catalogue's @desc / @tags),
+    /// anything that does not read audio or breaks a rule is refused.
+    #[test]
+    fn imported_shaders_are_checked() {
+        let src = BUILTIN[0].1;
+        assert_eq!(check_import(src, "x").unwrap(), "Neon Orb");
+        let bare: String = src
+            .lines()
+            .filter(|l| !l.starts_with("// @desc") && !l.starts_with("// @tags"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert!(check_import(&bare, "x").is_ok(), "{:?}", check_import(&bare, "x"));
+        assert!(check_import(crate::model::DEFAULT_SHADER, "x").is_err(), "not a visualizer");
+        let broken = format!("{src}\nvoid main() {{}}\n");
+        assert!(check_import(&broken, "x").is_err(), "must not contain void main");
     }
 
     /// Library ▸ Add with Audio Visualizer: the song lands at the playhead on an audio track, the

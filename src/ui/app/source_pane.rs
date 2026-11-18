@@ -55,6 +55,12 @@ impl App {
         self.source_focus && self.source.is_some() && self.pane_drawn(Pane::Source)
     }
 
+    /// Source and Preview are both on screen (separate tiles, popped out or on other screens): each
+    /// plays on its own, neither stops the other.
+    pub(crate) fn monitors_side_by_side(&self) -> bool {
+        self.pane_drawn(Pane::Source) && self.pane_drawn(Pane::Preview)
+    }
+
     pub(crate) fn close_source(&mut self) {
         self.source = None;
         self.source_tex = None;
@@ -100,7 +106,9 @@ impl App {
     /// Pauses the timeline: previewing a source and the program monitor should not both be making
     /// sound.
     fn source_open_now(&mut self, ctx: &egui::Context, path: PathBuf, seek: Option<f64>, id: Option<Id>) {
-        self.player.pause();
+        if !self.monitors_side_by_side() {
+            self.player.pause();
+        }
         let same = self
             .source
             .as_ref()
@@ -226,6 +234,17 @@ pub(super) fn pressed_in(ui: &egui::Ui) -> bool {
     ui.input(|i| i.pointer.any_pressed()) && ui.rect_contains_pointer(ui.max_rect())
 }
 
+/// The monitor a tab switch just hid, to stop: Source and Preview are tabs of one group (`front` is the
+/// one in front now) and the other one went from drawn (`was`) to not drawn (`now`), as (Source, Preview).
+/// Both on screen at once (separate tiles or screens) never stops either.
+pub(super) fn hidden_by_switch(was: (bool, bool), now: (bool, bool), front: Option<Pane>) -> Option<Pane> {
+    match front? {
+        Pane::Preview if was.0 && !now.0 => Some(Pane::Source),
+        Pane::Source if was.1 && !now.1 => Some(Pane::Preview),
+        _ => None,
+    }
+}
+
 /// FRAME_HOOKS entry: fulfil a queued open, upload this update's frame once, and keep the two players
 /// from talking over each other (the timeline starting pauses the source).
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
@@ -246,7 +265,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
         Some(Pending::Tape(ids)) => app.source_tape_now(ctx, ids),
         None => {}
     }
-    if app.player.is_playing() {
+    if app.player.is_playing() && !app.monitors_side_by_side() {
         if let Some(s) = app.source.as_mut().filter(|s| s.player.is_playing()) {
             s.player.pause();
         }
@@ -291,6 +310,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if resp.clicked {
         app.source_focus = true;
     }
+    let side_by_side = app.monitors_side_by_side();
     if resp.settings_changed {
         app.settings.save();
     }
@@ -300,7 +320,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if let Some(st) = app.source.as_mut() {
         let duration = st.duration;
         if resp.toggle_play {
-            app.player.pause();
+            if !side_by_side {
+                app.player.pause();
+            }
             st.player.toggle();
         }
         if resp.stop {
@@ -334,6 +356,22 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Switching tabs between Source and Preview stops the one hidden; side by side, neither.
+    #[test]
+    fn a_tab_switch_stops_the_hidden_monitor_only() {
+        use Pane::{Preview, Source};
+        // Preview's tab clicked: Source went hidden
+        assert_eq!(hidden_by_switch((true, false), (false, true), Some(Preview)), Some(Source));
+        // Source's tab clicked: Preview went hidden
+        assert_eq!(hidden_by_switch((false, true), (true, false), Some(Source)), Some(Preview));
+        // both visible (separate tiles): not stacked, nothing stops
+        assert_eq!(hidden_by_switch((true, true), (true, true), None), None);
+        // separate tiles and one closed / moved off: not a tab switch
+        assert_eq!(hidden_by_switch((true, true), (false, true), None), None);
+        // no change
+        assert_eq!(hidden_by_switch((false, true), (false, true), Some(Preview)), None);
+    }
 
     // ---- ws:viewer-surface ----
     /// Last-clicked transport wins for a right-click too, so the right-click menu's Mark In / Stop act

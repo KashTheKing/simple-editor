@@ -332,6 +332,7 @@ impl App {
             return None;
         }
         self.player.pause();
+        audio_only::bake_now(self); // ws:preview-audio-only: Timeline-mix visualizers export what plays
         let path = choice.opts.out_path.clone();
         let mut project = self.export_project();
         // "Use project background" checkbox: off → the export renders on black exactly as before the

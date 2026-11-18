@@ -815,6 +815,19 @@ impl Layout {
         }
         self.tree.tiles.find_pane(&pane).map(|id| self.tree.tiles.is_visible(id)).unwrap_or(false)
     }
+    /// `a` and `b` are tabs of one docked tab group: the one of them in front (None when they are not
+    /// stacked together, or a third tab is in front).
+    pub fn stacked_front(&self, a: Pane, b: Pane) -> Option<Pane> {
+        let tiles = &self.tree.tiles;
+        let (ia, ib) = (tiles.find_pane(&a)?, tiles.find_pane(&b)?);
+        let group = tiles.parent_of(ia).filter(|&g| tiles.parent_of(ib) == Some(g))?;
+        let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(t))) = tiles.get(group) else { return None };
+        match t.active {
+            Some(x) if x == ia => Some(a),
+            Some(x) if x == ib => Some(b),
+            _ => None,
+        }
+    }
     /// Show (back where it was in the tree, or into the root when it is gone) or hide (invisible in the
     /// tree / close the popout).
     pub fn toggle(&mut self, pane: Pane) {
@@ -2190,6 +2203,19 @@ mod tests {
     }
 
     /// The Edit page: a top row of three columns over a full-width Timeline, none opening unusably small.
+    /// Source and Preview stacked as tabs: the front one is known; apart (or behind a third tab) it is None.
+    #[test]
+    fn stacked_front_names_the_tab_in_front() {
+        let mut l = Layout::default_layout();
+        assert_eq!(l.stacked_front(Pane::Source, Pane::Preview), Some(Pane::Preview));
+        let s = l.tree.tiles.find_pane(&Pane::Source).unwrap();
+        l.tree.make_active(|id, _| id == s);
+        assert_eq!(l.stacked_front(Pane::Source, Pane::Preview), Some(Pane::Source));
+        assert_eq!(l.stacked_front(Pane::Preview, Pane::Source), Some(Pane::Source));
+        let audio = page_layout("Audio").unwrap()();
+        assert_eq!(audio.stacked_front(Pane::Source, Pane::Preview), None, "not in one group");
+    }
+
     #[test]
     fn default_layout_arrangement() {
         let l = Layout::default_layout();

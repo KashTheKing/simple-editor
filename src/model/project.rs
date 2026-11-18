@@ -103,6 +103,11 @@ pub struct Project {
     /// The Beat Aligner's song, grid, marks and sections (`model::beats`).
     #[serde(skip_serializing_if = "crate::model::beats::is_empty")]
     pub beats: BeatSheet,
+    // ---- ws:preview-audio-only ----
+    /// Preview ▸ Audio Only: the Preview plays the sound and shows a visualizer of the mix instead of the
+    /// picture (no video decoded). Export is unaffected. Kept across undo / redo.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub audio_only_preview: bool,
 }
 
 impl Default for Project {

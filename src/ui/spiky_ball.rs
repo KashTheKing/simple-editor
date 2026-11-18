@@ -58,6 +58,14 @@ impl Orb {
         self.time = t as f32;
     }
 
+    /// Show a live level instead of an analysis (every band at `level`, no beat): the mix meters while
+    /// Audio Only's whole-mix analysis is still being made.
+    pub fn show_level(&mut self, level: f32, t: f64) {
+        self.level = [level.clamp(0.0, 1.0); 1 + BANDS];
+        self.beat = (0.0, 0.0, None);
+        self.time = t as f32;
+    }
+
     pub fn level(&self) -> f32 {
         self.level[0]
     }
