@@ -198,11 +198,27 @@ fn no_network_until_a_fetch_is_asked_for() {
     assert_eq!(profile::NET_CALLS.load(std::sync::atomic::Ordering::SeqCst), before, "a refused input starts no curl either");
 }
 
+/// The smallest and the largest device of every picker group (every body, cut-out and system bar kind, at
+/// both ends of the size range): the slow all-states tests run on these instead of all hundred devices.
+fn sample_devices(d: &Data) -> Vec<&Device> {
+    let mut out: Vec<&Device> = Vec::new();
+    for g in DEVICE_GROUPS {
+        let mut ds: Vec<&Device> = d.devices.iter().filter(|v| v.group() == g).collect();
+        ds.sort_by(|a, b| (a.w * a.h).total_cmp(&(b.w * b.h)));
+        for v in [ds.first(), ds.last()].into_iter().flatten() {
+            if !out.iter().any(|o| o.id == v.id) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
 #[test]
 fn every_platform_builds_in_every_mode_and_device() {
     let d = data();
     for plat in &d.platforms {
-        for dev in &d.devices {
+        for dev in sample_devices(&d) {
             for mode in ["safe", "ui", "device"] {
                 let st = settings_with(&plat.id, mode, &dev.id);
                 let g = GuideView::new(&st, "My video", 9.0 / 16.0, 3.0, 10.0).unwrap();
@@ -528,7 +544,7 @@ use super::device::op_bbox as bbox;
 fn device_geometry_stays_inside_the_clip_for_every_preset() {
     let d = data();
     for plat in &d.platforms {
-        for dev in &d.devices {
+        for dev in sample_devices(&d) {
             for (area, land) in [vec2(600.0, 900.0), vec2(1400.0, 500.0), vec2(300.0, 300.0), vec2(1000.0, 1000.0)].into_iter().flat_map(|a| [(a, false), (a, true)]) {
                 let area = Rect::from_min_size(pos2(7.0, 11.0), area);
                 for (open, vm) in [(None, 0.0), (Some(Sheet::Comments), 0.0), (Some(Sheet::Share), 0.0), (None, 1.0), (None, 2.0), (None, 0.4)] {
@@ -551,6 +567,16 @@ fn device_geometry_stays_inside_the_clip_for_every_preset() {
                     if dev.k == "desktop" {
                         assert_eq!(sc.bezel, 0.0);
                         assert!(sc.outer.contains_rect(sc.screen));
+                    } else if dev.k != "tv" {
+                        // the screen sits inside the body by the bezel (a home-button model: by its face)
+                        let k = sc.screen.width() / if land && dev.turns() { dev.h } else { dev.w };
+                        let mut t = dev.clone();
+                        t.land = land && dev.turns();
+                        let [l, tp, r, b] = super::frame::insets(&t);
+                        let got = [sc.screen.min.x - sc.outer.min.x, sc.screen.min.y - sc.outer.min.y, sc.outer.max.x - sc.screen.max.x, sc.outer.max.y - sc.screen.max.y];
+                        for (g, w) in got.iter().zip([l, tp, r, b]) {
+                            assert!((g - w * k).abs() < 0.05, "screen inside the body by {w} dp, got {got:?} (k {k}): {ctx}");
+                        }
                     } else {
                         let inset = sc.screen.min.x - sc.outer.min.x;
                         assert!((inset - sc.bezel).abs() < 0.01 && (sc.outer.max.y - sc.screen.max.y - sc.bezel).abs() < 0.01, "screen inside the bezel by its width: {ctx}");
@@ -959,6 +985,95 @@ fn emulator_shots() {
                     let out = raster::render_device_with(frame.as_ref(), &g, open, w, land, pl);
                     let file = dir.join(format!("{}_{}_{}_{}.png", plat.id, dev, if land { "land" } else { "port" }, name));
                     std::fs::write(&file, crate::mcp::png_encode(&out)).unwrap();
+                }
+            }
+        }
+    }
+}
+
+/// Every device has sane numbers: a real size in points / dp, a scale, pixels that match, a corner radius that
+/// fits, the right system bars for its kind, a picker group; and every iPhone the picker promises is there.
+#[test]
+fn every_device_has_sane_dimensions() {
+    let d = data();
+    let mut ids = std::collections::HashSet::new();
+    for v in &d.devices {
+        let c = format!("{} ({})", v.n, v.id);
+        assert!(ids.insert(v.id.as_str()), "unique id: {c}");
+        assert!(DEVICE_GROUPS.contains(&v.group()), "{c}");
+        assert!(v.w >= 300.0 && v.h >= 300.0 && v.w <= 3000.0 && v.h <= 3000.0, "size {}x{}: {c}", v.w, v.h);
+        assert!(v.sc >= 1.0 && v.sc <= 4.0, "scale {}: {c}", v.sc);
+        let (pw, ph) = v.pixels();
+        // a Plus model renders at 3x and is scaled down onto a 1080 x 1920 panel (0.87)
+        for (p, l) in [(pw as f32, v.w), (ph as f32, v.h)] {
+            // ... and a Mac's default "looks like" size is drawn at 2x and scaled onto its panel (0.84)
+            let r = p / (l * v.sc);
+            assert!((if v.k == "desktop" { 0.8 } else { 0.85 }..=1.01).contains(&r), "pixels {pw}x{ph} vs {}x{} @{}: {c}", v.w, v.h, v.sc);
+        }
+        assert!(v.rad >= 0.0 && v.rad < v.w.min(v.h) * 0.2, "corner radius {}: {c}", v.rad);
+        match v.k.as_str() {
+            "phone" => {
+                assert!(v.h > v.w && (1.3..=2.4).contains(&(v.h / v.w)), "a portrait phone: {c}");
+                assert!(v.st >= 20.0 && v.st <= 60.0, "status bar {}: {c}", v.st);
+            }
+            "tablet" => assert!(v.h > v.w && v.h / v.w < 1.6, "a portrait tablet: {c}"),
+            _ => assert!(v.w > v.h && v.st == 0.0, "a landscape screen without a status bar: {c}"),
+        }
+        if v.home_button() {
+            let [side, top, chin] = v.face;
+            assert!(v.cut == "none" && v.home == 0.0 && v.rad == 0.0 && v.st == 20.0 && v.os == "ios", "a home-button model has no cut-out or home indicator: {c}");
+            assert!(side > 10.0 && top > side && chin >= top && chin < v.h * 0.35, "face {:?}: {c}", v.face);
+        } else if v.os == "ios" && v.k == "phone" {
+            assert!(matches!(v.cut.as_str(), "notch" | "island") && v.home == 34.0 && v.st >= 44.0, "an all-screen iPhone: {c}");
+        }
+    }
+    let names: Vec<&str> = d.devices.iter().map(|v| v.n.as_str()).collect();
+    for n in [
+        "iPhone (original)", "iPhone 4", "iPhone 5", "iPhone SE (1st gen)", "iPhone 6", "iPhone 8", "iPhone 8 Plus", "iPhone SE (2nd gen)",
+        "iPhone SE (3rd gen)", "iPhone X", "iPhone XR", "iPhone 11 Pro Max", "iPhone 12 mini", "iPhone 13 mini", "iPhone 14 Plus", "iPhone 14 Pro Max",
+        "iPhone 15", "iPhone 16 Pro Max", "iPhone 16e", "iPhone 17", "iPhone Air", "iPhone 17 Pro", "iPhone 17 Pro Max",
+    ] {
+        assert!(names.contains(&n), "{n} is in the list");
+    }
+    let se = d.device("iphone_se_3rd_gen");
+    assert_eq!((se.w, se.h, se.pixels(), se.group()), (375.0, 667.0, (750, 1334), "iPhone with home button"));
+    let max = d.device("iphone_16_pro_max");
+    assert_eq!((max.w, max.h, max.pixels(), max.cut.as_str()), (440.0, 956.0, (1320, 2868), "island"));
+    assert_eq!(d.device("iphone_8_plus").pixels(), (1080, 1920));
+    for g in DEVICE_GROUPS {
+        assert!(d.devices.iter().any(|v| v.group() == g), "{g} has devices");
+    }
+}
+
+/// Every platform's UI lays out on the home-button iPhone SEs and the largest Pro Max, portrait and landscape:
+/// the video and every tap target inside the screen, and (portrait) nothing the platform draws above the status
+/// bar; on an SE that is the 20 pt bar, with no notch inset.
+#[test]
+fn platform_uis_fit_the_se_and_the_pro_max() {
+    let d = data();
+    for dev in ["iphone_se_3rd_gen", "iphone_se_1st_gen", "iphone_16_pro_max", "iphone_17_pro_max", "ipad_9th_gen"] {
+        for plat in &d.platforms {
+            for land in [false, true] {
+                let st = settings_with(&plat.id, "device", dev);
+                let g = GuideView::new(&st, "t", if plat.pg == "watch" { 16.0 / 9.0 } else { 9.0 / 16.0 }, 3.0, 10.0).unwrap();
+                let mut v = g.device_view(None, 0.0);
+                v.land = land;
+                let area = Rect::from_min_size(pos2(0.0, 0.0), if land { vec2(1000.0, 600.0) } else { vec2(600.0, 1000.0) });
+                let sc = device::build(&v, area);
+                let c = format!("{} on {dev} land {land}", plat.id);
+                let scr = sc.screen.expand(0.75);
+                assert!(scr.contains_rect(sc.video.expand(-0.01)), "video inside the screen: {c}");
+                assert!(sc.video.width() > 20.0 && sc.video.height() > 20.0, "a video: {c}");
+                for (r, h) in &sc.hits {
+                    assert!(scr.contains_rect(*r), "{h:?} {r:?} inside the screen {scr:?}: {c}");
+                }
+                if !land {
+                    let k = sc.screen.width() / d.device(dev).w;
+                    let bar = sc.screen.min.y + d.device(dev).st * k;
+                    // the platform's own buttons (a tap on the full-screen video itself plays and is not one)
+                    for (r, h) in sc.hits.iter().filter(|(_, h)| !matches!(h, Hit::Play | Hit::Close | Hit::Block)) {
+                        assert!(r.min.y >= bar - 0.75, "{h:?} at {} under the status bar at {bar}: {c}", r.min.y);
+                    }
                 }
             }
         }

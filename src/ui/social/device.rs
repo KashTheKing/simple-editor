@@ -316,6 +316,12 @@ pub fn build(v: &View, area: Rect) -> Scene {
     cull(&mut tail, clip);
     under.ops.extend(tail);
     cull(&mut over.ops, clip);
+    // a tap target below the fold (a feed caption on a small phone) ends at the screen's edge: the body, the
+    // home button and the backdrop round it take no taps
+    hits.retain_mut(|(r, _)| {
+        *r = r.intersect(clip);
+        r.is_positive()
+    });
     let mask_start = over.ops.len();
     over.a = 1.0;
     super::frame::mask(&mut over, dev, land, &body, backdrop);

@@ -221,7 +221,9 @@ pub fn full(pg: &Pg, under: &mut B, over: &mut B, hits: &mut Vec<(Rect, Hit)>) -
     let kk = if desktop || dev.k == "tablet" { region.width() / lay.refsz[0] } else { k };
     let mut map = Map::new(lay.refsz, if desktop || dev.k == "tablet" { size } else { vec2(region.width() / k, region.height() / k) }, region_now.min, kk);
     if dev.k == "phone" {
-        map = map.insets((dev.st - 24.0).max(0.0), dev.home + if dev.nav < 40.0 { dev.nav } else { 0.0 }, 4.0);
+        // the references were measured in a mobile browser, whose page starts under the status bar: the app's
+        // top bar goes under the whole bar (20 pt on a home-button iPhone, 54 under a Dynamic Island)
+        map = map.insets(dev.st, dev.home + if dev.nav < 40.0 { dev.nav } else { 0.0 }, 4.0);
     }
     let mut ui = B::new();
     ui.a = ui_alpha;

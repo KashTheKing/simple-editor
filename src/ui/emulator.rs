@@ -136,9 +136,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut EmuState, mut c: EmuCtx) -> Vec<Asked> {
 
 fn toolbar(ui: &mut egui::Ui, st: &mut EmuState, before: &Prefs, prefs: &mut Prefs, cc: bool, asked: &mut Vec<Asked>, d: &social::Data) {
     ui.horizontal_wrapped(|ui| {
-        let devs: Vec<(&str, &str)> = d.devices.iter().map(|v| (v.id.as_str(), v.n.as_str())).collect();
+        device_picker(ui, &mut prefs.device, d);
         let plats: Vec<(&str, &str)> = d.platforms.iter().map(|p| (p.id.as_str(), p.n.as_str())).collect();
-        crate::ui::combo(ui, "emu_device", &mut prefs.device, &devs, Some(170.0));
         crate::ui::combo(ui, "emu_platform", &mut prefs.platform, &plats, Some(170.0));
         let turns = d.device(&prefs.device).turns();
         let r = ui.add_enabled(turns, egui::Button::new(if prefs.land { "Portrait" } else { "Landscape" }));
@@ -160,9 +159,68 @@ fn toolbar(ui: &mut egui::Ui, st: &mut EmuState, before: &Prefs, prefs: &mut Pre
             asked.push(Asked::Screenshot);
         }
     });
+    // the gallery shows every pairing and ignores the pickers: a platform, device or orientation picked while it
+    // is open would change nothing on screen, so a pick brings that pairing up large (as a click on its card does)
+    if prefs.gallery && (prefs.platform != before.platform || prefs.device != before.device || prefs.land != before.land) {
+        prefs.gallery = false;
+    }
     if *prefs != *before {
         asked.push(Asked::Saved);
     }
+}
+
+/// The device picker: a button with the device's name; it opens a searchable list grouped by maker and kind
+/// (iPhone with Dynamic Island / notch / home button, Pixel, Galaxy, iPad, desktop...), one aligned row per
+/// device with its size in points and its real pixels.
+fn device_picker(ui: &mut egui::Ui, device: &mut String, d: &social::Data) {
+    use crate::ui::list_rows::{RowSpec, Rows};
+    let cur = d.device(device);
+    let (pt, px) = cur.resolution();
+    let r = ui.add_sized([190.0, ui.spacing().interact_size.y], egui::Button::new(cur.n.as_str()).truncate());
+    let r = r.on_hover_text(format!("{} {}", pt, px).trim().to_string());
+    let qid = ui.make_persistent_id("emu_device_search");
+    egui::Popup::from_toggle_button_response(&r).close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside).width(460.0).show(|ui| {
+        let mut q: String = ui.data(|m| m.get_temp(qid)).unwrap_or_default();
+        let te = ui.add(egui::TextEdit::singleline(&mut q).hint_text("Search").desired_width(f32::INFINITY));
+        if r.clicked() {
+            te.request_focus();
+        }
+        ui.data_mut(|m| m.insert_temp(qid, q.clone()));
+        let ql = q.trim().to_lowercase();
+        egui::ScrollArea::vertical().max_height(460.0).show(ui, |ui| {
+            let mut rows = Rows::new(ui, "emu_device_rows", &[], &[140.0, 110.0], false).fixed_order();
+            let mut i = 0;
+            for g in social::DEVICE_GROUPS {
+                let devs: Vec<_> = d
+                    .devices
+                    .iter()
+                    .filter(|v| v.group() == g)
+                    .map(|v| (v, v.resolution()))
+                    .filter(|(v, (a, b))| ql.is_empty() || [v.n.as_str(), g, a, b].iter().any(|t| t.to_lowercase().contains(&ql)))
+                    .collect();
+                if devs.is_empty() {
+                    continue;
+                }
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(g).strong().size(12.0));
+                for (v, (a, b)) in devs {
+                    let resp = rows.row(ui, i, &RowSpec { key: hash(&v.id), label: &v.n, values: &[a.as_str(), b.as_str()], ..Default::default() });
+                    if v.id == *device {
+                        ui.painter().rect_stroke(resp.body.rect, 3.0, egui::Stroke::new(1.0, ui.visuals().selection.stroke.color), egui::StrokeKind::Inside);
+                    }
+                    resp.body.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &v.n));
+                    if resp.body.clicked() {
+                        *device = v.id.clone();
+                        ui.close();
+                    }
+                    i += 1;
+                }
+            }
+            if i == 0 {
+                ui.weak("No device matches");
+            }
+        });
+    });
 }
 
 /// The large view of the picked device: interactive (play, scrub, captions, comments and the other sheets,
@@ -334,6 +392,71 @@ mod tests {
         assert!(asked.contains(&Asked::Captions), "{asked:?}");
         assert!(asked.contains(&Asked::Play), "{asked:?}");
         assert!(asked.iter().any(|a| matches!(a, Asked::Seek(t) if (t - 7.5).abs() < 0.2)), "{asked:?}");
+    }
+
+    /// The rectangle of the widget labelled `label` in the last frame (egui keeps widget labels while
+    /// `debug.show_interactive_widgets` is on, test builds only).
+    fn widget(ctx: &egui::Context, label: &str) -> Option<Rect> {
+        ctx.viewport(|v| {
+            let w = &v.prev_pass.widgets;
+            w.layers().flat_map(|(_, rs)| rs.iter()).filter(|r| w.info(r.id).is_some_and(|i| i.label.as_deref() == Some(label) || i.current_text_value.as_deref() == Some(label))).map(|r| r.rect).last()
+        })
+    }
+
+    fn drawn(st: &EmuState) -> String {
+        let s = st.last.as_ref().expect("drawn");
+        format!("{:?}{:?}{:?}", s.under, s.over, s.video)
+    }
+
+    /// Regression: picking another platform in the toolbar redraws the device with that platform's UI at once,
+    /// also with the Gallery open (it kept showing its YouTube Shorts cards), and so do picking another device and
+    /// turning it.
+    #[test]
+    fn switching_platform_device_or_orientation_redraws() {
+        let s = Settings::default();
+        let ctx = egui::Context::default();
+        ctx.style_mut(|st| st.debug.show_interactive_widgets = true);
+        let mut st = EmuState::default();
+        let mut prefs = Prefs { device: "iphone".into(), platform: "yt_shorts".into(), land: false, gallery: false };
+        let pick = |ctx: &egui::Context, st: &mut EmuState, prefs: &mut Prefs, button: &str, row: &str| {
+            run(ctx, st, &s, prefs, vec![]);
+            let b = widget(ctx, button).unwrap_or_else(|| panic!("no {button} button"));
+            let mut asked = run(ctx, st, &s, prefs, click(b.center()));
+            asked.extend(run(ctx, st, &s, prefs, vec![]));
+            if button.starts_with("iPhone") {
+                // the device list is long: search for the row (the search box has the focus)
+                asked.extend(run(ctx, st, &s, prefs, vec![egui::Event::Text(row.into())]));
+                asked.extend(run(ctx, st, &s, prefs, vec![]));
+            }
+            if !row.is_empty() {
+                let r = widget(ctx, row).unwrap_or_else(|| panic!("no {row} row"));
+                asked.extend(run(ctx, st, &s, prefs, click(r.center())));
+                asked.extend(run(ctx, st, &s, prefs, vec![]));
+            }
+            asked
+        };
+        run(&ctx, &mut st, &s, &mut prefs, vec![]);
+        let shorts = drawn(&st);
+        // the reported case: the Gallery is open (its first cards are YouTube Shorts) when the platform is picked
+        prefs.gallery = true;
+        let asked = pick(&ctx, &mut st, &mut prefs, "YouTube Shorts", "TikTok");
+        assert!(!prefs.gallery, "the pick is shown large");
+        assert_eq!(prefs.platform, "tiktok");
+        assert!(asked.contains(&Asked::Saved), "{asked:?}");
+        assert_ne!(drawn(&st), shorts, "the device shows TikTok now");
+        for (from, to) in [("TikTok", "Instagram Reels"), ("Instagram Reels", "X video"), ("X video", "YouTube (long form)")] {
+            let before = drawn(&st);
+            pick(&ctx, &mut st, &mut prefs, from, to);
+            assert_ne!(drawn(&st), before, "{from} -> {to} redraws");
+        }
+        let before = drawn(&st);
+        pick(&ctx, &mut st, &mut prefs, "iPhone 16 Pro", "iPhone SE (3rd gen)");
+        assert_eq!(prefs.device, "iphone_se_3rd_gen");
+        assert_ne!(drawn(&st), before, "the SE is drawn");
+        let before = drawn(&st);
+        pick(&ctx, &mut st, &mut prefs, "Landscape", "");
+        assert!(prefs.land);
+        assert_ne!(drawn(&st), before, "turned");
     }
 
     /// Every gallery pairing exists in the data; a click on a card brings it up large and is saved.

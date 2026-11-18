@@ -140,6 +140,18 @@ pub struct Device {
     /// 1 = the status bar shows the battery percentage (Galaxy).
     #[serde(default)]
     pub pct: u8,
+    /// Home-button models: the face round the screen in dp, [side, top, bottom] in portrait (the home button
+    /// sits in the bottom one). All zero = an all-screen device with an even bezel.
+    #[serde(default)]
+    pub face: [f32; 3],
+    /// Pixels per dp, and the panel's real pixels when they are not w x h x scale (Plus models, minis).
+    #[serde(default)]
+    pub sc: f32,
+    #[serde(default)]
+    pub px: [u32; 2],
+    /// Turned to landscape (`turned`).
+    #[serde(skip)]
+    pub land: bool,
 }
 
 impl Device {
@@ -151,8 +163,69 @@ impl Device {
         d.st = 0.0;
         d.nav = 0.0;
         d.home = if self.home > 0.0 { 21.0 } else { 0.0 };
+        d.land = true;
         d
     }
+    /// A home button under the screen (no notch, no island, no home indicator).
+    pub fn home_button(&self) -> bool {
+        self.face[1] > 0.0
+    }
+    /// The screen's real pixels (portrait).
+    pub fn pixels(&self) -> (u32, u32) {
+        let (w, h) = if self.land { (self.h, self.w) } else { (self.w, self.h) };
+        if self.px[0] > 0 {
+            return (self.px[0], self.px[1]);
+        }
+        let s = if self.sc > 0.0 { self.sc } else { 1.0 };
+        ((w * s).round() as u32, (h * s).round() as u32)
+    }
+    /// What the picker shows: the size the layout uses ("393 x 852 pt @3x", "1470 x 956 pt", blank for a desktop
+    /// at 100 %) and the real pixels ("1179 x 2556 px").
+    pub fn resolution(&self) -> (String, String) {
+        let (w, h) = if self.land { (self.h, self.w) } else { (self.w, self.h) };
+        let (pw, ph) = self.pixels();
+        let px = format!("{pw} x {ph} px");
+        let sc = (self.sc.max(1.0) * 1000.0).round() / 1000.0;
+        let logical = match self.k.as_str() {
+            "desktop" | "tv" if pw == w as u32 => String::new(),
+            "desktop" | "tv" => format!("{w} x {h} at {}%", (sc * 100.0).round()),
+            _ if self.os == "android" => format!("{w} x {h} dp @{sc}x"),
+            _ => format!("{w} x {h} pt @{sc}x"),
+        };
+        (logical, px)
+    }
+    /// The picker's group: the maker and the kind.
+    pub fn group(&self) -> &'static str {
+        match (self.k.as_str(), self.os.as_str(), self.cut.as_str()) {
+            ("phone", "ios", _) if self.home_button() => "iPhone with home button",
+            ("phone", "ios", "notch") => "iPhone with notch",
+            ("phone", "ios", _) => "iPhone with Dynamic Island",
+            ("phone", _, _) if self.n.starts_with("Pixel") => "Google Pixel",
+            ("phone", _, _) if self.n.starts_with("Galaxy") => "Samsung Galaxy",
+            ("phone", _, _) => "Android",
+            ("tablet", _, _) if self.home_button() => "iPad with home button",
+            ("tablet", _, _) => "iPad",
+            ("desktop", _, _) => "Desktop and laptop",
+            _ => "TV",
+        }
+    }
+}
+
+/// The picker's groups, in order.
+pub const DEVICE_GROUPS: [&str; 10] = [
+    "iPhone with Dynamic Island",
+    "iPhone with notch",
+    "iPhone with home button",
+    "Google Pixel",
+    "Samsung Galaxy",
+    "Android",
+    "iPad",
+    "iPad with home button",
+    "Desktop and laptop",
+    "TV",
+];
+
+impl Device {
     /// Phones and tablets can turn; a browser window and a TV cannot.
     pub fn turns(&self) -> bool {
         matches!(self.k.as_str(), "phone" | "tablet")
@@ -270,7 +343,7 @@ impl Data {
         self.platforms.iter().find(|p| p.id == id)
     }
     pub fn device(&self, id: &str) -> &Device {
-        self.devices.iter().find(|d| d.id == id).or(self.devices.first()).expect("guides.json has devices")
+        self.devices.iter().find(|d| d.id == id).or_else(|| self.devices.iter().find(|d| d.id == "iphone")).expect("guides.json has devices")
     }
 }
 
@@ -350,6 +423,8 @@ pub fn merged(user: Option<&str>) -> Data {
         }
         for v in u.devices {
             match d.devices.iter_mut().find(|q| q.id == v.id) {
+                // an older file has no scale or pixels: keep the embedded ones
+                Some(q) if v.sc == 0.0 => *q = Device { sc: q.sc, px: q.px, ..v },
                 Some(q) => *q = v,
                 None => d.devices.push(v),
             }

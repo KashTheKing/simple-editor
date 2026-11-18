@@ -39,13 +39,25 @@ pub const BROWSER_BAR: f32 = 76.0;
 /// Room under a TV for its stand (dp).
 pub const TV_STAND: f32 = 34.0;
 
+/// The body round the screen in dp, [left, top, right, bottom] as drawn: an even bezel, or a home-button
+/// model's face (turned with its top to the left, the forehead is on the left and the chin on the right).
+pub fn insets(dev: &Device) -> [f32; 4] {
+    let [s, t, b] = dev.face;
+    match (dev.home_button(), dev.land) {
+        (true, false) => [s, t, s, b],
+        (true, true) => [t, s, b, s],
+        _ => [bezel_dp(dev); 4],
+    }
+}
+
 /// The size the whole device takes (dp): screen + bezels (+ the browser bars, + the TV stand).
 pub fn outer_dp(dev: &Device) -> (f32, f32) {
     let bz = bezel_dp(dev);
+    let [l, t, r, b] = insets(dev);
     match dev.k.as_str() {
         "desktop" => (dev.w, dev.h + BROWSER_BAR),
         "tv" => (dev.w + 2.0 * bz, dev.h + 2.0 * bz + TV_STAND),
-        _ => (dev.w + 2.0 * bz, dev.h + 2.0 * bz),
+        _ => (dev.w + l + r, dev.h + t + b),
     }
 }
 
@@ -79,6 +91,19 @@ pub fn body(b: &mut B, dev: &Device, land: bool, inner: Rect) -> Body {
             b.rect(screen, 0.0, Color32::BLACK);
             Body { outer, screen, k, bezel: bz * k }
         }
+        _ if dev.home_button() => {
+            let outer = outer_all;
+            side_buttons(b, dev, land, outer, k, frame);
+            let rad = face_rad(dev) * k;
+            b.rect(outer, rad, frame);
+            b.frame(outer.shrink(1.2 * k), rad - 1.2 * k, 0.8 * k, frame.gamma_multiply(1.6));
+            b.rect(outer.shrink(2.4 * k), rad - 2.4 * k, rgba(6, 6, 8, 255));
+            let [l, t, r, bt] = insets(dev);
+            let screen = Rect::from_min_max(outer.min + vec2(l, t) * k, outer.max - vec2(r, bt) * k);
+            b.rect(screen, dev.rad * k, Color32::BLACK);
+            face_parts(b, dev, land, outer, screen, k);
+            Body { outer, screen, k, bezel: l.min(t) * k }
+        }
         _ => {
             let outer = outer_all;
             side_buttons(b, dev, land, outer, k, frame);
@@ -93,6 +118,35 @@ pub fn body(b: &mut B, dev: &Device, land: bool, inner: Rect) -> Body {
             Body { outer, screen, k, bezel: bz * k }
         }
     }
+}
+
+/// A home-button body's corner radius (dp).
+fn face_rad(dev: &Device) -> f32 {
+    dev.w.min(dev.h) * if dev.k == "tablet" { 0.06 } else { 0.15 }
+}
+
+/// The earpiece and camera in the forehead, the home button in the chin (portrait: top / bottom; turned:
+/// left / right).
+fn face_parts(b: &mut B, dev: &Device, land: bool, outer: Rect, screen: Rect, k: f32) {
+    let [_, t, bt] = dev.face;
+    // centres of the forehead and the chin, and the direction "across" the device
+    let (top_c, chin_c) = if land {
+        (pos2((outer.min.x + screen.min.x) / 2.0, screen.center().y), pos2((screen.max.x + outer.max.x) / 2.0, screen.center().y))
+    } else {
+        (pos2(screen.center().x, (outer.min.y + screen.min.y) / 2.0), pos2(screen.center().x, (screen.max.y + outer.max.y) / 2.0))
+    };
+    let across = |len: f32, thick: f32| if land { vec2(thick, len) * k } else { vec2(len, thick) * k };
+    let dark = rgba(40, 40, 44, 255);
+    if dev.k == "tablet" {
+        b.circle(top_c, 3.5 * k, dark);
+    } else {
+        b.rect(Rect::from_center_size(top_c, across(t * 0.45, 5.5)), 2.75 * k, dark);
+        let cam = if land { pos2(top_c.x, top_c.y - t * 0.38 * k) } else { pos2(top_c.x - t * 0.38 * k, top_c.y) };
+        b.circle(cam, 4.0 * k, dark);
+    }
+    let r = (bt * 0.31).min(36.0) * k;
+    b.circle(chin_c, r, rgba(14, 14, 16, 255));
+    b.ring(chin_c, r, 1.6 * k, rgba(96, 96, 102, 255));
 }
 
 /// The buttons along the frame, in the frame colour. Portrait: iPhone = Action button + volume on the left,
@@ -233,6 +287,20 @@ pub fn system_bars(b: &mut B, dev: &Device, land: bool, screen: Rect, k: f32, in
 fn ios_status(b: &mut B, dev: &Device, screen: Rect, k: f32, ink: Color32) {
     let w = screen.width() / k;
     let at = |x: f32, y: f32| pos2(screen.min.x + x * k, screen.min.y + y * k);
+    if dev.home_button() && dev.k == "phone" {
+        // the 20 pt bar of a home-button iPhone: signal at the left, the time centred, the battery at the right
+        let cy = dev.st * 0.5;
+        b.text(at(w / 2.0, cy - 6.5), 12.0 * k, ink, true, "9:41", 1);
+        for i in 0..4 {
+            let hh = 3.0 + i as f32 * 1.8;
+            b.rect(Rect::from_min_max(at(6.0 + i as f32 * 3.8, cy + 4.0 - hh), at(8.6 + i as f32 * 3.8, cy + 4.0)), 0.7 * k, ink);
+        }
+        let br = Rect::from_min_max(at(w - 32.0, cy - 5.0), at(w - 10.0, cy + 5.0));
+        b.frame(br, 2.5 * k, 1.0 * k, ink.gamma_multiply(0.5));
+        b.rect(br.shrink(1.8 * k), 1.5 * k, ink);
+        b.rect(Rect::from_min_max(at(w - 9.0, cy - 2.0), at(w - 7.8, cy + 2.0)), 0.6 * k, ink.gamma_multiply(0.5));
+        return;
+    }
     // the ears: either side of the island / notch (a tablet has the whole bar)
     let (cut_w, cy) = match dev.cut.as_str() {
         "island" => (125.0, 11.0 + 18.5),
@@ -349,6 +417,14 @@ pub fn mask(b: &mut B, dev: &Device, land: bool, body: &Body, backdrop: Color32)
     if matches!(dev.k.as_str(), "desktop" | "tv") {
         let w = 8.0 * k + 2.0;
         b.frame(outer.expand(w * 0.5), if dev.k == "desktop" { 8.0 * k + w * 0.5 } else { 3.0 * k + w * 0.5 }, w, backdrop);
+        return;
+    }
+    if dev.home_button() {
+        // a square screen inside a wide face: only text running past the screen edge can show, so the face
+        // is laid again just round the screen, then its earpiece and home button
+        let w = 12.0 * k;
+        b.frame(screen.expand(w * 0.5), w * 0.5, w, rgba(6, 6, 8, 255));
+        face_parts(b, dev, land, outer, screen, k);
         return;
     }
     let w = body.bezel + rad * 0.45 + 4.0;

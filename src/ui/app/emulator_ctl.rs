@@ -188,7 +188,7 @@ pub(crate) const TOOLS: &[ToolDef] = &[
         name: "emulator.open",
         desc: "Show the Device Emulator pane on a device and platform: the project's video inside a real phone / tablet / browser / TV with the platform's UI. Any argument left out keeps the current choice (kept per project). Returns the choice and the ids to pick from.",
         args: &[
-            "device:string:false:iphone|iphone_notch|android|galaxy|small|tablet|desktop|tv",
+            "device:string:false:a device id (iphone, iphone_se_3rd_gen, iphone_16_pro_max, android, galaxy, tablet, desktop_1080, tv, ...; the result lists them all)",
             "platform:string:false:a guides.list platform id (yt_long, yt_shorts, tiktok, ig_reels, ...)",
             "orientation:string:false:portrait|landscape",
             "gallery:boolean:false:true = every device and platform at once",
@@ -213,7 +213,7 @@ pub(crate) const TOOLS: &[ToolDef] = &[
             open(app);
             let d = social::data();
             Ok(ToolOutcome::Done(json!({"state": state_json(app),
-                "devices": d.devices.iter().map(|v| json!({"id": v.id, "name": v.n, "kind": v.k, "os": v.os})).collect::<Vec<_>>(),
+                "devices": d.devices.iter().map(|v| json!({"id": v.id, "name": v.n, "group": v.group(), "size": v.resolution().0, "pixels": v.pixels()})).collect::<Vec<_>>(),
                 "platforms": d.platforms.iter().map(|p| json!({"id": p.id, "name": p.n})).collect::<Vec<_>>()})))
         },
     },
