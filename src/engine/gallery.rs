@@ -370,6 +370,8 @@ pub fn rename(root: &Path, item: &Item, new_name: &str) -> Result<Item, String> 
     rewrite(&out, &name, &out.tags, &out.data)?;
     if item.kind != Kind::Sound && out.path != item.path {
         let _ = std::fs::remove_file(&item.path);
+        // (the card picture of a template sits beside it)
+        let _ = std::fs::rename(item.path.with_extension("png"), out.path.with_extension("png"));
     }
     let _ = write_index(root);
     Ok(out)
@@ -506,6 +508,11 @@ fn import_one(root: &Path, p: &Path, out: &mut Imported, depth: usize) {
                 import_one(root, &dir, out, depth + 1);
                 let _ = std::fs::remove_dir_all(&dir);
             }
+            Err(e) => out.skipped.push((p.to_path_buf(), e)),
+        },
+        // ws:animator-templates: one shared template file (the template plus any footage inside)
+        crate::engine::templates::EXT => match crate::engine::templates::import_package(root, p) {
+            Ok(i) => out.added.push((Kind::Template, i.name)),
             Err(e) => out.skipped.push((p.to_path_buf(), e)),
         },
         "json" => {

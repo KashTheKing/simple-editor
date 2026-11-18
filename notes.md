@@ -698,6 +698,37 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - NOT verified: the compact list by eye (only its idle-repaint test), dragging blocks / handles by hand, Draw a motion path with a
   real pencil stroke, Link to layer through the menu, onion skin while scrubbing by eye, playback smoothness of ramps.
 
+## Animation templates (claude/animator-templates-5e186d, cut from feat/animator, 2026-11-17)
+- A template is still the Gallery `template` item (`{clips, assets}`); `engine::templates::TemplateData` adds optional `transitions`,
+  `layers` (track order), `slots` and `thumb_t`. Old templates decode with those empty and place exactly as `place_clips` did.
+- A slot IS a container clip (the existing `Clip.container`); `Slot` (name, clip id, wants, fit, card) lives in the template, not on
+  the clip. `Project::place_template` + `Project::fill_slot` (`model/ops/templates.rs`) do the placing; `templates::apply` is the one
+  entry (UI, drop, MCP all go through the `templates.use` tool = one undo).
+- Fit: Trim = slot keeps its length (longer footage cut, shorter slowed via `clip.speed`); Stretch = slot takes the footage length,
+  later template clips shift, keys / blocks in a clip's second half move with its end (a shrinking clip is scaled instead).
+- An empty slot of a built / built-in template has a colour card (a Shape clip one layer below, same blocks); `apply` removes the
+  card when the slot is filled, and a track that was added only for cards.
+- Built-ins (`templates::builtin(name, w, h)`) are generated for the project's frame size, not stored JSON.
+- Sharing: one `.setemplate` file = `SETEMPLATE1\n` + u64 header length + JSON header (name, files, data) + raw file bytes. Chosen over
+  a zip because the repo only has an UNzip (PowerShell); this is stdlib, streamed and unit-testable. Footage unpacks to
+  `gallery\templates\footage\<stamp>-<slug>\`. Asset paths in the header are file names; any other absolute-path string is scrubbed.
+- Legacy `capture_template` (clipboard, Save to Gallery > Template) is unchanged on purpose (no layers): paste behaviour stays.
+- A slot plays footage sound only if the clip it was made from had a linked sound half; built-in slots are picture only.
+- User templates are not rescaled when placed in a project of another frame size (built-ins are generated per size).
+- Checked live (debug exe, scratch profile, port 7513, window on DISPLAY2, driven over MCP + ui.input / ui.screenshot): the
+  Templates tab with the ten cards and their slot marks; Use Template (rows, Use selected media in selection order, Place);
+  Photo Slideshow / Photo Grid / Title Intro / Before and After placed and rendered (frame.export contact sheets); the Template
+  Builder window on a selection; templates.build (card picture written), export with footage (2.36 MB) and without (36 KB),
+  import of both (numbered names, footage unpacked), a stretch slot filled with a 6 s clip (fade out stayed at the end).
+- Found doing that, fixed here: the Inspector's Scale box (`inspector_audio::prop_row`) clamped a shown scale of 0 to 0.01 and
+  counted it as an edit, which the multi-selection wrote to every selected clip (placing a template selects its clips with the
+  playhead on a Pop In's first frame). `clamp_existing_to_range(false)` + a test.
+- The empty-container label box is see-through now (alpha 220 -> 96, `playback.rs` + `compose.rs`) so a slot's colour card shows
+  under it. The label itself is still the old one: drawn small and stretched to the frame (blurry). Worth a real placeholder look.
+- NOT verified: dragging media from the Media Library onto a slot row, the row's file picker (...), reordering builder rows by
+  hand, the Export... file dialog from a card's menu, dropping a .setemplate on the window, the other six built-ins by eye, playback
+  smoothness of a placed template. An imported template's card picture showed only after the next repaint.
+- D: ran out of space mid-session (0 bytes); this worktree's `target/` was moved to the session scratchpad on C: and deleted from D:.
 ## Gallery Video | Audio + title / template pictures (2026-11-17, feat/gallery-audio-video)
 - Audio side tabs are `GalleryTab::AudioAnimate | AudioTransitions | AudioEffects` + `Sounds`; `GalleryTab::VIDEO` /
   `AUDIO` are the strips. Side + last tab per side live in `Settings.gallery_audio` / `gallery_tab` / `gallery_audio_tab`

@@ -150,8 +150,12 @@ pub(crate) fn render(tpl: &crate::settings::Template) -> Option<Frame> {
         let f = crate::engine::html::render_frame(&h.src, &fields, scale, page.thumb_at()).ok()?;
         return (coverage(&f) > 0).then(|| fit(&f, framing(&f)));
     }
+    // ws:animator-templates: with its track order and transitions (text stays over footage)
     let mut p = crate::model::Project::new();
-    p.place_clips(clips, assets, 0.0);
+    match crate::engine::templates::TemplateData::decode(&tpl.json) {
+        Some(d) => drop(crate::engine::templates::apply(&mut p, d, 0.0, &[])),
+        None => drop(p.place_clips(clips, assets, 0.0)),
+    }
     let end = p.duration();
     if end <= 0.0 {
         return None;
@@ -191,7 +195,12 @@ pub(crate) fn picture(tpl: &crate::settings::Template, dir: &Path) -> Option<(Fr
 
 /// Every Titles / Templates card's template by name, as the Gallery lists them.
 pub(crate) fn templates(settings: &crate::settings::Settings) -> Vec<crate::settings::Template> {
-    crate::engine::presets::builtin_titles().into_iter().chain(settings.templates.iter().cloned()).collect()
+    // ws:animator-templates: the built-in animation templates too (a saved one of the same name comes later and wins)
+    crate::engine::presets::builtin_titles()
+        .into_iter()
+        .chain(crate::engine::templates::builtin_cards().iter().cloned())
+        .chain(settings.templates.iter().cloned())
+        .collect()
 }
 
 /// Called while the Titles or Templates tab is on screen: hand the cards without a picture to a worker,

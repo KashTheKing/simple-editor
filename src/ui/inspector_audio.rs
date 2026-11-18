@@ -162,6 +162,9 @@ fn prop_list(
                 "speed" => dv.range(5.0..=800.0).suffix(" %").max_decimals(0).speed(1.0),
                 _ => dv.speed(1.0),
             };
+            // the range limits what is typed or dragged, not what is shown: a Pop In starts at scale 0, and
+            // clamping that on sight counted as an edit written to every selected clip (ws:animator-templates)
+            let dv = dv.clamp_existing_to_range(false);
             let vresp = cui.add_sized(vr.size(), dv);
             if vresp.changed() {
                 a.set_at(

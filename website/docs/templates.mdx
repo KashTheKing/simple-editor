@@ -1,0 +1,98 @@
+---
+title: Templates
+description: Animated templates you fill with your own footage, the Template Builder for making your own, and sharing a template as one file.
+---
+
+A **template** is a ready-made piece of timeline: clips on their tracks with their animation blocks,
+keyframes, transitions, titles, shapes, HTML layers, effects and sound. Its **slots** are the clips you fill
+with your own footage. Everything a template places is ordinary clips and blocks, so you can change any of
+it afterwards in the Animator and the Inspector.
+
+Templates live in **Gallery ▸ Templates**: the built-in ones first, then yours (marked **M**).
+
+## Use a template
+
+1. Optional: select the photos or videos you want in the **Media Library** (Ctrl / Shift-click for several).
+2. Click a card in **Gallery ▸ Templates**. A template without slots is placed at the playhead straight away.
+3. A template with slots opens **Use Template**: one row per slot with what it wants (image, video, any),
+   its length and the footage chosen for it. The media you had selected is already filled in, in order.
+   - **Use selected media** fills the slots again from the Media Library's selection.
+   - Drag media from the Media Library onto a row (several at once fill that slot and the ones after it).
+   - **…** on a row picks a file from disk; **✕** empties the slot.
+4. **Place** puts the finished sequence at the playhead as **one undo step**.
+
+You can also drag a template card onto the timeline: it lands where you drop it, with the Media Library's
+selection in its slots.
+
+A slot you leave empty stays on the timeline as a placeholder with a coloured card under it. Fill it later
+with right-click ▸ **Replace Container Media…**.
+
+### How footage fits a slot
+
+| The slot says | What happens |
+|---|---|
+| **Trim footage** (the default) | The slot keeps its length. Longer footage is cut to it, shorter footage is slowed down to fill it. A photo simply shows for the slot's length. |
+| **Stretch template** | The slot takes the length of your footage. Everything after it moves along, a caption over it grows with it, and an animation at the slot's end stays at its end. |
+
+A slot plays the sound of your footage when the clip it was made from had sound. The built-in templates'
+slots are picture only.
+
+## Built-in templates
+
+| Template | What it is |
+|---|---|
+| **Photo Slideshow** | Four photos that drift slowly: the first pops in, the next ones push in from alternating sides or dissolve, with a title |
+| **Beat Montage** | Six short shots: a punch on every cut, a shake on every second one |
+| **Title Intro** | A title, a line and a subtitle over slowly moving footage |
+| **Product Showcase** | A hero shot that drops in, two details pushed in from the sides, a name and a price tag |
+| **Before and After** | Two shots side by side with a divider and a label each |
+| **Quote Card** | A quote over dimmed footage, the author under a short line |
+| **Lower Third Opener** | Footage with a name bar that slides in and leaves again |
+| **Vertical Short Opener** | A hook line that pops and shakes, two fast clips and a caption |
+| **End Card** | A thank-you, two video cards for what to watch next and a button |
+| **Photo Grid** | Four photos that pop into a grid one after another |
+
+They are built for the size of your project (wide, square or tall) from the Animator's own blocks and the
+app's shapes and text, so every part can be restyled.
+
+## Template Builder
+
+**Clip ▸ Save as Template…** (or right-click an empty spot in the Gallery ▸ **Template Builder…**) opens the
+builder on the selected clips, or on the whole timeline when nothing is selected.
+
+- **Name** and **Tags**, as for any Gallery item. A name that exists is replaced.
+- **From**: the selection or the timeline.
+- **Picture at**: the frame shown on the template's Gallery card. Moving it moves the playhead so you see it.
+- **Footage**: one row per footage clip.
+  - **▣ Slot** makes the clip a slot. Open the row to give the slot a name, say what it wants and choose
+    **Trim footage** or **Stretch template**. The order of the rows is the order slots are filled in:
+    drag a row's handle, or use **▲ ▼** (Alt+Up / Alt+Down).
+  - **🎞 Footage** chooses whether the clip's footage is **Included** in the template or replaced by a
+    **Placeholder**. A placeholder is always a slot. For a sound clip the choice is Included or Left out.
+- Text, shapes and other layers stay as they are.
+
+**Save** puts it in **Gallery ▸ Templates** as one of yours.
+
+## Share a template
+
+Right-click one of your template cards:
+
+- **Export with footage…** writes one `.setemplate` file holding the template and the footage it includes.
+- **Export without footage…** writes the template only. Every footage clip becomes an empty slot.
+
+The file never contains a folder path of your PC, only file names.
+
+To add a template someone sent you, use **Import…** in the Gallery's **⋯** menu or drop the `.setemplate`
+file onto the window. Its footage is unpacked into your gallery folder
+(`%APPDATA%\SimpleEditor\gallery\templates\footage\`), footage that is not in the file becomes empty slots,
+and a name you already have is numbered.
+
+## Scripts and assistants
+
+| Tool | What it does |
+|---|---|
+| `templates.list` | Your templates and the built-in ones |
+| `templates.slots` | A template's slots: name, what it wants, length, fit |
+| `templates.use` | Place a template with a slot → media mapping (asset ids or file paths), one undo step |
+| `templates.build` | Save clips of the timeline as a template, with slots and placeholders |
+| `templates.export` / `templates.import` | Write / read a `.setemplate` file |

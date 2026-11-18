@@ -172,6 +172,15 @@
   `tracking.run` descriptions say what they really do.
 ## Unreleased
 
+### Animation templates
+- **Built-in animation templates** in Gallery ▸ Templates, made from the Animator's blocks and transitions and sized to your project: Photo Slideshow, Beat Montage, Title Intro, Product Showcase, Before and After, Quote Card, Lower Third Opener, Vertical Short Opener, End Card, Photo Grid.
+- **Slots**: a template's footage clips are slots. Clicking a template opens **Use Template**, where each slot takes media from the Media Library (the selection fills them in order, or drag media onto a row) or a file; Place puts the finished sequence on the timeline as one undo step. A slot either trims footage to its length or stretches the template to the footage.
+- **Template Builder** (Clip ▸ Save as Template…, on the selection or the whole timeline): name, card picture time, which clips are slots (named, reordered), and per clip whether its footage is included or replaced by a placeholder.
+- Templates now keep their track order, transitions and animation blocks with their Animator controls. Templates saved before still load and place as they did.
+- **Share a template** as one `.setemplate` file, with or without its footage (right-click a template card ▸ Export…); import it from the Gallery's Import… or by dropping the file on the window. Footage that is not in the file becomes empty slots; no folder path of your PC is written into it.
+- MCP: `templates.slots`, `templates.use`, `templates.build`, `templates.export`, `templates.import`; `templates.list` / `templates.apply` know the built-in ones.
+- Fixed: with several clips selected and the playhead on a frame where the first one's scale is 0 (the start of a Pop In), the Inspector's Scale box counted showing the value as an edit and shifted the scale of every selected clip.
+
 ### Animate page and the Animator
 - New **Animate** page (after Edit, Alt+4): Gallery, Preview, Inspector, a thin Timeline and the new **Animator** panel. The page bar gets it once on existing installs; Color and Audio move to Alt+5 / Alt+6 and Export keeps Ctrl+E.
 - **Animator** panel: Blocks (one lane per selected clip; drag, stretch, snap with a guide line, open a block to drag its keys; blocks that overlap stack in rows), Curves (the block's keys as curves with bezier handles, box and Shift select, ease presets, value or velocity), Flow and Speed. Narrow, it becomes a list of the clip's blocks with their controls.

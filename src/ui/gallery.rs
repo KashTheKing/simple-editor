@@ -1113,6 +1113,8 @@ pub struct GalleryResponse {
     pub save_dialog: bool,
     /// A sound card was clicked: add it at the playhead.
     pub sound: Option<String>,
+    /// ws:animator-templates: the empty-space menu's "Template Builder…".
+    pub builder: bool,
     /// ws:gallery-audio: an Audio card rested under the pointer: hear it on the selected clip.
     pub audition: Option<(GalleryTab, String)>,
 }
@@ -1157,6 +1159,70 @@ pub fn mine_items(kind: GKind, now: f64) -> Rc<Vec<MineItem>> {
 /// Something was saved / renamed / deleted / imported: re-read on the next frame.
 pub fn forget_mine() {
     MINE.with(|m| m.borrow_mut().clear());
+}
+
+// ---- ws:animator-templates ----
+thread_local! {
+    /// The Templates tab's card pictures by template name (set by `gallery_ctl::draw` from the `.png`
+    /// beside each saved template).
+    static TPL_THUMBS: RefCell<HashMap<String, (egui::TextureId, [u32; 2])>> = RefCell::default();
+}
+
+pub(crate) fn set_template_thumbs(m: HashMap<String, (egui::TextureId, [u32; 2])>) {
+    TPL_THUMBS.with(|t| *t.borrow_mut() = m);
+}
+
+fn template_thumb(name: &str) -> Option<(egui::TextureId, [u32; 2])> {
+    TPL_THUMBS.with(|t| t.borrow().get(name).copied())
+}
+
+/// How many slots template `name` has (counted once per template: a saved one again when it changes).
+fn template_slots(name: &str, settings: &Settings) -> usize {
+    thread_local! {
+        static SLOTS: RefCell<HashMap<String, (usize, usize)>> = RefCell::default();
+    }
+    let mine = settings.templates.iter().find(|t| t.name == name);
+    let stamp = mine.map_or(0, |t| t.json.len() + 1);
+    SLOTS.with(|s| {
+        let mut s = s.borrow_mut();
+        if let Some(&(st, n)) = s.get(name) {
+            if st == stamp {
+                return n;
+            }
+        }
+        let n = match mine {
+            Some(t) => crate::engine::templates::TemplateData::decode(&t.json).map_or(0, |d| d.slot_list().len()),
+            None => crate::engine::templates::builtin(name, 1920, 1080).map_or(0, |d| d.slot_list().len()),
+        };
+        s.insert(name.to_string(), (stamp, n));
+        n
+    })
+}
+
+/// A template card's slots: one small card per slot along the bottom of the tile (bigger, in the middle,
+/// when the template has no picture of its own).
+fn slot_marks(p: &egui::Painter, tile: Rect, slots: usize, big: bool) {
+    const COLORS: [Color32; 6] = [
+        Color32::from_rgb(56, 97, 140),
+        Color32::from_rgb(140, 76, 96),
+        Color32::from_rgb(70, 122, 92),
+        Color32::from_rgb(150, 112, 58),
+        Color32::from_rgb(98, 82, 146),
+        Color32::from_rgb(60, 120, 128),
+    ];
+    let n = slots.min(6);
+    if n == 0 {
+        return;
+    }
+    let gap = 3.0;
+    let w = ((tile.width() - 12.0 - gap * (n as f32 - 1.0)) / n as f32).min(if big { 26.0 } else { 12.0 });
+    let h = if big { w * 0.62 } else { 5.0 };
+    let total = w * n as f32 + gap * (n as f32 - 1.0);
+    let y = if big { tile.center().y - h / 2.0 } else { tile.bottom() - h - 4.0 };
+    for i in 0..n {
+        let x = tile.center().x - total / 2.0 + i as f32 * (w + gap);
+        p.rect_filled(Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h)), 2.0, COLORS[i]);
+    }
 }
 
 pub(crate) fn set_sound_peaks(path: std::path::PathBuf, p: std::sync::Arc<crate::media::waveform::Peaks>) {
@@ -1295,6 +1361,11 @@ fn mine_rows(ui: &mut egui::Ui, out: &mut GalleryResponse, kind: GKind, name: &s
     let mut rows = vec![("Rename…", MineAct::Rename), ("Edit tags…", MineAct::Tags), ("Duplicate", MineAct::Duplicate)];
     if kind != GKind::Sound {
         rows.push(("Replace with current", MineAct::ReplaceCurrent));
+    }
+    // ws:animator-templates: one file to share, with or without the footage inside
+    if kind == GKind::Template {
+        rows.push(("Export with footage…", MineAct::Export(true)));
+        rows.push(("Export without footage…", MineAct::Export(false)));
     }
     rows.push(("Open file location", MineAct::Reveal));
     rows.push(("Delete", MineAct::Delete));
@@ -1541,7 +1612,13 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
             .map(|k| k.name().to_string())
             .chain(mine_items(GKind::Transition, 0.0).iter().map(|i| i.name.clone()))
             .collect(),
-        GalleryTab::Templates => settings.templates.iter().map(|t| t.name.clone()).collect(),
+        // ws:animator-templates: the built-in animation templates, then yours (a name of yours wins)
+        GalleryTab::Templates => crate::engine::templates::BUILTIN_NAMES
+            .iter()
+            .map(|n| n.to_string())
+            .filter(|n| !settings.templates.iter().any(|t| t.name.eq_ignore_ascii_case(n)))
+            .chain(settings.templates.iter().map(|t| t.name.clone()))
+            .collect(),
         // ---- ws:text-titles ----
         GalleryTab::Titles => crate::engine::presets::builtin_titles()
             .into_iter()
@@ -1629,6 +1706,10 @@ fn bg_menu(bg: &Response, out: &mut GalleryResponse) {
     menu::context(bg, |ui| {
         if menu::row(ui, None, "Save to Gallery…", "").clicked() {
             out.save_dialog = true;
+        }
+        // ws:animator-templates
+        if menu::row(ui, None, "Template Builder…", "").clicked() {
+            out.builder = true;
         }
     });
 }
@@ -2030,9 +2111,18 @@ pub fn show(
                         .on_hover_text(format!("{name} - click: at the playhead · drag onto a clip"))
                     }
                     GalleryTab::Templates => {
+                        // ws:animator-templates: the picture chosen in the Template Builder, else the rendered one
                         let pic = tpl_pics.get(name.as_str()).copied().unwrap_or_default();
+                        let pic = (template_thumb(name).or(pic.0), pic.1);
+                        let slots = template_slots(name, settings);
                         card(ui, ("tpl", name), name, Some(DragPayload::Template(name.clone())), false, |p, t| {
-                            template_picture(p, t, pic, false)
+                            template_picture(p, t, pic, false);
+                            slot_marks(p, t, slots, false);
+                        })
+                        .on_hover_text(match slots {
+                            0 => "Click: place it at the playhead · drag onto the timeline".to_string(),
+                            1 => "1 slot for your footage · click: fill it and place it at the playhead".to_string(),
+                            n => format!("{n} slots for your footage · click: fill them and place it at the playhead"),
                         })
                     }
                     GalleryTab::Titles => {
@@ -3253,7 +3343,14 @@ mod tests {
         let mut settings = Settings::default();
         settings.templates.push(crate::settings::Template { name: "Intro".into(), json: String::new() });
         let names = card_names(GalleryTab::Templates, &settings);
-        assert_eq!(names, vec!["Intro".to_string()]);
+        // ws:animator-templates: the built-in animation templates first, then the saved ones
+        let n = crate::engine::templates::BUILTIN_NAMES.len();
+        assert_eq!(names.len(), n + 1);
+        assert_eq!(names[..n], crate::engine::templates::BUILTIN_NAMES);
+        assert_eq!(names[n], "Intro");
+        // a saved template named like a built-in one is listed once (yours)
+        settings.templates.push(crate::settings::Template { name: "Quote Card".into(), json: String::new() });
+        assert_eq!(card_names(GalleryTab::Templates, &settings).len(), n + 1);
     }
 
     #[test]

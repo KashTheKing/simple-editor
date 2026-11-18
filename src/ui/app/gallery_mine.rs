@@ -97,6 +97,8 @@ pub enum MineAct {
     ReplaceCurrent,
     Delete,
     Reveal,
+    /// ws:animator-templates: a template as one `.setemplate` file (`true` = with its footage).
+    Export(bool),
 }
 
 pub(crate) fn root() -> std::path::PathBuf {
@@ -574,6 +576,10 @@ pub(crate) fn do_act(app: &mut App, what: MineAct, r: MineRef) -> Result<String,
                 reveal(&item);
                 Ok(String::new())
             }
+            MineAct::Export(footage) => {
+                super::template_ctl::export_dialog(app, &item.name, footage);
+                Ok(String::new())
+            }
             MineAct::ReplaceCurrent => {
                 let want = match r.kind {
                     GKind::Look => Save::Look,
@@ -641,8 +647,8 @@ pub(crate) fn import_dialog(app: &mut App, folder: bool) {
         rfd::FileDialog::new()
             .set_title("Import to Gallery")
             .add_filter(
-                "Gallery items, sounds, zips",
-                &["json", "zip", "wav", "mp3", "ogg", "flac", "m4a", "aac", "opus", "aif", "aiff", "wma"],
+                "Gallery items, templates, sounds, zips",
+                &["json", "setemplate", "zip", "wav", "mp3", "ogg", "flac", "m4a", "aac", "opus", "aif", "aiff", "wma"],
             )
             .pick_files()
     };

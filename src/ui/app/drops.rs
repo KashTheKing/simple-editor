@@ -61,8 +61,15 @@ impl App {
                 || crate::engine::gallery::is_audio(p)
                 || p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json") || e.eq_ignore_ascii_case("zip"))
         };
-        if over_gallery && dropped.iter().all(gallery_file) {
+        // (ws:animator-templates: a shared template file is never media, wherever it lands)
+        let is_template =
+            |p: &PathBuf| p.extension().is_some_and(|e| e.eq_ignore_ascii_case(crate::engine::templates::EXT));
+        if (over_gallery && dropped.iter().all(|p| gallery_file(p) || is_template(p))) || dropped.iter().all(is_template) {
             gallery_mine::import(self, &dropped);
+            if dropped.iter().any(is_template) {
+                self.gallery.tab = crate::ui::gallery::GalleryTab::Templates;
+                self.gallery.lib = None;
+            }
             return;
         }
         // ---- ws:html-layer ---- an .html file becomes an HTML layer linked to the file

@@ -580,9 +580,14 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
-| `templates.apply` | Mutate | at, name | Place a saved template at a time. |
+| `templates.apply` | Mutate | at, name | Place a template (saved or built-in) at a time, slots left as they are (templates.use fills them). |
+| `templates.build` | Ui | clip_ids, name, placeholders, slots, tags, thumb_t | Save clips of the timeline as a template in your Gallery (what the Template Builder does): slots [{clip_id, name, wants, fit}] in fill order, placeholders = clip ids saved without their footage. |
 | `templates.expose` | Ui | fields, name | Rewrite a saved user template's captured clips, setting Clip.exposed on each addressed clip_index (position within the template's own clip list, not a live id). Settings-level (Settings.templates) — ToolKind::Ui, not Mutate. |
-| `templates.list` | Read | - | Saved clip templates and motion presets. |
+| `templates.export` | Ui | footage, name, path | Write a template to one .setemplate file, with (default) or without its footage. |
+| `templates.import` | Ui | path | Add a shared .setemplate file to your Gallery; footage not in the file becomes empty slots. |
+| `templates.list` | Read | - | Saved clip templates, the built-in animation templates and motion presets. |
+| `templates.slots` | Read | name | A template's slots: index, name, wants (any/image/video), seconds, start, fit (trim/stretch), has_footage. |
+| `templates.use` | Mutate | at, fills, name, track | Place a template with its animation blocks, transitions and layers and fill its slots: fills = an array in slot order or an object keyed by slot name / 1-based index, values = asset id or file path. One undo step. |
 | `templates.save` | Ui | clip_ids, name | Save the given (or currently selected) clips as a reusable effect chain / node graph / clip template in settings.json (mirrors the deleted presets_ui.rs "Save from selection" button). |
 
 **`text.*`** (1 tool)

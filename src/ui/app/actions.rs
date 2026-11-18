@@ -968,19 +968,8 @@ impl App {
     }
 
     pub(super) fn place_template(&mut self, name: &str, t: f64) {
-        let Some(tpl) = self.settings.templates.iter().find(|x| x.name == name).cloned() else {
-            self.toast(format!("Template '{name}' not found"));
-            return;
-        };
-        match crate::engine::presets::decode_template(&tpl) {
-            Some((clips, assets)) => {
-                self.push_undo();
-                let ids = self.project.place_clips(clips, assets, t);
-                self.selection = ids;
-                self.after_edit();
-            }
-            None => self.toast(format!("Template '{name}' is corrupted")),
-        }
+        // ws:animator-templates: yours or a built-in one, with its layers and transitions
+        template_ctl::place(self, name, t, None, Vec::new());
     }
 
     // ---- ws:text-titles ----
