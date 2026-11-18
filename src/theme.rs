@@ -563,24 +563,6 @@ pub fn preset(name: &str) -> Option<PaletteOverride> {
         "CapCut Light" => {
             Some((false, [246, 246, 248], [255, 255, 255], [238, 238, 242], [212, 212, 218], [20, 20, 24], [92, 92, 100], [0, 140, 160]))
         }
-        "Premiere Pro Dark" => {
-            Some((true, [29, 29, 29], [35, 35, 35], [47, 47, 47], [64, 64, 64], [212, 212, 212], [145, 145, 145], [38, 128, 235]))
-        }
-        "Premiere Pro Light" => {
-            Some((false, [232, 232, 232], [214, 214, 214], [200, 200, 200], [165, 165, 165], [26, 26, 26], [80, 80, 80], [20, 115, 230]))
-        }
-        "DaVinci Resolve Dark" => {
-            Some((true, [28, 28, 30], [40, 40, 46], [50, 50, 56], [66, 66, 74], [200, 200, 200], [142, 142, 150], [232, 120, 46]))
-        }
-        "DaVinci Resolve Light" => {
-            Some((false, [236, 236, 239], [224, 224, 228], [210, 210, 216], [172, 172, 180], [28, 28, 32], [85, 85, 92], [190, 85, 12]))
-        }
-        "CapCut Dark" => {
-            Some((true, [17, 17, 19], [24, 24, 27], [35, 35, 40], [50, 50, 56], [235, 235, 238], [150, 150, 158], [0, 210, 228]))
-        }
-        "CapCut Light" => {
-            Some((false, [246, 246, 248], [255, 255, 255], [238, 238, 242], [212, 212, 218], [20, 20, 24], [92, 92, 100], [0, 140, 160]))
-        }
         "Charcoal Dark" => None,
         _ => return None,
     };
@@ -614,45 +596,6 @@ pub fn preset(name: &str) -> Option<PaletteOverride> {
         "SynthWave '84" => {
             ov.selection = Some([114, 241, 184]);
             ov.keyframe = Some([254, 222, 90]);
-        }
-        "Premiere Pro Dark" | "Premiere Pro Light" => {
-            let dark = name.ends_with("Dark");
-            ov.selection = Some([153, 153, 255]);
-            ov.playhead = Some(if dark { [45, 140, 235] } else { [20, 115, 230] });
-            let c = |d: [u8; 3], l: [u8; 3]| Some(if dark { d } else { l });
-            ov.clip_video = c([88, 100, 190], [150, 160, 225]);
-            ov.clip_audio = c([52, 140, 104], [140, 205, 175]);
-            ov.clip_image = c([150, 88, 170], [205, 160, 220]);
-            ov.clip_text = c([176, 100, 150], [225, 170, 205]);
-            ov.rounding = Some(2);
-            ov.clip_rounding = Some(2);
-        }
-        "DaVinci Resolve Dark" | "DaVinci Resolve Light" => {
-            let dark = name.ends_with("Dark");
-            ov.selection = Some(if dark { [64, 200, 190] } else { [0, 128, 128] });
-            ov.playhead = Some([232, 60, 50]);
-            ov.keyframe = Some([255, 170, 40]);
-            let c = |d: [u8; 3], l: [u8; 3]| Some(if dark { d } else { l });
-            ov.clip_video = c([58, 108, 150], [150, 185, 215]);
-            ov.clip_audio = c([48, 120, 98], [140, 205, 185]);
-            ov.clip_image = c([110, 90, 150], [190, 175, 220]);
-            ov.clip_text = c([160, 112, 56], [225, 195, 140]);
-            ov.waveform = c([118, 200, 120], [30, 110, 60]);
-            ov.rounding = Some(2);
-            ov.clip_rounding = Some(0);
-        }
-        "CapCut Dark" | "CapCut Light" => {
-            let dark = name.ends_with("Dark");
-            ov.selection = Some(if dark { [0, 210, 228] } else { [0, 140, 160] });
-            ov.playhead = Some(if dark { [255, 255, 255] } else { [30, 30, 34] });
-            let c = |d: [u8; 3], l: [u8; 3]| Some(if dark { d } else { l });
-            ov.clip_video = c([40, 76, 88], [150, 212, 200]);
-            ov.clip_audio = c([34, 84, 120], [165, 185, 240]);
-            ov.clip_image = c([84, 70, 140], [190, 178, 230]);
-            ov.clip_text = c([150, 108, 40], [235, 205, 140]);
-            ov.waveform = c([90, 210, 225], [0, 120, 140]);
-            ov.rounding = Some(8);
-            ov.clip_rounding = Some(5);
         }
         "Premiere Pro Dark" | "Premiere Pro Light" => {
             let dark = name.ends_with("Dark");

@@ -30,7 +30,7 @@ fn acts_if(ui: &mut egui::Ui, on: bool, items: &[Option<Action>]) {
 }
 
 /// Window menu: the everyday panels first, then the niche ones under More ▸ (hidden, not deleted).
-const MAIN_PANES: [Pane; 18] = [
+const MAIN_PANES: [Pane; 19] = [
     Pane::Library,
     Pane::MediaBrowser,
     Pane::Presets,
