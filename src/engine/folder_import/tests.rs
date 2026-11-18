@@ -217,4 +217,6 @@ fn a_folder_with_nothing_importable_scans_to_nothing() {
     let s = scan(&t.0.join("missing"), &Options::default(), EXTS);
     assert!(s.bins.is_empty() && s.skipped == 1);
     assert_eq!(Options::from_args(&serde_json::json!({})).bin_name, None);
+    assert!(Options::from_args(&serde_json::json!({})).linked, "a folder links by default");
+    assert!(!Options::from_args(&serde_json::json!({"linked": false})).linked);
 }

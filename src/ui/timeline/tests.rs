@@ -280,6 +280,7 @@ impl Harness {
                         realtime,
                         views,
                         wave_detailed: *wave_detailed,
+                        animator_shown: false,
                     },
                 ));
             });
@@ -1460,6 +1461,7 @@ fn test_clip_menu<'a>(labels: &'a [Label], buses: &'a [crate::model::Bus], share
         html: false,
         shape: false,
         zoom: 1.0,
+        animator_shown: false,
     }
 }
 
@@ -2613,6 +2615,22 @@ fn clip_menu_is_grouped_without_the_adjustment_row() {
     probe.click("Add", &mut draw);
     assert!(probe.has("Add Transition at Clip End"));
     assert!(!probe.texts().iter().any(|t| t.contains("Adjustment")), "not under Add ▸ either");
+}
+
+/// "Show Animations" reads "Hide Animations" while the Animator is on screen (the same Action hides it).
+#[test]
+fn show_animations_reads_hide_while_the_animator_is_shown() {
+    let p = Project::new();
+    for (shown, has, not) in
+        [(false, "Show Animations", "Hide Animations"), (true, "Hide Animations", "Show Animations")]
+    {
+        let m = ClipMenu { animator_shown: shown, ..test_clip_menu(&p.labels, &p.buses, &[]) };
+        let (mut act, mut tg, mut el) = (None, false, false);
+        let mut draw = |ui: &mut egui::Ui| clip_menu(ui, &m, &mut act, &mut tg, &mut el);
+        let mut probe = MenuProbe::new();
+        probe.run(vec![], &mut draw);
+        assert!(probe.has(has) && !probe.has(not), "{shown}: {:?}", probe.texts());
+    }
 }
 
 /// The track under the pointer (lane or header) is what the track Actions target; nothing is under the

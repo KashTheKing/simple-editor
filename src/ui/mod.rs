@@ -86,7 +86,7 @@ mod browser_ui;
 
 use crate::model::{AnimLink, Animated, Id, Mask, MaskShape, Project, LABEL_COLORS};
 use crate::theme::Palette;
-use eframe::egui::{self, DragValue, Grid, Response};
+use eframe::egui::{self, DragValue, Response};
 
 /// True on the first frame of an edit gesture (drag start, or a non-drag change such as typing/clicking).
 pub(crate) fn edit_start(r: &Response) -> bool {
@@ -175,12 +175,143 @@ pub(crate) fn key_buttons(
     label: &str,
     paths: &[(Id, String)],
 ) -> Response {
+    // ◀ previous key · ◆ key · ▶ next key · reset: every slot is always there, so rows stay aligned
+    let spacing = ui.spacing().item_spacing.x;
+    ui.spacing_mut().item_spacing.x = 0.0;
+    let step = |ui: &mut egui::Ui, a: &Animated, next: bool| {
+        let (rect, r) = ui.allocate_exact_size(egui::vec2(16.0, 18.0), egui::Sense::click());
+        let has = if next { a.keys.iter().any(|k| k.t > lt + 1e-4) } else { a.keys.iter().any(|k| k.t < lt - 1e-4) };
+        let col = if has && r.hovered() {
+            palette.text
+        } else if has {
+            palette.text_dim
+        } else {
+            palette.text_dim.gamma_multiply(0.35)
+        };
+        let glyph = if next { "▶" } else { "◀" };
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::proportional(10.0), col);
+        let r = r.on_hover_text(if next { "Next key" } else { "Previous key" });
+        if r.clicked() {
+            key_step(ui, a, lt, next);
+        }
+        r
+    };
+    let _prev = step(ui, a, false);
     let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
     let r = key_button_at(ui, rect, a, lt, palette, g, label, paths);
-    // the reset arrow: only on a keyed property (the slot is always there, so rows stay aligned)
+    let _next = step(ui, a, true);
+    // the reset arrow: only on a keyed property
     let (rr, _) = ui.allocate_exact_size(egui::vec2(14.0, 18.0), egui::Sense::hover());
     key_reset_at(ui, rr, a, lt, palette, g, label);
+    ui.spacing_mut().item_spacing.x = spacing;
     r
+}
+
+/// The name column of an Inspector row: one fixed width everywhere, so every value box and ◀ ◆ ▶ after it
+/// starts at the same x; a long name ends in "…" (the whole name on hover). Clickable (a double-click on a
+/// keyframable property's name keys it).
+pub(crate) const PROP_LABEL_W: f32 = 92.0;
+/// The value column of an Inspector row: one width, so a longer number moves nothing.
+pub(crate) const PROP_VAL_W: f32 = 72.0;
+
+pub(crate) fn prop_label(ui: &mut egui::Ui, text: &str) -> Response {
+    let h = ui.spacing().interact_size.y;
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(PROP_LABEL_W, h), egui::Sense::click());
+    let color = if ui.is_enabled() { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
+    let mut job =
+        egui::text::LayoutJob::simple_singleline(text.to_string(), egui::TextStyle::Body.resolve(ui.style()), color);
+    job.wrap = egui::text::TextWrapping::truncate_at_width(PROP_LABEL_W - 4.0);
+    let galley = ui.painter().layout_job(job);
+    let elided = galley.elided;
+    ui.painter().galley(egui::pos2(rect.left(), rect.center().y - galley.size().y / 2.0), galley, color);
+    if elided {
+        r.on_hover_text(text)
+    } else {
+        r
+    }
+}
+
+/// `ui.add` a widget into the whole of a fixed value box (`prop_value`, `prop_field`).
+pub(crate) fn fill(ui: &mut egui::Ui, w: impl egui::Widget) -> Response {
+    ui.add_sized(ui.available_size(), w)
+}
+
+/// A fixed `PROP_VAL_W` box at the cursor, `edit` drawing the value into it.
+fn val_box<R>(ui: &mut egui::Ui, edit: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let h = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(egui::vec2(PROP_VAL_W, h), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_min_size(egui::vec2(PROP_VAL_W, h));
+        edit(ui)
+    })
+    .inner
+}
+
+/// The value and ◀ ◆ ▶ of a keyframable row, left-anchored right after `prop_label`: `edit` draws the value
+/// into the fixed value box (`fill` a DragValue over `a.at(lt)`, write `a.set_at` when it changes) and
+/// returns its response; a right-click on it is the keyframe menu. Returns (value, key).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prop_value(
+    ui: &mut egui::Ui,
+    a: &mut Animated,
+    lt: f64,
+    palette: &Palette,
+    g: &mut Gesture,
+    label: &str,
+    paths: &[(Id, String)],
+    edit: impl FnOnce(&mut egui::Ui, &mut Animated) -> Response,
+) -> (Response, Response) {
+    let vr = val_box(ui, |ui| edit(ui, a));
+    g.note(&vr);
+    menu::context(&vr, |ui| key_menu(ui, a, lt, g, label, paths));
+    let kr = key_buttons(ui, a, lt, palette, g, label, paths);
+    (vr, kr)
+}
+
+/// One keyframable Inspector row: [name] [value] [◀ ◆ ▶ reset], the same everywhere (Transform, Effects,
+/// Text, Shape, Mask, …). A plain DragValue over `a` in its own unit; double-click the name for a key.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prop_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    a: &mut Animated,
+    lt: f64,
+    palette: &Palette,
+    g: &mut Gesture,
+    paths: &[(Id, String)],
+    dv: impl FnOnce(&mut f64) -> DragValue<'_>,
+) -> (Response, Response) {
+    ui.horizontal(|ui| {
+        let name = prop_label(ui, label);
+        if name.double_clicked() && a.link.is_none() && !a.has_key_at(lt) {
+            let v = a.at(lt);
+            a.key_at(lt, v);
+            g.click();
+        }
+        prop_value(ui, a, lt, palette, g, label, paths, |ui, a| {
+            let mut v = a.at(lt);
+            let r = fill(ui, dv(&mut v).clamp_existing_to_range(false));
+            if r.changed() {
+                a.set_at(lt, v);
+            }
+            r
+        })
+    })
+    .inner
+}
+
+/// A plain (not keyframable) Inspector row: the same name column, then `body` (left-anchored, so its
+/// inputs line up with the value boxes of the keyframable rows).
+pub(crate) fn prop_field<R>(ui: &mut egui::Ui, label: &str, body: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        prop_label(ui, label);
+        body(ui)
+    })
+    .inner
+}
+
+/// `prop_field` whose body is one widget in the fixed value box.
+pub(crate) fn prop_field_val(ui: &mut egui::Ui, label: &str, w: impl egui::Widget) -> Response {
+    prop_field(ui, label, |ui| val_box(ui, |ui| fill(ui, w)))
 }
 
 /// Previous / Next key from a property row's ◀ ▶ (as the keyframe menu's rows: see `take_key_seek`).
@@ -412,21 +543,20 @@ pub(crate) fn seed_mask_points(m: &mut Mask) {
 /// Mask parameter grid, shared by the Inspector (the clip mask) and the Effects panel (a per-effect
 /// mask): shape, enabled, invert, position/size/rotation, feather, expand, opacity - each keyframable.
 pub(crate) fn mask_grid(ui: &mut egui::Ui, m: &mut Mask, lt: f64, palette: &Palette, g: &mut Gesture, salt: egui::Id) {
-    Grid::new(salt).num_columns(2).show(ui, |ui| {
-        ui.label("Shape");
-        egui::ComboBox::from_id_salt(salt.with("shape")).selected_text(m.shape.name()).show_ui(ui, |ui| {
-            for sh in MaskShape::ALL {
-                g.note(&ui.selectable_value(&mut m.shape, sh, sh.name()));
-            }
+    ui.push_id(salt, |ui| {
+        prop_field(ui, "Shape", |ui| {
+            egui::ComboBox::from_id_salt(salt.with("shape")).selected_text(m.shape.name()).width(PROP_VAL_W).show_ui(
+                ui,
+                |ui| {
+                    for sh in MaskShape::ALL {
+                        g.note(&ui.selectable_value(&mut m.shape, sh, sh.name()));
+                    }
+                },
+            );
         });
         seed_mask_points(m);
-        ui.end_row();
-        ui.label("Enabled");
-        g.note(&ui.checkbox(&mut m.enabled, ""));
-        ui.end_row();
-        ui.label("Invert");
-        g.note(&ui.checkbox(&mut m.invert, ""));
-        ui.end_row();
+        prop_field(ui, "Enabled", |ui| g.note(&ui.checkbox(&mut m.enabled, "")));
+        prop_field(ui, "Invert", |ui| g.note(&ui.checkbox(&mut m.invert, "")));
         // X/Y/radius are here too: a mask added from a panel has no viewport drag behind it and would
         // otherwise be stuck at its default rect in the middle of the layer.
         let rows: [(&str, f64, f64, f64); 8] = [
@@ -440,28 +570,17 @@ pub(crate) fn mask_grid(ui: &mut egui::Ui, m: &mut Mask, lt: f64, palette: &Pale
             ("Opacity", 0.0, 1.0, 0.01),
         ];
         for (label, lo, hi, speed) in rows {
-            ui.label(label);
-            ui.horizontal(|ui| {
-                let a: &mut Animated = match label {
-                    "X" => &mut m.cx,
-                    "Y" => &mut m.cy,
-                    "Radius X" => &mut m.rx,
-                    "Radius Y" => &mut m.ry,
-                    "Rotation" => &mut m.rotation,
-                    "Feather" => &mut m.feather,
-                    "Expand" => &mut m.expand,
-                    _ => &mut m.opacity,
-                };
-                let mut v = a.at(lt);
-                let r = ui.add(DragValue::new(&mut v).range(lo..=hi).speed(speed).clamp_existing_to_range(false));
-                if r.changed() {
-                    a.set_at(lt, v);
-                }
-                g.note(&r);
-                menu::context(&r, |ui| key_menu(ui, a, lt, g, label, &[]));
-                key_buttons(ui, a, lt, palette, g, label, &[]);
-            });
-            ui.end_row();
+            let a: &mut Animated = match label {
+                "X" => &mut m.cx,
+                "Y" => &mut m.cy,
+                "Radius X" => &mut m.rx,
+                "Radius Y" => &mut m.ry,
+                "Rotation" => &mut m.rotation,
+                "Feather" => &mut m.feather,
+                "Expand" => &mut m.expand,
+                _ => &mut m.opacity,
+            };
+            prop_row(ui, label, a, lt, palette, g, &[], |v| DragValue::new(v).range(lo..=hi).speed(speed));
         }
     });
 }
