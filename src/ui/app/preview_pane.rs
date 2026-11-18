@@ -167,6 +167,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         if let Some(g) = resp.set_guide {
             g.apply(&mut app.settings);
         }
+        if let Some(s) = resp.set_visualizer_style {
+            app.settings.visualizer_style = s;
+            app.settings.save();
+        }
         if resp.open_emulator {
             super::emulator_ctl::open(app); // ws:device-emulator
         }

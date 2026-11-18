@@ -288,7 +288,7 @@ fn playlists(app: &mut App, ui: &mut egui::Ui) {
         ),
         None => (Vec::new(), 0.0, (0.0, 0.0)),
     };
-    let styles: Vec<String> = style_names();
+    let styles: Vec<String> = crate::engine::visualizer::style_names();
     if app.music.vis_style.is_empty() {
         app.music.vis_style = app.settings.visualizer_style.clone();
     }
@@ -297,21 +297,6 @@ fn playlists(app: &mut App, ui: &mut egui::Ui) {
     if let Some(a) = act {
         pl_act(app, ui.ctx(), a);
     }
-}
-
-thread_local! {
-    static STYLES: std::cell::RefCell<Option<(Instant, Vec<String>)>> = const { std::cell::RefCell::new(None) };
-}
-
-/// Visualizer style names (re-read from the library every few seconds, not every frame).
-fn style_names() -> Vec<String> {
-    STYLES.with(|s| {
-        let mut s = s.borrow_mut();
-        if s.as_ref().is_none_or(|(t, _)| t.elapsed() > Duration::from_secs(5)) {
-            *s = Some((Instant::now(), crate::engine::visualizer::styles().into_iter().map(|x| x.name).collect()));
-        }
-        s.as_ref().map(|(_, v)| v.clone()).unwrap_or_default()
-    })
 }
 
 fn edit(app: &mut App, f: impl FnOnce(&mut Project) -> bool) {

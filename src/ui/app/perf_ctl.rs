@@ -188,16 +188,25 @@ fn timecode(t: f64) -> String {
 }
 
 /// Nesting depth and total track count of a sequence (a sequence inside a sequence counts deeper).
-fn nest(p: &Project, seq: Id, depth: usize) -> (usize, usize) {
-    let Some(s) = p.sequence(seq) else { return (depth, 0) };
-    if depth > 8 {
-        return (depth, s.tracks.len()); // a cycle guard; open_sequence refuses cycles anyway
+/// (nesting depth, tracks summed over every nested instance) of sequence `seq`. Each sequence is measured
+/// once (`memo`): walking it again for every clip that uses it was exponential in the nesting and froze
+/// the UI thread on a project with many nests. A cycle is cut where it closes.
+fn nest(p: &Project, seq: Id, memo: &mut std::collections::HashMap<Id, (usize, usize)>, stack: &mut Vec<Id>) -> (usize, usize) {
+    if let Some(&v) = memo.get(&seq) {
+        return v;
     }
-    let mut out = (depth, s.tracks.len());
+    let Some(s) = p.sequence(seq) else { return (1, 0) };
+    if stack.contains(&seq) {
+        return (1, s.tracks.len()); // open_sequence refuses cycles anyway
+    }
+    stack.push(seq);
+    let mut out = (1, s.tracks.len());
     for c in s.tracks.iter().flat_map(|t| &t.clips).filter(|c| c.kind == ClipKind::Sequence) {
-        let (d, n) = nest(p, c.sequence, depth + 1);
-        out = (out.0.max(d), out.1 + n);
+        let (d, n) = nest(p, c.sequence, memo, stack);
+        out = (out.0.max(d + 1), out.1.saturating_add(n));
     }
+    stack.pop();
+    memo.insert(seq, out);
     out
 }
 
@@ -209,6 +218,7 @@ pub(super) fn project_rows(app: &App) -> (Vec<Row>, Vec<Row>) {
     let p = &app.project;
     let h = app.settings.proxy_height.max(120);
     let mut rows = Vec::new();
+    let mut nests = std::collections::HashMap::new();
     let first_use = |asset: Id| {
         p.all_clips().filter(|(_, c)| c.asset == asset).map(|(_, c)| (c.id, c.start)).min_by(|a, b| a.1.total_cmp(&b.1))
     };
@@ -247,7 +257,7 @@ pub(super) fn project_rows(app: &App) -> (Vec<Row>, Vec<Row>) {
             let asset = p.asset(c.asset);
             let fx =
                 c.effects.iter().chain(asset.into_iter().flat_map(|a| a.effects.iter())).filter(|e| e.enabled).count();
-            let (depth, tracks) = if c.kind == ClipKind::Sequence { nest(p, c.sequence, 1) } else { (0, 0) };
+            let (depth, tracks) = if c.kind == ClipKind::Sequence { nest(p, c.sequence, &mut nests, &mut Vec::new()) } else { (0, 0) };
             let html = asset.is_some_and(|a| {
                 a.html.is_some() && crate::media::proxy::status(a, true, h) != crate::media::proxy::ProxyStatus::Ready
             });
@@ -499,6 +509,29 @@ pub const TOOLS: &[ToolDef] = &[
 mod tests {
     use super::*;
     use crate::ui::layout::Layout;
+
+    /// Many clips of nested sequences that nest each other (and a cycle): measured in a blink, not the
+    /// exponential walk that froze the editor when the Performance tab opened.
+    #[test]
+    fn nest_depth_is_fast_on_wide_nesting_and_cycles() {
+        let path = crate::media::ffpipe::tests::test_mp4();
+        let mut p = Project::from_media(crate::media::probe(&path, crate::media::Backend::Auto).unwrap());
+        let mut clip = p.tracks[0].clips[0].clone();
+        clip.kind = ClipKind::Sequence;
+        let track = p.tracks[0].clone();
+        // sequence k holds 30 clips of sequence k+1; the last one holds 30 clips of the first (a cycle)
+        let ids: Vec<Id> = (0..10).map(|i| 1000 + i).collect();
+        for (i, &id) in ids.iter().enumerate() {
+            let mut t = track.clone();
+            t.clips = (0..30).map(|_| Clip { sequence: ids[(i + 1) % ids.len()], ..clip.clone() }).collect();
+            p.sequences.push(crate::model::Sequence { id, name: format!("S{i}"), width: 1920, height: 1080, fps: 30.0, tracks: vec![t] });
+        }
+        let t0 = Instant::now();
+        let (depth, tracks) = nest(&p, ids[0], &mut Default::default(), &mut Vec::new());
+        assert!(t0.elapsed() < Duration::from_millis(200), "took {:?}", t0.elapsed());
+        assert_eq!(depth, 11, "ten sequences, plus the one level where the cycle closes");
+        assert!(tracks >= 10);
+    }
 
     /// The top bar's Performance button: an icon button named "Performance" that answers a click and
     /// runs `Action::PerfWindow`, which opens / focuses the pane (no headless `App`: the wiring is pinned

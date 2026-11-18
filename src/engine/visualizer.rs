@@ -72,6 +72,21 @@ pub fn styles_from(custom: impl IntoIterator<Item = (String, String)>) -> Vec<St
     out
 }
 
+thread_local! {
+    static NAMES: std::cell::RefCell<Option<(std::time::Instant, Vec<String>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Every style's name, for pickers drawn each frame: re-read from the library every few seconds only.
+pub fn style_names() -> Vec<String> {
+    NAMES.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.as_ref().is_none_or(|(t, _)| t.elapsed() > std::time::Duration::from_secs(5)) {
+            *s = Some((std::time::Instant::now(), styles().into_iter().map(|x| x.name).collect()));
+        }
+        s.as_ref().map(|(_, v)| v.clone()).unwrap_or_default()
+    })
+}
+
 /// Find a style by name (case-insensitive), default = the first built-in.
 pub fn find(name: Option<&str>) -> Result<Style, String> {
     find_in(styles(), name)

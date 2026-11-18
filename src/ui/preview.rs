@@ -460,6 +460,8 @@ pub struct PreviewResponse {
     pub set_guide: Option<crate::ui::social::Set>,
     /// ws:device-emulator: the right-click's "Emulator" row: show the Device Emulator pane.
     pub open_emulator: bool,
+    /// The user picked an Audio Only visualizer style (Settings::visualizer_style).
+    pub set_visualizer_style: Option<String>,
     // ---- ws:canvas-handles-monitor ----
     /// The context menu toggled canvas snapping - the app stores it in Settings.canvas_snap.
     pub set_canvas_snap: Option<bool>,
@@ -1242,6 +1244,21 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
             let a = menu::check(ui, audio_only, "Audio Only", &menu::shortcut(Action::AudioOnlyPreview));
             if a.on_hover_text("Play the sound with a visualizer of the mix, no picture").clicked() {
                 r.actions.push(Action::AudioOnlyPreview);
+            }
+            if audio_only {
+                menu::sub(ui, Some(Glyph::Waveform), "Audio Visualizer", |ui| {
+                    let names = crate::engine::visualizer::style_names();
+                    let cur = if c.settings.visualizer_style.is_empty() {
+                        names.first().cloned().unwrap_or_default()
+                    } else {
+                        c.settings.visualizer_style.clone()
+                    };
+                    for n in names {
+                        if menu::check(ui, n.eq_ignore_ascii_case(&cur), &n, "").clicked() {
+                            r.set_visualizer_style = Some(n);
+                        }
+                    }
+                });
             }
             menu::sub(ui, Some(Glyph::Guides), "Social Guides", |ui| {
                 r.set_guide = crate::ui::social::menu_rows(ui, c.settings);
