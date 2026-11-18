@@ -7,10 +7,12 @@
 //! repaints only when a frame is due or the controls change; paused with the controls hidden it does
 //! nothing at all.
 //!
-//! The chrome follows Windows Media Player (`chrome`): an Editor button where Media Player has Home,
-//! the scrubber with elapsed / total, shuffle - previous - back 10 s - play - forward 30 s - next -
-//! repeat, then tracks, volume, full screen, mini player and the ⋯ menu. Esc or the Editor button
-//! builds the editor in this process (`Root`), with the file on the timeline at the current time.
+//! The chrome (`chrome`) wears the editor's theme - Settings ▸ Appearance's theme, palette, Look and
+//! accent, the one thing read from the editor's settings - on a media player's layout: a title strip
+//! with an Editor button, a bottom bar over the video with the scrub bar, the timecode, previous - back
+//! 10 s - play - forward 30 s - next, then tracks, volume, full screen, mini player and More. Esc or the
+//! Editor button builds the editor in this process (`Root`), with the file on the timeline at the
+//! current time.
 
 pub mod chrome;
 pub mod engine;
@@ -28,7 +30,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracks::Tracks;
 
-/// Skip buttons, as Media Player's.
+/// The skip buttons.
 pub const SKIP_BACK: f64 = 10.0;
 pub const SKIP_FORWARD: f64 = 30.0;
 
@@ -65,16 +67,23 @@ impl Zoom {
     }
 }
 
-/// The ⋯ / tracks / volume flyouts.
+/// The tracks / More flyouts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flyout {
     Tracks,
-    Volume,
     More,
 }
 
-/// Remembered between launches in `%APPDATA%\SimpleEditor\player.json` (a few bytes; the editor's
-/// settings file is never read in player mode).
+/// The editor's look, out of `settings.json` (the rest of it is skipped over unread).
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+struct Look {
+    theme: String,
+    palette: crate::theme::PaletteOverride,
+    ui_look: String,
+}
+
+/// Remembered between launches in `%APPDATA%\SimpleEditor\player.json` (a few bytes).
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 struct Prefs {
@@ -141,6 +150,8 @@ pub struct PlayerApp {
     cover_rx: Option<Receiver<Option<egui::ColorImage>>>,
     pub(crate) bars: Vec<f32>,
     pub(crate) icon: Option<egui::TextureHandle>,
+    /// Settings ▸ Appearance's colours (`theme::palette_with` per frame, as the editor).
+    pub(crate) look: crate::theme::PaletteOverride,
     /// Single-click play/pause waits out a possible double-click (full screen).
     pending_click: Option<f64>,
     ended: bool,
@@ -151,8 +162,11 @@ impl PlayerApp {
     pub fn new(ctx: &egui::Context, engine: Engine) -> PlayerApp {
         crate::perf::startup_mark("player: window + GL ready");
         ctx.set_fonts(crate::theme::player_fonts());
-        ctx.set_theme(egui::ThemePreference::Dark);
-        ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        let look: Look = std::fs::read(crate::settings::Settings::path())
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        crate::theme::apply_visuals(ctx, &look.theme, &look.palette, &look.ui_look);
         let prefs: Prefs =
             std::fs::read(prefs_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         engine.set_volume(prefs.volume);
@@ -199,6 +213,7 @@ impl PlayerApp {
             cover_rx: None,
             bars: Vec::new(),
             icon: None,
+            look: look.palette,
             pending_click: None,
             ended: false,
         }

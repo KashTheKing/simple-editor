@@ -398,6 +398,11 @@ pub fn apply(ctx: &egui::Context, pref: &str, ov: &PaletteOverride, look: &str) 
     // set_fonts is a no-op when unchanged; egui's own Ctrl+=/Ctrl+-/Ctrl+0 UI zoom would hijack the
     // timeline zoom hotkeys (and persist across runs)
     ctx.set_fonts(fonts());
+    apply_visuals(ctx, pref, ov, look);
+}
+
+/// `apply` without the font set: the player keeps its lighter `player_fonts`.
+pub fn apply_visuals(ctx: &egui::Context, pref: &str, ov: &PaletteOverride, look: &str) {
     ctx.options_mut(|o| o.zoom_with_keyboard = false);
     let cozy = look != "sharp";
     ctx.set_visuals_of(Theme::Dark, visuals(true, ov, cozy));

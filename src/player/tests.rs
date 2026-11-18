@@ -80,6 +80,38 @@ fn assert_no_idle_repaint_player_paused_with_controls_hidden() {
     }
 }
 
+/// The reported bug: moving the mouse over a paused picture stepped it on a frame per move (every UI
+/// update took the next queued frame), so the footage crept forward and glitched. Pointer moves must
+/// leave the frame, its place and the clock exactly where they were.
+#[test]
+fn pointer_moves_over_a_paused_picture_never_move_it() {
+    let Some((ctx, mut app)) = player(1.0) else { return };
+    until_picture(&ctx, &mut app);
+    // let the decoder fill its queue ahead, so there are frames a buggy update could take
+    let end = Instant::now() + Duration::from_secs(3);
+    while app.engine.next_due().is_none() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    run(&ctx, &mut app, vec![]);
+    let (pts, shown, t, next) = (app.video.pts, app.video.shown, app.engine.time(), app.engine.next_due());
+    assert!(next.is_some(), "frames queued ahead");
+    let placed = |app: &PlayerApp| app.zoom.place(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(960.0, 540.0)), app.info.as_ref().unwrap().size, 1.0);
+    let rect = placed(&app);
+    for i in 0..40 {
+        let p = egui::pos2(100.0 + i as f32 * 19.0, 120.0 + (i % 7) as f32 * 50.0);
+        run(&ctx, &mut app, vec![Event::PointerMoved(p)]);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(app.hide.shown(), "the moves bring the controls up");
+    assert_eq!(app.video.pts, pts, "the picture stepped on while paused");
+    assert_eq!(app.video.shown, shown, "the picture's texture / size / uv changed");
+    assert_eq!(placed(&app), rect, "the picture moved");
+    assert_eq!(app.engine.time(), t);
+    assert_eq!(app.engine.next_due(), next, "queued frames were taken");
+    assert!(!app.engine.is_playing());
+}
+
 #[test]
 fn esc_builds_the_editor_with_the_file_on_the_timeline_at_the_current_time() {
     let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());

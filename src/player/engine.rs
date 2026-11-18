@@ -60,6 +60,8 @@ struct Video {
     eof: bool,
     /// Physical pixels the picture is drawn at (the video processor scales to it); (0, 0) = native.
     want: (u32, u32),
+    /// A frame went on screen since the last seek (or the start): paused, nothing more is taken.
+    shown: bool,
 }
 
 #[derive(Default)]
@@ -283,6 +285,7 @@ impl Engine {
             v.seek_to = Some(t);
             v.queue.clear();
             v.eof = false;
+            v.shown = false;
         }
         self.s.video_cv.notify_all();
         {
@@ -336,10 +339,12 @@ impl Engine {
             }
             out = v.queue.pop_front();
         }
-        // paused after a seek: the first frame at/after the seek point is the one to show
-        if out.is_none() && !self.is_playing() {
+        // paused after a seek (or at the start): the first frame at/after that point, once. Every UI
+        // update calls this - a pointer move over a paused picture must not step it on a frame.
+        if out.is_none() && !v.shown && !self.is_playing() {
             out = v.queue.pop_front();
         }
+        v.shown |= out.is_some();
         let freed = out.is_some();
         drop(v);
         if freed {
