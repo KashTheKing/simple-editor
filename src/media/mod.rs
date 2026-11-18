@@ -8,6 +8,7 @@ pub mod bg;
 pub mod ffpipe;
 pub mod mf;
 pub mod proxy;
+pub mod renames;
 pub mod thumbs;
 pub mod waveform;
 pub mod ytdlp;

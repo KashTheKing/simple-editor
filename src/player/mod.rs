@@ -411,6 +411,10 @@ impl PlayerApp {
         }
         self.open_at(ctx, &back, t, play);
         self.playlist.scan(&back);
+        if done.is_ok() {
+            // an editor's Library holding this file relinks it (`media::renames`)
+            crate::media::renames::record(&crate::media::renames::log_path(), &from, &to);
+        }
         match done {
             Ok(()) => self.say(format!("Renamed to {}", to.file_name().unwrap_or_default().to_string_lossy()), None),
             Err(e) => self.say(format!("Couldn't rename: {e}"), None),

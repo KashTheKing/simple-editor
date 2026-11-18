@@ -195,7 +195,11 @@ pub(super) fn take_done(jobs: &mut Vec<MediaJob>) -> Vec<MediaJob> {
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     if let Some(now) = take_offline_scan(&app.project) {
         if now != app.library.offline {
+            let went_offline = now.iter().any(|id| !app.library.offline.contains(id));
             app.library.offline = now;
+            if went_offline {
+                follow_renames(app);
+            }
         }
     }
     if app.offline_scan_at.is_none_or(|t| t <= Instant::now()) {
@@ -324,6 +328,25 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 }
 
 // ---------- relink ----------
+
+/// Assets that just went offline because the player renamed their file (`media::renames`, written by
+/// any process - the player usually runs on its own): repoint them, as one labelled undo. Runs when the
+/// offline scan changes, so a renamed file is followed within ~2 s, on focus or on opening the project.
+fn follow_renames(app: &mut App) {
+    let log = crate::media::renames::load(&crate::media::renames::log_path());
+    if log.is_empty() {
+        return;
+    }
+    let before = app.project.to_json();
+    let n = crate::media::renames::apply(&mut app.project, &log);
+    if n == 0 {
+        return;
+    }
+    app.push_undo_labeled(before, "Relink renamed media");
+    app.after_edit();
+    app.library.offline = offline_set(&app.project);
+    app.toast(format!("Relinked {n} renamed file{}", if n == 1 { "" } else { "s" }));
+}
 
 /// Repoint `ids` (and every asset sharing their path - subclips) to files found under `dir`, by name
 /// then by duration within one frame. Pure over the project; returns (relinked, still missing).
