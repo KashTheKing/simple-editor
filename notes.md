@@ -814,3 +814,9 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - `emulator_shots` (ignored) renders every platform x device x state: `SE_SHOT_DIR=<dir> cargo test emulator_shots -- --ignored`; compare with the refs in the side-session notes `device-emulator/refs`.
 - With the Preview pane hidden (another page, or the emulator maximised) the pane uploads the pending frame itself (`emulator_ctl::draw`): checked live.
 - Launching a scratch instance from a Claude Code session: strip CLAUDE_* / ANTHROPIC_* from the child's environment, or the in-app Assistant inherits the host session's auth.
+
+## Performance pane "freeze" report (2026-11-18, fix/perf-freeze) - not reproduced, parked
+- Report: opening the Performance tab froze the installed 1.3.1. Clue from the user: the Device Emulator panel was open at the same time; it may have been a general system slowdown. Parked until it happens again.
+- Tried (installed release exe, scratch profile with a copy of the user's settings, copies of the aria-math and untitled-21080 autosaves): pane on Edit and Export, Project and Live tabs, idle and playing, Jump-to the Audio Visualizer clip (1.3 MB of baked shader keys), and the Device Emulator open together with the pane. UI round trips over MCP stayed at 2-220 ms; Live showed 59-62 fps, 0 dropped, UI p95 ~1.2 ms. No stall.
+- Ruled out by reading or measuring: `perf_sample` (brief `ahead` lock), the HUD frame window (capped at 120), the donut point counts (bounded even for NaN/inf), `cache_bytes` (own thread; the user's cache is 2.6 GB / 2,066 files), and `fs::metadata` on V: (a local SATA HDD, ~0.1 ms). The exponential `nest()` walk is already fixed in 166d9b3.
+- If it comes back: grab thread stacks of the frozen PID before killing it (`procdump -ma <pid>`), and note the page, tab, panes open and whether it was playing.
