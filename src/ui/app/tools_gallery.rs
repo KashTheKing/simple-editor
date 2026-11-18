@@ -259,6 +259,9 @@ fn apply_card(
         }
         GalleryTab::Sounds => Err("Sounds are placed by gallery.apply with `at` (handled before this)".into()),
         GalleryTab::AudioEffects => apply_audio_fx(&mut app.project, name, clip_ids),
+        GalleryTab::Visualizers => {
+            Err("Visualizers are placed by gallery.apply with `at` (handled before this)".into())
+        }
         GalleryTab::AudioTransitions => {
             let skip = skip_existing.unwrap_or(app.settings.transition_skip_existing);
             apply_audio_transition(&mut app.project, &mut app.transitions_ui, skip, name, clip_ids, place)
@@ -289,6 +292,30 @@ pub(super) fn audio_targets(project: &Project, ids: &[Id]) -> Vec<Id> {
         }
     }
     out
+}
+
+// ---- ws:preview-audio-only ----
+/// Gallery ▸ Audio ▸ Visualizers: a visualizer layer of type `name` at `at` on video track `track` (None = the
+/// first free one) that shows the timeline mix, as long as the sound from `at` on (10 s on a silent stretch).
+/// The type becomes the last-used one. Returns the new clip.
+pub(super) fn place_visualizer(app: &mut App, name: &str, at: f64, track: Option<usize>) -> Result<Id, String> {
+    let style = crate::engine::visualizer::find(Some(name))?;
+    let end = app
+        .project
+        .tracks
+        .iter()
+        .filter(|t| t.kind == TrackKind::Audio)
+        .flat_map(|t| &t.clips)
+        .map(|c| c.start + c.duration)
+        .fold(0.0, f64::max);
+    let dur = if end > at + 1.0 { end - at } else { 10.0 };
+    let id = crate::engine::visualizer::add_mix(&mut app.project, at, dur, track, &style)?;
+    if app.settings.visualizer_style != style.name {
+        app.settings.visualizer_style = style.name.clone();
+        app.settings.save();
+    }
+    app.selection = vec![id];
+    Ok(id)
 }
 
 /// Gallery ▸ Audio ▸ Effects: route the audio clips through the preset's bus (`Project::apply_repair`).
@@ -394,7 +421,7 @@ pub(super) fn open_tab(app: &mut App, tab: GalleryTab) {
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "gallery.list",
-        desc: "Card names in one Gallery tab (Video side: Looks|Luts|Captions|SpeedRamps|Effects|Transitions|Templates|Titles|Animate; Audio side: AudioAnimate|AudioTransitions|AudioEffects|Sounds), or every tab when omitted. Looks excludes saved node-graph presets and reuses color-engine's builtin_looks() - the sole tool surface for Looks. With `source`, `query`, `category` or `sort` (the Gallery header's chips, search box, category menu and sort order) the list is filtered the same way and also holds the library's items for Effects / Transitions / Luts (installed ones always; online ones once the online library is connected: see gallery.connect). `detail` returns {name, source (Built-in|Mine|Installed|Online), id, categories, uses} per card.",
+        desc: "Card names in one Gallery tab (Video side: Looks|Luts|Captions|SpeedRamps|Effects|Transitions|Templates|Titles|Animate; Audio side: AudioAnimate|AudioTransitions|AudioEffects|Visualizers|Sounds), or every tab when omitted. Looks excludes saved node-graph presets and reuses color-engine's builtin_looks() - the sole tool surface for Looks. With `source`, `query`, `category` or `sort` (the Gallery header's chips, search box, category menu and sort order) the list is filtered the same way and also holds the library's items for Effects / Transitions / Luts (installed ones always; online ones once the online library is connected: see gallery.connect). `detail` returns {name, source (Built-in|Mine|Installed|Online), id, categories, uses} per card.",
         args: &[
             "tab:string:false:omit=all tabs",
             "mine:boolean:false:only the items you saved to the Gallery (= source mine)",
@@ -467,7 +494,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "gallery.apply",
-        desc: "Apply a Gallery card (Look/LUT/Caption/SpeedRamp/Effect/Transition) to clip_ids (default selection); Captions is project-wide. Effects: name = an effect's display name or a library id (effects/glow), where=track adds it to every clip on the selection's track. Transitions: name = Cross Fade|Fade to Color|Push|Wipe or a library id (transitions/x); where = start|end (an edge transition on that side of each clip), connection (the cut at its start/end where a clip abuts), connection_start|connection_end, all (the cut at each clip's start, else a fade-in) - omit for the old default (= all, unclamped). Duration is the Transitions tab's, clamped to half the shorter clip. Audio side (audio clips, or a video clip's linked sound): AudioAnimate = a volume/pan block at the playhead; AudioEffects = route through the preset's Mixer bus (Telephone, Radio, Hall, Pitch Up, Low-pass Sweep…); AudioTransitions = Equal Power|Linear|Exponential crossfade or Dip (with where, as Transitions; the picture is left alone) or J-Cut|L-Cut (roll the sound's cut earlier / later by the transition duration). Templates place at the playhead instead - use templates.apply.",
+        desc: "Apply a Gallery card (Look/LUT/Caption/SpeedRamp/Effect/Transition) to clip_ids (default selection); Captions is project-wide. Effects: name = an effect's display name or a library id (effects/glow), where=track adds it to every clip on the selection's track. Transitions: name = Cross Fade|Fade to Color|Push|Wipe or a library id (transitions/x); where = start|end (an edge transition on that side of each clip), connection (the cut at its start/end where a clip abuts), connection_start|connection_end, all (the cut at each clip's start, else a fade-in) - omit for the old default (= all, unclamped). Duration is the Transitions tab's, clamped to half the shorter clip. Audio side (audio clips, or a video clip's linked sound): AudioAnimate = a volume/pan block at the playhead; AudioEffects = route through the preset's Mixer bus (Telephone, Radio, Hall, Pitch Up, Low-pass Sweep…); AudioTransitions = Equal Power|Linear|Exponential crossfade or Dip (with where, as Transitions; the picture is left alone) or J-Cut|L-Cut (roll the sound's cut earlier / later by the transition duration); Visualizers = a visualizer layer of that type (Neon Orb, Spectrum Bars, Voxel Blocks or a custom one) at `at` (default the playhead) on video `track`, showing the timeline's mixed sound. Templates place at the playhead instead - use templates.apply.",
         args: &[
             "tab:string:true:",
             "name:string:true:",
@@ -475,8 +502,8 @@ pub const TOOLS: &[ToolDef] = &[
             "intensity:number:false:Looks/Luts only, 0..1 default 1.0",
             "where:string:false:Effects: track | Transitions: start|end|connection|connection_start|connection_end|all",
             "skip_existing:boolean:false:Transitions with where: leave a spot that already has a transition alone (default: the setting; off = replace)",
-            "at:number:false:Sounds: timeline seconds (default the playhead)",
-            "track:integer:false:Sounds: audio track index, -1 = a new track (default: the first free one)",
+            "at:number:false:Sounds / Visualizers: timeline seconds (default the playhead)",
+            "track:integer:false:Sounds: audio track index, -1 = a new track | Visualizers: video track index (default: the first free one)",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
@@ -485,6 +512,11 @@ pub const TOOLS: &[ToolDef] = &[
             let name = req(arg_str(args, "name"), "name")?.to_string();
             let ids = Args(args).ids_or_selection("clip_ids", app);
             let intensity = arg_f64(args, "intensity").unwrap_or(1.0).clamp(0.0, 1.0) as f32;
+            if tab == GalleryTab::Visualizers {
+                let at = arg_f64(args, "at").unwrap_or(app.playhead);
+                let id = place_visualizer(app, &name, at, arg_u64(args, "track").map(|t| t as usize))?;
+                return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": id})));
+            }
             if tab == GalleryTab::Sounds {
                 let at = arg_f64(args, "at").unwrap_or(app.playhead);
                 let track = arg_u64(args, "track").map(|t| t as usize);
@@ -622,7 +654,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "gallery.tab",
-        desc: "Open the Gallery pane on a tab (Video side: Looks|Luts|Captions|SpeedRamps|Effects|Transitions|Templates|Titles|Animate, or the library tabs HTML|Icons|Skills; Audio side: AudioAnimate|AudioTransitions|AudioEffects|Sounds), the same as clicking it; the pane is shown if it was hidden. What Ctrl+3 (Effects) and Ctrl+4 (Transitions) do. UI-only, no undo.",
+        desc: "Open the Gallery pane on a tab (Video side: Looks|Luts|Captions|SpeedRamps|Effects|Transitions|Templates|Titles|Animate, or the library tabs HTML|Icons|Skills; Audio side: AudioAnimate|AudioTransitions|AudioEffects|Visualizers|Sounds), the same as clicking it; the pane is shown if it was hidden. What Ctrl+3 (Effects) and Ctrl+4 (Transitions) do. UI-only, no undo.",
         args: &["tab:string:true:a tab name from gallery.list"],
         kind: ToolKind::Ui,
         run: |app, args| {

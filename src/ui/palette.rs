@@ -79,6 +79,8 @@ pub enum Command {
     Ask(String),
     /// Put this text in the box and keep the palette open (a skill that needs arguments).
     Complete(String),
+    /// Export with the Export pane's current settings: the save dialog, then the job starts.
+    QuickExport,
 }
 
 impl Default for Command {
@@ -167,6 +169,9 @@ fn finish(mut rows: Vec<(u32, Row)>) -> Vec<Row> {
     rows.into_iter().map(|(_, r)| r).collect()
 }
 
+/// The `>` row that exports with the Export pane's settings (`Command::QuickExport`).
+pub const QUICK_EXPORT: &str = "Quick export";
+
 /// The `>` row set: `Action::ALL` + a "Show X" row for each pane `toggle_of` has no Action for +
 /// arg-free tools that act (a `Read` tool's reply would be dropped here; `:` mode lists those) +
 /// scripts + the on/off `settings` (key, label, current value), fuzzy-filtered by `query` (empty query = everything, most-recently-used actions first -
@@ -210,6 +215,21 @@ pub fn rows(
                 glyph,
                 enabled: reason.is_none(),
                 reason,
+                ..Default::default()
+            },
+        ));
+    }
+    // ">Export" lists this first: the Export page's settings, straight to a file
+    if let Some(s) = fuzzy_score(query, QUICK_EXPORT).or_else(|| fuzzy_score(query, "Export quick")) {
+        let lead = if query.is_empty() { 0 } else { 40 };
+        rows.push((
+            s + lead + boost("export.quick_pane"),
+            Row {
+                cmd: Command::QuickExport,
+                label: QUICK_EXPORT.into(),
+                glyph: Some(Glyph::Upload),
+                enabled: true,
+                reason: Some("Pick the file, then export with the Export page's current settings."),
                 ..Default::default()
             },
         ));
@@ -346,6 +366,7 @@ pub fn recent_id(cmd: &Command) -> Option<String> {
         Command::Tool(name) => format!("tool.{name}"),
         Command::Script(path) => format!("script.{}", path.to_string_lossy()),
         Command::Setting(key, _) => format!("setting.{key}"),
+        Command::QuickExport => "export.quick_pane".into(),
         Command::GoTo(t) => match t {
             Target::Clip { id, .. } => format!("clip.{id}"),
             Target::Timeline(s) => format!("seq.{}", s.unwrap_or(0)),
@@ -954,6 +975,24 @@ mod tests {
         let has_args = crate::mcp::tools::all().find(|t| !t.args.is_empty()).expect("at least one tool takes args");
         assert!(!all.iter().any(|r| r.cmd == Command::Tool(has_args.name)));
         assert!(all.iter().any(|r| matches!(&r.cmd, Command::Script(p) if p.ends_with("my_script.luau"))));
+    }
+
+    /// `>Export` (and its variants) lists "Quick export" first, with the Export page commands after it.
+    #[test]
+    fn export_query_lists_quick_export_first() {
+        let s = snap(|_| Ok(()));
+        for q in ["Export", "export", "exp", "quick", "quick export", "Export quick"] {
+            let typed = format!(">{q}");
+            let Mode::Commands(q) = mode(&typed) else { panic!(">{q} is command mode") };
+            let rs = rows(&s, toggles, &[], &[], &[], q);
+            assert_eq!(rs.first().map(|r| &r.cmd), Some(&Command::QuickExport), ">{q}");
+            assert_eq!(rs[0].label, QUICK_EXPORT);
+        }
+        let rs = rows(&s, toggles, &[], &[], &[], "Export");
+        for a in [Action::ExportVideo, Action::QuickExportAs] {
+            assert!(rs.iter().any(|r| r.cmd == Command::Action(a)), "{a:?} still listed");
+        }
+        assert_eq!(recent_id(&Command::QuickExport).as_deref(), Some("export.quick_pane"));
     }
 
     #[test]

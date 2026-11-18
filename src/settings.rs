@@ -936,6 +936,8 @@ impl Settings {
     /// An export preset by name (case-insensitive), wherever it lives - what the Export pane, Quick
     /// Export and the `export.*` tools look presets up with.
     pub fn export_preset(&self, name: &str) -> Option<crate::engine::export::ExportPreset> {
+        use crate::engine::export::{PRESET_MAX_QUALITY, PRESET_MAX_QUALITY_OLD};
+        let name = if name == PRESET_MAX_QUALITY_OLD { PRESET_MAX_QUALITY } else { name };
         self.all_export_presets().into_iter().find(|p| p.name.eq_ignore_ascii_case(name))
     }
 
@@ -1003,12 +1005,32 @@ impl Settings {
         let Ok(text) = std::fs::read_to_string(path) else {
             return (Self::default(), None); // no file yet - first run, not corruption
         };
-        match serde_json::from_str(&text) {
-            Ok(s) => (s, None),
+        match serde_json::from_str::<Settings>(&text) {
+            Ok(mut s) => {
+                s.rename_cut_page();
+                (s, None)
+            }
             Err(e) => {
                 let bad = path.with_extension("json.bad");
                 let _ = std::fs::rename(path, &bad);
                 (Self::default(), Some(e.to_string()))
+            }
+        }
+    }
+    /// The "Cut" page was renamed "Plan": carry the page list, the current page and the saved
+    /// arrangements over so nobody loses their layout.
+    pub fn rename_cut_page(&mut self) {
+        for p in &mut self.pages {
+            if p == "Cut" {
+                *p = "Plan".into();
+            }
+        }
+        if self.page == "Cut" {
+            self.page = "Plan".into();
+        }
+        for map in [&mut self.page_layouts, &mut self.page_defaults] {
+            if let Some(v) = map.remove("Cut") {
+                map.entry("Plan".into()).or_insert(v);
             }
         }
     }

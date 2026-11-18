@@ -98,6 +98,14 @@ pub(super) fn execute(app: &mut App, payload: DragPayload, aim: Option<Aim>) {
             }
         }
         (DragPayload::GalleryCard(tab, name), Aim::Clips { clips, .. }) => apply_tool(app, tab, &name, &clips),
+        // ws:preview-audio-only: a visualizer layer where it was dropped
+        (DragPayload::GalleryCard(GalleryTab::Visualizers, name), Aim::Place { track, t }) => {
+            let args = json!({"tab": "Visualizers", "name": name, "at": t, "track": track});
+            match app.run_tool_undoable("gallery.apply", &args) {
+                Ok(_) => app.toast(format!("{name} added")),
+                Err(e) => app.toast(e),
+            }
+        }
         // ws:keyframe-blocks: starting where it was dropped
         (DragPayload::KeyBlock(name), Aim::Clips { clips, t, .. }) => {
             let args = json!({"name": name, "clip_ids": clips, "at": t});

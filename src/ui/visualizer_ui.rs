@@ -30,39 +30,66 @@ pub fn section(
     let err_id = egui::Id::new(("visualizer_err", id));
     let mut pick: Option<visualizer::Style> = None;
     let mut rebake = false;
+    let mut to_mix = false;
     let source = visualizer::source_of(project, id);
     egui::Grid::new("inspector_visualizer").num_columns(2).show(ui, |ui| {
-        ui.label("Style");
-        egui::ComboBox::from_id_salt("visualizer_style").selected_text(&current).show_ui(ui, |ui| {
-            // ponytail: lists the library folder each frame the popup is open (a few small files)
-            for s in visualizer::styles() {
-                let label = if s.custom { format!("{} (custom)", s.name) } else { s.name.clone() };
-                if ui.selectable_label(s.name == current, label).clicked() && s.name != current {
-                    pick = Some(s);
+        ui.label("Type");
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("visualizer_style").selected_text(&current).show_ui(ui, |ui| {
+                // ponytail: lists the library folder each frame the popup is open (a few small files)
+                for s in visualizer::styles() {
+                    let label = if s.custom { format!("{} (custom)", s.name) } else { s.name.clone() };
+                    if ui.selectable_label(s.name == current, label).clicked() && s.name != current {
+                        pick = Some(s);
+                    }
+                }
+            });
+            // ws:preview-audio-only: a GLSL visualizer of your own, checked, into the library, then used
+            let r = ui.small_button("Import shader…");
+            if r.on_hover_text("Load a GLSL visualizer file: it joins the types in your library").clicked() {
+                if let Some(path) =
+                    rfd::FileDialog::new().add_filter("GLSL", &["glsl", "frag", "fs", "txt"]).pick_file()
+                {
+                    match import_shader(&path) {
+                        Ok(s) => pick = Some(s),
+                        Err(e) => ui.ctx().data_mut(|d| d.insert_temp(err_id, e)),
+                    }
                 }
             }
         });
         ui.end_row();
-        ui.label("Audio");
+        ui.label("Source");
         ui.horizontal(|ui| {
-            match source.and_then(|a| project.clip(a)) {
-                Some(a) => {
-                    ui.label(&a.name);
-                }
-                None => {
-                    ui.weak("no audio under this clip");
-                }
-            }
-            if ui
-                .add_enabled(source.is_some(), egui::Button::new("Re-bake").small())
-                .on_hover_text("Read the audio under the clip again (after moving or trimming it)")
-                .clicked()
+            let song = source.and_then(|a| project.clip(a)).map(|a| a.name.clone());
+            let shown = song.clone().unwrap_or_else(|| MIX_SOURCE.to_string());
+            egui::ComboBox::from_id_salt(("visualizer_source", id))
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    if let Some(s) = &song {
+                        let _ = ui.selectable_label(true, s.as_str());
+                    }
+                    if ui.selectable_label(song.is_none(), MIX_SOURCE).clicked() && song.is_some() {
+                        to_mix = true;
+                    }
+                })
+                .response
+                .on_hover_text("What it reacts to: its linked song, or everything the timeline plays at that moment");
+            if ui.small_button("Re-bake").on_hover_text("Read the audio again (after moving or trimming it)").clicked()
             {
                 rebake = true;
             }
         });
         ui.end_row();
     });
+    if to_mix {
+        undo(project);
+        visualizer::follow_mix(project, id);
+        let r = visualizer::rebake_any(project, id, backend).map(|_| ());
+        if let Err(e) = r {
+            ui.ctx().data_mut(|d| d.insert_temp(err_id, e));
+        }
+        return true;
+    }
     // ---- the band mixer
     let mix_now = project
         .clip(id)
@@ -76,6 +103,11 @@ pub fn section(
         let song = visualizer::analysis_async(&path, c.audio_stream, backend, move || ctx.request_repaint())?;
         let (s0, s1) = (c.src_time(v.start), c.src_time(v.start + v.duration));
         Some(song.spectrum(s0.min(s1), s0.max(s1)))
+    });
+    // a Timeline-mix visualizer: the mix's spectrum under it (once the background analysis has landed)
+    let spectrum = spectrum.or_else(|| {
+        let v = project.clip(id).filter(|_| source.is_none())?;
+        visualizer::mix_cached().map(|(_, m)| m.spectrum(v.start, v.start + v.duration))
     });
     let (mix, mix_started) = mixer(ui, id, &mix_now, spectrum);
     if let Some(e) = ui.ctx().data(|d| d.get_temp::<String>(err_id)) {
@@ -91,7 +123,7 @@ pub fn section(
         {
             e.audio_mix = (mix != AudioMix::default()).then_some(mix);
         }
-        if pick.is_none() && source.is_some() {
+        if pick.is_none() {
             rebake = true;
         }
     }
@@ -100,17 +132,17 @@ pub fn section(
         .and_then(|c| c.effects.iter().find(|e| visualizer::style_of(e).is_some()))
         .map(|e| e.audio_mix.clone().unwrap_or_default())
         != Some(mix_now);
-    let r = match (pick, rebake, source) {
-        (Some(s), _, _) => {
+    let r = match (pick, rebake) {
+        (Some(s), _) => {
             undo(project);
             *last = s.name.clone();
             Some(visualizer::restyle(project, id, &s, backend))
         }
-        (None, true, Some(a)) => {
+        (None, true) => {
             if !mix_changed {
                 undo(project); // the Re-bake button (a mix edit pushed its own undo above)
             }
-            Some(visualizer::rebake(project, id, a, backend).map(|_| ()))
+            Some(visualizer::rebake_any(project, id, backend).map(|_| ()))
         }
         _ => None,
     };
@@ -126,6 +158,106 @@ pub fn section(
         None => mix_changed,
     }
 }
+
+/// The Source choice for a visualizer that is not linked to a song.
+pub const MIX_SOURCE: &str = "Timeline mix";
+
+/// Read, check (`visualizer::check_import`) and save a GLSL visualizer to the library's effects: a new type.
+fn import_shader(path: &std::path::Path) -> Result<visualizer::Style, String> {
+    let src = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = visualizer::check_import(&src, &stem)?;
+    let item = crate::engine::library::save(crate::engine::library::Kind::Effect, &name, &src)?;
+    Ok(visualizer::styles().into_iter().find(|s| s.src == src).unwrap_or(visualizer::Style {
+        name: item.id,
+        src,
+        custom: true,
+    }))
+}
+
+/// The band response curve: one point per band (x = the band, low to high frequency; y = its weight,
+/// 0 at the bottom to `MAX_GAIN` at the top). Drag a point up or down; double-click puts it back to 1.
+/// The song's own spectrum is drawn behind it, dim. Returns true while a point moved this frame.
+fn curve_editor(ui: &mut egui::Ui, m: &mut AudioMix, spectrum: Option<[f32; 6]>) -> egui::Response {
+    let (rect, r) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width().min(300.0), 96.0), egui::Sense::click_and_drag());
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
+    let plot = rect.shrink2(egui::vec2(10.0, 8.0)).with_max_y(rect.bottom() - 14.0);
+    let x_of = |b: usize| plot.left() + plot.width() * b as f32 / 5.0;
+    let y_of = |g: f32| plot.bottom() - plot.height() * (g / MAX_GAIN).clamp(0.0, 1.0);
+    // the 1.0 line, the song's spectrum
+    p.hline(plot.x_range(), y_of(1.0), egui::Stroke::new(1.0, ui.visuals().weak_text_color().gamma_multiply(0.4)));
+    if let Some(s) = spectrum {
+        for b in 0..6 {
+            let h = plot.height() * s[b].sqrt().clamp(0.0, 1.0);
+            let x = x_of(b);
+            p.rect_filled(
+                egui::Rect::from_min_max(egui::pos2(x - 6.0, plot.bottom() - h), egui::pos2(x + 6.0, plot.bottom())),
+                1.0,
+                ui.visuals().weak_text_color().gamma_multiply(0.3),
+            );
+        }
+    }
+    // drag the nearest point
+    let mut moved = false;
+    if let Some(pos) = r.interact_pointer_pos() {
+        let b = (((pos.x - plot.left()) / plot.width() * 5.0).round().clamp(0.0, 5.0)) as usize;
+        if r.double_clicked() {
+            m.gains[b] = 1.0;
+            moved = true;
+        } else if r.dragged() || r.clicked() {
+            m.gains[b] = gain_at(plot, pos.y);
+            moved = true;
+        }
+    }
+    // the curve (Catmull-Rom through the points), then the points
+    let pts: Vec<egui::Pos2> = (0..6).map(|b| egui::pos2(x_of(b), y_of(m.gains[b]))).collect();
+    let mut line = Vec::new();
+    for i in 0..5usize {
+        let (p0, p1, p2, p3) = (pts[i.saturating_sub(1)], pts[i], pts[i + 1], pts[(i + 2).min(5)]);
+        for k in 0..12 {
+            let t = k as f32 / 12.0;
+            let (t2, t3) = (t * t, t * t * t);
+            let c = |a: f32, b: f32, c: f32, d: f32| {
+                0.5 * (2.0 * b
+                    + (c - a) * t
+                    + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2
+                    + (3.0 * b - a - 3.0 * c + d) * t3)
+            };
+            line.push(egui::pos2(
+                c(p0.x, p1.x, p2.x, p3.x),
+                c(p0.y, p1.y, p2.y, p3.y).clamp(plot.top(), plot.bottom()),
+            ));
+        }
+    }
+    line.push(pts[5]);
+    let accent = ui.visuals().selection.bg_fill;
+    p.add(egui::Shape::line(line, egui::Stroke::new(2.0, accent)));
+    for (b, q) in pts.iter().enumerate() {
+        p.circle_filled(*q, 4.5, accent);
+        p.text(
+            egui::pos2(q.x, rect.bottom() - 1.0),
+            egui::Align2::CENTER_BOTTOM,
+            AudioMix::BANDS[b].0,
+            egui::FontId::proportional(9.0),
+            ui.visuals().text_color(),
+        );
+    }
+    let mut r = r.on_hover_text("Frequency left to right, weight bottom to top: drag a point; double-click resets it");
+    if moved {
+        r.mark_changed();
+    }
+    r
+}
+
+/// A band's weight top-to-bottom of the curve editor's plot: `MAX_GAIN` at the top, 0 at the bottom.
+fn gain_at(plot: egui::Rect, y: f32) -> f32 {
+    ((plot.bottom() - y) / plot.height().max(1.0) * MAX_GAIN).clamp(0.0, MAX_GAIN)
+}
+
+/// The top of a band's weight (the Intensity sliders' range).
+const MAX_GAIN: f32 = 3.0;
 
 /// The effect index of `id`'s 3D visualizer (a `// @camera` shader), if it has one.
 fn camera_effect(project: &Project, id: Id) -> Option<usize> {
@@ -259,12 +391,19 @@ pub fn camera_gesture(
 /// The band mixer's widgets: a preset, the spectrum graph, per band a gain and a beat-source tick, then
 /// sensitivity and smoothing. Returns the edited mix and whether this frame STARTED an interaction
 /// (a click, a typed value, a drag's first move) - the caller's one undo per edit.
+/// The band mixer's title in the Inspector.
+pub const BANDS_TITLE: &str = "Frequency bands";
+
 fn mixer(ui: &mut egui::Ui, id: Id, cur: &AudioMix, spectrum: Option<[f32; 6]>) -> (AudioMix, bool) {
     let mut m = cur.clone();
     let mut started = false;
     ui.add_space(4.0);
+    // ws:preview-audio-only: titled, so the band controls are found
+    ui.separator();
+    ui.label(egui::RichText::new(BANDS_TITLE).strong())
+        .on_hover_text("Which frequencies drive the visualizer, how hard, and which ones its beat follows");
     ui.horizontal(|ui| {
-        ui.label("Listen like");
+        ui.label("Preset");
         let shown = if m.preset.is_empty() { "Custom".to_string() } else { m.preset.clone() };
         egui::ComboBox::from_id_salt(("visualizer_preset", id)).selected_text(shown).show_ui(ui, |ui| {
             for p in AudioMix::PRESETS {
@@ -281,30 +420,11 @@ fn mixer(ui: &mut egui::Ui, id: Id, cur: &AudioMix, spectrum: Option<[f32; 6]>) 
             started = true;
         }
     });
-    // the song's spectrum under the clip (dim) and what the mix makes of it (accent)
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(260.0), 56.0), egui::Sense::hover());
-    let p = ui.painter_at(rect);
-    p.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
-    let w = rect.width() / 6.0;
-    for b in 0..6 {
-        let x0 = rect.left() + w * b as f32 + 3.0;
-        let bar = |v: f32, c: egui::Color32| {
-            let h = (rect.height() - 14.0) * v.clamp(0.0, 1.0);
-            p.rect_filled(egui::Rect::from_min_max(egui::pos2(x0, rect.bottom() - 12.0 - h), egui::pos2(x0 + w - 6.0, rect.bottom() - 12.0)), 1.0, c);
-        };
-        let have = spectrum.map_or(0.0, |s| s[b].sqrt());
-        bar(have, ui.visuals().weak_text_color().gamma_multiply(0.5));
-        bar(have * m.gains[b] / 3.0_f32.max(1.0) * m.sensitivity.min(3.0), ui.visuals().selection.bg_fill);
-        p.text(
-            egui::pos2(x0 + (w - 6.0) / 2.0, rect.bottom() - 1.0),
-            egui::Align2::CENTER_BOTTOM,
-            AudioMix::BANDS[b].0,
-            egui::FontId::proportional(9.0),
-            ui.visuals().text_color(),
-        );
-    }
+    // ws:preview-audio-only: the band response curve (the sound's spectrum behind it)
+    let before = m.clone();
+    let curve = curve_editor(ui, &mut m, spectrum);
     if spectrum.is_none() {
-        p.text(rect.center(), egui::Align2::CENTER_CENTER, "reading the song…", egui::FontId::proportional(11.0), ui.visuals().weak_text_color());
+        ui.weak("reading the sound…");
     }
     // a drag owes ONE undo, paid by its first frame that actually changes a value
     let owed_id = egui::Id::new(("visualizer_mix_owed", id));
@@ -318,11 +438,11 @@ fn mixer(ui: &mut egui::Ui, id: Id, cur: &AudioMix, spectrum: Option<[f32; 6]>) 
             owed = false;
         }
     };
-    let before = m.clone();
+    note(&curve);
     egui::Grid::new(("visualizer_bands", id)).num_columns(3).show(ui, |ui| {
         ui.weak("Band");
         ui.weak("Intensity");
-        ui.weak("Beat").on_hover_text("Which bands the beat detection listens to (none = the whole sound)");
+        ui.weak("Beat source").on_hover_text("Which bands the beat detection listens to (none = the whole sound)");
         ui.end_row();
         for (b, (name, lo, hi)) in AudioMix::BANDS.iter().enumerate() {
             ui.label(*name).on_hover_text(format!("{lo:.0} - {hi:.0} Hz"));
@@ -363,6 +483,17 @@ mod tests {
         (changed, undos, text)
     }
 
+    /// The curve editor's height is the band weight: top = the maximum, bottom = 0, clamped outside.
+    #[test]
+    fn the_curve_maps_height_to_weight() {
+        let plot = egui::Rect::from_min_max(egui::pos2(0.0, 10.0), egui::pos2(100.0, 70.0));
+        assert_eq!(gain_at(plot, 10.0), MAX_GAIN);
+        assert_eq!(gain_at(plot, 70.0), 0.0);
+        assert!((gain_at(plot, 40.0) - MAX_GAIN / 2.0).abs() < 1e-4);
+        assert_eq!(gain_at(plot, -50.0), MAX_GAIN);
+        assert_eq!(gain_at(plot, 500.0), 0.0);
+    }
+
     /// A visualizer clip gets the Style picker showing its style; a plain shape gets nothing; drawing
     /// alone never edits or pushes an undo.
     #[test]
@@ -376,8 +507,19 @@ mod tests {
         let before = p.to_json();
         let (changed, undos, text) = draw(&mut p, vis);
         assert!(!changed && undos == 0 && p.to_json() == before);
-        assert!(text.contains("Spectrum Bars") && text.contains("no audio under this clip"), "{text}");
-        for w in ["Listen like", "Custom", "Sub", "High-mid", "Air", "Intensity", "Sensitivity", "Release"] {
+        assert!(text.contains("Spectrum Bars") && text.contains("Timeline mix"), "{text}");
+        for w in [
+            BANDS_TITLE,
+            "Preset",
+            "Custom",
+            "Sub",
+            "High-mid",
+            "Air",
+            "Intensity",
+            "Beat source",
+            "Sensitivity",
+            "Release",
+        ] {
             assert!(text.contains(w), "the band mixer shows {w}");
         }
         assert!(!draw(&mut p, plain).0);

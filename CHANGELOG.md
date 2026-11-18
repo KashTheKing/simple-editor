@@ -1,9 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Library
+- **Linked bins: Import folder as bin is instant now.** A folder comes in as a bin that points at it: nothing is
+  copied, scanned or probed up front, its sub-folders show as nested bins, and each bin lists its files when you
+  open it (durations and thumbnails fill in for what is on screen). New or removed files show up by themselves. A
+  file becomes a project asset the moment you use it (drag it to the timeline, add it from its menu). The project
+  saves only the folder. Right-click the bin for Refresh, Relink…, Convert to regular bin (the old import every
+  file) and Unlink; a folder that is missing shows as offline. `media.import_folder` links by default
+  (`linked: false` imports every file), and `media.linked_bin` lists, refreshes, relinks, converts and unlinks.
+
 ## 1.3.1
 
+### Pages
+- **The Cut page is now the Plan page** (Alt+2, opens with the Select tool): Planner, Moodboard, Markers, Subtitles, Voiceover, Transcript and Clips beside Source | Preview and the Inspector, a small Library | Media Browser beside Timeline | Beat Aligner. New default layouts for Edit (Clips beside the Inspector), Color (a big Preview beside Inspector | Nodes | Gallery, Clips | Timeline across the middle, Color Wheels · Curves · Scopes below) and Audio (Library | Media Browser | Gallery · Preview · Voiceover | Transcript | Subtitles · Inspector over Timeline | Beat Aligner · Mixer). Saved page layouts are kept: Window ▸ Layout ▸ Reset Page Layout gets the new ones. **File ▸ Open Project…** (Ctrl+Shift+O) is now in the File menu.
+### Audio Only and visualizers
+- **Audio Only** (Preview right-click, Playback menu, Ctrl+P, `preview.audio_only`): the Preview plays the timeline's sound with a visualizer of the whole mix instead of the picture (no video decoded), with an Audio Only badge; saved per project, export unaffected. The Source monitor has it too (right-click ▸ Audio Only). **Visualizers are layers of their own**: Gallery ▸ Audio ▸ Visualizers (click = at the playhead, drag onto a video track) adds one that reacts to everything the timeline plays; Inspector: Type, Import shader…, Source (its song or Timeline mix) and a **Frequency bands** curve editor (drag a point per band) with presets and beat source. Also: Ctrl+Shift-drop a song from the Library / Media Browser to add it with a visualizer, and Add Audio Visualizer at the top of a song's right-click menu. Switching between the Source and Preview tabs stops the one hidden (side by side, both play).
+
 ### Beat Aligner
-- **New Beat Aligner panel** (the tab beside the Timeline on the Audio page, a tab on the Cut page, anywhere from a tab bar's +): pick a song, Detect finds the BPM, beat grid and downbeats (from the cached song analysis) under a bar ruler over a big waveform; fix it with BPM, ½ / ×2, Tap tempo, offset and beats per bar. Tap Space, B or M while it plays to drop marks (calibrated latency, optional snap to the beat with a strength), or let Continuous / Fill grid mark the grid. Drag marks (snapping to beats or sub-beats), select stretches into named, coloured sections (Intro, Verse, Chorus, Drop ...) and drag their chips to move or resize them. Then turn them into timeline markers, cut the picture at the marks, put a Library sound on each mark, snap clip edges to them or apply a Zoom Punch / Shake / any Animator block on each beat; export and import CSV, Resolve marker EDL and YouTube chapters. Voice mode marks a voiceover's phrases and pauses instead. Tools: `beats.*`.
+- **New Beat Aligner panel** (the tab beside the Timeline on the Audio page, a tab on the Plan page, anywhere from a tab bar's +): pick a song, Detect finds the BPM, beat grid and downbeats (from the cached song analysis) under a bar ruler over a big waveform; fix it with BPM, ½ / ×2, Tap tempo, offset and beats per bar. Tap Space, B or M while it plays to drop marks (calibrated latency, optional snap to the beat with a strength), or let Continuous / Fill grid mark the grid. Drag marks (snapping to beats or sub-beats), select stretches into named, coloured sections (Intro, Verse, Chorus, Drop ...) and drag their chips to move or resize them. Then turn them into timeline markers, cut the picture at the marks, put a Library sound on each mark, snap clip edges to them or apply a Zoom Punch / Shake / any Animator block on each beat; export and import CSV, Resolve marker EDL and YouTube chapters. Voice mode marks a voiceover's phrases and pauses instead. Tools: `beats.*`.
 
 ### Timeline waveforms
 - **Clearer audio waveforms on the timeline**: Simple (the default) draws loudness on a dB scale, so quiet speech
@@ -20,6 +36,15 @@
   platform cards show the real YouTube, Shorts, Instagram and TikTok marks (Simple Icons, CC0). **Your own
   presets**: "Save current settings…" (name, icon, colour), right-click to duplicate, rename, update or delete;
   Quick Export and the new `export.preset_save` / `preset_apply` / `preset_rename` / `preset_delete` tools use them too.
+- **Calmer Export panel, more in it**: the sections now look like the Inspector's (no colour bars), the
+  selected preset gets the normal selection highlight, platform presets are small square tiles and the brand marks
+  follow the text colour. **Frame rate is editable** (Project, 24, 25, 30, 50, 60 or Custom; presets can set it)
+  and the export resamples the timeline to it. The **project settings** (name, format, resolution, frame rate,
+  background, captions burn-in) are in the Export panel, so the Export page no longer shows the Inspector (a saved
+  Export layout is kept: Window ▸ Layout ▸ Reset Page Layout gets the new one). The built-in best-quality
+  preset is now just **Max quality**. **Ctrl+P `>Export`** lists **Quick export**: pick the file, it exports with
+  the Export panel's settings. **Cancel stops an export at once**: ffmpeg is stopped immediately, the partial file
+  is deleted and the job shows Cancelled straight away.
 ### Panels and screens
 - **Voiceover, Transcript and Rendering are panels now** instead of pop-up windows: dock them, tab them, undock
   them, open them from the Window menu or Ctrl+P. Voiceover has the input, a live level meter, Record / Stop,
@@ -79,14 +104,6 @@
 - **AI Upscale is no longer starved on a busy PC**: the upscaler runs at normal priority and steps down only while
   the timeline or Source monitor plays; the result is encoded on the graphics card (NVENC / QSV / AMF, x264 fallback).
   A short upscale with every core busy went from over 30 minutes to about 2.5 minutes.
-
-### Fixes: Media Library filters
-- **A filtered Library keeps your bins**: a search or filter now shows the bins that hold a match (opened, with a
-  count) and only the matching items inside them, instead of one flat list; View ▾ **Flat results** brings the flat
-  list back. The Audio page's sounds-only view belongs to that page: it shows as an **Audio only ×** chip, never
-  changes your own filter, and goes away when you leave the page (it used to stay on everywhere). Every active
-  filter shows as a chip under the search box, with **Clear filter**, and the Filter button lights up. Smart Bins
-  are a section with **Save filter…** in its header.
 
 ### Fixes: HTML layers
 - **"Edge failed to start" on a busy PC**: 1.3.0 started Edge at below-normal priority, so while a build, an

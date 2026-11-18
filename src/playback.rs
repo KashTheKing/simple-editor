@@ -828,6 +828,21 @@ fn guarded(pool: &mut DecoderPool, f: impl FnOnce(&mut DecoderPool)) -> bool {
     false
 }
 
+/// What playback draws of `p`: `p` itself, or in Audio Only (`Project::audio_only_preview`) `p` with every
+/// picture track emptied - nothing to decode or composite, the sound plays from the audio thread's own copy.
+pub(crate) fn played_view(p: &Arc<Project>) -> Arc<Project> {
+    if !p.audio_only_preview {
+        return p.clone();
+    }
+    let mut v = (**p).clone();
+    for t in v.tracks.iter_mut().filter(|t| t.kind != TrackKind::Audio) {
+        t.clips.clear();
+        t.transitions.clear();
+    }
+    v.show_subtitles = false;
+    Arc::new(v)
+}
+
 fn render_thread(
     shared: Arc<Shared>,
     rx: Receiver<Cmd>,
@@ -838,7 +853,10 @@ fn render_thread(
     crate::media::bg::raise_thread();
     let mut comp = Compositor::new();
     let mut shapes = ShapeRasterizer::new();
-    let mut project = lock(&shared.project).clone();
+    // ws:preview-audio-only: `full` is the project as edited (one-shot renders: render.frame, Export
+    // Frame, scopes); `project` is what playback draws - its picture tracks emptied in Audio Only
+    let mut full = lock(&shared.project).clone();
+    let mut project = played_view(&full);
     // ws:nested-gpu: nested sequences as projects of their own, made once per project
     let mut nest = Nest::default();
     let mut dirty = false;
@@ -960,10 +978,12 @@ fn render_thread(
             pre_done = false;
             match c {
                 Cmd::SetProject => {
-                    let new = lock(&shared.project).clone();
+                    full = lock(&shared.project).clone();
+                    let new = played_view(&full);
                     (dirty, preload) = (true, true);
                     // evict only the frames the edit can have changed; None = anything could differ
-                    match video_dirty_spans(&project, &new) {
+                    let flipped = new.audio_only_preview != project.audio_only_preview;
+                    match video_dirty_spans(&project, &new).filter(|_| !flipped) {
                         Some(spans) => {
                             evict_spans!(spans, new.fps.max(1.0));
                         }
@@ -1041,7 +1061,7 @@ fn render_thread(
                     let _ = ack.send(());
                 }
                 Cmd::LayersOnce(t, max_w, reply) => {
-                    let (pw, ph) = (project.width.max(1), project.height.max(1));
+                    let (pw, ph) = (full.width.max(1), full.height.max(1));
                     let w = pw.min(max_w.max(16));
                     let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
                     let mut set = LayerSet::default();
@@ -1052,7 +1072,7 @@ fn render_thread(
                     pool.set_exact(exact);
                     guarded(&mut pool, |pool| {
                         set = layers_with(
-                            &project,
+                            &full,
                             t,
                             w,
                             h,
@@ -1068,11 +1088,11 @@ fn render_thread(
                     let _ = reply.send(Arc::new(set));
                 }
                 Cmd::RenderOnce(t, max_w, reply) => {
-                    let (pw, ph) = (project.width.max(1), project.height.max(1));
+                    let (pw, ph) = (full.width.max(1), full.height.max(1));
                     let w = pw.min(max_w.max(16));
                     let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
                     let mut f = Frame::default();
-                    guarded(&mut pool, |pool| comp.render(&project, t, w, h, pool, &mut lock(&text), &mut f));
+                    guarded(&mut pool, |pool| comp.render(&full, t, w, h, pool, &mut lock(&text), &mut f));
                     let _ = reply.send(Arc::new(f));
                 }
                 // ---- ws:player-rate-loop ----
@@ -1082,14 +1102,14 @@ fn render_thread(
                 Cmd::LayersAsync => {
                     // non-blocking mirror of LayersOnce: decode the latest request and publish the reply
                     if let Some((id, t, max_w)) = *lock(&shared.req) {
-                        let (pw, ph) = (project.width.max(1), project.height.max(1));
+                        let (pw, ph) = (full.width.max(1), full.height.max(1));
                         let w = pw.min(max_w.max(16));
                         let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
                         let mut set = LayerSet::default();
                         let text = &mut TextRef::Shared(&text);
                         guarded(&mut pool, |pool| {
                             set = layers_with(
-                                &project,
+                                &full,
                                 t,
                                 w,
                                 h,
@@ -3480,6 +3500,67 @@ mod tests {
         let c = centre(&f);
         assert!(c[1] > 200 && c[0] < 70, "expected green from the CPU path, got {c:?}");
         assert!(p.take_layers().is_none(), "layers must stop when the GPU path is off");
+    }
+
+    // ---- ws:preview-audio-only ----
+    /// Audio Only: playback's view has no picture (no clips on video tracks, no subtitles) and keeps every
+    /// audio clip; off, it is the project itself (no copy).
+    #[test]
+    fn audio_only_view_drops_the_picture_and_keeps_the_sound() {
+        let path = media::ffpipe::tests::test_mp4();
+        let mut p = Project::from_media(media::probe(&path, Backend::Auto).unwrap());
+        p.show_subtitles = true;
+        let full = Arc::new(p.clone());
+        assert!(Arc::ptr_eq(&played_view(&full), &full), "off: the same project");
+        p.audio_only_preview = true;
+        let v = played_view(&Arc::new(p.clone()));
+        let count = |q: &Project, k: TrackKind| {
+            q.tracks.iter().filter(|t| t.kind == k).map(|t| t.clips.len()).sum::<usize>()
+        };
+        assert_eq!(count(&v, TrackKind::Video), 0);
+        assert!(!v.show_subtitles);
+        assert_eq!(count(&v, TrackKind::Audio), count(&p, TrackKind::Audio));
+        assert!(count(&p, TrackKind::Audio) > 0, "the test clip has sound");
+        assert_eq!(v.duration(), p.duration(), "the timeline is as long as before");
+    }
+
+    /// Audio Only: the render thread publishes no video layers while playing, the one-shot renders (render.frame,
+    /// Export Frame, scopes) still draw the picture, and the clock (the audio) runs.
+    #[test]
+    fn audio_only_publishes_no_video_layers() {
+        let path = media::ffpipe::tests::test_mp4();
+        let mut project = Project::from_media(media::probe(&path, Backend::Auto).unwrap());
+        project.audio_only_preview = true;
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(320, 240, 1280);
+        p.set_gpu(true);
+        p.seek(0.5);
+        p.play();
+        for _ in 0..60 {
+            if let Some(s) = p.take_layers() {
+                assert!(s.layers.is_empty(), "no picture layer in Audio Only");
+            }
+            sleep(Duration::from_millis(10));
+        }
+        assert!(p.time() > 0.5, "the clock (audio) plays on");
+        p.pause();
+        let one = p.layers_once(0.5, 320).expect("a one-shot render");
+        assert_eq!(one.layers.len(), 1, "a one-shot still draws the picture");
+        // off again: the picture comes back
+        project.audio_only_preview = false;
+        p.set_project(&project);
+        p.seek(0.5);
+        let mut back = false;
+        for _ in 0..300 {
+            if p.take_layers().is_some_and(|s| !s.layers.is_empty()) {
+                back = true;
+                break;
+            }
+            sleep(Duration::from_millis(10));
+        }
+        assert!(back, "layers again once Audio Only is off");
     }
 
     /// `decode_layers` owes the GPU renderer a bitmap for every visual clip, not just decoded media:

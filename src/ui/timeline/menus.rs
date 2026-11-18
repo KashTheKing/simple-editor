@@ -303,8 +303,11 @@ pub(super) fn clip_menu(
                 }
                 acts(ui, &[Some(Normalize), Some(MatchLoudness), Some(AutoDuck), None]);
                 acts(ui, &[Some(DetectBeats), Some(SplitAtBeats), None, Some(AutoCut)]);
-                acts(ui, &[None, Some(AddAudioVisualizer)]); // ws:audio-visualizer
             });
+        }
+        // ws:preview-audio-only: top level on a song, where it is found (was under Audio ▸)
+        if m.audio {
+            acts(ui, &[Some(AddAudioVisualizer)]);
         }
         acts(ui, &[Some(ShowAnimations)]); // ws:animator: opens the Animator on the selection
         menu::sub(ui, Some(Glyph::Sequence), "Nest", |ui| {

@@ -12,6 +12,7 @@ impl Project {
             assets: Vec::new(),
             folders: Vec::new(),
             linked_folders: Vec::new(),
+            linked_bins: Vec::new(),
             tracks: Vec::new(),
             in_point: None,
             out_point: None,
@@ -66,6 +67,7 @@ impl Project {
             quick_export: None, // ws:quick-export
             // ---- ws:beat-aligner ----
             beats: Default::default(),
+            audio_only_preview: false,
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);
@@ -123,6 +125,12 @@ impl Project {
     pub fn add_asset(&mut self, mut a: Asset) -> Id {
         if let Some(e) = self.asset_by_path(&a.path) {
             return e.id;
+        }
+        // a file used from a linked bin is filed under that bin the moment it becomes an asset
+        if a.folder.is_empty() {
+            if let Some(bin) = self.linked_bin_for_file(&a.path) {
+                a.folder = bin;
+            }
         }
         a.id = self.new_id();
         let id = a.id;

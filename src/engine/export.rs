@@ -99,6 +99,8 @@ pub struct ExportOptions {
     pub stem_by: StemBy,
     /// Drawn over each frame before encoding (None = nothing). Forces the RGBA readback.
     pub overlay: Option<FrameOverlay>,
+    /// Output frame rate; None = the project's. Frames are sampled from the timeline at this rate.
+    pub fps: Option<f64>,
 }
 
 // ---- ws:pro-schema ----
@@ -286,6 +288,9 @@ pub struct ExportPreset {
     /// Card accent colour; None = the icon's own.
     #[serde(default)]
     pub color: Option<[u8; 3]>,
+    /// Output frame rate; 0 = the project's.
+    #[serde(default)]
+    pub fps: f64,
 }
 
 /// The 4 shipped tiles - also the serde field default for `Settings.export_presets`, so a
@@ -310,7 +315,9 @@ pub fn default_export_presets() -> Vec<ExportPreset> {
 }
 
 /// The built-in preset that exports exactly the project (size, fps) at the best quality.
-pub const PRESET_MAX_QUALITY: &str = "Project settings — Max quality";
+pub const PRESET_MAX_QUALITY: &str = "Max quality";
+/// Its name before 1.3.1, still found by `Settings::export_preset` (a stored Quick Export target).
+pub const PRESET_MAX_QUALITY_OLD: &str = "Project settings \u{2014} Max quality";
 /// The built-in quick-look preset: project size and fps, fastest encode, smaller file.
 pub const PRESET_FAST_PREVIEW: &str = "Fast preview";
 
@@ -590,7 +597,7 @@ fn run_export_with(
     let tmp = temp_output(&opts.out_path);
     let audio_only = AUDIO_EXTS.contains(&ext.as_str());
     let is_gif = ext == "gif";
-    let fps = project.fps.max(1.0);
+    let fps = opts.fps.filter(|f| *f > 0.0).unwrap_or(project.fps).max(1.0);
     // ws:export-deliver: a range export renders [start, start+dur) instead of the whole timeline
     let (start, dur, n) = frame_plan(project.duration(), fps, opts.range)?;
     let (w, h) = (project.width.max(1), project.height.max(1));
@@ -702,7 +709,30 @@ fn run_export_with(
     let stop = AtomicBool::new(false);
     let audio_done: Vec<AtomicU32> = inputs.iter().map(|_| AtomicU32::new(0)).collect();
     let mut sent = 0u64;
+    let killer = ChildKiller::of(&child);
+    let swept = AtomicBool::new(false);
     let r = std::thread::scope(|s| {
+        // cancel kills ffmpeg at once (not after the frame in hand): its pipe and sockets break, which
+        // frees the writer and the audio threads wherever they are blocked. The job is reported stopped
+        // right here, partial file gone, while this thread finishes the frame it is on and unwinds.
+        s.spawn(|| {
+            while !stop.load(Ordering::SeqCst) {
+                if prog.is_cancelled() {
+                    killer.kill();
+                    // (a scanner may hold the just-closed file a moment: retry briefly)
+                    for _ in 0..50 {
+                        if std::fs::remove_file(&tmp.0).is_ok() || !tmp.0.exists() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(4));
+                    }
+                    swept.store(true, Ordering::SeqCst);
+                    prog.finish(Some(CANCELLED.into()));
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
         for ((input, listener), done) in inputs.iter().zip(listeners).zip(&audio_done) {
             let stop = &stop;
             s.spawn(move || feed_audio(input, listener, backend, start, dur, prog, stop, done, audio_only));
@@ -743,7 +773,10 @@ fn run_export_with(
                         }
                         next_req += 1;
                     }
-                    frame = g.window.pop(GPU_TIMEOUT);
+                    frame = g.window.pop(GPU_TIMEOUT, || prog.is_cancelled());
+                    if prog.is_cancelled() {
+                        break;
+                    }
                     if frame.is_none() {
                         // the renderer died or the UI stopped answering: finish on the CPU from this very
                         // frame (requests still in flight are dropped with the window) and say so
@@ -793,6 +826,11 @@ fn run_export_with(
         stop.store(true, Ordering::SeqCst);
         r
     });
+    if swept.load(Ordering::SeqCst) {
+        // already deleted when the cancel landed - a new export to the same name may own it by now
+        std::mem::forget(tmp);
+        return Err(CANCELLED.into());
+    }
     if r.is_err() && auto_hw && sent <= HW_START_FRAMES {
         *hw_failed = Some(encoder.clone());
     }
@@ -1048,9 +1086,17 @@ impl ReplyWindow {
         self.rx.push_back(rx);
     }
     /// The oldest request's frame. None = it failed (renderer gone / sender dropped), it took longer
-    /// than `timeout`, or nothing is in flight.
-    fn pop(&mut self, timeout: Duration) -> Option<Frame> {
-        self.rx.pop_front()?.recv_timeout(timeout).ok().flatten()
+    /// than `timeout`, nothing is in flight, or `quit` (polled every 10 ms) said stop.
+    fn pop(&mut self, timeout: Duration, quit: impl Fn() -> bool) -> Option<Frame> {
+        let rx = self.rx.pop_front()?;
+        let end = std::time::Instant::now() + timeout;
+        loop {
+            match rx.recv_timeout(Duration::from_millis(10)) {
+                Ok(f) => return f,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !quit() && std::time::Instant::now() < end => {}
+                Err(_) => return None,
+            }
+        }
     }
 }
 
@@ -1148,6 +1194,26 @@ fn cpu_gaps(project: &Project) -> String {
     }
 }
 
+/// Terminates a child process from another thread while its `Child` is borrowed elsewhere (the raw
+/// handle stays valid as long as that `Child` lives - it outlives the scope that uses this).
+struct ChildKiller(isize);
+impl ChildKiller {
+    fn of(child: &Child) -> Self {
+        use std::os::windows::io::AsRawHandle;
+        Self(child.as_raw_handle() as isize)
+    }
+    /// Terminate it and wait (up to 1 s) until it is gone, so its files are closed.
+    fn kill(&self) {
+        use windows::Win32::{
+            Foundation::HANDLE,
+            System::Threading::{TerminateProcess, WaitForSingleObject},
+        };
+        let h = HANDLE(self.0 as _);
+        let _ = unsafe { TerminateProcess(h, 1) };
+        let _ = unsafe { WaitForSingleObject(h, 1000) };
+    }
+}
+
 /// Deleted on drop (a no-op once `commit`ted into place).
 pub(crate) struct TempFile(pub(crate) PathBuf);
 impl TempFile {
@@ -1197,7 +1263,7 @@ pub(crate) fn wait_ffmpeg(child: &mut Child, tail: Option<JoinHandle<String>>, p
         }
         match child.try_wait() {
             Ok(Some(st)) => break st,
-            Ok(None) => std::thread::sleep(Duration::from_millis(30)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(e) => return Err(format!("ffmpeg: {e}")),
         }
     };
@@ -2037,16 +2103,16 @@ pub(crate) mod tests {
             t.send(Some(Frame { pts: i as f64, ..Frame::default() })).unwrap();
         }
         let short = Duration::from_millis(50);
-        assert_eq!(win.pop(short).map(|f| f.pts), Some(0.0));
+        assert_eq!(win.pop(short, || false).map(|f| f.pts), Some(0.0));
         assert!(win.has_room());
-        assert_eq!(win.pop(short).map(|f| f.pts), Some(1.0));
+        assert_eq!(win.pop(short, || false).map(|f| f.pts), Some(1.0));
         // a dropped sender / None reply / nothing in flight = give up on the GPU
         let (t, r) = std::sync::mpsc::sync_channel::<Option<Frame>>(1);
         win.push(r);
         drop(t);
-        assert_eq!(win.pop(short).map(|f| f.pts), Some(2.0));
-        assert!(win.pop(short).is_none());
-        assert!(win.pop(short).is_none());
+        assert_eq!(win.pop(short, || false).map(|f| f.pts), Some(2.0));
+        assert!(win.pop(short, || false).is_none());
+        assert!(win.pop(short, || false).is_none());
     }
 
     #[test]
@@ -2153,6 +2219,7 @@ pub(crate) mod tests {
             audio: Default::default(),
             stem_by: Default::default(),
             overlay: None,
+            fps: None,
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         assert_eq!(wait_done(&start_export(p, opts, text)), None);
@@ -2193,6 +2260,7 @@ pub(crate) mod tests {
             audio: Default::default(),
             stem_by: Default::default(),
             overlay: None,
+            fps: None,
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         let prog = start_export(p.clone(), opts.clone(), text.clone());
@@ -2232,6 +2300,7 @@ pub(crate) mod tests {
             audio: Default::default(),
             stem_by: Default::default(),
             overlay: None,
+            fps: None,
         }
     }
 
@@ -2258,6 +2327,69 @@ pub(crate) mod tests {
         assert_eq!(wait_done(&start_export(p, opts, text)), None);
         let d = probe_duration(&out).expect("probe");
         assert!((d - 2.0).abs() < 0.1, "duration {d}, expected the 2 s range");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `fps` resamples the timeline: a 4 s 30 fps project written at 15 and 60 fps (ffprobe reads the
+    /// stream's rate and frame count back).
+    #[test]
+    fn fps_option_sets_output_rate_and_frame_count() {
+        let dir = temp_dir("fps");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        let p = Project::from_media(asset(&src.to_string_lossy(), 2));
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        for (fps, rate, frames) in [(15.0, "15/1", 60), (60.0, "60/1", 240)] {
+            let out = dir.join(format!("fps{fps}.mp4"));
+            let opts = ExportOptions { fps: Some(fps), ..opts_for(out.clone()) };
+            assert_eq!(wait_done(&start_export(p.clone(), opts, text.clone())), None);
+            let o = ffpipe::command(&ffpipe::ffprobe_exe().unwrap())
+                .args(["-v", "error", "-select_streams", "v:0", "-count_frames"])
+                .args(["-show_entries", "stream=r_frame_rate,nb_read_frames", "-of", "csv=p=0"])
+                .arg(&out)
+                .output()
+                .unwrap();
+            let got = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            assert_eq!(got, format!("{rate},{frames}"), "{fps} fps");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Cancel stops a running 1080p export at once: done within 300 ms of the click, ffmpeg gone, no
+    /// partial file and no temp file left behind.
+    #[test]
+    fn cancel_stops_a_1080p_export_within_300ms() {
+        let dir = temp_dir("cancel-fast");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        let mut p = Project::from_media(asset(&src.to_string_lossy(), 2));
+        (p.width, p.height, p.fps) = (1920, 1080, 60.0);
+        let out = dir.join("big.mp4");
+        let opts = ExportOptions { encoder: "libx264".into(), preset: "medium".into(), ..opts_for(out.clone()) };
+        let prog = start_export(p, opts, Arc::new(Mutex::new(TextRasterizer::new())));
+        // let it get going: frames flowing into ffmpeg
+        for _ in 0..200 {
+            if prog.fraction() > 0.02 || prog.is_done() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!prog.is_done(), "the export finished before it could be cancelled: {:?}", prog.error());
+        let t0 = std::time::Instant::now();
+        prog.cancel.store(true, Ordering::SeqCst);
+        while !prog.is_done() && t0.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let took = t0.elapsed();
+        eprintln!("cancel-to-stopped: {} ms", took.as_millis());
+        assert_eq!(prog.error().as_deref(), Some(CANCELLED));
+        assert!(took < Duration::from_millis(300), "cancel took {} ms", took.as_millis());
+        assert!(!out.exists(), "no partial file");
+        assert!(!dir.join(".big.simple-editor-tmp.mp4").exists(), "no temp file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
