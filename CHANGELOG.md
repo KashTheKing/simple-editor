@@ -2,6 +2,9 @@
 
 ## 1.3.1
 
+### Assistant scripts and the library
+- **The Assistant can manage the whole project with Luau scripts**: `scripts.eval` runs a script straight away against the project and its library (tracks, clips, effects, keyframes, markers, subtitles, sequences, assets, bins, linked folders) as one undo step named after its purpose, undone entirely if it fails. It is sandboxed to the project and library (no files, exports, settings or network), so it needs no Allow; output comes back capped. **Compact library tools**: `media.summary`, filters and fields on `media.list`, `media.bulk_set` and `library.bins`, so a library of hundreds of assets is organised in a few calls. New built-in skill **/organize-library** sorts the library into Footage / SFX / Music / Voiceover / Images / Graphics / Unused bins and tags everything, never deleting.
+
 ### Beat Aligner
 - **New Beat Aligner panel** (the tab beside the Timeline on the Audio page, a tab on the Cut page, anywhere from a tab bar's +): pick a song, Detect finds the BPM, beat grid and downbeats (from the cached song analysis) under a bar ruler over a big waveform; fix it with BPM, ½ / ×2, Tap tempo, offset and beats per bar. Tap Space, B or M while it plays to drop marks (calibrated latency, optional snap to the beat with a strength), or let Continuous / Fill grid mark the grid. Drag marks (snapping to beats or sub-beats), select stretches into named, coloured sections (Intro, Verse, Chorus, Drop ...) and drag their chips to move or resize them. Then turn them into timeline markers, cut the picture at the marks, put a Library sound on each mark, snap clip edges to them or apply a Zoom Punch / Shake / any Animator block on each beat; export and import CSV, Resolve marker EDL and YouTube chapters. Voice mode marks a voiceover's phrases and pauses instead. Tools: `beats.*`.
 

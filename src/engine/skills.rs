@@ -63,6 +63,8 @@ pub const BUILT_IN: &[(&str, &str)] = &[
     ("lower-third", include_str!("../../library/skills/lower-third.md")),
     ("title-card", include_str!("../../library/skills/title-card.md")),
     ("create-skill", include_str!("../../library/skills/create-skill.md")),
+    // ws:assistant-luau: built in so it works offline - it is the library API's end-to-end check
+    ("organize-library", include_str!("../../library/skills/organize-library.md")),
 ];
 
 /// The skill that writes skills (`/create-skill`, the New skill window's "Write it for me").
@@ -407,7 +409,7 @@ mod tests {
             assert_eq!(s.name, stem, "{}", p.display());
             assert!(!s.description.is_empty() && !s.body.is_empty(), "{stem}");
         }
-        assert_eq!(BUILT_IN.len(), 6);
+        assert_eq!(BUILT_IN.len(), 7);
         for (stem, text) in BUILT_IN {
             assert_eq!(parse(stem, text, Source::BuiltIn, None).name, *stem);
         }

@@ -226,6 +226,10 @@ pub(super) fn preamble(ctx: &Value, atts: &[aui::Attachment]) -> String {
         "You are editing the video project open in Simple Editor, live, through its MCP tools. This whole request \
          is already one undo step: do not call edit.begin or edit.end.",
     );
+    // ws:assistant-luau
+    s.push_str(
+        " For the library or any bulk work, read media.summary first and media.list with filters and fields          (never the whole list), then edit with media.bulk_set / library.bins, or run a Luau script with          scripts.eval{code, purpose} - it reaches the project and library only, needs no Allow, and is one          undo step. You have no shell or file access, and need none.",
+    );
     if ctx.as_object().is_some_and(|o| !o.is_empty()) {
         s.push_str(&format!(
             " The context the user attached (editor.context JSON; `pinned` = what they added on purpose):\n{ctx}"
@@ -1274,6 +1278,11 @@ pub(super) fn palette_row(text: &str) -> crate::ui::palette::Row {
 
 fn task_json(t: &aui::Task) -> Value {
     json!({"id": t.id, "title": t.title, "note": t.note, "status": t.status.label(), "error": t.error, "code": t.code})
+}
+
+/// ws:assistant-luau: a task script is running (`scripts.eval` refuses to start inside one).
+pub(super) fn running_task(app: &App) -> bool {
+    app.assistant_rt.running_task
 }
 
 fn no_reentry(app: &App) -> Result<(), String> {
