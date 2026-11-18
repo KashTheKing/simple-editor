@@ -117,7 +117,7 @@ fn detect(app: &mut App, ctx: &egui::Context) -> Result<bool, String> {
 }
 
 /// Tempo, grid and downbeat from a song analysis onto the sheet.
-fn apply_analysis(s: &mut BeatSheet, a: &crate::engine::visualizer::SongAnalysis, dur: f64) -> Result<(), String> {
+pub(super) fn apply_analysis(s: &mut BeatSheet, a: &crate::engine::visualizer::SongAnalysis, dur: f64) -> Result<(), String> {
     let (bpm, off) = beats::fit_grid(&a.beats).ok_or("no steady beat found - set the BPM or tap the tempo")?;
     s.bpm = (bpm * 100.0).round() / 100.0;
     s.offset = off;

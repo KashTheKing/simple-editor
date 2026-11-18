@@ -410,6 +410,11 @@ pub fn analysis(path: &str, stream: usize, backend: Backend) -> Result<std::sync
     Ok(a)
 }
 
+/// The song's analysis is cached (asking never starts one).
+pub fn analysis_ready(path: &str, stream: usize) -> bool {
+    songs().as_ref().is_some_and(|m| matches!(m.get(&(path.to_string(), stream)), Some(Some(_))))
+}
+
 /// The song's analysis if ready, else start it on a background thread (once) and answer None; `done`
 /// runs when it lands (a repaint). For the Source monitor: never blocks the UI thread.
 pub fn analysis_async(path: &str, stream: usize, backend: Backend, done: impl FnOnce() + Send + 'static) -> Option<std::sync::Arc<SongAnalysis>> {

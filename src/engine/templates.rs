@@ -34,15 +34,19 @@ pub enum SlotWant {
     Any,
     Image,
     Video,
+    /// A sound: the song of a beat-synced edit, or a sound effect (an audio clip of the template).
+    Audio,
 }
 
 impl SlotWant {
+    /// What a picture slot can want (the Template Builder's choice); `Audio` is a sound slot's own.
     pub const ALL: [SlotWant; 3] = [SlotWant::Any, SlotWant::Image, SlotWant::Video];
     pub fn name(self) -> &'static str {
         match self {
             SlotWant::Any => "any",
             SlotWant::Image => "image",
             SlotWant::Video => "video",
+            SlotWant::Audio => "audio",
         }
     }
     pub fn label(self) -> &'static str {
@@ -50,10 +54,11 @@ impl SlotWant {
             SlotWant::Any => "Any",
             SlotWant::Image => "Image",
             SlotWant::Video => "Video",
+            SlotWant::Audio => "Sound",
         }
     }
     pub fn parse(s: &str) -> Option<SlotWant> {
-        Self::ALL.into_iter().find(|w| w.name().eq_ignore_ascii_case(s.trim()))
+        Self::ALL.into_iter().chain([SlotWant::Audio]).find(|w| w.name().eq_ignore_ascii_case(s.trim()))
     }
 }
 
@@ -99,6 +104,50 @@ pub struct Slot {
     /// The placeholder card under an empty slot (a template clip id; 0 = none): removed when it is filled.
     #[serde(default, skip_serializing_if = "is_zero_id")]
     pub card: Id,
+    /// A sound slot: words its file name has, to fill it from your sounds when nothing is given
+    /// (`find_sound`: the media library, then your SFX and music folders).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub hint: String,
+    /// A sound slot: seconds into the clip where the sound's hit (its loudest onset) lands.
+    #[serde(default, skip_serializing_if = "is_zero_f")]
+    pub hit: f64,
+}
+
+impl Slot {
+    fn new(name: &str, clip: Id, want: SlotWant, fit: SlotFit) -> Slot {
+        Slot { name: name.to_string(), clip, want, fit, card: 0, hint: String::new(), hit: 0.0 }
+    }
+}
+
+/// How a beat-synced edit follows the song in its song slot. The template is laid out on a grid of `bpm`
+/// (beat 0 at its start, every cut on a beat); placed with a song, it is retimed to the song's tempo and
+/// the song is cut so the template's drop lands on the song's drop.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BeatSync {
+    pub bpm: f64,
+    /// Template seconds of the drop (a downbeat of the grid).
+    pub drop: f64,
+    /// The song slot's clip (an audio container of this template).
+    pub song: Id,
+}
+
+/// What the song in a song slot does: its tempo grid and drop, in source seconds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SongBeat {
+    pub bpm: f64,
+    /// A downbeat.
+    pub offset: f64,
+    pub drop: f64,
+    /// The song's length.
+    pub len: f64,
+}
+
+/// Footage for slot `slot` (index in `slot_list`). `onset`: a sound's hit, source seconds (sound slots).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fill {
+    pub slot: usize,
+    pub asset: Id,
+    pub onset: f64,
 }
 
 fn is_zero_id(i: &Id) -> bool {
@@ -125,6 +174,13 @@ pub struct TemplateData {
     /// Where the Gallery picture was taken (seconds into the template).
     #[serde(default, skip_serializing_if = "is_zero_f")]
     pub thumb_t: f64,
+    /// Mixer buses its clips play through (`Clip.bus`), with their filters and automation (template
+    /// seconds): a song muffled until the drop is a low-pass on its bus. Placed as new buses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buses: Vec<Bus>,
+    /// A beat-synced edit: how it follows its song.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<BeatSync>,
 }
 
 impl TemplateData {
@@ -146,12 +202,9 @@ impl TemplateData {
         cs.sort_by(|a, b| a.start.total_cmp(&b.start));
         cs.iter()
             .enumerate()
-            .map(|(i, c)| Slot {
-                name: if c.container_label.is_empty() { format!("Slot {}", i + 1) } else { c.container_label.clone() },
-                clip: c.id,
-                want: SlotWant::Any,
-                fit: SlotFit::Trim,
-                card: 0,
+            .map(|(i, c)| {
+                let name = if c.container_label.is_empty() { format!("Slot {}", i + 1) } else { c.container_label.clone() };
+                Slot::new(&name, c.id, SlotWant::Any, SlotFit::Trim)
             })
             .collect()
     }
@@ -166,7 +219,7 @@ impl TemplateData {
         }
         match self.slots.iter_mut().find(|s| s.clip == clip) {
             Some(s) => (s.name, s.want, s.fit) = (name.to_string(), want, fit),
-            None => self.slots.push(Slot { name: name.to_string(), clip, want, fit, card: 0 }),
+            None => self.slots.push(Slot::new(name, clip, want, fit)),
         }
     }
     /// Take the footage out of `clip` (and its linked sound): an empty slot. Assets nobody uses any more go.
@@ -191,7 +244,7 @@ impl TemplateData {
         for c in self.clips.iter().filter(|c| c.is_empty_container() && c.kind != ClipKind::Audio) {
             if !slots.iter().any(|s| s.clip == c.id) {
                 let name = if c.container_label.is_empty() { c.name.clone() } else { c.container_label.clone() };
-                slots.push(Slot { name, clip: c.id, want: SlotWant::Any, fit: SlotFit::Trim, card: 0 });
+                slots.push(Slot::new(&name, c.id, SlotWant::Any, SlotFit::Trim));
             }
         }
         self.slots = slots;
@@ -207,7 +260,10 @@ impl TemplateData {
         let mut doubled = false;
         for si in 0..self.slots.len() {
             let (clip, card) = (self.slots[si].clip, self.slots[si].card);
-            let Some(i) = self.clips.iter().position(|c| c.id == clip && c.is_empty_container()) else { continue };
+            let Some(i) = self.clips.iter().position(|c| c.id == clip && c.is_empty_container() && c.kind != ClipKind::Audio)
+            else {
+                continue;
+            };
             if card != 0 {
                 continue;
             }
@@ -247,6 +303,211 @@ impl TemplateData {
     }
 }
 
+impl TemplateData {
+    /// Stretch the whole template in time by `k` (2 = twice as long): clip times, keys, blocks, effect
+    /// windows, transitions, bus automation and the beat grid. Footage speeds are left alone.
+    pub fn retime(&mut self, k: f64) {
+        if !(k.is_finite() && k > 0.0) || (k - 1.0).abs() < 1e-9 {
+            return;
+        }
+        for c in &mut self.clips {
+            c.start *= k;
+            c.duration *= k;
+            c.fade_in *= k;
+            c.fade_out *= k;
+            for a in c.all_animated_mut() {
+                a.keys.iter_mut().for_each(|key| key.t *= k);
+            }
+            for b in &mut c.blocks {
+                b.t *= k;
+                b.dur *= k;
+            }
+            for e in &mut c.effects {
+                e.start *= k;
+                e.len *= k;
+            }
+        }
+        for t in &mut self.transitions {
+            t.duration *= k;
+        }
+        for b in &mut self.buses {
+            for a in bus_anims(b) {
+                a.keys.iter_mut().for_each(|key| key.t *= k);
+            }
+        }
+        for s in &mut self.slots {
+            s.hit *= k;
+        }
+        if let Some(sy) = &mut self.sync {
+            sy.bpm /= k;
+            sy.drop *= k;
+        }
+        self.thumb_t *= k;
+    }
+
+    /// Retime a beat-synced template to `song` and say where the song starts (source seconds): the
+    /// template's grid becomes the song's (the nearer of its tempo, double or half, so cuts keep their
+    /// feel) and its drop lands on the song's drop. A song whose drop comes too early to fit the template
+    /// before it starts a whole number of bars later, still on the beat. None for a template without sync.
+    pub fn fit_to_song(&mut self, song: &SongBeat) -> Option<f64> {
+        let sy = self.sync.clone()?;
+        if !(song.bpm > 0.0 && sy.bpm > 0.0) {
+            return Some(0.0);
+        }
+        let tp = 60.0 / sy.bpm;
+        let mut sp = 60.0 / song.bpm;
+        while sp / tp > 1.45 {
+            sp /= 2.0;
+        }
+        while sp / tp < 0.72 {
+            sp *= 2.0;
+        }
+        self.retime(sp / tp);
+        let drop = self.sync.as_ref().map_or(0.0, |s| s.drop);
+        let bar = 4.0 * sp;
+        let mut src_in = song.drop - drop;
+        if src_in < 0.0 {
+            src_in += (-src_in / bar).ceil() * bar;
+        }
+        Some(src_in)
+    }
+}
+
+/// Every keyframeable value of a bus: gain, pan and its filters' parameters.
+fn bus_anims(b: &mut Bus) -> impl Iterator<Item = &mut Animated> {
+    std::iter::once(&mut b.gain).chain(std::iter::once(&mut b.pan)).chain(b.filters.iter_mut().flat_map(|f| f.params.iter_mut()))
+}
+
+/// Where a song drops: the bar line (source seconds, at or after `min`) where the two bars after it are
+/// loud and much louder than the two bars before it - the jump weighted by how loud it lands, so a drop
+/// out of a breakdown into the full beat beats the intro's first lift. `low` = low-end level per analysis
+/// frame at `hz`. Without a bar line that late, the best one anywhere.
+pub fn find_drop(low: &[f32], hz: f64, bpm: f64, offset: f64, min: f64) -> Option<f64> {
+    if !(bpm > 0.0) || low.is_empty() {
+        return None;
+    }
+    let bar = 4.0 * 60.0 / bpm;
+    let len = low.len() as f64 / hz;
+    let mean = |a: f64, b: f64| {
+        let (i, j) = (((a * hz) as usize).min(low.len()), ((b * hz) as usize).min(low.len()));
+        if j <= i {
+            return 0.0;
+        }
+        low[i..j].iter().map(|&v| v as f64).sum::<f64>() / (j - i) as f64
+    };
+    let first = offset - (offset / bar).floor() * bar;
+    let mut cands: Vec<(f64, f64, f64)> = Vec::new(); // (t, jump, level after)
+    let mut t = first;
+    while t + 2.0 * bar <= len {
+        if t >= 2.0 * bar - 1e-9 {
+            let after = mean(t, t + 2.0 * bar);
+            cands.push((t, after - mean(t - 2.0 * bar, t), after));
+        }
+        t += bar;
+    }
+    let loudest = cands.iter().map(|c| c.2).fold(0.0, f64::max);
+    let score = |c: &(f64, f64, f64)| if loudest > 0.0 { c.1 * c.2 / loudest } else { 0.0 };
+    let best = |late: bool| {
+        cands.iter().filter(|c| c.1 > 0.0 && (!late || c.0 >= min - 1e-9)).max_by(|a, b| score(a).total_cmp(&score(b))).map(|c| c.0)
+    };
+    best(true).or_else(|| best(false))
+}
+
+/// The start of a sound's main hit (seconds): the last of its loudest peaks (within 3 dB of the loudest,
+/// so a sting after a whoosh or an impact wins), walked back to where the level climbed past half of it.
+/// `level` = peak level per frame at `hz`.
+pub fn loudest_onset(level: &[f32], hz: f64) -> f64 {
+    let top = level.iter().copied().fold(0.0f32, f32::max);
+    if !(top > 0.0) {
+        return 0.0;
+    }
+    let near = (0.15 * hz).ceil() as usize;
+    let peak = (0..level.len())
+        .rev()
+        .find(|&i| {
+            let (a, b) = (i.saturating_sub(near), (i + near + 1).min(level.len()));
+            level[i] >= top * 0.7 && level[a..b].iter().all(|&v| v <= level[i])
+        })
+        .unwrap_or(0);
+    let mut i = peak;
+    while i > 0 && level[i - 1] > level[peak] * 0.5 {
+        i -= 1;
+    }
+    i as f64 / hz
+}
+
+/// A sound file for a sound slot's `hint` under `roots` (a few folders deep): the first whose name holds
+/// every word of the hint, sound files before videos. None when the hint is empty or nothing matches.
+pub fn find_sound(hint: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+    let words: Vec<String> = hint.split_whitespace().map(|w| w.to_lowercase()).collect();
+    if words.is_empty() {
+        return None;
+    }
+    const SOUND: [&str; 6] = ["wav", "mp3", "m4a", "ogg", "flac", "opus"];
+    const VIDEO: [&str; 4] = ["mp4", "mov", "webm", "mkv"];
+    fn walk(dir: &Path, depth: u32, f: &mut dyn FnMut(&Path)) {
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        let mut es: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+        es.sort();
+        for p in es {
+            if p.is_dir() {
+                if depth > 0 {
+                    walk(&p, depth - 1, f);
+                }
+            } else {
+                f(&p);
+            }
+        }
+    }
+    let mut hits: Vec<(u8, PathBuf)> = Vec::new();
+    for r in roots {
+        walk(r, 3, &mut |p| {
+            let name = p.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+            let rank = if SOUND.contains(&ext.as_str()) {
+                0
+            } else if VIDEO.contains(&ext.as_str()) {
+                1
+            } else {
+                return;
+            };
+            if words.iter().all(|w| name.contains(w.as_str())) {
+                hits.push((rank, p.to_path_buf()));
+            }
+        });
+    }
+    hits.sort_by_key(|h| h.0); // (stable: folder order within a rank)
+    hits.into_iter().next().map(|h| h.1)
+}
+
+/// Media for slots wanting `wants`, in order: sounds (`media[i].1`) to sound slots, pictures to the
+/// others. With `cycle` (a beat edit with more shots than clips) the pictures go round again until every
+/// picture slot has one; otherwise a slot past the last medium stays empty.
+pub fn assign(wants: &[SlotWant], media: &[(Id, bool)], cycle: bool) -> Vec<Option<Id>> {
+    let mut out = vec![None; wants.len()];
+    for sound in [true, false] {
+        let mine: Vec<Id> = media.iter().filter(|m| m.1 == sound).map(|m| m.0).collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let mut k = 0;
+        for (i, w) in wants.iter().enumerate() {
+            if (*w == SlotWant::Audio) != sound || (k >= mine.len() && !(cycle && !sound)) {
+                continue;
+            }
+            out[i] = Some(mine[k % mine.len()]);
+            k += 1;
+        }
+    }
+    out
+}
+
+/// The folders a sound slot's hint is looked for in: your Video Assets SFX folder, then Music.
+pub fn sound_roots() -> Vec<PathBuf> {
+    let Some(home) = std::env::var_os("USERPROFILE").map(PathBuf::from) else { return Vec::new() };
+    [home.join("Videos").join("Video Assets").join("SFX"), home.join("Music")].into_iter().filter(|p| p.is_dir()).collect()
+}
+
 /// Placeholder card colours, one per slot in turn.
 const CARD_COLORS: [[u8; 4]; 6] = [
     [56, 97, 140, 255],
@@ -282,6 +543,19 @@ pub fn capture(project: &Project, ids: &[Id]) -> TemplateData {
         *n += 1;
     }
     let start = d.clips.iter().map(|c| c.start).fold(f64::INFINITY, f64::min);
+    // the buses its clips play through (not Main), their automation moved to template time
+    let main = project.buses.first().map_or(0, |b| b.id);
+    let mut buses: Vec<Id> = d.clips.iter().map(|c| c.bus).filter(|&b| b != 0 && b != main).collect();
+    buses.sort_unstable();
+    buses.dedup();
+    for b in buses {
+        if let Some(mut bus) = project.bus(b).cloned() {
+            let dt = if start.is_finite() { start } else { 0.0 };
+            bus_anims(&mut bus).for_each(|a| a.keys.iter_mut().for_each(|k| k.t -= dt));
+            bus.output = 0;
+            d.buses.push(bus);
+        }
+    }
     for c in &mut d.clips {
         c.start -= if start.is_finite() { start } else { 0.0 };
         if c.uses_asset() && !d.assets.iter().any(|x| x.id == c.asset) {
@@ -347,17 +621,72 @@ pub fn build(project: &Project, ids: &[Id], parts: &[Part], thumb_t: f64) -> Tem
 /// Returns the new clip ids. A filled slot's placeholder card is removed, and so is a track that was added
 /// only for cards.
 pub fn apply(p: &mut Project, d: TemplateData, at: f64, fills: &[(usize, Id)]) -> Vec<Id> {
+    let fills: Vec<Fill> = fills.iter().map(|&(slot, asset)| Fill { slot, asset, onset: 0.0 }).collect();
+    apply_synced(p, d, at, &fills, None)
+}
+
+/// `apply` for every kind of slot: picture slots, the song slot and sound-effect slots. With `song` (the
+/// song slot's beat grid and drop) a beat-synced template is first retimed to the song and the song cut so
+/// the drops meet; the song becomes the Beat Aligner's when it has none. Footage that fills several slots
+/// plays a different stretch of itself in each.
+pub fn apply_synced(p: &mut Project, mut d: TemplateData, at: f64, fills: &[Fill], song: Option<SongBeat>) -> Vec<Id> {
+    let song_slot = d.sync.as_ref().and_then(|sy| d.slot_list().iter().position(|s| s.clip == sy.song));
+    let song_fill = song_slot.and_then(|i| fills.iter().find(|f| f.slot == i)).copied();
+    let song_in = match (song_fill, song) {
+        (Some(_), Some(sb)) => d.fit_to_song(&sb),
+        _ => None,
+    };
     let slots = d.slot_list();
     let before: Vec<Id> = p.tracks.iter().map(|t| t.id).collect();
+    // the template's buses become new buses of the project, their automation moved to `at`
+    let main = p.main_bus();
+    let mut bus_map: std::collections::HashMap<Id, Id> = std::collections::HashMap::new();
+    for b in &d.buses {
+        let id = p.add_bus(b.name.clone());
+        let mut nb = b.clone();
+        (nb.id, nb.output) = (id, main);
+        bus_anims(&mut nb).for_each(|a| a.keys.iter_mut().for_each(|k| k.t += at));
+        if let Some(x) = p.bus_mut(id) {
+            *x = nb;
+        }
+        bus_map.insert(b.id, id);
+    }
+    for c in &mut d.clips {
+        c.bus = bus_map.get(&c.bus).copied().unwrap_or(0);
+    }
+    let sync_song = d.sync.as_ref().map(|sy| sy.song);
     let (mut ids, map) = p.place_template(d.clips, d.assets, d.transitions, &d.layers, at);
-    for &(i, asset) in fills {
-        let Some(s) = slots.get(i) else { continue };
+    let mut repeats: Vec<(Id, Id)> = Vec::new(); // (asset, picture clip) in slot order
+    for f in fills {
+        let Some(s) = slots.get(f.slot) else { continue };
         let Some(&clip) = map.get(&s.clip) else { continue };
-        if p.fill_slot(clip, asset, s.fit == SlotFit::Stretch, &ids) {
-            if let Some(card) = map.get(&s.card) {
-                for t in &mut p.tracks {
-                    t.clips.retain(|c| c.id != *card);
-                }
+        let ok = if p.clip(clip).is_some_and(|c| c.kind == ClipKind::Audio) {
+            let src_in = if Some(f.slot) == song_slot { song_in.unwrap_or(0.0) } else { f.onset - s.hit };
+            fill_sound(p, clip, f.asset, src_in)
+        } else {
+            let ok = p.fill_slot(clip, f.asset, s.fit == SlotFit::Stretch, &ids);
+            if ok {
+                repeats.push((f.asset, clip));
+            }
+            ok
+        };
+        if let (true, Some(card)) = (ok, map.get(&s.card)) {
+            for t in &mut p.tracks {
+                t.clips.retain(|c| c.id != *card);
+            }
+        }
+    }
+    spread_repeats(p, &repeats);
+    if sync_song.is_some() {
+        cover_frame(p, &repeats);
+    }
+    if let (Some(sb), Some(f), Some(&clip)) = (song, song_fill, sync_song.and_then(|s| map.get(&s))) {
+        if p.beats.asset == 0 || p.beats.asset == f.asset {
+            p.set_beat_source(Some(clip), None, false);
+            p.beats.bpm = (sb.bpm * 100.0).round() / 100.0;
+            p.beats.offset = sb.offset;
+            if !p.beats.sections.iter().any(|s| s.name.eq_ignore_ascii_case("Drop")) {
+                p.beats.add_section(sb.drop, sb.drop + 16.0 * 60.0 / sb.bpm.max(1.0), "Drop");
             }
         }
     }
@@ -366,6 +695,75 @@ pub fn apply(p: &mut Project, d: TemplateData, at: f64, fills: &[(usize, Id)]) -
     }
     ids.retain(|id| p.clip(*id).is_some());
     ids
+}
+
+/// Put sound `asset` into the sound slot `clip` from source second `src_in` (a negative one starts the
+/// clip that much later instead); the clip ends where the sound does.
+fn fill_sound(p: &mut Project, clip: Id, asset: Id, src_in: f64) -> bool {
+    let Some(a) = p.asset(asset).cloned() else { return false };
+    if a.audio_streams.is_empty() && a.kind != ClipKind::Audio {
+        return false;
+    }
+    let Some(c) = p.clip_mut(clip) else { return false };
+    if !c.container || c.kind != ClipKind::Audio {
+        return false;
+    }
+    let late = (-src_in).max(0.0);
+    c.start += late;
+    c.duration = (c.duration - late).max(MIN_CLIP);
+    c.asset = asset;
+    c.src_in = src_in.max(0.0);
+    c.audio_stream = a.audio_streams.first().map_or(0, |s| s.index);
+    if a.duration > 0.0 {
+        c.duration = c.duration.min((a.duration - c.src_in) / c.rate(0.0).max(0.01)).max(MIN_CLIP);
+    }
+    c.name = if c.container_label.is_empty() { a.name() } else { format!("{} [{}]", a.name(), c.container_label) };
+    if let Some(ti) = p.track_of(clip) {
+        p.tracks[ti].sort();
+    }
+    true
+}
+
+/// A beat edit fills the frame: footage of another shape (a tall clip in a wide edit) is scaled up to cover
+/// it, its animation scaled along so the motion stays the same.
+fn cover_frame(p: &mut Project, fills: &[(Id, Id)]) {
+    let (pw, ph) = (p.width.max(1) as f64, p.height.max(1) as f64);
+    for &(asset, clip) in fills {
+        let Some((aw, ah)) = p.asset(asset).filter(|a| a.width > 0 && a.height > 0).map(|a| (a.width as f64, a.height as f64)) else { continue };
+        let (sx, sy) = (pw / aw, ph / ah);
+        let k = sx.max(sy) / sx.min(sy);
+        if k < 1.001 {
+            continue;
+        }
+        if let Some(c) = p.clip_mut(clip) {
+            c.scale.value *= k;
+            c.scale.keys.iter_mut().for_each(|key| key.v *= k);
+        }
+    }
+}
+
+/// Footage in several slots plays a different stretch of itself in each: the k-th of n starts k/n of the
+/// way into what is left after the slot's own length.
+fn spread_repeats(p: &mut Project, fills: &[(Id, Id)]) {
+    let mut done: Vec<Id> = Vec::new();
+    for &(asset, _) in fills {
+        if done.contains(&asset) {
+            continue;
+        }
+        done.push(asset);
+        let mine: Vec<Id> = fills.iter().filter(|f| f.0 == asset).map(|f| f.1).collect();
+        let Some(dur) = p.asset(asset).filter(|a| a.kind == ClipKind::Video).map(|a| a.duration) else { continue };
+        if mine.len() < 2 || dur <= 0.0 {
+            continue;
+        }
+        let n = mine.len() as f64;
+        for (k, id) in mine.iter().enumerate() {
+            if let Some(c) = p.clip_mut(*id) {
+                let room = (dur - c.src_len()).max(0.0);
+                c.src_in = room * k as f64 / n;
+            }
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------------------ built-ins
@@ -412,7 +810,7 @@ impl Build {
         c.container = true;
         c.container_label = name.to_string();
         let id = self.push(c, layer, pos, scale, anims);
-        self.d.slots.push(Slot { name: name.to_string(), clip: id, want, fit: SlotFit::Trim, card: 0 });
+        self.d.slots.push(Slot::new(name, id, want, SlotFit::Trim));
         id
     }
     #[allow(clippy::too_many_arguments)]
@@ -468,7 +866,7 @@ const WHITE: [u8; 4] = [255, 255, 255, 255];
 const INK: [u8; 4] = [16, 18, 24, 235];
 const ACCENT: [u8; 4] = [255, 196, 46, 255];
 
-pub const BUILTIN_NAMES: [&str; 10] = [
+pub const BUILTIN_NAMES: [&str; 14] = [
     "Photo Slideshow",
     "Beat Montage",
     "Title Intro",
@@ -479,6 +877,11 @@ pub const BUILTIN_NAMES: [&str; 10] = [
     "Vertical Short Opener",
     "End Card",
     "Photo Grid",
+    // ---- edit templates (templates_edits.rs): beat-synced to the song you give them ----
+    "Phonk Synced Edit",
+    "Velocity Edit",
+    "Hype Montage",
+    "Meme Cut",
 ];
 
 /// A built-in animation template for a `w` x `h` project (None = no such name).
@@ -591,6 +994,7 @@ pub fn builtin(name: &str, w: u32, h: u32) -> Option<TemplateData> {
             b.rect("Button", [220, 40, 50, 255], (170.0 * u, 44.0 * u), 3, 1.6, 6.4, (0.0, fh * 0.36), &[("Elastic", 0.0, 0.7), ("Pulse", 2.6, 0.6)]);
             b.text("Button label", "SUBSCRIBE", 46.0, 4, 1.6, 6.4, (0.0, fh * 0.36), &[("Pop In", 0.0, 0.4)]);
         }
+        10..=13 => edits::build(&mut b, BUILTIN_NAMES[10..].iter().position(|n| n.eq_ignore_ascii_case(name.trim()))?),
         // four photos that pop into a grid one after another
         _ => {
             b.rect("Backdrop", [22, 24, 30, 255], (fw / 2.0, fh / 2.0), 0, 0.0, 6.0, (0.0, 0.0), &[]);
@@ -792,6 +1196,9 @@ pub fn import_package(root: &Path, file: &Path) -> Result<Item, String> {
 pub fn thumb_path(item_json: &Path) -> PathBuf {
     item_json.with_extension("png")
 }
+
+#[path = "templates_edits.rs"]
+mod edits;
 
 #[cfg(test)]
 #[path = "templates_tests.rs"]
