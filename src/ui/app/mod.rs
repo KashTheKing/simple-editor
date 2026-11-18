@@ -176,6 +176,7 @@ mod transcript_pane;
 mod voiceover_pane;
 mod template_ctl; // ws:animator-templates
 mod beats_ctl; // ws:beat-aligner
+mod music_ctl; // ws:music-burn
 mod audio_only; // ws:preview-audio-only
 mod media_api; // ws:assistant-luau
 mod script_ctl; // ws:assistant-luau
@@ -523,6 +524,8 @@ pub struct App {
     beats: crate::ui::beat_aligner::AlignState,
     /// Continuous marking has its undo step for this play.
     beats_run_undo: bool,
+    // ---- ws:music-burn ----
+    music: crate::ui::music_ui::MusicState,
     /// "Draw a motion path" is armed: the next Viewer stroke becomes a path the selection follows.
     path_armed: bool,
     // ---- ws:pro-schema ----
@@ -1004,6 +1007,7 @@ impl App {
             animator: Default::default(), // ws:animator
             beats: Default::default(), // ws:beat-aligner
             beats_run_undo: false,
+            music: crate::ui::music_ui::MusicState::new(), // ws:music-burn
             path_armed: false,
             // ---- ws:pro-schema ----
             assistant: Default::default(),
@@ -1776,6 +1780,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     template_ctl::TOOLS,
     // ---- ws:beat-aligner ----
     beats_ctl::TOOLS,
+    // ---- ws:music-burn ----
+    music_ctl::TOOLS,
     // ---- ws:preview-audio-only ----
     audio_only::TOOLS,
     // ---- ws:assistant-luau ----
@@ -1872,6 +1878,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     screens_ctl::act,
     // ---- ws:animator-templates ----
     template_ctl::act,
+    // ---- ws:music-burn ----
+    music_ctl::act,
     // ---- ws:preview-audio-only ----
     audio_only::act,
 ];
@@ -1962,6 +1970,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     screens_ctl::tick,
     // ---- ws:beat-aligner ----
     beats_ctl::frame,
+    // ---- ws:music-burn ----
+    music_ctl::frame,
     // ---- ws:preview-audio-only ----
     audio_only::tick,
 ];
@@ -2039,6 +2049,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     screens_ctl::window,
     // ---- ws:animator-templates ----
     template_ctl::windows,
+    // ---- ws:music-burn ----
+    music_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -2108,6 +2120,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     render_pane::draw,
     // ---- ws:beat-aligner ----
     beats_ctl::draw,
+    // ---- ws:music-burn ----
+    music_ctl::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

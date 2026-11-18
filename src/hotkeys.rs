@@ -400,6 +400,10 @@ actions! {
     AiUpscale4Real => "ai_upscale_4_real", "AI Upscale ×4 (Real-World)", None;
     SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
     PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
+    // ---- ws:music-burn ----
+    BurnDisc => "burn_disc", "Burn to Discâ€¦", None;
+    MakeVisualizerVideo => "make_visualizer_video", "Make Visualizer Video", None;
+    NewPlaylist => "new_playlist", "New Playlist", None;
     // ---- ws:perf-window ----
     // Open / focus the Performance pane (Window menu, palette, top-bar button, `perf.window`). Unbound by design.
     PerfWindow => "performance", "Performance", None;
@@ -753,6 +757,9 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:browser-layer ----
         AddBrowser | ImportWebPage => "Add",
         BrowserFitPages | BrowserNextPage | RecordMouse | CursorWaypoints | CursorPress | SharpenZooms | PageMakeEditable => "Clip",
+        // ---- ws:music-burn ----
+        BurnDisc => "File",
+        MakeVisualizerVideo | NewPlaylist => "Add",
         // ---- ws:ai-enhancer ----
         AiUpscale2Game | AiUpscale2Real | AiUpscale4Game | AiUpscale4Real => "Clip",
         // ---- ws:perf-window ----

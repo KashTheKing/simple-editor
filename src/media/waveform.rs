@@ -98,8 +98,10 @@ impl Col {
 #[derive(Default)]
 pub struct WaveDetail {
     pub levels: Vec<Vec<Col>>,
-    /// False for a mixed sequence (envelope only: `rms`/`bands` are 0).
+    /// False for a mixed sequence (envelope only: `rms`/`bands` are 0) and for a file's coarse first pass.
     pub has_bands: bool,
+    /// `rms` is real (a file, coarse or detailed); false for a mixed sequence.
+    pub has_rms: bool,
     pub spec: Vec<[u8; SPEC_BINS]>,
     /// Onsets (source seconds) from the spectral flux - the detailed view's ticks.
     pub onsets: Vec<f64>,
@@ -120,7 +122,7 @@ impl WaveDetail {
             levels.push(next);
         }
         let onsets = spec_onsets(&spec);
-        WaveDetail { levels, has_bands: rb.is_some(), spec, onsets }
+        WaveDetail { levels, has_bands: rb.is_some(), has_rms: rb.is_some(), spec, onsets }
     }
     /// Pyramid level for a column spanning `buckets` peak buckets: the coarsest whose entries are at
     /// most half a column wide, so a column merges 2-5 entries and bleeds at most half a column.
@@ -232,9 +234,19 @@ impl WaveformCache {
                 super::bg::lower_thread();
                 // ponytail: a decoder panic must leave the key resolved (as empty peaks, same as a file
                 // that won't open) - otherwise it stays pending forever and callers wait for good.
-                let (peaks, detail) =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| load_or_compute(&path, stream, backend)))
-                        .unwrap_or_else(|_| (Peaks { min: Vec::new(), max: Vec::new() }, WaveDetail::default()));
+                // the quick min/max + loudness pass lands first (the clip draws its waveform in a moment),
+                // the band / spectrogram pass replaces it when it is done
+                let early = |peaks: Peaks, detail: WaveDetail| {
+                    if let Ok(mut st) = state.lock() {
+                        st.ready.insert(key, Arc::new(peaks));
+                        st.detail.insert(key, Arc::new(detail));
+                    }
+                    ctx.request_repaint();
+                };
+                let (peaks, detail) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    load_or_compute(&path, stream, backend, early)
+                }))
+                .unwrap_or_else(|_| (Peaks { min: Vec::new(), max: Vec::new() }, WaveDetail::default()));
                 if let Ok(mut st) = state.lock() {
                     st.pending.remove(&key);
                     st.ready.insert(key, Arc::new(peaks));
@@ -434,7 +446,9 @@ fn decode(b: &[u8]) -> Option<(Peaks, Vec<[u8; 4]>, Vec<[u8; SPEC_BINS]>)> {
 }
 
 /// Disk cache first; else decode the whole stream (empty Peaks when the stream can't be opened).
-fn load_or_compute(path: &str, stream: usize, backend: Backend) -> (Peaks, WaveDetail) {
+/// The disk cache, else two passes over the audio: `early` gets the coarse result (min/max + RMS, no
+/// FFT: a few times faster) as soon as it exists, then the detailed pass runs and is returned.
+fn load_or_compute(path: &str, stream: usize, backend: Backend, early: impl FnOnce(Peaks, WaveDetail)) -> (Peaks, WaveDetail) {
     let file = cache_file(path, stream);
     if let Some((p, rb, spec)) = file.as_ref().and_then(|f| std::fs::read(f).ok()).and_then(|b| decode(&b)) {
         crate::engine::cache_lru::touch_if_stale(file.as_deref().unwrap_or(std::path::Path::new("")));
@@ -445,6 +459,12 @@ fn load_or_compute(path: &str, stream: usize, backend: Backend) -> (Peaks, WaveD
         return (Peaks { min: Vec::new(), max: Vec::new() }, WaveDetail::default());
     };
     let duration = src.duration();
+    let (peaks, rb, _) = scan(&mut *src, duration, false);
+    if !peaks.is_empty() {
+        let mut d = WaveDetail::new(&peaks, Some(&rb), Vec::new());
+        d.has_bands = false; // loudness only until the detailed pass lands
+        early(peaks, d);
+    }
     let (peaks, rb, spec) = compute(&mut *src, duration);
     if let Some(f) = file {
         if !peaks.is_empty() {
@@ -488,6 +508,15 @@ fn bin_ranges() -> ([(usize, usize); 3], Vec<(usize, usize)>) {
 /// spectrogram at `SPEC_PER_SEC`. Stops at the first all-zero block at/after `duration` (so an unknown
 /// duration of 0 stops at the first silent block). Waits between blocks while something plays.
 fn compute(source: &mut dyn AudioSource, duration: f64) -> (Peaks, Vec<[u8; 4]>, Vec<[u8; SPEC_BINS]>) {
+    scan(source, duration, true)
+}
+
+/// `compute`'s decode loop. `detailed` = false skips the FFT (bands 0, no spectrogram): the coarse pass.
+fn scan(
+    source: &mut dyn AudioSource,
+    duration: f64,
+    detailed: bool,
+) -> (Peaks, Vec<[u8; 4]>, Vec<[u8; SPEC_BINS]>) {
     const BLOCK: usize = 4800;
     const BUCKET: usize = (SAMPLE_RATE / PEAKS_PER_SEC) as usize; // 480 frames
     let (bands, rows) = bin_ranges();
@@ -524,6 +553,11 @@ fn compute(source: &mut dyn AudioSource, duration: f64) -> (Peaks, Vec<[u8; 4]>,
             }
             p.min.push(lo);
             p.max.push(hi);
+            let rms = q_db((sq / BUCKET as f32).sqrt());
+            if !detailed {
+                rb.push([rms, 0, 0, 0]);
+                continue;
+            }
             for i in 0..FFT_N {
                 re[i] = hist[i] * window[i];
                 im[i] = 0.0;
@@ -531,7 +565,7 @@ fn compute(source: &mut dyn AudioSource, duration: f64) -> (Peaks, Vec<[u8; 4]>,
             crate::engine::visualizer::fft(&mut re, &mut im);
             let pw = |k: usize| re[k] * re[k] + im[k] * im[k];
             let band = |(a, b): (usize, usize)| q_db(((a..b).map(pw).sum::<f32>() * norm_sum).sqrt());
-            rb.push([q_db((sq / BUCKET as f32).sqrt()), band(bands[0]), band(bands[1]), band(bands[2])]);
+            rb.push([rms, band(bands[0]), band(bands[1]), band(bands[2])]);
             let odd = p.len() % 2 == 0;
             for (r, &(a, b)) in rows.iter().enumerate() {
                 let v = q_db(((a..b).map(pw).fold(0.0, f32::max) * norm_peak).sqrt());
@@ -667,6 +701,37 @@ mod tests {
             let f = 30.0 * (16000f32 / 30.0).powf((row as f32 + 0.5) / SPEC_BINS as f32);
             assert!((f / hz as f32).log2().abs() < 0.5, "{hz} Hz -> row {row} ({f} Hz)");
         }
+    }
+
+    /// The coarse first pass (no FFT) gives the detailed pass's exact peaks and loudness, just no bands and
+    /// no spectrogram - so swapping one for the other never moves the waveform's outline.
+    #[test]
+    fn coarse_pass_matches_the_detailed_peaks_and_loudness() {
+        let (fp, frb, fspec) = compute(&mut Sine(1000.0, 1.0), 1.0);
+        let (cp, crb, cspec) = scan(&mut Sine(1000.0, 1.0), 1.0, false);
+        assert_eq!((cp.min, cp.max), (fp.min, fp.max));
+        assert_eq!(crb.iter().map(|x| x[0]).collect::<Vec<_>>(), frb.iter().map(|x| x[0]).collect::<Vec<_>>());
+        assert!(crb.iter().all(|x| x[1..] == [0, 0, 0]) && cspec.is_empty() && !fspec.is_empty());
+    }
+
+    /// A file with no disk cache: the coarse result is handed over first (loudness, no bands), then the
+    /// detailed one is returned (and cached on disk).
+    #[test]
+    fn first_peaks_arrive_before_the_detailed_pass() {
+        let path = ffpipe::tests::test_mp4();
+        if let Some(f) = cache_file(&path, 1) {
+            let _ = std::fs::remove_file(f);
+        }
+        let mut early = None;
+        let (peaks, full) = load_or_compute(&path, 1, Backend::Ffmpeg, |p, d| early = Some((p, d)));
+        let (ep, ed) = early.expect("the coarse pass was published");
+        assert_eq!(ep.max, peaks.max, "same outline");
+        assert!(ed.has_rms && !ed.has_bands && ed.spec.is_empty());
+        assert!(full.has_bands && !full.spec.is_empty());
+        // from the disk cache there is one result and no early one
+        let mut again = false;
+        let (cached, _) = load_or_compute(&path, 1, Backend::Ffmpeg, |_, _| again = true);
+        assert!(!again && cached.max == peaks.max);
     }
 
     #[test]

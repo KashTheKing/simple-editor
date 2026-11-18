@@ -13,6 +13,14 @@
 - **Library filters are easier to see and undo**: every active filter shows as a chip under the search box (its ✕ drops just that one) with **Clear filter** beside them, and the Filter button lights up while any filter is on. Smart Bins are their own section, with **Save filter…** in its header.
 - **Shift+click a bin’s arrow** to open or close it together with every bin inside it; on a linked bin it keeps opening the sub-folders as they are listed.
 
+### Music, playlists and Burn to Disc
+- **Tags and cover art for songs and videos**: click a song or video in the Library and the Inspector shows its Tags (title, artist, album, album artist, genre, year, track, disc, comment, lyrics; for video: title, description, genre, rating) and the cover / thumbnail (from a file, from the Source monitor's frame, or removed). Edit several files at once (differing fields show Mixed). Save writes into the files without re-encoding, through a temp file and a `.bak` kept until it worked. A new **Playlists** panel (beside the Media Browser on the Media page): drag songs in from the Library, reorder with the grip or Alt+Up/Down, total length, gap or crossfade, play it in the Source monitor, put it on the timeline as a mix, export `.m3u8`, or **Make visualizer video** (each song with a linked visualizer of the chosen style, its cover art and a title card). **Burn to Disc**: an audio CD (CD audio tracks, gaps, CD-Text, 74 / 80 min check) or a data disc (ISO 9660 + Joliet + UDF, playlists with their `.m3u8`) to a drive (disc check, erase, speed, verify, test only, eject) or to a disc image (`.iso`, `.bin` + `.cue`) with no drive; it runs as a job you can cancel. No video DVD (it needs DVD authoring). Tools: `playlist.*`, `media.tags_get` / `media.tags_set`, `disc.drives` / `disc.burn`.
+
+### Fixes: timeline waveforms
+- **Waveforms show up sooner**: a clip’s waveform is drawn from a quick first pass (peaks and loudness) a few
+  moments after it lands, and the Detailed view’s colours, ticks and spectrogram fill in when the full analysis is
+  done. Both run in the background and pause while something plays.
+
 ## 1.3.1
 
 ### Export size
