@@ -54,6 +54,9 @@ pub struct Project {
     pub moodboard: Vec<MoodItem>,
     /// Saved drawing / polygon outlines, reusable as motion paths (see `PathAsset`).
     pub paths: Vec<PathAsset>,
+    /// ws:animator: transition spans over the main timeline (`ops::spans`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<TransitionSpan>,
     pub(crate) next_id: Id,
     // ---- ws:registries-schema-hooks ----
     /// Per-clip word timing (timeline seconds) for the transcript panel / word-range cuts; filled by

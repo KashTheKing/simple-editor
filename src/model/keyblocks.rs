@@ -160,12 +160,16 @@ impl Clip {
     /// block's own length, clamped to the clip). Blocks of the same properties wholly inside that span are
     /// replaced (their keys were). `w` x `h` = the frame, for x / y offsets.
     pub fn place_block(&mut self, block: &KeyBlock, t0: f64, dur: Option<f64>, w: f64, h: f64) -> Option<(f64, f64)> {
+        self.place_ctl(crate::model::BlockCtl::new(block.clone()), t0, dur, w, h)
+    }
+
+    /// `place_block` with the controls already set (`ctl.src` is the block).
+    pub(crate) fn place_ctl(&mut self, ctl: crate::model::BlockCtl, t0: f64, dur: Option<f64>, w: f64, h: f64) -> Option<(f64, f64)> {
         let t0 = t0.clamp(0.0, self.duration);
-        let dur = dur.unwrap_or(block.dur).min(self.duration - t0);
+        let dur = dur.unwrap_or(ctl.src.dur).min(self.duration - t0);
         if dur < 0.01 {
             return None;
         }
-        let ctl = crate::model::BlockCtl::new(block.clone());
         let made = ctl.resolve(dur);
         let mine: Vec<&str> = made.tracks.iter().map(|t| t.prop.as_str()).collect();
         self.blocks.retain(|b| !(b.t >= t0 - BK_EPS && b.end() <= t0 + dur + BK_EPS && b.props.iter().any(|p| mine.contains(&p.as_str()))));
@@ -173,7 +177,7 @@ impl Clip {
         if props.is_empty() {
             return None;
         }
-        self.blocks.push(AppliedBlock { name: block.name.clone(), t: t0, dur, props, ctl: Some(ctl) });
+        self.blocks.push(AppliedBlock { name: ctl.src.name.clone(), t: t0, dur, props, ctl: Some(ctl) });
         self.blocks.sort_by(|a, b| a.t.total_cmp(&b.t));
         Some((t0, dur))
     }
@@ -401,12 +405,6 @@ pub fn builtin_blocks() -> Vec<KeyBlock> {
     .into_iter()
     .chain(crate::model::sim_blocks())
     .collect()
-}
-
-/// Deterministic bar/card colour for a block name.
-pub fn block_color(name: &str) -> [u8; 3] {
-    let h = name.bytes().fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-    crate::model::LABEL_COLORS[h as usize % crate::model::LABEL_COLORS.len()].1
 }
 
 /// A block by name (case-insensitive): the user's saved ones first (so a save can shadow a builtin),

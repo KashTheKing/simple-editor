@@ -2606,7 +2606,9 @@ fn clip_menu_is_grouped_without_the_adjustment_row() {
     probe.run(vec![], &mut draw);
     assert!(probe.has("Match Frame") && probe.has("Reveal in Library"), "{:?}", probe.texts());
     let rows = probe.texts().iter().filter(|t| t.chars().count() > 1).count(); // not the icon glyphs
-    assert!(rows <= 24, "grouped into submenus, not ~32 flat rows: {rows}");
+    // (25 since ws:animator's "Show Animations" joined the top level)
+    assert!(rows <= 25, "grouped into submenus, not ~32 flat rows: {rows}");
+    assert!(probe.has("Show Animations"));
     assert!(!probe.texts().iter().any(|t| t.contains("Adjustment")));
     probe.click("Add", &mut draw);
     assert!(probe.has("Add Transition at Clip End"));

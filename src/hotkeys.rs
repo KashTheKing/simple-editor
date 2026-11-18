@@ -364,6 +364,8 @@ actions! {
     // ---- ws:animator ----
     // The clip under the playhead (or the selection) and its overlays into one stack. Unbound by design.
     StackOverlays => "stack_overlays", "Stack Clip with Overlays", None;
+    // Bring the Animator pane up on the selected clips (the timeline clip menu). Unbound by design.
+    ShowAnimations => "show_animations", "Show Animations", None;
     // ---- ws:html-layer ----
     // HTML + CSS layers (Add menu / palette; the clip menu and a double-click edit them). Unbound by design.
     AddHtmlLayer => "add_html_layer", "Add HTML Layer", None;
@@ -738,7 +740,7 @@ pub fn group(a: Action) -> &'static str {
         PushToTalk => "Panels & Pages",
         // ---- ws:docs-release ----
         // ---- ws:animator ----
-        StackOverlays => "Clip",
+        StackOverlays | ShowAnimations => "Clip",
         // ---- ws:html-layer ----
         AddHtmlLayer | AddHtmlScene | AddChatThread | AddForumThread | AddVideoComments | ImportHtml | SnapshotWeb | EditHtml | SaveHtmlToLibrary => "Add",
         // ---- ws:my-gallery ----

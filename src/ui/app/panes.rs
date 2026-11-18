@@ -60,6 +60,9 @@ impl App {
                 if let Some(a) = inspector::take_pending_action() {
                     self.pending_actions.push(a);
                 }
+                if crate::ui::effects_ui::take_open_effects() {
+                    super::tools_gallery::open_tab(self, crate::ui::gallery::GalleryTab::Effects);
+                }
                 // a keyframe menu's Previous / Next key
                 if let Some(t) = inspector::take_pending_seek() {
                     self.player.pause();

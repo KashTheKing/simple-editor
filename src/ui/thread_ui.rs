@@ -429,7 +429,7 @@ fn items_section(ui: &mut Ui, g: &mut Gesture, t: &mut Thread, clip: Id, images:
         let title = item_title(t, &t.items[i]);
         let value = if t.kind == Kind::Chat { t.items[i].time.clone() } else if t.items[i].kind == ItemKind::Msg { crate::engine::thread::count_text(t.items[i].score) } else { String::new() };
         let dim = nested && (0..i).rev().find(|&k| t.items[k].depth < t.items[i].depth).is_some_and(|k| t.items[k].collapsed);
-        let r = rows.row(ui, i, &RowSpec { key: id as u64, label: &title, depth: t.items[i].depth, open: Some(open), dim, values: &[&value] });
+        let r = rows.row(ui, i, &RowSpec { key: id as u64, label: &title, depth: t.items[i].depth, open: Some(open), dim, values: &[&value], blank: 0 });
         if r.toggled {
             ui.data_mut(|d| d.insert_temp(oid, !open));
         }

@@ -1112,8 +1112,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 for b in &clip.blocks {
                     let (x0, x1) = span(b.t, b.end());
                     if x1 > x0 {
-                        let [r, g, bl] = crate::model::block_color(&b.name);
-                        lp.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + 2.0)), 1, Color32::from_rgb(r, g, bl));
+                        let col = crate::ui::animator::block_kind(b).1; // the kind's colour, as in the Animator
+                        lp.rect_filled(Rect::from_min_max(pos2(x0, y), pos2(x1, y + 2.0)), 1, col);
                     }
                 }
             }

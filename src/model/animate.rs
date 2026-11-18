@@ -27,7 +27,7 @@ impl Dir {
     pub fn parse(s: &str) -> Option<Dir> {
         Dir::ALL.into_iter().find(|d| d.name().eq_ignore_ascii_case(s))
     }
-    fn vec(self) -> (i8, i8) {
+    pub(crate) fn vec(self) -> (i8, i8) {
         match self {
             Dir::Left => (-1, 0),
             Dir::Up => (0, -1),
@@ -45,10 +45,15 @@ pub enum Gen {
     BounceDrop,
     ThrowOut,
     Wobble,
+    /// Falls from its place and bounces on the frame's bottom edge.
+    GravityFall,
+    /// Thrown across the screen, bouncing off the frame's edges.
+    ThrowBounce,
 }
 
 impl Gen {
-    pub const ALL: [Gen; 5] = [Gen::Shake, Gen::SpringIn, Gen::BounceDrop, Gen::ThrowOut, Gen::Wobble];
+    pub const ALL: [Gen; 7] =
+        [Gen::Shake, Gen::SpringIn, Gen::BounceDrop, Gen::ThrowOut, Gen::Wobble, Gen::GravityFall, Gen::ThrowBounce];
     pub fn name(self) -> &'static str {
         match self {
             Gen::Shake => "Camera Shake",
@@ -56,6 +61,8 @@ impl Gen {
             Gen::BounceDrop => "Bounce Drop",
             Gen::ThrowOut => "Throw Out",
             Gen::Wobble => "Wobble",
+            Gen::GravityFall => "Gravity Fall",
+            Gen::ThrowBounce => "Throw & Bounce",
         }
     }
     fn dur(self) -> f64 {
@@ -65,6 +72,8 @@ impl Gen {
             Gen::BounceDrop => 1.2,
             Gen::ThrowOut => 0.9,
             Gen::Wobble => 1.0,
+            Gen::GravityFall => 2.0,
+            Gen::ThrowBounce => 2.5,
         }
     }
     /// Which physics controls apply (the Inspector shows only these).
@@ -75,12 +84,20 @@ impl Gen {
             Gen::BounceDrop => &["bounce", "gravity"],
             Gen::ThrowOut => &["gravity", "spin"],
             Gen::Wobble => &["stiffness", "damping"],
+            Gen::GravityFall | Gen::ThrowBounce => RIGID,
         }
     }
     pub fn has_dir(self) -> bool {
-        matches!(self, Gen::SpringIn | Gen::ThrowOut)
+        matches!(self, Gen::SpringIn | Gen::ThrowOut | Gen::GravityFall | Gen::ThrowBounce)
+    }
+    /// Bounces off the frame's edges: it needs to know how far the clip is from them (`Phys::room`).
+    pub fn walls(self) -> bool {
+        matches!(self, Gen::GravityFall | Gen::ThrowBounce)
     }
 }
+
+/// The rigid-body controls (Gravity Fall, Throw & Bounce and "Drop with collisions"), in Inspector order.
+pub const RIGID: &[&str] = &["mass", "gravity", "gravity_dir", "bounce", "friction", "drag", "throw", "spin"];
 
 /// Physics / noise controls (0..1 unless noted).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -97,11 +114,40 @@ pub struct Phys {
     pub seed: u32,
     /// Shake: zoom in just enough that the frame edges never show (camera shake on footage).
     pub cover: bool,
+    /// Gravity Fall / Throw & Bounce: how hard it is thrown.
+    pub throw: f64,
+    /// Gravity Fall / Throw & Bounce: how far the clip's edges are from the frame's left, right, top and bottom
+    /// edges as the block starts, in frame widths / heights (`Project::set_block_ctl` measures it).
+    pub room: [f64; 4],
+    /// Rigid body: how heavy it is (1 = normal). A heavier body is slowed less by air drag and pushed less
+    /// in a collision.
+    pub mass: f64,
+    /// Rigid body: how much an edge (or another body) slows what slides or spins along it.
+    pub friction: f64,
+    /// Rigid body: air drag.
+    pub drag: f64,
+    /// Rigid body: the way gravity pulls.
+    pub gravity_dir: Dir,
 }
 
 impl Default for Phys {
     fn default() -> Self {
-        Self { stiffness: 0.55, damping: 0.3, bounce: 0.45, gravity: 0.55, spin: 0.3, freq: 12.0, seed: 1, cover: true }
+        Self {
+            stiffness: 0.55,
+            damping: 0.3,
+            bounce: 0.45,
+            gravity: 0.55,
+            spin: 0.3,
+            freq: 12.0,
+            seed: 1,
+            cover: true,
+            throw: 0.5,
+            room: [0.35; 4],
+            mass: 1.0,
+            friction: 0.3,
+            drag: 0.1,
+            gravity_dir: Dir::Down,
+        }
     }
 }
 
@@ -110,6 +156,9 @@ fn one() -> f64 {
 }
 fn is_false(b: &bool) -> bool {
     !*b
+}
+fn no_loop(n: &u32) -> bool {
+    *n < 2
 }
 
 /// The controls of an applied block. Changing one rewrites the block's keys from `src`.
@@ -142,6 +191,179 @@ pub struct BlockCtl {
     /// Its keys were edited by hand: the controls are paused until Reset.
     #[serde(default, skip_serializing_if = "is_false")]
     pub edited: bool,
+    /// Loop: how many times the block plays over its length (0 / 1 = once), and whether every other time
+    /// runs backwards (ping-pong).
+    #[serde(default, skip_serializing_if = "no_loop")]
+    pub loops: u32,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub pingpong: bool,
+    /// A Path block: the stroke as it was drawn and how the clip travels it (its keys come from this, not
+    /// from `src`'s tracks).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<PathCtl>,
+}
+
+/// A Path block's controls: a stroke drawn in the Viewer, kept as drawn, and how the clip travels along it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct PathCtl {
+    /// The raw stroke: x, y in project px from the frame's centre (a clip's Position), t in seconds from
+    /// the stroke's start.
+    pub points: Vec<(f32, f32, f32)>,
+    /// Timing. false = "Shape": the path at one speed along its length over the block, shaped by the
+    /// block's Ease. true = "As drawn": the stroke's own timing (its rushes and pauses), scaled to the block.
+    pub as_drawn: bool,
+    /// 0 = the points as drawn .. 1 = a heavily smoothed curve. The two ends never move.
+    pub smoothing: f64,
+    /// Rotation faces the way the clip travels.
+    pub turn: bool,
+}
+
+impl PathCtl {
+    /// The stroke smoothed by `smoothing`: each point becomes the average of its neighbours, over a wider
+    /// window the higher it is, twice. The window shrinks toward the ends, so the first and last points stay
+    /// exactly where they were drawn; every point keeps its time.
+    pub fn smoothed(&self) -> Vec<(f64, f64, f64)> {
+        let mut pts: Vec<(f64, f64, f64)> = self.points.iter().map(|p| (p.0 as f64, p.1 as f64, p.2 as f64)).collect();
+        let n = pts.len();
+        let r = (self.smoothing.clamp(0.0, 1.0) * n as f64 / 6.0).round() as usize;
+        for _ in 0..if r > 0 { 2 } else { 0 } {
+            let src = pts.clone();
+            for i in 0..n {
+                let w = r.min(i).min(n - 1 - i);
+                let k = (2 * w + 1) as f64;
+                pts[i].0 = src[i - w..=i + w].iter().map(|p| p.0).sum::<f64>() / k;
+                pts[i].1 = src[i - w..=i + w].iter().map(|p| p.1).sum::<f64>() / k;
+            }
+        }
+        pts
+    }
+
+    /// The block's keys: Position X / Y (and Rotation with `turn`) as absolute values over 0..1 of a block
+    /// `dur` seconds long.
+    pub fn tracks(&self, ease: Ease, dur: f64) -> Vec<BlockTrack> {
+        let pts = self.smoothed();
+        let n = pts.len();
+        if n < 2 {
+            return Vec::new();
+        }
+        // (f, x, y) samples
+        let mut ks: Vec<(f64, f64, f64)> = Vec::new();
+        if self.as_drawn {
+            let span = pts[n - 1].2 - pts[0].2;
+            for (i, p) in pts.iter().enumerate() {
+                let f = if span > 1e-9 { (p.2 - pts[0].2) / span } else { i as f64 / (n - 1) as f64 };
+                // two points at one time: the later a hair after
+                let f = ks.last().map_or(f, |l| f.max(l.0 + 1e-6));
+                ks.push((f, p.0, p.1));
+            }
+            let end = ks[n - 1].0.max(1e-9);
+            ks.iter_mut().for_each(|k| k.0 /= end);
+        } else {
+            // by length: where the path is after each stretch of it
+            let mut len = vec![0.0; n];
+            for i in 1..n {
+                len[i] = len[i - 1] + (pts[i].0 - pts[i - 1].0).hypot(pts[i].1 - pts[i - 1].1);
+            }
+            let total = len[n - 1];
+            // ponytail: sampled 60 times a second (a corner is cut by less than a frame's travel); put keys
+            // on the vertices instead if a slow path ever shows it
+            let m = ((dur * 60.0).ceil() as usize).clamp(16, 600);
+            for j in 0..=m {
+                let f = j as f64 / m as f64;
+                let s = ease.apply(f).clamp(0.0, 1.0) * total;
+                let i = len.partition_point(|l| *l < s).clamp(1, n - 1);
+                let seg = len[i] - len[i - 1];
+                let q = if seg > 1e-12 { (s - len[i - 1]) / seg } else { 0.0 };
+                ks.push((f, pts[i - 1].0 + (pts[i].0 - pts[i - 1].0) * q, pts[i - 1].1 + (pts[i].1 - pts[i - 1].1) * q));
+            }
+            // the ends are the drawn ends whatever the ease does
+            let last = ks.len() - 1;
+            (ks[0].1, ks[0].2) = (pts[0].0, pts[0].1);
+            (ks[last].1, ks[last].2) = (pts[n - 1].0, pts[n - 1].1);
+        }
+        let track = |prop: &str, v: &dyn Fn(usize) -> f64| BlockTrack {
+            prop: prop.into(),
+            keys: (0..ks.len()).map(|i| BlockKey { f: ks[i].0, v: BlockVal::Abs(v(i)), ease: Ease::Linear }).collect(),
+        };
+        let mut out = vec![track("x", &|i| ks[i].1), track("y", &|i| ks[i].2)];
+        if self.turn {
+            // the way it travels at each key (its neighbours' direction), unwrapped; a standstill keeps
+            // the angle before it
+            let m = ks.len() - 1;
+            let mut angles = Vec::with_capacity(m + 1);
+            let mut last: Option<f64> = None;
+            for i in 0..=m {
+                let (a, b) = (ks[i.saturating_sub(1)], ks[(i + 1).min(m)]);
+                let (dx, dy) = (b.1 - a.1, b.2 - a.2);
+                let mut ang = if dx.abs() + dy.abs() > 1e-6 { dy.atan2(dx).to_degrees() } else { last.unwrap_or(f64::NAN) };
+                if let Some(l) = last {
+                    ang -= ((ang - l) / 360.0).round() * 360.0;
+                }
+                if !ang.is_nan() {
+                    last = Some(ang);
+                }
+                angles.push(ang);
+            }
+            // a path that starts at a standstill faces the first way it moves
+            let first = angles.iter().copied().find(|a| !a.is_nan()).unwrap_or(0.0);
+            out.push(track("rotation", &|i| if angles[i].is_nan() { first } else { angles[i] }));
+        }
+        out
+    }
+}
+
+/// How long a loop's jump back to its start takes: one frame at 60 fps.
+const JUMP: f64 = 1.0 / 60.0;
+
+/// An ease played backwards.
+fn rev_ease(e: Ease) -> Ease {
+    match e {
+        Ease::EaseIn => Ease::EaseOut,
+        Ease::EaseOut => Ease::EaseIn,
+        Ease::Bezier { x1, y1, x2, y2 } => Ease::Bezier { x1: 1.0 - x2, y1: 1.0 - y2, x2: 1.0 - x1, y2: 1.0 - y1 },
+        // ponytail: a Hold played backwards holds the value it now starts from (the step lands a key late)
+        e => e,
+    }
+}
+
+/// One cycle `b` played `n` times over a block `dur` seconds long; ping-pong plays every other cycle backwards.
+/// Where a cycle ends on another value than the next one starts from, the jump back takes one frame.
+fn tile(b: &KeyBlock, n: u32, pingpong: bool, dur: f64) -> KeyBlock {
+    let nf = n as f64;
+    let jump = (JUMP / dur.max(1e-6)).min(0.25 / nf);
+    let track = |t: &BlockTrack| {
+        let m = t.keys.len();
+        // backwards: key j is the old key m-1-j, with the ease of the segment that now follows it
+        let rev: Vec<BlockKey> = (0..m)
+            .map(|j| BlockKey {
+                f: 1.0 - t.keys[m - 1 - j].f,
+                v: t.keys[m - 1 - j].v,
+                ease: if j + 1 < m { rev_ease(t.keys[m - 2 - j].ease) } else { Ease::Linear },
+            })
+            .collect();
+        let mut keys: Vec<BlockKey> = Vec::new();
+        for j in 0..n {
+            let cyc = if pingpong && j % 2 == 1 { &rev } else { &t.keys };
+            for (i, k) in cyc.iter().enumerate() {
+                let mut f = (j as f64 + k.f.clamp(0.0, 1.0)) / nf;
+                if let Some(last) = keys.last_mut() {
+                    if i == 0 && f - last.f < jump {
+                        if last.v == k.v {
+                            last.ease = k.ease; // the same key: one is enough
+                            continue;
+                        }
+                        f = last.f + jump;
+                    } else if f <= last.f {
+                        continue;
+                    }
+                }
+                keys.push(BlockKey { f, v: k.v, ease: k.ease });
+            }
+        }
+        BlockTrack { prop: t.prop.clone(), keys }
+    };
+    KeyBlock { name: b.name.clone(), dur, tracks: b.tracks.iter().map(track).collect(), gen: None }
 }
 
 /// The x/y side a keyed block moves along: the biggest x / y offset among its keys.
@@ -187,10 +409,14 @@ pub fn ease_with_out_slope(e: Ease, s: f64) -> Ease {
 impl BlockCtl {
     pub fn new(src: KeyBlock) -> Self {
         let dir = match src.gen {
+            Some(Gen::GravityFall) => Some(Dir::Down), // straight down; a side throws it that way first
+            Some(Gen::ThrowBounce) => Some(Dir::Right),
             Some(g) if g.has_dir() => Some(Dir::Left),
             Some(_) => None,
             None => native_dir(&src),
         };
+        // a drop does not spin unless asked to
+        let spin = if src.gen == Some(Gen::GravityFall) { 0.0 } else { Phys::default().spin };
         Self {
             src,
             strength: 1.0,
@@ -198,18 +424,41 @@ impl BlockCtl {
             ease: None,
             from: Vec::new(),
             to: Vec::new(),
-            phys: Phys::default(),
+            phys: Phys { spin, ..Phys::default() },
             in_speed: None,
             out_speed: None,
             edited: false,
+            loops: 0,
+            pingpong: false,
+            path: None,
         }
     }
     pub fn is_sim(&self) -> bool {
         self.src.gen.is_some()
     }
+    /// How many times the block plays over its length.
+    pub fn cycles(&self) -> u32 {
+        self.loops.clamp(1, 50)
+    }
 
-    /// The block these controls make, `dur` seconds long (a simulation runs in real seconds).
+    /// The block these controls make, `dur` seconds long (a simulation runs in real seconds): one cycle, or
+    /// with Loop on that cycle `cycles()` times.
     pub fn resolve(&self, dur: f64) -> KeyBlock {
+        let n = self.cycles();
+        let one = self.resolve_one(dur / n as f64);
+        if n < 2 {
+            one
+        } else {
+            tile(&one, n, self.pingpong, dur)
+        }
+    }
+
+    fn resolve_one(&self, dur: f64) -> KeyBlock {
+        // a Path block: its keys are the stroke's (strength, side, origin / target don't apply)
+        if let Some(p) = &self.path {
+            let tracks = p.tracks(self.ease.unwrap_or(Ease::Linear), dur);
+            return KeyBlock { name: self.src.name.clone(), dur, tracks, gen: None };
+        }
         let mut b = match self.src.gen {
             Some(g) => simulate(g, &self.phys, self.strength, self.dir.unwrap_or(Dir::Left), dur),
             None => self.reshape(),
@@ -336,6 +585,59 @@ fn noise(seed: u32, i: u32) -> f64 {
     h = h.wrapping_mul(0x2C1B_3C6D);
     h ^= h >> 12;
     (h as f64 / u32::MAX as f64) * 2.0 - 1.0
+}
+
+/// A rigid body in the frame: the clip's centre as a point in a box whose walls are `Phys::room` away, started
+/// at `v0` (frame widths / heights per second) under gravity `grav` along `Phys::gravity_dir`. Elasticity
+/// (`bounce`) is how much speed a bounce keeps, friction slows what slides or spins along an edge, air drag
+/// slows everything - the heavier the body, the less. Returns the x and y offsets and the rotation (degrees)
+/// at N + 1 samples.
+/// ponytail: a point with a spin, not a shape: it does not roll or tip, and an edge only changes its spin by
+/// friction. A real rigid body (torque from contacts) is the upgrade if tumbling has to look right.
+pub fn rigid(p: &Phys, v0: [f64; 2], grav: f64, dur: f64) -> [Vec<f64>; 3] {
+    let [rl, rr, ru, rd] = p.room.map(|r| r.max(0.0));
+    let lim = [[-rl, rr], [-ru, rd]];
+    let e = 0.15 + p.bounce.clamp(0.0, 1.0) * 0.7;
+    let (gx, gy) = p.gravity_dir.vec();
+    let g = [gx as f64 * grav, gy as f64 * grav];
+    let (grip, drag) = (p.friction.clamp(0.0, 1.0) * 10.0, p.drag.clamp(0.0, 1.0) * 3.0 / p.mass.clamp(0.05, 100.0));
+    let dt = dur / N as f64 / 12.0;
+    let (mut pos, mut v, mut w, mut a) = ([0.0f64; 2], v0, p.spin * 360.0, 0.0f64);
+    let mut out = [vec![0.0], vec![0.0], vec![0.0]];
+    for _ in 0..N {
+        // a sample in which it hit an edge is taken on that edge, so the key of a bounce touches it
+        let mut hit = [None; 2];
+        for _ in 0..12 {
+            let air = 1.0 - (drag * dt).min(1.0);
+            w *= air;
+            for ax in 0..2 {
+                v[ax] = (v[ax] + g[ax] * dt) * air;
+                pos[ax] += v[ax] * dt;
+            }
+            for ax in 0..2 {
+                let (wall, away) = if pos[ax] < lim[ax][0] {
+                    (lim[ax][0], 1.0)
+                } else if pos[ax] > lim[ax][1] {
+                    (lim[ax][1], -1.0)
+                } else {
+                    continue;
+                };
+                (pos[ax], hit[ax]) = (wall, Some(wall));
+                v[ax] = away * v[ax].abs() * e;
+                if v[ax].abs() < 0.08 {
+                    v[ax] = 0.0;
+                }
+                let keep = 1.0 - (grip * dt).min(1.0);
+                v[1 - ax] *= keep;
+                w *= keep;
+            }
+            a += w * dt;
+        }
+        out[0].push(hit[0].unwrap_or(pos[0]));
+        out[1].push(hit[1].unwrap_or(pos[1]));
+        out[2].push(a);
+    }
+    out
 }
 
 /// Keys through sampled values (one sample per 1/N of the block): the ends, every turn and corner, at most
@@ -477,6 +779,34 @@ pub fn simulate(g: Gen, p: &Phys, strength: f64, dir: Dir, dur: f64) -> KeyBlock
             let mut r = spring(dur, 6.0 + p.stiffness * 25.0, 0.03 + p.damping * 0.7, 0.0, s * 700.0);
             settle(&mut r, 0.0, 0.1);
             tracks.push(fit("rotation", &r, add));
+        }
+        Gen::GravityFall | Gen::ThrowBounce => {
+            let fall = g == Gen::GravityFall;
+            let sp = (0.3 + p.throw.clamp(0.0, 1.0) * 1.7) * s;
+            let v0 = match dir {
+                Dir::Down if fall => [0.0, 0.0],
+                // thrown sideways it lifts a little first, so it arcs
+                Dir::Left | Dir::Right => [dx * sp, -0.4 * sp],
+                _ => [0.0, dy * sp],
+            };
+            let [mut xs, mut ys, rot] = rigid(p, v0, if fall { 1.5 + p.gravity * 4.5 } else { p.gravity * 4.0 }, dur);
+            if fall {
+                // it always ends at rest on the edge gravity pulls it to
+                let [rl, rr, ru, rd] = p.room.map(|r| r.max(0.0));
+                match p.gravity_dir {
+                    Dir::Down => settle(&mut ys, rd, 0.1),
+                    Dir::Up => settle(&mut ys, -ru, 0.1),
+                    Dir::Left => settle(&mut xs, -rl, 0.1),
+                    Dir::Right => settle(&mut xs, rr, 0.1),
+                }
+            }
+            if xs.iter().any(|v| v.abs() > 1e-9) {
+                tracks.push(fit("x", &xs, add));
+            }
+            tracks.push(fit("y", &ys, add));
+            if rot.iter().any(|v| v.abs() > 1e-6) {
+                tracks.push(fit("rotation", &rot, add));
+            }
         }
     }
     KeyBlock { name: g.name().into(), dur, tracks, gen: None }
@@ -780,7 +1110,7 @@ mod tests {
             assert!(!b.tracks.is_empty(), "{g:?}");
             for t in &b.tracks {
                 assert!(t.keys.len() >= 2 && t.keys[0].f == 0.0 && t.keys.last().unwrap().f == 1.0);
-                if g != Gen::ThrowOut && t.prop != "opacity" {
+                if g != Gen::ThrowOut && !g.walls() && t.prop != "opacity" {
                     let end = t.keys.last().unwrap().v;
                     assert!(
                         matches!(end, BlockVal::Add(v) if v.abs() < 1e-3) || end == BlockVal::Mul(1.0),
@@ -795,6 +1125,92 @@ mod tests {
         let other = Phys { seed: 7, ..Phys::default() };
         assert_ne!(a, simulate(Gen::Shake, &other, 1.0, Dir::Left, 1.0));
         assert!(a.tracks.iter().any(|t| t.prop == "scale"), "camera shake zooms to cover the edges");
+    }
+
+    /// The offsets a track's keys write (`Add` is the only kind the wall simulations make).
+    fn adds(b: &KeyBlock, prop: &str) -> Vec<f64> {
+        let Some(t) = b.tracks.iter().find(|t| t.prop == prop) else { return Vec::new() };
+        t.keys.iter().map(|k| if let BlockVal::Add(v) = k.v { v } else { panic!("{:?}", k.v) }).collect()
+    }
+
+    #[test]
+    fn gravity_fall_ends_at_rest_on_the_floor_and_a_throw_stays_inside_the_frame() {
+        let room = [0.3, 0.4, 0.25, 0.35];
+        let ph = Phys { room, ..Phys::default() };
+        let inside = |v: &[f64], lo: f64, hi: f64| v.iter().all(|v| *v >= -lo - 1e-9 && *v <= hi + 1e-9);
+        // straight down: no sideways motion, never below the floor, resting on it at the end
+        let b = simulate(Gen::GravityFall, &ph, 1.0, Dir::Down, 1.6);
+        assert!(b.tracks.iter().all(|t| t.prop != "x"), "a straight drop does not move sideways");
+        let y = adds(&b, "y");
+        assert!(inside(&y, room[2], room[3]), "{y:?}");
+        assert!((y[y.len() - 1] - room[3]).abs() < 1e-6 && (y[y.len() - 2] - room[3]).abs() < 0.02, "{y:?}");
+        assert!(y.len() > 4, "it bounces: more than a fall and a stop ({} keys)", y.len());
+        // thrown to the right it also moves along x, inside the walls
+        let b = simulate(Gen::GravityFall, &ph, 1.0, Dir::Right, 1.6);
+        let x = adds(&b, "x");
+        assert!(x.iter().any(|v| *v > 0.05) && inside(&x, room[0], room[1]), "{x:?}");
+        // Throw & Bounce: every key inside the frame on both axes, and thrown that hard it reaches an edge
+        for dir in Dir::ALL {
+            let b = simulate(Gen::ThrowBounce, &Phys { throw: 1.0, ..ph }, 1.5, dir, 2.5);
+            let (x, y) = (adds(&b, "x"), adds(&b, "y"));
+            assert!(inside(&x, room[0], room[1]) && inside(&y, room[2], room[3]), "{dir:?} {x:?} {y:?}");
+            let on = |v: &[f64], lo: f64, hi: f64| v.iter().any(|v| (*v + lo).abs() < 1e-9 || (*v - hi).abs() < 1e-9);
+            assert!(on(&x, room[0], room[1]) || on(&y, room[2], room[3]), "{dir:?} {x:?} {y:?}");
+        }
+    }
+
+    #[test]
+    fn a_rigid_body_has_mass_drag_friction_spin_and_a_gravity_direction() {
+        let wide = Phys { room: [50.0; 4], gravity: 0.0, drag: 1.0, spin: 0.0, ..Phys::default() };
+        let far = |mass: f64| *rigid(&Phys { mass, ..wide }, [1.0, 0.0], 0.0, 2.0)[0].last().unwrap();
+        // the same push through the same air: the heavy body gets further
+        assert!(far(5.0) > far(1.0) * 1.5 && far(1.0) > far(0.2) * 1.5, "{} {} {}", far(5.0), far(1.0), far(0.2));
+        // no drag: mass changes nothing (gravity pulls every mass alike)
+        let free = |mass: f64| *rigid(&Phys { mass, drag: 0.0, ..wide }, [1.0, 0.0], 0.0, 2.0)[0].last().unwrap();
+        assert!((free(5.0) - free(0.2)).abs() < 1e-9 && (free(1.0) - 2.0).abs() < 1e-6);
+        // friction: sliding along the floor it stops sooner
+        let slide = |friction: f64| {
+            let p = Phys { room: [50.0, 50.0, 0.5, 0.0], friction, drag: 0.0, ..Phys::default() };
+            *rigid(&p, [1.0, 0.0], 3.0, 2.0)[0].last().unwrap()
+        };
+        assert!(slide(0.0) > slide(0.3) * 2.0 && slide(0.3) > slide(1.0), "{} {} {}", slide(0.0), slide(0.3), slide(1.0));
+        // spin is baked as rotation, and gravity can pull sideways: Gravity Fall then lands on that edge
+        let p = Phys { room: [0.3, 0.4, 0.25, 0.35], spin: 0.5, gravity_dir: Dir::Left, ..Phys::default() };
+        let b = simulate(Gen::GravityFall, &p, 1.0, Dir::Down, 2.0);
+        assert!(adds(&b, "rotation").last().unwrap().abs() > 30.0, "{:?}", adds(&b, "rotation"));
+        assert!((adds(&b, "x").last().unwrap() + 0.3).abs() < 1e-6, "{:?}", adds(&b, "x"));
+        // a drop does not spin by default, and a project from before these controls loads with their defaults
+        assert_eq!(BlockCtl::new(block("Gravity Fall")).phys.spin, 0.0);
+        let old: Phys = serde_json::from_str(r#"{"stiffness":0.5,"bounce":0.9,"seed":3}"#).unwrap();
+        assert_eq!((old.mass, old.friction, old.drag, old.gravity_dir, old.bounce), (1.0, 0.3, 0.1, Dir::Down, 0.9));
+    }
+
+    #[test]
+    fn a_loop_repeats_the_cycle_and_ping_pong_comes_back() {
+        // a pulse (ends where it starts): 3 cycles share their seam keys
+        let mut ctl = BlockCtl::new(block("Pulse"));
+        ctl.loops = 3;
+        let b = ctl.resolve(1.8);
+        let k = &b.tracks[0].keys;
+        assert_eq!(k.len(), 7, "{k:?}");
+        assert_eq!(k.iter().map(|k| (k.f * 6.0).round() as i32).collect::<Vec<_>>(), (0..=6).collect::<Vec<_>>());
+        assert_eq!((k[2].v, k[3].v), (BlockVal::Mul(1.0), BlockVal::Mul(1.08)));
+        // a slide (ends somewhere else): each cycle jumps back to its start within a frame
+        let mut ctl = BlockCtl::new(block("Slide In Left"));
+        ctl.loops = 2;
+        let k = ctl.resolve(1.2).tracks[0].keys.clone();
+        assert_eq!(k.iter().map(|k| k.v).collect::<Vec<_>>(), [-1.0, 0.0, -1.0, 0.0].map(BlockVal::Add));
+        assert!((k[1].f - 0.5).abs() < 1e-9 && k[2].f > 0.5 && k[2].f < 0.52 && k[3].f == 1.0, "{k:?}");
+        // ping-pong: out and back, the way back eased the other way round
+        ctl.pingpong = true;
+        let k = ctl.resolve(1.2).tracks[0].keys.clone();
+        assert_eq!(k.iter().map(|k| k.v).collect::<Vec<_>>(), [-1.0, 0.0, -1.0].map(BlockVal::Add));
+        assert_eq!((k[0].ease, k[1].ease), (Ease::EaseOut, Ease::EaseIn));
+        // a block that does not loop saves without the loop fields, and loads without them (old projects)
+        let plain = BlockCtl::new(block("Pulse"));
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("loops") && !json.contains("pingpong"), "{json}");
+        assert_eq!(serde_json::from_str::<BlockCtl>(&json).unwrap(), plain);
     }
 
     #[test]

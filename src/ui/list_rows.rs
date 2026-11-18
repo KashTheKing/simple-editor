@@ -44,6 +44,9 @@ pub struct RowSpec<'a> {
     pub dim: bool,
     /// One text per fixed value column.
     pub values: &'a [&'a str],
+    /// Controls this row leaves empty (bit k = control k): the slot stays, so the columns still line up, and
+    /// the caller may draw its own widget there (`RowResp::slot`).
+    pub blank: u8,
 }
 
 pub struct RowResp {
@@ -56,6 +59,19 @@ pub struct RowResp {
     pub label: Rect,
     /// The whole row (click / double-click / right-click).
     pub body: egui::Response,
+}
+
+impl RowResp {
+    /// Control `k`'s slot.
+    pub fn slot(&self, k: usize) -> Rect {
+        let r = self.body.rect;
+        Rect::from_min_size(Pos2::new(self.ctrl_x + CTRL_W * k as f32, r.top()), vec2(CTRL_W, r.height()))
+    }
+    /// The fixed value columns, between the label and the controls.
+    pub fn values(&self) -> Rect {
+        let r = self.body.rect;
+        Rect::from_min_max(Pos2::new(self.label.right() + 4.0, r.top()), Pos2::new(self.ctrl_x - 4.0, r.bottom()))
+    }
 }
 
 /// What a drag or a key asked for (rows are numbered as they were drawn).
@@ -145,7 +161,7 @@ impl Rows {
         // controls: the same columns on every row
         let ctrl_x0 = rect.right() - CTRL_W * self.ctrls.len() as f32;
         out.ctrl_x = ctrl_x0;
-        for (k, c) in self.ctrls.iter().enumerate() {
+        for (k, c) in self.ctrls.iter().enumerate().filter(|(k, _)| spec.blank & (1 << k) == 0) {
             let r = Rect::from_min_size(Pos2::new(ctrl_x0 + CTRL_W * k as f32, rect.top()), vec2(CTRL_W, ROW_H));
             let resp = ui.interact(r, self.id.with(("ctrl", spec.key, k)), Sense::click()).on_hover_text(c.hint);
             if resp.hovered() {

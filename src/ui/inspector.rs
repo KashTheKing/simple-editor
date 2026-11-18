@@ -1641,7 +1641,7 @@ mod tests {
         assert_eq!(crate::ui::label_name(200), "None");
     }
 
-    /// A keyboard nudge on the Pan slider of an audio clip pushes exactly one undo and moves the pan.
+    /// A keyboard nudge on the Pan value of an audio clip pushes exactly one undo and moves the pan.
     #[test]
     fn pan_edit_pushes_one_undo() {
         let mut p = Project::new();
@@ -1671,7 +1671,7 @@ mod tests {
         assert_eq!(undos, 0);
         let mut input = egui::RawInput::default();
         input.events.push(egui::Event::Key {
-            key: egui::Key::ArrowRight,
+            key: egui::Key::ArrowUp,
             physical_key: None,
             pressed: true,
             repeat: false,
@@ -1712,7 +1712,7 @@ mod tests {
         run(&ctx, egui::RawInput::default(), &mut p); // focus settles
         let mut input = egui::RawInput::default();
         input.events.push(egui::Event::Key {
-            key: egui::Key::ArrowLeft,
+            key: egui::Key::ArrowDown,
             physical_key: None,
             pressed: true,
             repeat: false,
@@ -1756,7 +1756,7 @@ mod tests {
         run(&ctx, egui::RawInput::default(), &mut p); // focus settles
         let mut input = egui::RawInput::default();
         input.events.push(egui::Event::Key {
-            key: egui::Key::ArrowLeft,
+            key: egui::Key::ArrowDown,
             physical_key: None,
             pressed: true,
             repeat: false,
@@ -2436,6 +2436,43 @@ mod tests {
         assert!(h.project.clip(h.id).unwrap().rotation.is_animated(), "Spin wrote rotation keys");
         assert_eq!(h.project.clip(h.id).unwrap().blocks.len(), 1);
         assert_eq!(h.undos, before + 1);
+    }
+
+    /// The property list is a table: the value box and every control sit at the same x on a row with a
+    /// short value and on one with a long value, and a double-click on a name puts a key at the playhead.
+    #[test]
+    fn property_rows_keep_their_columns_whatever_the_value() {
+        let mut h = H::video_clip();
+        {
+            let c = h.project.clip_mut(h.id).unwrap();
+            c.y.value = -123456.789;
+            c.rotation.value = 3.0;
+        }
+        h.frame(vec![]);
+        let scale_xy = h.rect("scale_xy").center();
+        h.click(scale_xy); // Scale X / Y rows too
+        h.frame(vec![]);
+        let labels = ["Position X", "Position Y", "Scale", "Scale X", "Scale Y", "Rotation", "Opacity"];
+        let col = |h: &H, what: &str| -> Vec<(f32, f32)> {
+            labels.iter().map(|l| h.rect(&format!("{what}_{l}"))).map(|r| (r.left(), r.right())).collect()
+        };
+        for what in ["val", "kf"] {
+            let c = col(&h, what);
+            assert!(c.iter().all(|x| *x == c[0]), "{what} column moves between rows: {c:?}");
+        }
+        let (val, kf) = (col(&h, "val")[0], col(&h, "kf")[0]);
+        assert!(val.1 <= kf.0 && val.1 - val.0 > 60.0, "the value box ends before the controls: {val:?} {kf:?}");
+        // the chain slot is the last column on its two rows, right of the key column
+        assert_eq!(h.rect("pos_xy").left(), h.rect("scale_xy").left());
+        assert!(h.rect("pos_xy").left() > kf.1);
+        // a double-click on the name (left of the value box) keys the property at the playhead
+        let row = h.rect("val_Rotation");
+        let name = egui::pos2(row.left() - 60.0, row.center().y);
+        assert!(!h.project.clip(h.id).unwrap().rotation.is_animated());
+        h.click(name);
+        h.click(name);
+        let rot = &h.project.clip(h.id).unwrap().rotation;
+        assert!(rot.has_key_at(1.0) && rot.keys.len() == 1, "{:?}", rot.keys);
     }
 
     /// The header is label dot · name · enable: the dot's menu sets the label, the eye switches the

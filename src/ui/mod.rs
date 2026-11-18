@@ -174,6 +174,38 @@ pub(crate) fn key_buttons(
     paths: &[(Id, String)],
 ) -> Response {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+    let r = key_button_at(ui, rect, a, lt, palette, g, label, paths);
+    // the reset arrow: only on a keyed property (the slot is always there, so rows stay aligned)
+    let (rr, _) = ui.allocate_exact_size(egui::vec2(14.0, 18.0), egui::Sense::hover());
+    key_reset_at(ui, rr, a, lt, palette, g, label);
+    r
+}
+
+/// Previous / Next key from a property row's ◀ ▶ (as the keyframe menu's rows: see `take_key_seek`).
+pub(crate) fn key_step(ui: &egui::Ui, a: &Animated, lt: f64, next: bool) {
+    let t = if next {
+        a.keys.iter().map(|k| k.t).find(|&t| t > lt + 1e-4)
+    } else {
+        a.keys.iter().rev().map(|k| k.t).find(|&t| t < lt - 1e-4)
+    };
+    if t.is_some() {
+        KEY_SEEK.with(|s| s.set(t));
+        ui.ctx().request_repaint();
+    }
+}
+
+/// `key_buttons`' key control in `rect` (a list row's slot).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn key_button_at(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    a: &mut Animated,
+    lt: f64,
+    palette: &Palette,
+    g: &mut Gesture,
+    label: &str,
+    paths: &[(Id, String)],
+) -> Response {
     let r = ui.interact(rect, ui.id().with(("kf", label)), egui::Sense::click());
     let here = a.has_key_at(lt);
     let color = if a.is_animated() || !a.link.is_none() { palette.accent } else { palette.text_dim };
@@ -205,8 +237,11 @@ pub(crate) fn key_buttons(
         g.click();
     }
     menu::context(&r, |ui| key_menu(ui, a, lt, g, label, paths));
-    // the reset arrow: only on a keyed property (the slot is always there, so rows stay aligned)
-    let (rr, _) = ui.allocate_exact_size(egui::vec2(14.0, 18.0), egui::Sense::hover());
+    r
+}
+
+/// `key_buttons`' reset arrow in `rr`: drawn only on a keyed property.
+pub(crate) fn key_reset_at(ui: &mut egui::Ui, rr: egui::Rect, a: &mut Animated, lt: f64, palette: &Palette, g: &mut Gesture, label: &str) {
     if a.is_animated() {
         let rs = ui
             .interact(rr, ui.id().with(("kf-reset", label)), egui::Sense::click())
@@ -218,7 +253,6 @@ pub(crate) fn key_buttons(
             g.click();
         }
     }
-    r
 }
 
 /// The keyframe right-click menu, shared by the ◆ and the value next to it: Previous / Next key (a seek,
