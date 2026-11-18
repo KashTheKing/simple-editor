@@ -7,6 +7,8 @@
 //! - the pointer rests over the video for `IDLE` while playing -> they fade out, and the cursor hides
 //! - `keep` (paused, or the pointer is over the controls) keeps them up while the pointer is inside;
 //!   `hold` (a menu is open, the scrubber is being dragged) keeps them up even when it leaves
+//! - a click on the video while they show (`dismiss`) hides them at once - and the click is spent on
+//!   that (`Output::dismissed`), it does not play/pause; they come back with the next pointer move
 //!
 //! `step` says when it next needs a frame (`repaint_in`); `None` means nothing changes until input
 //! arrives - a paused player with hidden controls asks for no repaint at all.
@@ -28,6 +30,8 @@ pub struct Input {
     pub keep: bool,
     /// Keep the controls even when the pointer is outside: an open menu, a drag in progress.
     pub hold: bool,
+    /// A click on the video itself (not on the controls) this frame.
+    pub dismiss: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -38,6 +42,8 @@ pub struct Output {
     pub repaint_in: Option<f64>,
     /// Hide the mouse cursor (resting over playing video).
     pub hide_cursor: bool,
+    /// This frame's `dismiss` click hid the controls: it does nothing else (no play/pause).
+    pub dismissed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -47,23 +53,26 @@ pub struct AutoHide {
     /// When the current fade started and the opacity it started from.
     fade_at: f64,
     fade_from: f32,
+    /// Hidden by a click: stays hidden (even with `keep`) until the pointer moves again.
+    dismissed: bool,
 }
 
 impl Default for AutoHide {
     /// Starts shown, as if the pointer just moved: a freshly opened player shows its controls once.
     fn default() -> Self {
-        AutoHide { shown: true, last_move: f64::NEG_INFINITY, fade_at: f64::NEG_INFINITY, fade_from: 1.0 }
+        AutoHide { shown: true, last_move: f64::NEG_INFINITY, fade_at: f64::NEG_INFINITY, fade_from: 1.0, dismissed: false }
     }
 }
 
 impl AutoHide {
     /// Starts hidden (the editor's fullscreen Preview: the transport waits for a mouse move).
     pub fn hidden() -> Self {
-        AutoHide { shown: false, last_move: f64::NEG_INFINITY, fade_at: f64::NEG_INFINITY, fade_from: 0.0 }
+        AutoHide { shown: false, last_move: f64::NEG_INFINITY, fade_at: f64::NEG_INFINITY, fade_from: 0.0, dismissed: false }
     }
 
     /// Show the controls now, as a mouse move would (a key press that changes something on them).
     pub fn poke(&mut self, now: f64) {
+        self.dismissed = false;
         self.last_move = now;
         self.set(true, now);
     }
@@ -87,14 +96,18 @@ impl AutoHide {
     }
 
     pub fn step(&mut self, i: Input) -> Output {
-        if i.pointer_in && i.moved {
+        let dismissed = i.dismiss && i.pointer_in && !i.hold && self.shown;
+        if dismissed {
+            self.dismissed = true;
+        } else if i.pointer_in && i.moved && !i.dismiss {
+            self.dismissed = false;
             self.last_move = i.now;
         }
         if self.last_move == f64::NEG_INFINITY && self.shown {
             self.last_move = i.now; // the opening "just moved" of `default()`
         }
         let idle = i.now - self.last_move >= IDLE;
-        let want = i.hold || (i.pointer_in && (i.keep || !idle));
+        let want = i.hold || (i.pointer_in && !self.dismissed && (i.keep || !idle));
         self.set(want, i.now);
         let opacity = self.opacity(i.now);
         let fading = i.now - self.fade_at < FADE;
@@ -105,7 +118,7 @@ impl AutoHide {
         } else {
             None
         };
-        Output { opacity, repaint_in, hide_cursor: i.pointer_in && !want }
+        Output { opacity, repaint_in, hide_cursor: i.pointer_in && !want && !i.keep, dismissed }
     }
 }
 
@@ -163,6 +176,33 @@ mod tests {
         let mut h = AutoHide::default();
         let o = h.step(Input { now: 0.0, pointer_in: false, hold: true, ..Default::default() });
         assert_eq!((o.opacity, o.repaint_in), (1.0, None));
+    }
+
+    /// A click on the video while the controls show hides them at once, paused or playing, and is spent
+    /// on that; one while they are hidden is left to the caller (play/pause); a move brings them back.
+    #[test]
+    fn a_click_on_the_video_hides_shown_controls_at_once() {
+        for keep in [false, true] {
+            let mut h = AutoHide::default();
+            h.step(Input { now: 0.0, pointer_in: true, moved: true, keep, ..Default::default() });
+            assert!(h.shown());
+            let click = |now| Input { now, pointer_in: true, moved: true, keep, dismiss: true, ..Default::default() };
+            let o = h.step(click(0.5));
+            assert!(o.dismissed && !h.shown(), "keep {keep}: hidden by the click");
+            assert_eq!(h.step(Input { now: 0.5 + FADE, pointer_in: true, keep, ..Default::default() }).opacity, 0.0);
+            // resting there, even paused: they stay hidden
+            assert_eq!(h.step(Input { now: 9.0, pointer_in: true, keep, ..Default::default() }).opacity, 0.0);
+            // a click while hidden: not spent here (the caller plays/pauses), still hidden
+            let o = h.step(click(9.5));
+            assert!(!o.dismissed && !h.shown(), "keep {keep}: a click on hidden controls is the caller's");
+            // the pointer moves: back
+            h.step(Input { now: 10.0, pointer_in: true, moved: true, keep, ..Default::default() });
+            assert!(h.shown(), "keep {keep}: a move shows them again");
+        }
+        // a menu held open is not dismissed by a click on the video
+        let mut h = AutoHide::default();
+        let o = h.step(Input { now: 0.0, pointer_in: true, hold: true, dismiss: true, ..Default::default() });
+        assert!(!o.dismissed && h.shown());
     }
 
     #[test]

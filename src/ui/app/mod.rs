@@ -245,6 +245,8 @@ pub struct App {
     started: Instant,
     /// Window starts hidden (see main.rs); shown once the first frame has been painted.
     window_shown: bool,
+    /// Opening without a flash (`winpos::Reveal`).
+    reveal: crate::winpos::Reveal,
     first_frame_at: Option<Instant>,
     /// Updates run so far, up to 4 (`SE_STARTUP_TRACE`).
     startup_frames: u8,
@@ -905,6 +907,7 @@ impl App {
             screenshot,
             started: Instant::now(),
             window_shown: false,
+            reveal: Default::default(),
             first_frame_at: None,
             startup_frames: 0,
             screenshot_requested: false,
@@ -1261,18 +1264,18 @@ impl eframe::App for App {
             crate::perf::startup_mark(&format!("update {} start", self.startup_frames));
         }
         let perf_t0 = Instant::now(); // ws:perf-baseline: the HUD's UI frame time
+        // shown cloaked, maximised when it should be, and revealed once a frame at its final size is
+        // on screen (`winpos::Reveal`): no white flash, no jump
+        let just = self.reveal.step(ctx, _frame, !crate::winpos::background());
         if !self.window_shown {
-            // viewport commands apply after this frame is painted, so no white flash
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            if !crate::winpos::background() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            }
             self.window_shown = true;
             boot::run(self); // ws:forgiveness: offers crash recovery, if any
+        }
+        if just {
             if boot::bench_armed() {
                 ctx.request_repaint(); // the next update follows the first present
             }
-        } else {
+        } else if self.reveal.revealed() {
             boot::bench_first_frame(ctx);
         }
         // ws:forgiveness: confirm_discard_then's continuation sets this once the (non-blocking) discard

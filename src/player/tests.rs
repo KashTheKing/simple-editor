@@ -107,7 +107,7 @@ fn esc_builds_the_editor_with_the_file_on_the_timeline_at_the_current_time() {
     let (project, playhead) = editor.project_and_playhead();
     let p = path.to_string_lossy();
     let asset = project.assets.iter().find(|a| a.path == p).expect("the file is in the project");
-    let on_timeline = project.tracks.iter().flat_map(|t| &t.clips).any(|c| c.asset == Some(asset.id));
+    let on_timeline = project.tracks.iter().flat_map(|t| &t.clips).any(|c| c.asset == asset.id);
     assert!(on_timeline, "the file is on the timeline");
     assert!((playhead - t).abs() < 1e-6, "playhead {playhead} vs {t}");
     drop(editor);

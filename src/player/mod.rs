@@ -131,6 +131,8 @@ pub struct PlayerApp {
     pub(crate) first_present: Option<Duration>,
     bench: Option<PathBuf>,
     shown_at_frame: u64,
+    /// Opening without a flash (`winpos::Reveal`).
+    reveal: crate::winpos::Reveal,
     frames: u64,
     pub(crate) cover: Option<egui::TextureHandle>,
     cover_rx: Option<Receiver<Option<egui::ColorImage>>>,
@@ -184,6 +186,7 @@ impl PlayerApp {
             first_present: None,
             bench: std::env::var_os("SE_BENCH_FIRST_FRAME").map(PathBuf::from),
             shown_at_frame: 0,
+            reveal: Default::default(),
             frames: 0,
             cover: None,
             cover_rx: None,
@@ -544,6 +547,11 @@ impl PlayerApp {
         self.pending_click = Some(now);
     }
 
+    /// The click on the video only hid the controls (`autohide::Output::dismissed`): no play/pause.
+    pub(crate) fn cancel_click(&mut self) {
+        self.pending_click = None;
+    }
+
     pub(crate) fn double_click_video(&mut self, ctx: &egui::Context) {
         self.pending_click = None;
         self.toggle_fullscreen(ctx);
@@ -576,19 +584,23 @@ impl eframe::App for PlayerApp {
             self.engine.wait_first(Duration::from_millis(250));
         }
         self.frame(ctx, Some(frame));
-        if !self.window_shown {
-            // shown after this frame is painted: no white flash, and the picture is there at once
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        let has_picture = self.video.shown.is_some() || self.info.as_ref().is_some_and(|i| !i.has_video) || self.error.is_some();
+        // shown cloaked at once (maximised), revealed once a frame with the picture is on screen at
+        // that size (`winpos::Reveal`) - or after 1.5 s, whatever it shows
+        let ready = has_picture || self.engine.started.elapsed() > Duration::from_millis(1500);
+        let just = if self.reveal.started() && !ready {
+            ctx.request_repaint_after(Duration::from_millis(5));
+            false
+        } else {
+            self.reveal.step(ctx, frame, !crate::winpos::background())
+        };
+        if just {
             // the clock starts with the picture: no frames skipped, no sound before the window
             self.engine.set_playing(true);
-            if !crate::winpos::background() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            }
             self.window_shown = true;
             self.shown_at_frame = self.frames;
             ctx.request_repaint(); // the next update is the first one after a present
-        } else if self.first_present.is_none() && self.frames > self.shown_at_frame {
-            let has_picture = self.video.shown.is_some() || self.info.as_ref().is_some_and(|i| !i.has_video) || self.error.is_some();
+        } else if self.window_shown && self.first_present.is_none() && self.frames > self.shown_at_frame {
             if has_picture {
                 let d = crate::perf::since_process_start();
                 self.first_present = Some(d);

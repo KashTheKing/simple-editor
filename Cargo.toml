@@ -38,6 +38,8 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    # the window opens cloaked until its first frame at its final size is on screen (`winpos::Reveal`)
+    "Win32_Graphics_Dwm",
     # Library / Gallery picture thumbnails decoded in-process (was one ffmpeg.exe per picture: ~0.7 s each)
     "Win32_Graphics_Imaging",
     "Win32_System_Time",

@@ -155,7 +155,7 @@ fn scrubber(ui: &mut Ui, rect: Rect, t: f64, dur: f64) -> (Response, Option<f64>
 
 /// Draw the frame: picture, subtitles, chrome, flyouts. Returns what the auto-hide needs repainted.
 pub fn draw(app: &mut PlayerApp, ctx: &egui::Context, now: f64) -> autohide::Output {
-    let mut out = autohide::Output { opacity: 0.0, repaint_in: None, hide_cursor: false };
+    let mut out = autohide::Output { opacity: 0.0, repaint_in: None, hide_cursor: false, dismissed: false };
     egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::BLACK)).show(ctx, |ui| {
         out = body(app, ui, now);
     });
@@ -201,9 +201,10 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, now: f64) -> autohide::Output {
     // ---- the video surface: click = play/pause, double-click = full screen; in the mini player a
     // drag moves the window
     let surface = ui.interact(full, ui.id().with("surface"), Sense::click_and_drag());
+    let clicked = surface.clicked() && !surface.double_clicked();
     if surface.double_clicked() {
         app.double_click_video(&ctx);
-    } else if surface.clicked() {
+    } else if clicked {
         app.click_video(now);
     }
     if mini && surface.drag_started() {
@@ -226,8 +227,13 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, now: f64) -> autohide::Output {
         // paused, over the controls, or a sound file (nothing to uncover): the controls stay up
         keep: over_chrome || !app.engine.is_playing() || app.info.as_ref().is_some_and(|i| !i.has_video),
         hold: app.flyout.is_some() || app.scrub.is_some() || app.info_open,
+        // a click on the picture, not on a bar (the bars are drawn over `surface`)
+        dismiss: clicked && !over_chrome,
     };
     let out = app.autohide(input);
+    if out.dismissed {
+        app.cancel_click(); // it only hid the controls
+    }
     if out.hide_cursor {
         ctx.set_cursor_icon(egui::CursorIcon::None);
     }
@@ -848,7 +854,8 @@ mod tests {
     #[test]
     fn zoom_places_the_picture() {
         let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 900.0));
-        assert_eq!(Zoom::Fit.place(area, (1920, 800), 1.0).size(), vec2(1600.0, 1600.0 * 800.0 / 1920.0));
+        let fit = Zoom::Fit.place(area, (1920, 800), 1.0).size();
+        assert!((fit - vec2(1600.0, 1600.0 * 800.0 / 1920.0)).length() < 1e-3, "{fit:?}");
         assert_eq!(Zoom::Fill.place(area, (1920, 800), 1.0).height(), 900.0);
         assert_eq!(Zoom::Stretch.place(area, (640, 480), 1.0), area);
         assert_eq!(Zoom::Original.place(area, (640, 480), 2.0).size(), vec2(320.0, 240.0));

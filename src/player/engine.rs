@@ -155,6 +155,13 @@ impl Engine {
             wake: Mutex::new(None),
             gpu,
         });
+        if gpu {
+            // the D3D11 device takes ~0.25 s: build it while the file is probed and the window opens
+            let _ = std::thread::Builder::new().name("player-d3d".into()).spawn(|| {
+                crate::media::mf::init_thread();
+                let _ = crate::media::mf::d3d_device();
+            });
+        }
         let v = s.clone();
         let threads = vec![std::thread::Builder::new()
             .name("player-video".into())
@@ -388,8 +395,22 @@ pub fn skip_target(t: f64, by: f64, duration: f64) -> f64 {
     (t + by).clamp(0.0, end)
 }
 
-/// Open the video (zero-copy first) and probe the file; publish `Info`.
-fn open(s: &Shared) -> Result<(Info, Option<Box<dyn VideoSource>>), String> {
+/// A zero-copy source being brought up beside the software one the picture starts on, and the time
+/// it was decoded up to (`upgrade`).
+type Upgrade = std::sync::mpsc::Receiver<(Box<dyn VideoSource>, f64)>;
+
+/// How far ahead of the clock `upgrade` positions the zero-copy source, so the hand-over is a plain
+/// next frame (no seek) on the video thread.
+const UPGRADE_LEAD: f64 = 0.5;
+
+/// Up to this size the software reader (`mf::open_video`, no D3D) starts the picture: its first frame
+/// is out in ~0.25 s, where the hardware decoder's setup took 1-2.5 s (measured on an RTX 2060,
+/// 1080p60 H.264). Bigger sources go straight to zero-copy - software decode would not keep up.
+const SOFTWARE_FIRST_PIXELS: u64 = 2560 * 1440;
+
+/// Open the video and probe the file. Up to `SOFTWARE_FIRST_PIXELS` the software reader comes back at
+/// once and `upgrade` brings up zero-copy behind it; bigger, it is zero-copy (else the usual source).
+fn open(s: &Arc<Shared>) -> Result<(Info, Option<Box<dyn VideoSource>>, Option<Upgrade>), String> {
     let p = s.path.to_string_lossy().into_owned();
     crate::media::mf::init_thread();
     crate::perf::startup_mark("player: mf init");
@@ -406,32 +427,82 @@ fn open(s: &Shared) -> Result<(Info, Option<Box<dyn VideoSource>>), String> {
         decoder: "Software",
     };
     if !has_video {
-        return Ok((info, None));
+        return Ok((info, None, None));
     }
     crate::perf::startup_mark("player: probed");
-    let src = if s.gpu && !media::is_image_path(&p) {
+    let gpu = s.gpu && !media::is_image_path(&p);
+    let small = (asset.width as u64) * (asset.height as u64) < SOFTWARE_FIRST_PIXELS;
+    let (src, up) = if gpu && small {
+        let up = upgrade(s.clone(), p.clone());
+        match media::open_video(&p, Backend::Auto) {
+            Ok(v) => (v, Some(up)),
+            // no software reader for it: wait for the zero-copy one instead
+            Err(e) => match up.recv() {
+                Ok((v, _)) => {
+                    info.decoder = "Hardware, zero-copy";
+                    (v, None)
+                }
+                Err(_) => return Err(e),
+            },
+        }
+    } else if gpu {
         match media::mf::open_video_gpu(&p) {
             Ok(v) => {
                 info.decoder = "Hardware, zero-copy";
-                Ok(v)
+                (v, None)
             }
-            Err(_) => media::open_video(&p, Backend::Auto),
+            Err(_) => (media::open_video(&p, Backend::Auto)?, None),
         }
     } else {
-        media::open_video(&p, Backend::Auto)
-    }?;
+        (media::open_video(&p, Backend::Auto)?, None)
+    };
     if info.size.0 == 0 {
         info.size = src.size();
     }
-    Ok((info, Some(src)))
+    Ok((info, Some(src), up))
+}
+
+/// Bring up the zero-copy source on a thread of its own (D3D device, hardware decoder, first frame)
+/// and pre-roll it to `UPGRADE_LEAD` ahead of the clock. Nothing arrives when it can't (no D3D video
+/// device, a software-only codec) - the software source simply carries on.
+fn upgrade(s: Arc<Shared>, p: String) -> Upgrade {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let _ = std::thread::Builder::new().name("player-gpu-open".into()).spawn(move || {
+        crate::media::mf::init_thread();
+        let Ok(mut src) = media::mf::open_video_gpu(&p) else { return };
+        crate::perf::startup_mark("player: zero-copy ready");
+        if s.quit.load(Ordering::Relaxed) {
+            return;
+        }
+        let at = lock(&s.clock).now(Instant::now()) + UPGRADE_LEAD;
+        let (mut w, mut h) = lock(&s.video).want;
+        if w == 0 || h == 0 {
+            (w, h) = src.size();
+        }
+        let Some(f) = src.frame_gpu(at, w, h) else { return };
+        let _ = tx.send((src, f.pts));
+    });
+    rx
+}
+
+/// Hand the picture to the zero-copy source once the software one reaches where it was pre-rolled
+/// to (`at`), or at once when nothing plays or a seek moved far from it.
+fn take_upgrade(up: &Option<Upgrade>, pending: &mut Option<(Box<dyn VideoSource>, f64)>, s: &Shared, next_t: f64, dur: f64) -> Option<Box<dyn VideoSource>> {
+    if pending.is_none() {
+        *pending = up.as_ref()?.try_recv().ok();
+    }
+    let at = pending.as_ref()?.1;
+    let playing = lock(&s.clock).playing;
+    let swap = !playing || next_t >= at - dur * 0.5 || next_t < at - UPGRADE_LEAD - 1.0;
+    swap.then(|| pending.take().map(|(v, _)| v)).flatten()
 }
 
 fn video_thread(s: Arc<Shared>) {
     crate::perf::startup_mark("player: video thread");
     let opened = open(&s);
     crate::perf::startup_mark("player: file open");
-    let (info, src) = match opened {
-        Ok((i, v)) => (i, v),
+    let (info, src, up) = match opened {
+        Ok((i, v, u)) => (i, v, u),
         Err(e) => {
             *lock(&s.info) = Some(Err(e));
             lock(&s.video).eof = true;
@@ -458,6 +529,11 @@ fn video_thread(s: Arc<Shared>) {
     let mut next_t = 0.0;
     let mut last_pts = f64::NEG_INFINITY;
     let mut spare: Vec<Frame> = Vec::new();
+    let mut pending = None;
+    let mut up = up;
+    let mut marked = false;
+    // a seek at (or a hair before) the end asks for a time past the last frame's start: one retry there
+    let mut retried = false;
     loop {
         let (gen, want) = {
             let mut v = lock(&s.video);
@@ -468,6 +544,7 @@ fn video_thread(s: Arc<Shared>) {
                 if let Some(t) = v.seek_to.take() {
                     next_t = t;
                     last_pts = f64::NEG_INFINITY;
+                    retried = false;
                 }
                 if !v.eof && v.queue.len() < QUEUE {
                     break;
@@ -476,6 +553,14 @@ fn video_thread(s: Arc<Shared>) {
             }
             (v.gen, v.want)
         };
+        if let Some(v) = take_upgrade(&up, &mut pending, &s, next_t, dur) {
+            src = v;
+            up = None;
+            if let Some(Ok(i)) = lock(&s.info).as_mut() {
+                i.decoder = "Hardware, zero-copy";
+            }
+            crate::perf::startup_mark("player: on zero-copy");
+        }
         let (w, h) = if want.0 > 0 && want.1 > 0 { want } else { info.size };
         let f = src.frame_gpu(next_t, w, h).or_else(|| src.frame_shared(next_t, w, h, &mut spare));
         let mut v = lock(&s.video);
@@ -483,6 +568,11 @@ fn video_thread(s: Arc<Shared>) {
             continue; // a seek came in while decoding: the frame is for the old position
         }
         match f {
+            None if last_pts == f64::NEG_INFINITY && !retried && next_t > dur => {
+                // nothing at the seek point: it is past the last frame's start - show that frame
+                retried = true;
+                next_t = (info.duration - dur).min(next_t - dur).max(0.0);
+            }
             None => {
                 v.eof = true;
                 drop(v);
@@ -497,7 +587,8 @@ fn video_thread(s: Arc<Shared>) {
                 last_pts = f.pts;
                 next_t = f.pts + dur;
                 let first = v.queue.is_empty();
-                if last_pts == f.pts && first {
+                if !marked {
+                    marked = true;
                     crate::perf::startup_mark("player: frame decoded");
                 }
                 v.queue.push_back(f);

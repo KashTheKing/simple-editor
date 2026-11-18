@@ -9,7 +9,9 @@
 use crate::settings::Settings;
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
@@ -112,7 +114,7 @@ pub fn apply_rect(vb: eframe::egui::ViewportBuilder, rect: Option<[i32; 4]>) -> 
             // normal window it would hide its bottom (transports) and right edge off-screen
             let area = work_area(POINT { x: x + w / 2, y: y + h / 2 });
             if area.is_some_and(|a| too_big(a, w, h)) {
-                return vb.with_maximized(true);
+                return start_maximized(vb.with_position([x as f32, y as f32]));
             }
             vb.with_position([x as f32, y as f32]).with_inner_size([w as f32, h as f32])
         }
@@ -127,8 +129,91 @@ pub fn maximized_on_cursor_monitor(vb: eframe::egui::ViewportBuilder) -> eframe:
     let mut cursor = POINT::default();
     let area = if unsafe { GetCursorPos(&mut cursor) }.is_ok() { work_area(cursor) } else { None };
     match area {
-        Some(a) => vb.with_position([a.left as f32, a.top as f32]).with_maximized(true),
-        None => vb.with_maximized(true),
+        Some(a) => start_maximized(vb.with_position([a.left as f32, a.top as f32])),
+        None => start_maximized(vb),
+    }
+}
+
+/// Maximise the window when it is first shown (`Reveal`), not at creation: winit maximises with
+/// `ShowWindow(SW_MAXIMIZE)` right after `CreateWindowEx`, which shows the window whatever
+/// `with_visible(false)` says - a blank white window before the first frame (the launch flash).
+static START_MAXIMIZED: AtomicBool = AtomicBool::new(false);
+
+fn start_maximized(vb: eframe::egui::ViewportBuilder) -> eframe::egui::ViewportBuilder {
+    START_MAXIMIZED.store(true, Ordering::Relaxed);
+    vb
+}
+
+fn cloak(handle: &impl HasWindowHandle, on: bool) -> bool {
+    let Some(hwnd) = hwnd_of(handle) else { return false };
+    let v: i32 = on.into(); // a Win32 BOOL
+    unsafe {
+        DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, &v as *const i32 as *const _, std::mem::size_of::<i32>() as u32).is_ok()
+    }
+}
+
+/// Showing the window without a flash: it opens hidden (`with_visible(false)`), and `step` - called at
+/// the top of every update - shows it cloaked (DWM composes nothing of it), maximised when it should
+/// be, lets one frame paint at that final size, and uncloaks once that frame has been presented. The
+/// first thing on screen is the window at its final size, already painted.
+#[derive(Default)]
+pub struct Reveal {
+    stage: u8,
+    /// Updates spent waiting for the maximise to land.
+    waited: u8,
+    cloaked: bool,
+}
+
+impl Reveal {
+    /// Advance; true on the one update where the window has just become visible (the frame before it
+    /// is on screen).
+    pub fn step(&mut self, ctx: &eframe::egui::Context, frame: &eframe::Frame, focus: bool) -> bool {
+        use eframe::egui::ViewportCommand;
+        let max = START_MAXIMIZED.load(Ordering::Relaxed);
+        match self.stage {
+            0 => {
+                self.cloaked = cloak(frame, true);
+                if max {
+                    ctx.send_viewport_cmd(ViewportCommand::Maximized(true));
+                }
+                ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                if focus {
+                    ctx.send_viewport_cmd(ViewportCommand::Focus);
+                }
+                self.stage = 1;
+                ctx.request_repaint();
+                // no cloak (an old Windows, no DWM): shown as before, after this frame is painted
+                !self.cloaked
+            }
+            1 => {
+                // this update paints at the size the window was shown at (maximised: once it says so)
+                let sized = !max || ctx.input(|i| i.viewport().maximized == Some(true));
+                self.waited += 1;
+                if sized || self.waited > 10 {
+                    self.stage = 2;
+                }
+                ctx.request_repaint();
+                false
+            }
+            2 => {
+                self.stage = 3;
+                if self.cloaked {
+                    cloak(frame, false);
+                    return true;
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Shown (cloaked) already: the next steps only wait for a frame worth revealing.
+    pub fn started(&self) -> bool {
+        self.stage > 0
+    }
+
+    pub fn revealed(&self) -> bool {
+        self.stage >= 3 || (self.stage >= 1 && !self.cloaked)
     }
 }
 

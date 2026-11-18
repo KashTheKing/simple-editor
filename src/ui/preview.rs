@@ -476,16 +476,19 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
         // transport overlay: summoned by mouse movement (pointer-only, so spacebar play/pause never
         // reveals it), gone 2.5 s after the mouse stops - and at once when the pointer leaves the video
         let full = ui.max_rect();
-        let (pointer, moved) = ui.input(|i| {
+        let (pointer, moved, clicked) = ui.input(|i| {
             let moved = i.events.iter().any(|e| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. }));
-            (i.pointer.hover_pos(), moved)
+            (i.pointer.hover_pos(), moved, i.pointer.primary_clicked())
         });
+        let on_bar = pointer.is_some_and(|p| state.fs_bar.is_some_and(|b| b.contains(p)));
         let input = crate::ui::autohide::Input {
             now: state.hide_clock.elapsed().as_secs_f64(),
             pointer_in: pointer.is_some_and(|p| full.contains(p)),
             moved,
-            keep: pointer.is_some_and(|p| state.fs_bar.is_some_and(|b| b.contains(p))),
+            keep: on_bar,
             hold: false,
+            // a click on the picture hides a shown transport at once
+            dismiss: clicked && !on_bar,
         };
         let out = state.hide.step(input);
         if out.hide_cursor {
@@ -495,7 +498,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(s));
         }
         state.fs_bar = None;
-        if out.opacity > 0.0 {
+        // drawn from the frame it is summoned on (its fade-in starts at opacity 0)
+        if out.opacity > 0.0 || state.hide.shown() {
             let shown = egui::Area::new(ui.id().with("fs_transport"))
                 .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -24.0))
                 .order(egui::Order::Foreground)

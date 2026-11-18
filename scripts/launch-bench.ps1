@@ -1,5 +1,5 @@
 # Launch-to-first-paint, timed from outside, the same way for every app:
-#   start the process -> poll its top-level window (PrintWindow, PW_RENDERFULLCONTENT) every few ms ->
+#   start the process -> poll the screen under its top-level window's client area every few ms ->
 #   stop when the middle of the window shows the picture (the test clip is colourful: high variance)
 #   or, for an app launched without a file, when the window shows painted UI (any variance at all).
 #
@@ -33,7 +33,8 @@ public static class LaunchBench {
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out RECT r);
-    [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr h, ref POINT p);
+    [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
 
     public static IntPtr Window(HashSet<uint> pids) {
@@ -53,12 +54,11 @@ public static class LaunchBench {
     public static double Variance(IntPtr h, bool whole) {
         RECT r; if (!GetClientRect(h, out r)) return 0;
         int w = r.R - r.L, ht = r.B - r.T; if (w < 16 || ht < 16) return 0;
+        // what is on screen at the client area (PrintWindow returns nothing for a GL/D3D swap chain)
+        POINT o = new POINT(); if (!ClientToScreen(h, ref o)) return 0;
         using (var bmp = new Bitmap(w, ht, PixelFormat.Format32bppArgb)) {
             using (var g = Graphics.FromImage(bmp)) {
-                IntPtr dc = g.GetHdc();
-                bool ok = PrintWindow(h, dc, 3); // PW_CLIENTONLY | PW_RENDERFULLCONTENT
-                g.ReleaseHdc(dc);
-                if (!ok) return 0;
+                try { g.CopyFromScreen(o.X, o.Y, 0, 0, new Size(w, ht)); } catch { return 0; }
             }
             int x0 = whole ? 0 : w / 4, x1 = whole ? w : w * 3 / 4, y0 = whole ? 0 : ht / 4, y1 = whole ? ht : ht * 3 / 4;
             double s = 0, s2 = 0; int n = 0;
