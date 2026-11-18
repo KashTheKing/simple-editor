@@ -178,6 +178,7 @@ mod transcript_pane;
 mod voiceover_pane;
 mod template_ctl; // ws:animator-templates
 mod beats_ctl; // ws:beat-aligner
+mod emulator_ctl; // ws:device-emulator
 #[path = "windows.rs"]
 mod windows_dlg;
 
@@ -524,6 +525,10 @@ pub struct App {
     beats_run_undo: bool,
     /// "Draw a motion path" is armed: the next Viewer stroke becomes a path the selection follows.
     path_armed: bool,
+    // ---- ws:device-emulator ----
+    emulator: crate::ui::emulator::EmuState,
+    /// The Device Emulator's own copy of the picture when the Preview pane is hidden (nobody else uploads it).
+    emulator_tex: Option<egui::TextureHandle>,
     // ---- ws:pro-schema ----
     /// The Assistant pane's prompt / pending requests / log (`ui::assistant_ui`).
     pub(crate) assistant: crate::ui::assistant_ui::AssistantState,
@@ -1004,6 +1009,8 @@ impl App {
             beats: Default::default(), // ws:beat-aligner
             beats_run_undo: false,
             path_armed: false,
+            emulator: Default::default(), // ws:device-emulator
+            emulator_tex: None,
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -1751,6 +1758,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     template_ctl::TOOLS,
     // ---- ws:beat-aligner ----
     beats_ctl::TOOLS,
+    // ---- ws:device-emulator ----
+    emulator_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2074,6 +2083,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     render_pane::draw,
     // ---- ws:beat-aligner ----
     beats_ctl::draw,
+    // ---- ws:device-emulator ----
+    emulator_ctl::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

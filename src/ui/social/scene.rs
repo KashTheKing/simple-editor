@@ -1,7 +1,7 @@
 //! Draw lists. Everything the guides draw - zones, silhouettes, the device and its sheets - is built here
 //! as plain `Op`s (screen points), so the viewer (`paint`) and the bitmap renderer (`raster`) show exactly
-//! the same picture. Generic vector shapes only: rounded rectangles, circles, lines, simple glyphs; no
-//! logos, no brand assets, no copyrighted icons.
+//! the same picture. Shapes are rounded rectangles, circles, lines and simple glyphs; the platforms' own
+//! icons come from the `icons` atlas (`Op::Icon`).
 
 use super::profile::SocialProfile;
 use super::*;
@@ -23,6 +23,9 @@ pub enum Op {
     Grad { r: Rect, up: bool, a: u8 },
     /// Clip the following ops to this rectangle (None = no clip).
     Clip(Option<Rect>),
+    /// A real platform icon (`icons` atlas entry `i`) filling `r`, multiplied by `col` (white = as drawn);
+    /// `flip` = turned half a turn (a thumbs-down from the thumbs-up).
+    Icon { r: Rect, i: u16, col: Color32, flip: bool },
 }
 
 pub fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
@@ -89,6 +92,28 @@ impl B {
     pub fn grad(&mut self, r: Rect, up: bool, a: f32) {
         let a = (a * self.a * 255.0).clamp(0.0, 255.0) as u8;
         self.ops.push(Op::Grad { r, up, a });
+    }
+    /// The atlas icon `name` filling `r` (its own aspect is the caller's business); "<name>:r180" turns it half
+    /// a turn. False when there is no such icon.
+    pub fn icon(&mut self, name: &str, r: Rect, col: Color32) -> bool {
+        let (name, flip) = match name.strip_suffix(":r180") {
+            Some(n) => (n, true),
+            None => (name, false),
+        };
+        match super::icons::index(name) {
+            Some(i) => {
+                let col = self.col(col);
+                self.ops.push(Op::Icon { r, i, col, flip });
+                true
+            }
+            None => false,
+        }
+    }
+    /// The atlas icon `name` drawn in a square `size` points wide centred on `c` (the way a page lays out a
+    /// 24 px icon box); a wordmark keeps its aspect at that height.
+    pub fn icon_at(&mut self, name: &str, c: Pos2, size: f32, col: Color32) -> bool {
+        let a = super::icons::index(name.trim_end_matches(":r180")).map_or(1.0, super::icons::aspect);
+        self.icon(name, Rect::from_center_size(c, vec2(size * a, size)), col)
     }
     pub fn clip(&mut self, r: Option<Rect>) {
         self.ops.push(Op::Clip(r));
@@ -187,8 +212,13 @@ pub fn ellipsize(s: &str, size: f32, bold: bool, max_w: f32) -> String {
 
 // ---------------------------------------------------------------- glyphs
 
-/// A generic icon centred on `c`, `h` = half its size.
+/// An icon centred on `c`, `h` = half its size: a real platform icon from the atlas when `name` is one
+/// ("yt/like"), else a generic vector glyph.
 pub fn glyph(b: &mut B, name: &str, c: Pos2, h: f32, col: Color32) {
+    // a real platform icon ("tt/heart") wins; its box is the glyph's square
+    if name.contains('/') && b.icon_at(name, c, 2.0 * h, col) {
+        return;
+    }
     let p = |x: f32, y: f32| pos2(c.x + x * h, c.y + y * h);
     let w = (h * 0.16).max(1.0);
     let dark = Color32::from_black_alpha(150);
@@ -240,9 +270,12 @@ pub fn glyph(b: &mut B, name: &str, c: Pos2, h: f32, col: Color32) {
             b.line(p(-0.3, -0.7), p(0.3, -0.7), w * 1.4, col);
         }
         "disc" => {
-            b.circle(c, h, rgba(20, 20, 20, 230));
-            b.avatar(c, h * 0.62);
-            b.ring(c, h * 0.95, w * 1.2, white(0.55));
+            // the spinning record: grooves round the profile picture
+            b.circle(c, h, rgba(28, 28, 30, 245));
+            for (i, rr) in [0.92f32, 0.8, 0.7].iter().enumerate() {
+                b.ring(c, h * rr, (h * 0.05).max(0.6), if i == 0 { rgba(90, 90, 96, 255) } else { rgba(52, 52, 56, 255) });
+            }
+            b.avatar(c, h * 0.55);
         }
         "note" => {
             b.circle(p(-0.4, 0.6), h * 0.38, col);
@@ -292,6 +325,15 @@ pub fn glyph(b: &mut B, name: &str, c: Pos2, h: f32, col: Color32) {
         "remix" => {
             b.ring(p(-0.38, 0.0), h * 0.6, w * 1.3, col);
             b.ring(p(0.38, 0.0), h * 0.6, w * 1.3, col);
+        }
+        "tt_create" => {
+            // TikTok's create button: a white key with a cyan edge on the left and a red one on the right
+            let r = |dx: f32| Rect::from_min_max(p(-1.0 + dx, -0.62), p(1.0 + dx, 0.62));
+            b.rect(r(-0.12), h * 0.3, rgba(37, 244, 238, 255));
+            b.rect(r(0.12), h * 0.3, rgba(254, 44, 85, 255));
+            b.rect(r(0.0), h * 0.3, Color32::WHITE);
+            b.line(p(-0.3, 0.0), p(0.3, 0.0), w * 1.5, Color32::BLACK);
+            b.line(p(0.0, -0.3), p(0.0, 0.3), w * 1.5, Color32::BLACK);
         }
         "plus" => {
             b.rect(Rect::from_min_max(p(-1.0, -0.62), p(1.0, 0.62)), h * 0.3, white(0.95));
@@ -379,6 +421,9 @@ pub fn draw_ui(b: &mut B, lay: &Layout, map: &Map, cx: &Ctx, outside: bool) -> V
                 let half = if has_t { (w * 0.31).min(h * 0.25) } else { w.min(h) * 0.28 };
                 let cy = if has_t { r.top() + h * 0.34 } else { r.center().y };
                 let icon = if e.i == "play" && cx.playing { "pause" } else { e.i.as_str() };
+                if e.bg != 0 {
+                    b.circle(pos2(cxp, cy), half * 2.3, Color32::from_black_alpha(70));
+                }
                 glyph(b, icon, pos2(cxp, cy), half, ink);
                 let t = if e.lbl.is_empty() { cx.prof.count(&e.n).to_string() } else { e.lbl.clone() };
                 b.text(pos2(cxp, r.top() + h * 0.62), 12.0 * k, ink, false, &t, 1);

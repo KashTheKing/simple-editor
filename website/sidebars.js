@@ -9,7 +9,7 @@ module.exports = {
       type: 'category',
       label: 'Editing',
       collapsed: false,
-      items: ['library', 'viewer', 'social-guides', 'timeline', 'inspector', 'effects', 'html-layers', 'chat-forum-threads', 'browser-layer', 'online-library', 'my-gallery', 'templates'],
+      items: ['library', 'viewer', 'social-guides', 'device-emulator', 'timeline', 'inspector', 'effects', 'html-layers', 'chat-forum-threads', 'browser-layer', 'online-library', 'my-gallery', 'templates'],
     },
     {
       type: 'category',

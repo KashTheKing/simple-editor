@@ -165,6 +165,9 @@ pub enum Pane {
     // ---- ws:beat-aligner ----
     /// Mark a song's beats / a voiceover's phrases, tap along, name sections and cut to them (`ui::beat_aligner`).
     BeatAligner,
+    // ---- ws:device-emulator ----
+    /// The video in real devices with each platform's UI round it (`ui::emulator`).
+    Emulator,
 }
 
 impl Pane {
@@ -244,6 +247,8 @@ impl Pane {
         Pane::Rendering,
         // ---- ws:beat-aligner ----
         Pane::BeatAligner,
+        // ---- ws:device-emulator ----
+        Pane::Emulator,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -282,6 +287,7 @@ impl Pane {
             Pane::Transcript => Glyph::Transcript,
             Pane::Rendering => Glyph::Queue,
             Pane::BeatAligner => Glyph::Waveform,
+            Pane::Emulator => Glyph::Guides,
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -325,6 +331,7 @@ impl Pane {
             Pane::Transcript => "Transcript",
             Pane::Rendering => "Rendering",
             Pane::BeatAligner => "Beat Aligner",
+            Pane::Emulator => "Device Emulator",
         }
     }
 }

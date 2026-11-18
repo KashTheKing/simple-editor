@@ -1,0 +1,75 @@
+---
+title: Device Emulator
+description: Watch your video playing on an iPhone, a Pixel, a Galaxy, an iPad, a desktop browser or a TV, inside YouTube, Shorts, TikTok, Reels and the other apps, drawn with their real icons.
+---
+
+The **Device Emulator** shows your video the way your viewers will see it: playing inside a real phone,
+tablet, browser window or TV, with the platform's own app round it. The icons are the platforms' real
+ones, taken from their own pages, and the layouts follow the apps.
+
+Open it from **right-click the Preview ▸ Emulator**, from **Window ▸ Device Emulator**, or from a tab bar's
+**+**. It is a normal pane: dock it beside the Preview, put it on a second screen, or make it a tab.
+
+## The bar at the top
+
+| Control | What it does |
+|---|---|
+| **Device** | iPhone 16 Pro (Dynamic Island), iPhone 14 (notch), Pixel 9 and Galaxy S24 (Android status bar, punch-hole camera, gesture or three-button bar), a small Android phone, iPad Air, a desktop browser window, a TV. |
+| **Platform** | YouTube (long form), YouTube Shorts, TikTok, Instagram Reels, an Instagram post, Facebook Reels, Snapchat Spotlight, an X post. |
+| **Landscape / Portrait** | Turns a phone or tablet. YouTube becomes its full-screen player; the vertical apps show their full-screen player with the action buttons down the right edge. |
+| **Comments** | Opens the platform's comments, drawn the way that app draws them. |
+| **Captions** | Shows or hides your project's subtitles, the same switch as the player's **CC** button. |
+| **Gallery** | Every device and platform at once, each playing your video. Click one to bring it up large. |
+| **Screenshot** | Saves a picture of the device to `Pictures\Simple Editor`. |
+
+The pane remembers the device, platform and orientation **for each project**.
+
+## Click it like the real thing
+
+In the large view, the device works:
+
+- **Play / pause**: the play button, or a tap on the video. It plays the editor itself.
+- **Scrub**: click anywhere on the progress bar to jump there.
+- **CC**: YouTube's captions button (and the settings menu's **Subtitles/CC** row) turns your project's
+  subtitles on or off. It is one undo step.
+- **Settings**: YouTube's gear opens its real settings menu (Ambient mode, Annotations, Audio track,
+  Subtitles/CC, Sleep timer, Playback speed, Quality); on a phone it is the app's settings sheet.
+- **Speaker**: mute, and click along the volume slider to set it (the preview's own speaker; your edit's
+  audio is not changed).
+- **Theatre / Fullscreen** on YouTube desktop: the player glides to the theatre layout or fills the
+  window. The Default view button (in theatre) goes back.
+- **Comments, Share, the description, the profile, the sound**: tap them to open their sheets. On YouTube
+  desktop the page scrolls down to the comments instead, as on youtube.com.
+
+### What each platform shows
+
+- **YouTube desktop**: the top bar (logo, search, voice search, Create, notifications, your avatar), the
+  player with its control bar (play, next, the speaker and its slider, the time, captions, settings,
+  miniplayer, theatre, fullscreen), the title, the channel row with **Subscribe**, the like / dislike pill,
+  **Share** and the more button, the description, and the comments (count, **Sort by**, **Add a
+  comment...**, each comment with like, dislike and **Reply**). The left menu stays closed.
+- **YouTube on a phone**: the app's player (previous / play / next, captions, settings, the time,
+  fullscreen, the red bar) and the page under it; comments open as the app's sheet.
+- **Shorts, TikTok, Reels**: the action column with the real icons and your profile's counts, the
+  creator row, the caption, the sound row (TikTok's spinning record), the comment sheets in each app's own
+  style (TikTok's is white, with a heart and count on every comment).
+
+### Buffering
+
+When the editor's player has to wait for frames, the device shows that platform's own spinner: YouTube's
+white arc, Instagram's spokes, X's blue ring, TikTok's pulsing line along the bottom.
+
+### Your profile
+
+The names, picture, counts and comments come from your [social profiles](social-guides#profiles). Every
+avatar is clipped to its circle.
+
+## For scripts and the assistant
+
+- `emulator.open {device, platform, orientation, gallery, sheet, view}` shows the pane on a device and
+  platform (anything left out stays as it is).
+- `emulator.screenshot {device, platform, orientation, sheet, view, menu, buffering, width}` returns a
+  picture of it with the frame at the playhead.
+
+The [social guides](social-guides) (safe zones and the UI overlay over the Preview, and burning the guide
+into an export) are still there; the Emulator is the place to look at the whole app.

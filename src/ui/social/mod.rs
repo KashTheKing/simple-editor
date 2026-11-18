@@ -14,10 +14,15 @@
 //! `render.frame` / `guides.preview`. Nothing here touches the project or the export.
 
 pub mod device;
+pub mod frame;
+pub mod icons;
 pub mod paint;
 pub mod profile;
 pub mod raster;
 pub mod scene;
+pub mod sheets;
+pub mod vertical;
+pub mod youtube;
 
 use eframe::egui::{self, pos2, vec2, Pos2, Rect};
 use serde::Deserialize;
@@ -124,8 +129,34 @@ pub struct Device {
     pub st: f32,
     pub home: f32,
     pub nav: f32,
-    /// "phone" | "tablet" | "desktop"
+    /// "phone" | "tablet" | "desktop" | "tv"
     pub k: String,
+    /// "ios" | "android" | "" (the status bar and system UI drawn).
+    #[serde(default)]
+    pub os: String,
+    /// Frame colour, "#rrggbb".
+    #[serde(default)]
+    pub col: String,
+    /// 1 = the status bar shows the battery percentage (Galaxy).
+    #[serde(default)]
+    pub pct: u8,
+}
+
+impl Device {
+    /// The same device turned to landscape (top to the left): width and height swap, and the status / navigation
+    /// bars go away the way a full-screen video hides them (an iPhone keeps its home indicator).
+    pub fn turned(&self) -> Device {
+        let mut d = self.clone();
+        (d.w, d.h) = (self.h, self.w);
+        d.st = 0.0;
+        d.nav = 0.0;
+        d.home = if self.home > 0.0 { 21.0 } else { 0.0 };
+        d
+    }
+    /// Phones and tablets can turn; a browser window and a TV cannot.
+    pub fn turns(&self) -> bool {
+        matches!(self.k.as_str(), "phone" | "tablet")
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -210,6 +241,8 @@ pub struct El {
     pub sq: u8,
     /// Alignment: "c" centred.
     pub al: String,
+    /// 1 = the icon sits on a translucent dark circle (Shorts' action column).
+    pub bg: u8,
 }
 
 #[derive(Clone, Debug, Deserialize)]

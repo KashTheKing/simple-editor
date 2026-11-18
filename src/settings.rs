@@ -647,6 +647,9 @@ pub struct Settings {
     pub screen_layouts: BTreeMap<String, String>,
     /// The Audio page's "new default layout" note was shown (a saved Audio layout is never replaced).
     pub audio_layout_offered: bool,
+    // ---- ws:device-emulator ----
+    /// The Device Emulator's device / platform / orientation, per project file ("" = an unsaved project).
+    pub emulator: BTreeMap<String, crate::ui::emulator::Prefs>,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -919,6 +922,8 @@ impl Default for Settings {
             screens_answered: 0,
             screen_layouts: BTreeMap::new(),
             audio_layout_offered: false,
+            // ---- ws:device-emulator ----
+            emulator: BTreeMap::new(),
         }
     }
 }

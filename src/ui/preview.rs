@@ -453,6 +453,8 @@ pub struct PreviewResponse {
     pub set_tracker: Option<(f32, f32)>,
     /// The user changed the social guide from the right-click (platform, mode, device, profile, options).
     pub set_guide: Option<crate::ui::social::Set>,
+    /// ws:device-emulator: the right-click's "Emulator" row: show the Device Emulator pane.
+    pub open_emulator: bool,
     // ---- ws:canvas-handles-monitor ----
     /// The context menu toggled canvas snapping - the app stores it in Settings.canvas_snap.
     pub set_canvas_snap: Option<bool>,
@@ -1205,6 +1207,9 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
             if menu::check(ui, c.movie_mode, "Movie Mode (pre-render)", &menu::shortcut(Action::MovieMode)).clicked() {
                 r.set_movie_mode = Some(!c.movie_mode);
             }
+            if menu::row(ui, Some(Glyph::Guides), "Emulator", "").on_hover_text("See the video on real devices with each platform's app round it").clicked() {
+                r.open_emulator = true;
+            }
             menu::sub(ui, Some(Glyph::Guides), "Social Guides", |ui| {
                 r.set_guide = crate::ui::social::menu_rows(ui, c.settings);
             });
@@ -1266,6 +1271,8 @@ fn guide_view<'a>(c: &PreviewCtx<'a>) -> Option<crate::ui::social::paint::GuideV
     let aspect = c.project.width.max(1) as f32 / c.project.height.max(1) as f32;
     let mut g = crate::ui::social::paint::GuideView::new(c.settings, &c.project.name, aspect, c.playhead, c.project.duration())?;
     g.playing = c.playing;
+    g.cc = c.project.show_subtitles;
+    g.buffering = c.buffering;
     Some(g)
 }
 
@@ -1367,8 +1374,17 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
         crate::ui::social::paint::replay(&painter, &s.over, av);
         if resp.clicked() {
             if let Some(p) = resp.interact_pointer_pos() {
-                if let Some(set) = state.social.click(s, p, g.view) {
-                    r.set_guide = Some(set);
+                use crate::ui::social::paint::Tap;
+                match state.social.click(s, p, g.view) {
+                    Some(Tap::Set(set)) => r.set_guide = Some(set),
+                    Some(Tap::Play) => r.actions.push(Action::PlayPause),
+                    Some(Tap::Seek(f)) => r.seek = Some(f as f64 * c.project.duration()),
+                    Some(Tap::Captions) => {
+                        (c.undo)(c.project);
+                        c.project.show_subtitles = !c.project.show_subtitles;
+                        r.edited = true;
+                    }
+                    None => {}
                 }
             }
         }
