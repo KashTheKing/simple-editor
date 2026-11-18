@@ -218,11 +218,29 @@ pub(super) fn indicator(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     app.jobs.drew = true;
-    let r = ui.add(egui::Button::new(format!("{n}")).small()).on_hover_text("Background jobs - show the Jobs pane");
-    tools::glyph_label(ui, tools::Glyph::Queue, ui.visuals().text_color());
-    if r.clicked() {
+    if count_button(ui, &app.palette, n).clicked() {
         app.toggle_pane(Pane::Jobs);
     }
+}
+
+/// The indicator's one button: count then glyph (right-to-left layout puts the glyph on the right), one
+/// hit rect over both, with the hover fill `tools::icon_button` uses.
+fn count_button(ui: &mut egui::Ui, palette: &crate::theme::Palette, n: usize) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(n.to_string(), egui::FontId::proportional(13.0), palette.text);
+    let w = 6.0 + galley.size().x + 2.0 + 22.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::hover());
+    let r = ui.interact(rect, egui::Id::new("se-jobs-indicator"), egui::Sense::click());
+    let p = ui.painter();
+    if r.hovered() {
+        let cr = egui::CornerRadius::same(palette.rounding as u8);
+        p.rect_filled(rect, cr, palette.header);
+        p.rect_stroke(rect, cr, egui::Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+    }
+    let text_at = egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0);
+    p.galley(text_at, galley, palette.text);
+    let icon = egui::Rect::from_min_max(egui::pos2(rect.right() - 24.0, rect.top()), rect.right_bottom());
+    tools::draw_glyph(p, icon, tools::Glyph::Queue, palette.text);
+    r.on_hover_text("Background jobs - show the Jobs pane")
 }
 
 /// ACT_HANDLERS entry.
@@ -324,8 +342,53 @@ pub(super) fn apply(app: &mut App, resp: JobsResponse) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    /// Lay `draw` out, then click at `at(rect)` (move, press, release); true if a frame saw `clicked`.
+    /// Also used by `perf_ctl`'s top-bar button test.
+    pub(in crate::ui::app) fn click_widget(
+        draw: impl Fn(&mut egui::Ui) -> egui::Response,
+        at: impl Fn(egui::Rect) -> egui::Pos2,
+    ) -> bool {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let (mut rect, mut clicked) = (egui::Rect::NOTHING, false);
+        let frame = |events: Vec<egui::Event>, rect: &mut egui::Rect, clicked: &mut bool| {
+            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let r = draw(ui);
+                        (*rect, *clicked) = (r.rect, *clicked || r.clicked());
+                    });
+                });
+            });
+        };
+        frame(vec![], &mut rect, &mut clicked);
+        let pos = at(rect);
+        assert!(rect.contains(pos), "{pos:?} is inside {rect:?}");
+        let press = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![egui::Event::PointerMoved(pos)], &mut rect, &mut clicked);
+        frame(vec![press(true)], &mut rect, &mut clicked);
+        frame(vec![press(false)], &mut rect, &mut clicked);
+        clicked
+    }
+
+    /// The Jobs indicator is one button from its count to its glyph: a click on either lands (the
+    /// glyph used to be a bare label beside a small count button, so only the count answered).
+    #[test]
+    fn jobs_button_full_rect_is_clickable() {
+        let pal = crate::theme::Palette::new(true, egui::Color32::LIGHT_BLUE);
+        let draw = |ui: &mut egui::Ui| count_button(ui, &pal, 3);
+        assert!(click_widget(draw, |r| egui::pos2(r.left() + 8.0, r.center().y)), "a click on the count");
+        assert!(click_widget(draw, |r| egui::pos2(r.right() - 12.0, r.center().y)), "a click on the glyph");
+        assert!(click_widget(draw, |r| r.center()), "a click between them");
+    }
 
     fn job(kind: JobKind) -> ProgJob {
         (kind, kind.name().to_string(), Progress::new())

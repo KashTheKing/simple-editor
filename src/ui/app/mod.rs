@@ -514,7 +514,7 @@ pub struct App {
     /// Frame-time HUD numbers (`ui::hud`), fed at the end of every `update`, drawn when `settings.hud`.
     hud: crate::ui::hud::Hud,
     // ---- ws:perf-window ----
-    /// The Performance window (`ui::perf_ui`, `perf_ctl`).
+    /// The Performance pane (`ui::perf_ui`, `perf_ctl`).
     perf: crate::ui::perf_ui::PerfWin,
     // ---- ws:animator ----
     animator: crate::ui::animator::AnimState,
@@ -2000,8 +2000,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     gallery_mine::windows,
     // ---- ws:browser-layer ----
     browser_ctl::windows,
-    // ---- ws:perf-window ----
-    perf_ctl::window,
+    // ---- ws:perf-window ---- (the Performance window became a pane: PANE_DRAWERS)
     // ---- ws:panels-multiscreen ----
     screens_ctl::window,
     // ---- ws:animator-templates ----
@@ -2048,6 +2047,7 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:color-page ----
     color_page::draw,
     // ---- ws:perf-baseline ----
+    perf_ctl::draw, // ws:perf-window
     // ---- ws:pro-schema ----
     assistant_ctl::draw,
     // ---- ws:play-decode-path ----

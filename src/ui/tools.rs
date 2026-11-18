@@ -324,6 +324,8 @@ pub(crate) enum Glyph {
     /// Two chasing arrows - a proxy being built.
     Proxy,
     // ---- ws:perf-baseline ----
+    /// An area chart - the Performance pane and its top-bar button.
+    Perf,
     // ---- ws:pro-schema ----
     /// A speech bubble with a sparkle - the Assistant pane (painted: `draw_glyph`).
     Assistant,
@@ -484,6 +486,7 @@ impl Glyph {
         Glyph::History,
         Glyph::Proxy,
         // ---- ws:perf-baseline ----
+        Glyph::Perf,
         // ---- ws:pro-schema ----
         Glyph::Assistant,
         // ---- ws:play-decode-path ----
@@ -648,6 +651,7 @@ impl Glyph {
             Glyph::History => "history",
             Glyph::Proxy => "proxy",
             // ---- ws:perf-baseline ----
+            Glyph::Perf => "performance",
             // ---- ws:pro-schema ----
             Glyph::Assistant => "assistant",
             // ---- ws:play-decode-path ----
@@ -778,6 +782,7 @@ impl Glyph {
             Glyph::Speed => 0xE916,                     // Stopwatch (SpeedHigh's gauge is illegible at 14 px)
             Glyph::History => 0xE81C,                   // History
             Glyph::Proxy => 0xE895,                     // Sync
+            Glyph::Perf => 0xE9D2,                      // AreaChart
             // no symbol fits (a snapping magnet, a gap being pushed open, the trim cursors, an n-gon):
             // `draw_glyph` paints these; Letter is plain text
             Glyph::Letter(_) | Glyph::Poly(_) | Glyph::Magnet | Glyph::Spacer => return None,

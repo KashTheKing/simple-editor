@@ -1,6 +1,7 @@
 //! ---- ws:perf-window ----
-//! The Performance window (View ▸ Performance…, `perf.report`): a dark card with a donut of where the
-//! frame time goes and a legend sorted by cost, a Live / Project toggle, and live stat tiles under it.
+//! The Performance pane (Window ▸ Performance, the top bar's chart button, `perf.report`): a dark card
+//! with a donut of where the frame time goes and a legend sorted by cost, a Live / Project toggle, and
+//! live stat tiles under it.
 //! Live = the span recorder's self time per category (`perf::self_totals`), sampled ~4 times a second by
 //! `ui::app::perf_ctl::tick` - never per frame. Project = the heaviest sources and clips, each with a
 //! Jump and, where there is one, a Fix. Drawing never asks for a repaint.
@@ -269,23 +270,24 @@ impl Live {
     }
 }
 
-/// The window's state (`App::perf`).
+/// The pane's state (`App::perf`).
 #[derive(Default)]
 pub struct PerfWin {
-    pub open: bool,
+    /// The pane was on screen last frame (`perf_ctl::tick` sets it): live sampling runs only then.
+    pub shown: bool,
     pub tab: Tab,
     pub live: Live,
     /// Project tab: donut rows, then rows outside the donut (disk cache, jobs).
     pub project: Vec<Row>,
     pub extra: Vec<Row>,
     pub project_at: Option<Instant>,
-    /// `perf.report` keeps sampling for a minute without the window open.
+    /// `perf.report` keeps sampling for a minute without the pane on screen.
     pub report_until: Option<Instant>,
 }
 
 impl PerfWin {
     pub fn sampling(&self) -> bool {
-        self.open || self.report_until.is_some_and(|t| Instant::now() < t)
+        self.shown || self.report_until.is_some_and(|t| Instant::now() < t)
     }
 }
 
@@ -412,7 +414,7 @@ fn segmented(ui: &mut Ui, tab: &mut Tab) {
 fn card(ui: &mut Ui, w: &mut PerfWin) -> Option<Click> {
     let mut out = None;
     egui::Frame::new().fill(CARD).corner_radius(12.0).inner_margin(16.0).show(ui, |ui| {
-        ui.set_width(WIDTH - 32.0);
+        ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Where the performance goes").size(15.0).strong().color(TEXT));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| segmented(ui, &mut w.tab));
@@ -496,80 +498,85 @@ fn tile_body(ui: &mut Ui, caption: &str, value: &str, sub: &str, g: Grade, spark
     }
 }
 
+/// One stat tile's content: caption, value, sub line, grade, sparkline.
+type TileSpec = (&'static str, String, String, Grade, Option<(Vec<f32>, f32)>);
+
+/// A tile's footprint: 124 content + 2 x 10 margin.
+const TILE_W: f32 = 144.0;
+
 fn tiles(ui: &mut Ui, l: &Live) {
     let fm = l.frame_ms();
-    // a grid, five tiles a row: a Frame inside `horizontal_wrapped` never wraps
-    egui::Grid::new("perf_tiles").spacing(vec2(8.0, 8.0)).show(ui, |ui| {
-        let hist: Vec<f32> = l.hist.iter().map(|h| h.0).collect();
-        let fps = if l.playing { format!("{:.1}", l.fps) } else { "–".into() };
-        tile(
-            ui,
-            "FPS",
-            &fps,
-            &format!("of {:.0}", l.target_fps),
-            if l.playing { grade_fps(l.fps, l.target_fps) } else { Grade::Neutral },
-            Some((hist.as_slice(), l.target_fps * 1.1)),
-        );
-        let d10 = l.dropped_10s();
-        tile(
-            ui,
+    let hist: Vec<f32> = l.hist.iter().map(|h| h.0).collect();
+    let fps = if l.playing { format!("{:.1}", l.fps) } else { "–".into() };
+    let fps_g = if l.playing { grade_fps(l.fps, l.target_fps) } else { Grade::Neutral };
+    let d10 = l.dropped_10s();
+    let (disk, of, disk_g) = match (l.disk_gb, l.disk_budget_gb) {
+        (Some(u), Some(b)) => (format!("{u:.1} GB"), format!("of {b:.0} GB"), grade_disk(u, b)),
+        (Some(u), None) => (format!("{u:.1} GB"), "no budget".into(), Grade::Neutral),
+        _ => ("…".into(), "measuring".into(), Grade::Neutral),
+    };
+    let jobs = if l.jobs_paused {
+        "paused by you"
+    } else if l.playing {
+        "wait while playing"
+    } else {
+        "running"
+    };
+    let specs: [TileSpec; 10] = [
+        ("FPS", fps, format!("of {:.0}", l.target_fps), fps_g, Some((hist, l.target_fps * 1.1))),
+        (
             "Dropped frames",
-            &d10.to_string(),
-            &format!("last 10 s · {} session", l.dropped_session),
+            d10.to_string(),
+            format!("last 10 s · {} session", l.dropped_session),
             grade_drops(d10),
             None,
-        );
-        tile(
-            ui,
+        ),
+        (
             "Worst frame gap",
-            &format!("{:.0} ms", l.worst_gap()),
-            "last 10 s · budget 50",
+            format!("{:.0} ms", l.worst_gap()),
+            "last 10 s · budget 50".into(),
             grade_gap(l.worst_gap()),
             None,
-        );
-        tile(ui, "UI frame p95", &format!("{:.1} ms", l.ui_p95), "budget 8 ms", grade_ui_p95(l.ui_p95), None);
-        tile(
-            ui,
+        ),
+        ("UI frame p95", format!("{:.1} ms", l.ui_p95), "budget 8 ms".into(), grade_ui_p95(l.ui_p95), None),
+        (
             "Decode",
-            &format!("{:.1} ms", l.decode_avg),
-            &format!("avg · worst {:.1}", l.decode_worst),
+            format!("{:.1} ms", l.decode_avg),
+            format!("avg · worst {:.1}", l.decode_worst),
             grade_decode(l.decode_avg, fm),
             None,
-        );
-        ui.end_row();
-        tile(ui, "Cache hits", &format!("{:.0} %", l.hit_rate * 100.0), "frames from RAM", Grade::Neutral, None);
-        tile(
-            ui,
-            "RAM cache",
-            &format!("{:.0} MB", l.ram_mb),
-            &format!("of {:.0} MB", l.ram_budget_mb),
-            Grade::Neutral,
-            None,
-        );
-        tile(ui, "Frames queued", &l.queued.to_string(), "ready ahead of the clock", Grade::Neutral, None);
-        let (disk, of, g) = match (l.disk_gb, l.disk_budget_gb) {
-            (Some(u), Some(b)) => (format!("{u:.1} GB"), format!("of {b:.0} GB"), grade_disk(u, b)),
-            (Some(u), None) => (format!("{u:.1} GB"), "no budget".into(), Grade::Neutral),
-            _ => ("…".into(), "measuring".into(), Grade::Neutral),
-        };
-        tile(ui, "Disk cache", &disk, &of, g, None);
-        let jobs = if l.jobs_paused {
-            "paused by you"
-        } else if l.playing {
-            "wait while playing"
-        } else {
-            "running"
-        };
-        tile(ui, "Background jobs", &l.jobs.to_string(), jobs, Grade::Neutral, None);
+        ),
+        ("Cache hits", format!("{:.0} %", l.hit_rate * 100.0), "frames from RAM".into(), Grade::Neutral, None),
+        ("RAM cache", format!("{:.0} MB", l.ram_mb), format!("of {:.0} MB", l.ram_budget_mb), Grade::Neutral, None),
+        ("Frames queued", l.queued.to_string(), "ready ahead of the clock".into(), Grade::Neutral, None),
+        ("Disk cache", disk, of, disk_g, None),
+        ("Background jobs", l.jobs.to_string(), jobs.into(), Grade::Neutral, None),
+    ];
+    // a grid, as many tiles a row as fit (five at most): a Frame inside `horizontal_wrapped` never wraps
+    let cols = (((ui.available_width() + 8.0) / (TILE_W + 8.0)).floor() as usize).clamp(1, 5);
+    egui::Grid::new("perf_tiles").spacing(vec2(8.0, 8.0)).show(ui, |ui| {
+        for (i, (caption, value, sub, g, spark)) in specs.iter().enumerate() {
+            tile(ui, caption, value, sub, *g, spark.as_ref().map(|(v, m)| (v.as_slice(), *m)));
+            if (i + 1) % cols == 0 {
+                ui.end_row();
+            }
+        }
     });
 }
 
-/// The window body (inside `egui::Window`). Returns what the user clicked, for the app to apply.
-/// The window's content width: the card and four rows of tiles, like the reference card.
-pub const WIDTH: f32 = 720.0;
+/// The widest the content gets: the card over two rows of five tiles, like the reference card.
+pub const WIDTH: f32 = 5.0 * TILE_W + 4.0 * 8.0;
+/// The narrowest: the donut and a readable legend (a narrower pane scrolls sideways).
+pub const MIN_WIDTH: f32 = 460.0;
 
+/// The content width for the space on hand.
+fn width(ui: &Ui) -> f32 {
+    ui.available_width().clamp(MIN_WIDTH, WIDTH)
+}
+
+/// The pane body. Returns what the user clicked, for the app to apply.
 pub fn body(ui: &mut Ui, w: &mut PerfWin) -> Option<Click> {
-    ui.set_width(WIDTH);
+    ui.set_width(width(ui));
     let out = card(ui, w);
     if w.tab == Tab::Live {
         ui.add_space(8.0);
@@ -643,11 +650,8 @@ mod tests {
         assert_eq!((Grade::Good.color(), Grade::Warn.color(), Grade::Bad.color()), (GOOD, WARN, BAD));
     }
 
-    #[test]
-    fn assert_no_idle_repaint_performance_window() {
-        let ctx = egui::Context::default();
-        ctx.set_fonts(crate::theme::test_fonts());
-        let mut w = PerfWin { open: true, ..Default::default() };
+    fn filled() -> PerfWin {
+        let mut w = PerfWin { shown: true, ..Default::default() };
         w.live.rows =
             vec![row("Decode", 4.0), Row { label: "Idle".into(), ms: 10.0, idle: true, ..Default::default() }];
         w.project = vec![Row {
@@ -663,17 +667,54 @@ mod tests {
             fix: Some((Fix::PruneCache, "Free disk cache")),
             ..Default::default()
         }];
-        for tab in [Tab::Live, Tab::Project] {
-            w.tab = tab;
-            for _ in 0..30 {
-                let _ = ctx.run(egui::RawInput::default(), |ctx| {
-                    egui::Window::new("Performance").show(ctx, |ui| body(ui, &mut w));
-                });
+        w
+    }
+
+    /// Drawn as a docked pane (a panel the size of a tab, scrolling like `perf_ctl::draw`), both tabs,
+    /// wide and narrow: no repaint asked.
+    #[test]
+    fn assert_no_idle_repaint_performance_pane() {
+        let mut w = filled();
+        for size in [vec2(1200.0, 800.0), vec2(480.0, 360.0)] {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts());
+            for tab in [Tab::Live, Tab::Project] {
+                w.tab = tab;
+                for _ in 0..30 {
+                    let input = egui::RawInput {
+                        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)),
+                        ..Default::default()
+                    };
+                    let _ = ctx.run(input, |ctx| {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| body(ui, &mut w));
+                        });
+                    });
+                }
+                assert!(!ctx.has_requested_repaint(), "the Performance pane repainted while idle ({tab:?}, {size:?})");
             }
-            assert!(
-                !ctx.has_requested_repaint(),
-                "the Performance window must request no repaint while idle ({tab:?})"
-            );
+        }
+    }
+
+    /// The pane fits the tab it is in: the full card at its widest, narrower in a narrow tab, never under
+    /// the minimum (the pane scrolls sideways instead).
+    #[test]
+    fn performance_pane_follows_the_tab_width() {
+        let mut w = filled();
+        for (avail, want) in [(1200.0, WIDTH), (600.0, 600.0), (300.0, MIN_WIDTH)] {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts());
+            let mut got = 0.0;
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(avail, 900.0))),
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                    got = ui.scope(|ui| body(ui, &mut w)).response.rect.width();
+                });
+            });
+            assert!((got - want).abs() < 1.0, "{avail} wide: the pane drew {got}, not {want}");
         }
     }
 }

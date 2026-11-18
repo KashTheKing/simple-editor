@@ -1,8 +1,8 @@
 //! ---- ws:perf-window ----
-//! The Performance window's App side (`ui::perf_ui` draws it): `tick` (FRAME_HOOKS) samples the live
-//! numbers ~4 times a second while the window is open (or a minute after `perf.report`), `window`
-//! (WINDOW_DRAWERS) draws it and applies a Jump / Fix, `project_rows` ranks the heaviest sources and clips,
-//! and `perf.report` / `perf.window` are the MCP twins.
+//! The Performance pane's App side (`ui::perf_ui` draws it): `tick` (FRAME_HOOKS) samples the live
+//! numbers ~4 times a second while the pane is on screen (or a minute after `perf.report`), `draw`
+//! (PANE_DRAWERS) draws it and applies a Jump / Fix, `button` is the top bar's chart button,
+//! `project_rows` ranks the heaviest sources and clips, and `perf.report` / `perf.window` are the MCP twins.
 
 use super::*;
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
@@ -26,6 +26,7 @@ fn refresh_disk(force: bool) {
 }
 
 pub(super) fn tick(app: &mut App, _ctx: &egui::Context) {
+    app.perf.shown = app.pane_drawn(Pane::Performance);
     let on = app.perf.sampling();
     if crate::perf::accumulating() != on {
         crate::perf::accumulate(on);
@@ -371,35 +372,49 @@ fn apply(app: &mut App, c: Click) {
     app.perf.project_at = None; // re-rank on the next frame
 }
 
-pub(super) fn window(app: &mut App, ctx: &egui::Context) {
-    if !app.perf.open {
-        return;
+/// PANE_DRAWERS entry: the pane (scrolls when it is shorter or narrower than the card).
+pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
+    if pane != Pane::Performance {
+        return false;
     }
     if app.perf.tab == Tab::Project && app.perf.project_at.is_none_or(|t| t.elapsed() > Duration::from_secs(2)) {
         refresh_project(app);
     }
-    let (mut open, tab) = (true, app.perf.tab);
-    let click = egui::Window::new("Performance")
-        .open(&mut open)
-        .resizable(false)
-        .show(ctx, |ui| perf_ui::body(ui, &mut app.perf))
-        .and_then(|r| r.inner.flatten());
-    app.perf.open = open;
+    let tab = app.perf.tab;
+    let click = egui::ScrollArea::both()
+        .id_salt("perf-pane")
+        .auto_shrink([false, false])
+        .show(ui, |ui| perf_ui::body(ui, &mut app.perf))
+        .inner;
     if app.perf.tab != tab {
-        ctx.request_repaint(); // the other tab's rows are made at the start of the next frame
+        ui.ctx().request_repaint(); // the other tab's rows are made at the start of the next frame
     }
     if let Some(c) = click {
         apply(app, c);
-        ctx.request_repaint();
+        ui.ctx().request_repaint();
     }
+    true
+}
+
+/// Open the pane, or bring it to the front of its tab group.
+fn open(app: &mut App) {
+    app.surface(Pane::Performance);
 }
 
 pub(super) fn act(app: &mut App, a: Action) -> bool {
     if a != Action::PerfWindow {
         return false;
     }
-    app.perf.open = true;
+    open(app);
     true
+}
+
+/// Top bar: the Performance button (beside Jobs and Quick Export).
+pub(super) fn button(app: &mut App, ui: &mut egui::Ui) {
+    let id = egui::Id::new("se-perf-button");
+    if tools::icon_button(ui, &app.palette, id, tools::Glyph::Perf, "Performance", false).clicked() {
+        app.act(Action::PerfWindow);
+    }
 }
 
 fn rows_json(rows: &[Row], shares: Option<&[f32]>) -> Vec<Value> {
@@ -427,7 +442,7 @@ fn report(app: &mut App) -> Value {
     let ps = perf_ui::segments(&mut proj);
     json!({
         "measuring": !live_rows.is_empty(),
-        "note": "live numbers are sampled ~4x a second while the Performance window is open, or for 60 s after this call: play, then call again",
+        "note": "live numbers are sampled ~4x a second while the Performance pane is on screen, or for 60 s after this call: play, then call again",
         "live": {
             "playing": l.playing, "fps": l.fps, "target_fps": l.target_fps,
             "dropped_10s": l.dropped_10s(), "dropped_session": l.dropped_session, "worst_gap_ms": l.worst_gap(),
@@ -444,14 +459,14 @@ fn report(app: &mut App) -> Value {
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "perf.report",
-        desc: "What the Performance window shows, as JSON: `live` (fps, dropped frames, worst gap, UI p95, decode, caches, jobs, and `breakdown`: ms per frame by category with its share) and `project` (the heaviest sources and clips, ms per frame - `estimate` true when not measured - with the clip to jump to and the fix on offer). Starts sampling for 60 s: play, then call again for live numbers.",
+        desc: "What the Performance pane shows, as JSON: `live` (fps, dropped frames, worst gap, UI p95, decode, caches, jobs, and `breakdown`: ms per frame by category with its share) and `project` (the heaviest sources and clips, ms per frame - `estimate` true when not measured - with the clip to jump to and the fix on offer). Starts sampling for 60 s: play, then call again for live numbers.",
         args: &[],
         kind: ToolKind::Read,
         run: |app, _| Ok(ToolOutcome::Done(report(app))),
     },
     ToolDef {
         name: "perf.bench",
-        desc: "Benchmark playback in the live app: `start` seeks to `from` (default: the playhead) and plays to `to` (default from + 10 s) through the play gate, recording as the Performance window does; poll `status` until `done` for frames published / dropped, avg and min fps, worst frame gap, UI frame p95, decode worst, start wait, buffering, `ok` against the budgets (0 dropped, gap <= 50 ms, UI p95 <= 8 ms) and the per-category `breakdown`; `stop` ends it. Pair with perf.report for the heaviest project items and their fixes.",
+        desc: "Benchmark playback in the live app: `start` seeks to `from` (default: the playhead) and plays to `to` (default from + 10 s) through the play gate, recording as the Performance pane does; poll `status` until `done` for frames published / dropped, avg and min fps, worst frame gap, UI frame p95, decode worst, start wait, buffering, `ok` against the budgets (0 dropped, gap <= 50 ms, UI p95 <= 8 ms) and the per-category `breakdown`; `stop` ends it. Pair with perf.report for the heaviest project items and their fixes.",
         args: &["action:string:false:start | status | stop (default start)", "from:number:false:", "to:number:false:"],
         kind: ToolKind::Ui,
         run: |app, args| bench(app, args).map(ToolOutcome::Done),
@@ -459,20 +474,67 @@ pub const TOOLS: &[ToolDef] = &[
     // the ToolDef twin of Action::PerfWindow
     ToolDef {
         name: "perf.window",
-        desc: "Open or close the Performance window (omit `on` to toggle); `tab` picks live | project.",
+        desc: "Open the Performance pane or bring it to the front (`on: false` hides it); `tab` picks live | project.",
         args: &["on:boolean:false:", "tab:string:false:live | project"],
         kind: ToolKind::Ui,
         run: |app, args| {
-            // picking a tab opens it; neither `on` nor `tab` toggles
-            let toggle = !app.perf.open || args.get("tab").is_some();
-            app.perf.open = args.get("on").and_then(|v| v.as_bool()).unwrap_or(toggle);
             match args.get("tab").and_then(|v| v.as_str()) {
                 Some("live") => app.perf.tab = Tab::Live,
                 Some("project") => app.perf.tab = Tab::Project,
                 Some(t) => return Err(format!("tab: live | project, not '{t}'")),
                 None => {}
             }
-            Ok(ToolOutcome::Done(json!({"ok": true, "open": app.perf.open})))
+            let on = args.get("on").and_then(|v| v.as_bool()).unwrap_or(true);
+            if on {
+                open(app);
+            } else if app.layout.is_visible(Pane::Performance) {
+                app.toggle_pane(Pane::Performance);
+            }
+            Ok(ToolOutcome::Done(json!({"ok": true, "open": on})))
         },
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::layout::Layout;
+
+    /// The top bar's Performance button: an icon button named "Performance" that answers a click and
+    /// runs `Action::PerfWindow`, which opens / focuses the pane (no headless `App`: the wiring is pinned
+    /// on the source, like `quick_export`'s button test).
+    #[test]
+    fn perf_button_triggers_the_action() {
+        let pal = crate::theme::Palette::new(true, egui::Color32::LIGHT_BLUE);
+        let id = egui::Id::new("se-perf-button");
+        let draw = |ui: &mut egui::Ui| tools::icon_button(ui, &pal, id, tools::Glyph::Perf, "Performance", false);
+        assert!(super::super::jobs_pane::tests::click_widget(draw, |r| r.center()));
+        let src = include_str!("perf_ctl.rs");
+        let body = |f: &str| {
+            let s = &src[src.find(f).unwrap()..];
+            s[..s.find("\n}\n").unwrap()].to_string()
+        };
+        let button = body("pub(super) fn button");
+        assert!(button.contains("\"Performance\"") && button.contains("app.act(Action::PerfWindow)"));
+        assert!(body("pub(super) fn act").contains("open(app)"));
+        assert!(body("fn open(app").contains("app.surface(Pane::Performance)"));
+        let menus = include_str!("menus.rs");
+        assert!(menus.contains("perf_ctl::button(self, ui)"), "the top bar draws the button");
+        assert!(menus.contains("Pane::Performance => PerfWindow"), "the Window menu and the Ctrl+P palette row");
+        let reg = include_str!("mod.rs");
+        assert!(!reg.contains("    perf_ctl::window,") && reg.contains("    perf_ctl::draw,"), "a pane, not a window");
+        let window = concat!("egui::", "Window"); // (not the literal: this test is in `src`)
+        assert!(!src.contains(window) && !include_str!("../perf_ui.rs").contains(window));
+        assert_eq!(Action::from_id("performance"), Some(Action::PerfWindow));
+        assert_eq!(Pane::by_title("performance"), Some(Pane::Performance));
+    }
+
+    /// `perf.window` / the button reveal the pane: hidden or not, it ends up visible and in front.
+    #[test]
+    fn opening_reveals_the_pane_on_any_page() {
+        for mut l in [Layout::export_layout(), Layout::blank_layout()] {
+            l.reveal(Pane::Performance);
+            assert!(l.is_visible(Pane::Performance));
+        }
+    }
+}

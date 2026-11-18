@@ -30,7 +30,7 @@ fn acts_if(ui: &mut egui::Ui, on: bool, items: &[Option<Action>]) {
 }
 
 /// Window menu: the everyday panels first, then the niche ones under More ▸ (hidden, not deleted).
-const MAIN_PANES: [Pane; 17] = [
+const MAIN_PANES: [Pane; 18] = [
     Pane::Library,
     Pane::MediaBrowser,
     Pane::Presets,
@@ -44,6 +44,8 @@ const MAIN_PANES: [Pane; 17] = [
     Pane::Scopes,
     Pane::Export,
     Pane::Jobs,
+    // ---- ws:perf-window ----
+    Pane::Performance,
     // ---- ws:pro-schema ----
     Pane::Assistant,
     // ---- ws:panels-multiscreen ----
@@ -79,6 +81,7 @@ pub(super) fn toggle_action(p: Pane) -> Option<Action> {
         Pane::Source => ToggleSource,
         Pane::Jobs => ToggleJobs,
         Pane::Scopes => ToggleScopes,
+        Pane::Performance => PerfWindow, // ws:perf-window
         // ---- ws:pro-schema ----
         Pane::Assistant => ToggleAssistant,
         // ---- ws:panels-multiscreen ----
@@ -142,6 +145,8 @@ impl App {
                 quick_export::button(self, ui);
                 // ---- ws:jobs-panel ----
                 jobs_pane::indicator(self, ui);
+                // ---- ws:perf-window ----
+                perf_ctl::button(self, ui);
             });
         });
         out
@@ -381,8 +386,6 @@ impl App {
             menu::sub(ui, None, "Move to window", |ui| self.move_to_menu(ui));
         }
         acts(ui, &[Some(Action::MaximizePane)]);
-        // ws:perf-window
-        acts(ui, &[None, Some(Action::PerfWindow)]);
         // ---- ws:command-palette ---- (per-script icon/hotkey/desc from ScriptMeta)
         if !self.script_metas().is_empty() {
             menu::sub(ui, Some(tools::Glyph::Terminal), "Scripts", |ui| {
