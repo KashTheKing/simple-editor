@@ -25,6 +25,15 @@
   platform cards show the real YouTube, Shorts, Instagram and TikTok marks (Simple Icons, CC0). **Your own
   presets**: "Save current settings…" (name, icon, colour), right-click to duplicate, rename, update or delete;
   Quick Export and the new `export.preset_save` / `preset_apply` / `preset_rename` / `preset_delete` tools use them too.
+- **Calmer Export panel, more in it**: the sections now look like the Inspector's (no colour bars), the
+  selected preset gets the normal selection highlight, platform presets are small square tiles and the brand marks
+  follow the text colour. **Frame rate is editable** (Project, 24, 25, 30, 50, 60 or Custom; presets can set it)
+  and the export resamples the timeline to it. The **project settings** (name, format, resolution, frame rate,
+  background, captions burn-in) are in the Export panel, so the Export page no longer shows the Inspector (a saved
+  Export layout is kept: Window ▸ Layout ▸ Reset Page Layout gets the new one). The built-in best-quality
+  preset is now just **Max quality**. **Ctrl+P `>Export`** lists **Quick export**: pick the file, it exports with
+  the Export panel's settings. **Cancel stops an export at once**: ffmpeg is stopped immediately, the partial file
+  is deleted and the job shows Cancelled straight away.
 ### Panels and screens
 - **Voiceover, Transcript and Rendering are panels now** instead of pop-up windows: dock them, tab them, undock
   them, open them from the Window menu or Ctrl+P. Voiceover has the input, a live level meter, Record / Stop,

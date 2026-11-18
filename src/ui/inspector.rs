@@ -382,7 +382,7 @@ fn transition_section(ui: &mut egui::Ui, project: &mut Project, ids: &[Id], undo
 /// that keep the aspect; "Custom…" reveals W × H), Frame rate (the presets; "Custom…" reveals a
 /// number), Background. The "Project" title shows the duration; its right-click saves the current
 /// format as a template or deletes saved ones. Save / Export live in the File menu and the Export page.
-fn project_section(
+pub(crate) fn project_section(
     ui: &mut egui::Ui,
     project: &mut Project,
     settings: &mut Settings,
@@ -672,8 +672,14 @@ fn rescale_prompt_id() -> egui::Id {
 
 /// "Resize existing media?" - non-blocking (plain egui::Window, never Modal). Armed by
 /// `project_section` when a control changed the resolution and footage exists; stays open across
-/// frames and selection changes (egui::Id-keyed temp) until answered or closed.
-fn rescale_prompt(ui: &mut egui::Ui, project: &mut Project, undo: &mut dyn FnMut(&Project)) -> bool {
+/// frames and selection changes (egui::Id-keyed temp) until answered or closed. Drawn by the Inspector
+/// and the Export pane (both show the project form); only the first caller in a pass draws it.
+pub(crate) fn rescale_prompt(ui: &mut egui::Ui, project: &mut Project, undo: &mut dyn FnMut(&Project)) -> bool {
+    let pass = ui.ctx().cumulative_pass_nr();
+    let drawn = egui::Id::new("inspector_rescale_prompt_pass");
+    if ui.ctx().data_mut(|d| std::mem::replace(d.get_temp_mut_or(drawn, u64::MAX), pass)) == pass {
+        return false;
+    }
     let mut edited = false;
     let mut rescale_open: bool = ui.ctx().data(|d| d.get_temp(rescale_prompt_id()).unwrap_or(false));
     if rescale_open {
