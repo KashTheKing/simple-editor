@@ -58,6 +58,11 @@ impl Toast {
         self.action = Some(("Undo".into(), action));
         self
     }
+    /// ws:panels-multiscreen: a button that runs `action` (the Audio page's Reset Page Layout).
+    pub(super) fn action(mut self, label: &str, action: Action) -> Self {
+        self.action = Some((label.into(), action));
+        self
+    }
 }
 
 impl App {

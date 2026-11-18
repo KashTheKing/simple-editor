@@ -757,3 +757,9 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   the picture; the crop is `tools_uikit::crop_frame`. Captures keep up to 2048 px (`CAPTURE_MAX`), other images 1024.
 - Line-by-line agents (codex, custom) now merge consecutive stdout lines into one Markdown text, so fenced blocks and
   lists render whole.
+
+## Panels + multi-screen (2026-11-17, feat/panels-multiscreen)
+- Voiceover / Transcript / Rendering are panes (`ui::voiceover_ui`, `app::voiceover_pane`, `subtitles_ui::show_transcript_pane` + `app::transcript_pane`, `app::render_pane`); the Voiceover, View transcript and Exporting… windows and the Export Frame window are gone. The Subtitles pane lost its Transcript tab and Transcribe… toggle (a Transcript button opens the pane).
+- Audio page default rebuilt (`Layout::audio_layout`); the Beat Aligner is found by title (`timeline_tabs`), so merging feat/beat-aligner needs its own `mix` line in audio_layout dropped (it would tab the aligner twice) and `BeatAligner` added to the Audio row of `every_page_contains_every_pane`.
+- Multi-screen: `Layout.screens` (one tile tree per extra window, panes keep a hidden tile in the main tree), drawn as immediate viewports in `layout::show_screen`; monitors / prompt / assignment in `ui::screens`; per-count layouts (`Settings.screen_layouts`, `"<n>|<page>"`) and placement in `app::screens_ctl`; `layout.screens` MCP tool. SE_BACKGROUND keeps screen windows on the main window's monitor (never the user's).
+- Live check: screen capture of the scratch instance's windows came back white for the main window too (environment), so the 2/3-screen windows were checked by window enumeration (titles, rects) plus ui.screenshot of the main viewport.

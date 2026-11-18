@@ -617,6 +617,17 @@ pub struct Settings {
     pub cache_move_from: String,
     /// The browser the app sends the user to (an exe path); empty = the Windows default browser.
     pub web_browser: String,
+    // ---- ws:panels-multiscreen ----
+    /// Screens the editor is laid out for: 1 (one window), 2 or 3 (the pages' extra windows on the other
+    /// monitors). The current count's trees are `layout` / `page_layouts`; the others' are in `screen_layouts`.
+    pub screen_mode: u8,
+    /// How many monitors there were when "Use 2-screen mode?" was last answered (0 = never asked): it asks
+    /// again only when more monitors than that are connected.
+    pub screens_answered: u8,
+    /// The pages' trees for the screen counts not in use, as `"<count>|<page>"` -> Layout JSON.
+    pub screen_layouts: BTreeMap<String, String>,
+    /// The Audio page's "new default layout" note was shown (a saved Audio layout is never replaced).
+    pub audio_layout_offered: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -879,6 +890,11 @@ impl Default for Settings {
             cache_folder: String::new(),
             cache_move_from: String::new(),
             web_browser: String::new(),
+            // ---- ws:panels-multiscreen ----
+            screen_mode: 1,
+            screens_answered: 0,
+            screen_layouts: BTreeMap::new(),
+            audio_layout_offered: false,
         }
     }
 }

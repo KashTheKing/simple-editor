@@ -2,6 +2,19 @@
 
 ## 1.3.1
 
+### Panels and screens
+- **Voiceover, Transcript and Rendering are panels now** instead of pop-up windows: dock them, tab them, undock
+  them, open them from the Window menu or Ctrl+P. Voiceover has the input, a live level meter, Record / Stop,
+  punch-in at the playhead, Retake and a list of your takes; Transcript holds transcription, the words and
+  captions from the transcript; Rendering shows the running export (and Export Frame) and comes up when an export
+  starts. **A real Audio page**: music (Library and the Gallery's Audio side), a small Preview, Mixer / Voiceover /
+  Transcript, the Inspector and the Timeline; a saved Audio layout is kept (Window ▸ Layout ▸ Reset Page Layout gets
+  the new one). **2- and 3-screen mode**: with more than one monitor the editor asks "Use 2-screen mode?" (also
+  Window ▸ Screens… and Settings ▸ General ▸ Layout): the Timeline gets its own window on the second screen, the
+  Preview the third. Each page keeps an arrangement per screen count; move any panel with its tab's right-click ▸
+  Move to window, or drag a tab out of the window onto another screen. A window whose monitor is gone folds back
+  into the main one.
+
 ### Quick Export
 - **A Quick Export button in the top bar** (top right, beside Jobs; also File ▸ Export ▸ Quick Export… and the
   palette): a Save As dialog with a file type list (MP4, MOV, MKV, WebM, GIF, WAV, MP3), then the export runs as a

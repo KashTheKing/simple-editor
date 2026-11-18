@@ -6,8 +6,7 @@
 //! (`transcript_hits`) and a ⋯ menu - Clip ▸ (which transcript to show), Transcribe selected clip,
 //! filler removal with Mark-instead first ("Mark fillers" drops a range marker per hit; "Remove
 //! fillers" only lights up once marks exist), the editable filler-word chips, "Speak text…" (TTS) and
-//! Export transcript. Also the
-//! non-blocking "View transcript" `egui::Window` the clip menu opens.
+//! Export transcript. Drawn by the Transcript pane (`subtitles_ui::show_transcript_pane`).
 //!
 //! This module has no `App`: app-level requests (start a transcription, speak a line) are left in
 //! `TranscriptUiState` and drained by `ui::app::transcript_ctl::tick`; edits go through the same
@@ -482,87 +481,6 @@ fn tts_panel(ui: &mut egui::Ui, st: &mut TranscriptUiState) {
     });
 }
 
-// ---------------------------------------------------------------- "View transcript" window
-
-/// The clip menu's "View transcript" window: every word with its timestamp, a filter box, click =
-/// seek. Non-blocking (`egui::Window`), one per app.
-#[derive(Default)]
-pub struct TranscriptWindow {
-    pub open: bool,
-    pub clip: Id,
-    pub query: String,
-}
-
-#[derive(Default)]
-pub struct WindowResponse {
-    pub seek: Option<f64>,
-    /// "No transcript yet - Transcribe…" was clicked.
-    pub transcribe: bool,
-}
-
-pub fn window(ctx: &egui::Context, st: &mut TranscriptWindow, project: &Project, playhead: f64) -> WindowResponse {
-    let mut resp = WindowResponse::default();
-    if !st.open {
-        return resp;
-    }
-    let mut open = true;
-    let title = format!("Transcript - {}", clip_label(project, st.clip));
-    egui::Window::new(title)
-        .id(egui::Id::new("transcript_window"))
-        .open(&mut open)
-        .default_width(380.0)
-        .default_height(320.0)
-        .show(ctx, |ui| match project.transcript(st.clip) {
-            None => {
-                ui.horizontal(|ui| {
-                    ui.label("No transcript yet - ");
-                    if ui.button("Transcribe…").clicked() {
-                        resp.transcribe = true;
-                    }
-                });
-            }
-            Some(tr) => {
-                ui.horizontal(|ui| {
-                    ui.add(TextEdit::singleline(&mut st.query).desired_width(180.0).hint_text("Filter words…"));
-                    ui.weak(format!("{} words", tr.words.len()));
-                });
-                let q = st.query.trim().to_lowercase();
-                let rows: Vec<usize> = tr
-                    .words
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, w)| q.is_empty() || w.2.to_lowercase().contains(&q))
-                    .map(|(i, _)| i)
-                    .collect();
-                let row_h = ui.spacing().interact_size.y;
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(
-                    ui,
-                    row_h,
-                    rows.len(),
-                    |ui, range| {
-                        for &i in &rows[range] {
-                            let w = &tr.words[i];
-                            ui.horizontal(|ui| {
-                                let active = playhead >= w.0 && playhead < w.1;
-                                if ui.small_button(duration_text(w.0)).on_hover_text("Seek here").clicked() {
-                                    resp.seek = Some(w.0);
-                                }
-                                let text = if active { RichText::new(&w.2).strong() } else { RichText::new(&w.2) };
-                                if ui.add(egui::Label::new(text).sense(egui::Sense::click())).clicked() {
-                                    resp.seek = Some(w.0);
-                                }
-                            });
-                        }
-                    },
-                );
-            }
-        });
-    if !open {
-        st.open = false;
-    }
-    resp
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,39 +559,6 @@ mod tests {
         assert_eq!(st.clip, Some(id), "the selected clip's transcript is shown");
         assert_eq!(p.transcript(id).unwrap().words.len(), 5);
         assert!(st.want_transcribe.is_none() && st.tts_request.is_none());
-    }
-
-    /// The "View transcript" window: 30 idle frames open over a transcript request no repaint; with no
-    /// transcript it shows the "No transcript yet" hint instead of an empty list.
-    #[test]
-    fn transcript_window_no_idle_repaint_and_empty_hint() {
-        let (p, id) = project();
-        let ctx = egui::Context::default();
-        ctx.set_fonts(crate::theme::test_fonts());
-        let mut st = TranscriptWindow { open: true, clip: id, query: String::new() };
-        for _ in 0..30 {
-            let _ = ctx.run(screen(), |ctx| {
-                let r = window(ctx, &mut st, &p, 1.1);
-                assert!(r.seek.is_none() && !r.transcribe);
-            });
-        }
-        assert!(!ctx.has_requested_repaint(), "idle transcript window requested a repaint");
-        assert!(st.open);
-        // a clip without a transcript
-        let mut st = TranscriptWindow { open: true, clip: 424242, query: String::new() };
-        let full = ctx.run(screen(), |ctx| {
-            let _ = window(ctx, &mut st, &p, 0.0);
-        });
-        let texts: Vec<String> = full
-            .shapes
-            .iter()
-            .filter_map(|cs| match &cs.shape {
-                Shape::Text(t) => Some(t.galley.text().to_string()),
-                _ => None,
-            })
-            .collect();
-        assert!(texts.iter().any(|s| s.contains("No transcript yet")), "{texts:?}");
-        assert!(texts.iter().any(|s| s == "Transcribe…"), "{texts:?}");
     }
 
     /// Clicking a word seeks to it; Delete over a selected word ripple-cuts it out of the clip (and
