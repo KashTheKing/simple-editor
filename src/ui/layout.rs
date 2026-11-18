@@ -165,6 +165,9 @@ pub enum Pane {
     // ---- ws:music-burn ----
     /// Playlists of library songs: order, play, to the timeline, visualizer video, .m3u8, burn (`ui::music_ui`).
     Playlists,
+    // ---- ws:device-emulator ----
+    /// The video in real devices with each platform's UI round it (`ui::emulator`).
+    Emulator,
 }
 
 impl Pane {
@@ -246,6 +249,8 @@ impl Pane {
         Pane::BeatAligner,
         // ---- ws:music-burn ----
         Pane::Playlists,
+        // ---- ws:device-emulator ----
+        Pane::Emulator,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -285,6 +290,7 @@ impl Pane {
             Pane::Rendering => Glyph::Queue,
             Pane::BeatAligner => Glyph::Waveform,
             Pane::Playlists => Glyph::MusicNote,
+            Pane::Emulator => Glyph::Guides,
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -329,6 +335,7 @@ impl Pane {
             Pane::Rendering => "Rendering",
             Pane::BeatAligner => "Beat Aligner",
             Pane::Playlists => "Playlists",
+            Pane::Emulator => "Device Emulator",
         }
     }
 }

@@ -210,7 +210,9 @@ fn every_platform_builds_in_every_mode_and_device() {
                 assert!(!ops.is_empty());
                 for open in [None, Some(Sheet::Comments), Some(Sheet::Desc), Some(Sheet::Share), Some(Sheet::More), Some(Sheet::Profile), Some(Sheet::Sound)] {
                     let sc = device::build(&g.device_view(open, 1.0), Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 900.0)));
-                    assert!(sc.video.width() > 10.0 && sc.video.height() > 10.0, "{} on {} has a video", plat.id, dev.id);
+                    // a desktop watch page scrolls to its comments like the real one: the player goes under the top bar
+                    let scrolled_away = dev.k == "desktop" && plat.pg == "watch" && open == Some(Sheet::Comments);
+                    assert!(scrolled_away || (sc.video.width() > 10.0 && sc.video.height() > 10.0), "{} on {} has a video ({open:?})", plat.id, dev.id);
                     assert!(sc.video.is_finite() && sc.uv.is_finite());
                     assert!(!sc.over.is_empty() && !sc.under.is_empty());
                 }
@@ -519,25 +521,31 @@ use super::device::op_bbox as bbox;
 
 /// Nothing is drawn outside the device's clip: every shape between the body and the corner mask lies inside
 /// the rounded screen (the browser window on desktop), the screen sits inside the bezel by exactly the bezel
-/// width, and the whole device has an even margin in the viewer, for every device and viewer shape.
+/// width, and the whole device has an even margin in the viewer, for every device and viewer shape, portrait
+/// and landscape (the reflowed landscape layouts keep every element inside the turned screen too), with the
+/// settings menu open and buffering.
 #[test]
 fn device_geometry_stays_inside_the_clip_for_every_preset() {
     let d = data();
     for plat in &d.platforms {
         for dev in &d.devices {
-            for area in [vec2(600.0, 900.0), vec2(1400.0, 500.0), vec2(300.0, 300.0), vec2(1000.0, 1000.0)] {
+            for (area, land) in [vec2(600.0, 900.0), vec2(1400.0, 500.0), vec2(300.0, 300.0), vec2(1000.0, 1000.0)].into_iter().flat_map(|a| [(a, false), (a, true)]) {
                 let area = Rect::from_min_size(pos2(7.0, 11.0), area);
                 for (open, vm) in [(None, 0.0), (Some(Sheet::Comments), 0.0), (Some(Sheet::Share), 0.0), (None, 1.0), (None, 2.0), (None, 0.4)] {
                     let st = settings_with(&plat.id, "device", &dev.id);
                     let g = GuideView::new(&st, "t", 9.0 / 16.0, 3.0, 10.0).unwrap();
                     let mut v = g.device_view(open, if open.is_some() { 1.0 } else { 0.0 });
                     v.vm = vm;
+                    v.land = land;
+                    v.pl = device::Player { menu: vm == 0.0, buffering: open.is_none(), t: 1.3, ..device::Player::default() };
                     let sc = device::build(&v, area);
-                    let ctx = format!("{} on {} in {area:?} open {open:?} vm {vm}", plat.id, dev.id);
+                    let ctx = format!("{} on {} in {area:?} open {open:?} vm {vm} land {land}", plat.id, dev.id);
+                    // a TV stands on its foot: the body is centred with the stand under it
+                    let stand = if dev.k == "tv" { (sc.outer.width() / (dev.w + 20.0)) * super::frame::TV_STAND } else { 0.0 };
                     assert!(area.contains_rect(sc.outer), "device inside the viewer: {ctx}");
                     let m = area.width().min(area.height()) * 0.04;
                     let (l, r) = (sc.outer.min.x - area.min.x, area.max.x - sc.outer.max.x);
-                    let (t, b) = (sc.outer.min.y - area.min.y, area.max.y - sc.outer.max.y);
+                    let (t, b) = (sc.outer.min.y - area.min.y, area.max.y - sc.outer.max.y - stand);
                     assert!((l - r).abs() < 1.0 && (t - b).abs() < 1.0, "centred, even margins {l} {r} {t} {b}: {ctx}");
                     assert!(l.min(t) >= m.max(10.0).min(area.width().min(area.height()) * 0.2) - 0.5, "margin kept: {ctx}");
                     if dev.k == "desktop" {
@@ -600,8 +608,10 @@ fn desktop_player_views() {
     };
     let (d, t, f) = (at(0.0), at(1.0), at(2.0));
     let page = d.screen.width();
-    assert!((d.video.width() / page - 1344.0 / 1920.0).abs() < 0.01, "default player is 70% of the page: {}", d.video.width() / page);
-    assert!((t.video.width() / page - 1620.0 / 1920.0).abs() < 0.01, "theatre video is 84% of the page, pillarboxed in a full-width box: {}", t.video.width() / page);
+    // youtube.com's own rules in a 1440 x 900 browser: the default player is the column left of the 402 px
+    // related videos (24 px margins), theatre is the full width and 100vh - 225 px tall (the video pillarboxed)
+    assert!((d.video.width() / page - (1440.0 - 24.0 * 3.0 - 402.0) / 1440.0).abs() < 0.01, "default player: {}", d.video.width() / page);
+    assert!((t.video.width() / page - (900.0 - 56.0 - 169.0) * 16.0 / 9.0 / 1440.0).abs() < 0.01, "theatre video, pillarboxed in a full-width box: {}", t.video.width() / page);
     assert!(t.video.width() > d.video.width());
     assert!((f.video.width() - f.outer.width()).abs() < 1.0, "fullscreen fills the window's width");
     assert!(f.under.len() < d.under.len() + 10 && f.under.iter().skip(f.chrome_under).any(|o| matches!(o, Op::Rect { fill, .. } if *fill == Color32::BLACK)));
@@ -611,10 +621,10 @@ fn desktop_player_views() {
     // the control bar's buttons
     let tap = |sc: &device::Scene, v: ViewMode| sc.hits.iter().rev().find(|(_, h)| *h == Hit::View(v)).map(|(r, _)| r.center()).expect("view button");
     let mut s = paint::State::default();
-    assert_eq!(s.click(&d, tap(&d, ViewMode::Theatre), ViewMode::Default), Some(Set::View(ViewMode::Theatre)));
-    assert_eq!(s.click(&t, tap(&t, ViewMode::Theatre), ViewMode::Theatre), Some(Set::View(ViewMode::Default)), "the same button again goes back");
-    assert_eq!(s.click(&d, tap(&d, ViewMode::Full), ViewMode::Default), Some(Set::View(ViewMode::Full)));
-    assert_eq!(s.click(&f, tap(&f, ViewMode::Full), ViewMode::Full), Some(Set::View(ViewMode::Default)));
+    assert_eq!(s.click(&d, tap(&d, ViewMode::Theatre), ViewMode::Default), Some(super::paint::Tap::Set(Set::View(ViewMode::Theatre))));
+    assert_eq!(s.click(&t, tap(&t, ViewMode::Theatre), ViewMode::Theatre), Some(super::paint::Tap::Set(Set::View(ViewMode::Default))), "the same button again goes back");
+    assert_eq!(s.click(&d, tap(&d, ViewMode::Full), ViewMode::Default), Some(super::paint::Tap::Set(Set::View(ViewMode::Full))));
+    assert_eq!(s.click(&f, tap(&f, ViewMode::Full), ViewMode::Full), Some(super::paint::Tap::Set(Set::View(ViewMode::Default))));
     // ids and settings
     assert_eq!(ViewMode::from_id("fullscreen"), Some(ViewMode::Full));
     assert_eq!(ViewMode::from_id("theatre"), Some(ViewMode::Theatre));
@@ -643,11 +653,11 @@ fn youtube_guides_have_no_dislike() {
             }
         }
     }
-    // the YouTube like is a thumbs-up, the others' a heart; no glyph is named after the old shape
+    // the YouTube like is YouTube's own thumbs-up icon, TikTok's its own heart (the real icons, `library/icons/platforms`)
     let d = data();
     let like_of = |id: &str| d.platform(id).unwrap().lay["phone"].ui.iter().find(|e| e.n == "likes").map(|e| e.i.clone());
-    assert_eq!(like_of("yt_shorts").as_deref(), Some("thumb"));
-    assert_eq!(like_of("tiktok").as_deref(), Some("like"));
+    assert_eq!(like_of("yt_shorts").as_deref(), Some("yt/like_filled"));
+    assert_eq!(like_of("tiktok").as_deref(), Some("tt/heart"));
     assert!(!EMBEDDED.contains("dislike"));
 }
 
@@ -744,4 +754,213 @@ fn burnt_in_guide_follows_the_exported_frame() {
     let end = red_end(&raw, 360, 638);
     assert!((end - 180.0).abs() <= 3.0, "exported frame 60 of 120: bar ends at {end}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------- ws:device-emulator
+
+fn icon_ops(ops: &[Op]) -> Vec<&'static str> {
+    ops.iter().filter_map(|o| if let Op::Icon { i, .. } = o { Some(super::icons::all()[*i as usize].name) } else { None }).collect()
+}
+
+fn scene_for(plat: &str, dev: &str, open: Option<Sheet>, land: bool, pl: device::Player) -> device::Scene {
+    let st = settings_with(plat, "device", dev);
+    let g = GuideView::new(&st, "My video", 9.0 / 16.0, 3.0, 10.0).unwrap();
+    let mut v = g.device_view(open, if open.is_some() { 1.0 } else { 0.0 });
+    (v.land, v.pl) = (land, pl);
+    device::build(&v, Rect::from_min_size(pos2(0.0, 0.0), vec2(900.0, 900.0)))
+}
+
+/// The atlas decodes, every name in atlas.txt has its SVG in the library and a picture in its cell, and the
+/// names the guides and pages draw resolve.
+#[test]
+fn icons_load_and_decode() {
+    let a = super::icons::atlas();
+    assert_eq!(a.width, 16 * 72, "16 cells a row");
+    assert!(a.height >= 72 && a.height % 72 == 0);
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("library/icons/platforms");
+    for (i, e) in super::icons::all().iter().enumerate() {
+        assert!(root.join(format!("{}.svg", e.name)).exists(), "{} has its SVG", e.name);
+        let [x0, y0, x1, y1] = e.px.map(|v| v as u32);
+        let mut ink = 0;
+        for y in y0..y1.min(a.height) {
+            for x in x0..x1 {
+                ink += (a.rgba[((y * a.width + x) * 4 + 3) as usize] > 128) as u32;
+            }
+        }
+        assert!(ink > 20, "{} ({i}) is drawn in its cell ({ink} px)", e.name);
+    }
+    for n in ["yt/play", "yt/pause", "yt/cc_on", "yt/cc_off", "yt/settings", "yt/theater", "yt/fullscreen", "yt/miniplayer", "yt/volume_mute", "yt/logo", "tt/heart", "tt/comment", "ig/heart", "android/wifi", "android/battery_full"] {
+        assert!(super::icons::index(n).is_some(), "{n}");
+    }
+    assert!((super::icons::aspect(super::icons::index("yt/logo").unwrap()) - 3.4).abs() < 0.3, "the logo spans three cells");
+}
+
+/// The avatar placeholder's shoulders stay inside the avatar's circle, in the viewer (the polygon) and in a
+/// bitmap (no pixel outside the circle changes).
+#[test]
+fn avatar_placeholder_is_clipped_to_its_circle() {
+    let (c, r) = (pos2(50.0, 50.0), 20.0);
+    let pts = paint::shoulders(c, r);
+    assert!(pts.len() >= 8);
+    assert!(pts.iter().all(|p| (*p - c).length() <= r + 0.01), "every shoulder point inside the circle");
+    let mut canvas = raster::Canvas::new(Frame::new(100, 100));
+    canvas.run(&[Op::Avatar { c, r }], None);
+    for y in 0..100usize {
+        for x in 0..100usize {
+            let d = ((x as f32 + 0.5 - c.x).powi(2) + (y as f32 + 0.5 - c.y).powi(2)).sqrt();
+            if d > r + 1.0 {
+                assert_eq!(canvas.f.rgba[(y * 100 + x) * 4 + 3], 0, "pixel {x},{y} outside the avatar is untouched");
+            }
+        }
+    }
+}
+
+/// Android devices draw the Android status bar (Material icons, the time at the left), iPhones their own.
+#[test]
+fn android_devices_use_the_android_status_bar() {
+    for dev in ["android", "galaxy", "small"] {
+        let s = scene_for("tiktok", dev, None, false, device::Player::default());
+        let icons = icon_ops(&s.over);
+        assert!(icons.contains(&"android/wifi") && icons.contains(&"android/battery_full") && icons.contains(&"android/signal_cellular_4_bar"), "{dev}: {icons:?}");
+        assert!(s.over.iter().any(|o| matches!(o, Op::Text { t, .. } if t == "12:30")), "{dev} shows the Android clock");
+    }
+    for dev in ["iphone", "iphone_notch"] {
+        let s = scene_for("tiktok", dev, None, false, device::Player::default());
+        assert!(!icon_ops(&s.over).iter().any(|n| n.starts_with("android/")), "{dev} is not Android");
+        assert!(s.over.iter().any(|o| matches!(o, Op::Text { t, .. } if t == "9:41")), "{dev} shows the iOS clock");
+    }
+    let s = scene_for("tiktok", "galaxy", None, false, device::Player::default());
+    assert!(s.over.iter().any(|o| matches!(o, Op::Text { t, .. } if t == "85%")), "the Galaxy shows its battery percentage");
+}
+
+/// While the player buffers, every platform draws its own spinner over the video (more marks over the video or
+/// along its bottom edge than when it plays).
+#[test]
+fn buffering_shows_the_platform_spinner() {
+    for plat in data().platforms.iter() {
+        for dev in ["iphone", "desktop"] {
+            let still = scene_for(&plat.id, dev, None, false, device::Player::default());
+            let busy = scene_for(&plat.id, dev, None, false, device::Player { buffering: true, t: 0.7, ..device::Player::default() });
+            let near = |s: &device::Scene| {
+                s.over
+                    .iter()
+                    .filter(|o| match o {
+                        Op::Line { a, .. } => s.video.expand(4.0).contains(*a),
+                        Op::Rect { r, .. } => (r.center().y - s.video.max.y).abs() < 6.0 && r.height() < 6.0,
+                        _ => false,
+                    })
+                    .count()
+            };
+            assert!(near(&busy) > near(&still), "{} on {dev}: spinner drawn while buffering", plat.id);
+        }
+    }
+}
+
+/// Every platform's comments open: on a phone a sheet that can be closed shows the first comment; YouTube on
+/// desktop scrolls its page to the comments.
+#[test]
+fn every_platforms_comments_open() {
+    for plat in data().platforms.iter() {
+        for dev in ["iphone", "android"] {
+            let s = scene_for(&plat.id, dev, Some(Sheet::Comments), false, device::Player::default());
+            assert!(s.hits.iter().any(|(_, h)| *h == Hit::Close), "{} on {dev}: the comments can be closed", plat.id);
+            let p = SocialProfile::sample(&plat.net);
+            let first = p.comment_list[0].name.clone();
+            assert!(s.over.iter().any(|o| matches!(o, Op::Text { t, .. } if t.contains(first.as_str()))), "{} on {dev}: the first comment is shown", plat.id);
+        }
+    }
+    let shut = scene_for("yt_long", "desktop", None, false, device::Player::default());
+    let open = scene_for("yt_long", "desktop", Some(Sheet::Comments), false, device::Player::default());
+    let head = |s: &device::Scene| s.under.iter().find_map(|o| match o {
+        Op::Text { p, t, .. } if t.ends_with(" Comments") => Some(p.y),
+        _ => None,
+    });
+    let (a, b) = (head(&shut).unwrap(), head(&open).unwrap());
+    assert!(b < a - 50.0 && b > open.screen.min.y && b < open.screen.max.y, "the page scrolled the comments into view: {a} -> {b}");
+}
+
+/// The CC button shows the project's subtitles switch (on / off icon) and a tap on it (or on the settings menu's
+/// Subtitles/CC row) asks for the switch; the gear opens the menu.
+#[test]
+fn captions_button_follows_and_switches_the_project_subtitles() {
+    for (dev, cc) in [("desktop", true), ("desktop", false), ("iphone", true)] {
+        let s = scene_for("yt_long", dev, None, false, device::Player { cc, ..device::Player::default() });
+        let icons = icon_ops(&s.over);
+        assert!(icons.contains(&if cc { "yt/cc_on" } else { "yt/cc_off" }), "{dev} cc {cc}: {icons:?}");
+        let (r, _) = *s.hits.iter().find(|(_, h)| *h == Hit::Captions).expect("a captions button");
+        let mut st = paint::State::default();
+        assert_eq!(st.click(&s, r.center(), ViewMode::Default), Some(paint::Tap::Captions));
+    }
+    let s = scene_for("yt_long", "desktop", None, false, device::Player::default());
+    let (gear, _) = *s.hits.iter().find(|(_, h)| *h == Hit::Menu).unwrap();
+    let mut st = paint::State::default();
+    st.click(&s, gear.center(), ViewMode::Default);
+    assert!(st.menu, "the gear opens the settings menu");
+    let s = scene_for("yt_long", "desktop", None, false, st.player(false, false, 0.0));
+    let has = |t0: &str| s.over.iter().any(|o| matches!(o, Op::Text { t, .. } if t == t0));
+    assert!(has("Subtitles/CC") && has("Quality") && has("Playback speed"));
+    let row = *s.hits.iter().rev().find(|(r, h)| *h == Hit::Captions && r.width() > 200.0).expect("the Subtitles/CC row");
+    assert_eq!(st.click(&s, row.0.center(), ViewMode::Default), Some(paint::Tap::Captions));
+}
+
+/// Turned to landscape, a phone's screen is wider than tall, the video fills its height (or width), and every tap
+/// target stays on the screen (the geometry test checks every drawn shape for every pairing).
+#[test]
+fn landscape_reflows_inside_the_turned_screen() {
+    for plat in ["tiktok", "yt_shorts", "ig_reels", "yt_long"] {
+        for dev in ["iphone", "android", "galaxy"] {
+            let s = scene_for(plat, dev, None, true, device::Player::default());
+            assert!(s.screen.width() > s.screen.height(), "{plat} on {dev}: turned");
+            let fills = (s.video.height() - s.screen.height()).abs() < s.screen.height() * 0.02 || (s.video.width() - s.screen.width()).abs() < 2.0;
+            assert!(fills, "{plat} on {dev}: the video fills the screen's height or width");
+            for (r, h) in &s.hits {
+                assert!(s.screen.expand(1.0).contains(r.center()), "{plat} on {dev}: tap target {h:?} inside");
+            }
+        }
+    }
+}
+
+/// Not a check: renders every platform on an iPhone, a Pixel, a Galaxy (and YouTube long form on the desktop
+/// browser and a TV), portrait and landscape, closed / comments open / buffering / CC on + settings menu, into
+/// PNGs for looking at. `SE_SHOT_DIR=<folder> [SE_SHOT_FRAME=<16:9 or 9:16 png>] cargo test emulator_shots -- --ignored`
+#[test]
+#[ignore]
+fn emulator_shots() {
+    let Some(dir) = std::env::var_os("SE_SHOT_DIR") else { return };
+    let dir = std::path::PathBuf::from(dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let frame = std::env::var_os("SE_SHOT_FRAME").and_then(|p| std::fs::read(p).ok()).and_then(|b| crate::engine::html::decode_png(&b).ok());
+    let aspect = frame.as_ref().map_or(9.0 / 16.0, |f| f.width as f32 / f.height as f32);
+    for plat in data().platforms.iter() {
+        let mut devs = vec!["iphone", "android", "galaxy"];
+        if plat.pg == "watch" {
+            devs.extend(["desktop", "tv"]);
+        }
+        for dev in devs {
+            for land in [false, true] {
+                if land && matches!(dev, "desktop" | "tv") {
+                    continue;
+                }
+                let states: [(&str, Option<Sheet>, device::Player, ViewMode); 5] = [
+                    ("closed", None, device::Player::default(), ViewMode::Default),
+                    ("comments", Some(Sheet::Comments), device::Player::default(), ViewMode::Default),
+                    ("buffering", None, device::Player { buffering: true, t: 0.9, ..device::Player::default() }, ViewMode::Default),
+                    ("cc_menu", None, device::Player { cc: true, menu: true, ..device::Player::default() }, ViewMode::Default),
+                    ("theatre", None, device::Player::default(), ViewMode::Theatre),
+                ];
+                for (name, open, pl, view) in states {
+                    if name == "theatre" && dev != "desktop" {
+                        continue;
+                    }
+                    let st = settings_with(&plat.id, "device", dev);
+                    let mut g = GuideView::new(&st, "Can 6 DEVS Make VERITY Without Communicating?", aspect, 63.0, 1382.0).unwrap();
+                    g.view = view;
+                    let w = if matches!(dev, "desktop" | "tv") { 1600 } else if land { 1100 } else { 560 };
+                    let out = raster::render_device_with(frame.as_ref(), &g, open, w, land, pl);
+                    let file = dir.join(format!("{}_{}_{}_{}.png", plat.id, dev, if land { "land" } else { "port" }, name));
+                    std::fs::write(&file, crate::mcp::png_encode(&out)).unwrap();
+                }
+            }
+        }
+    }
 }

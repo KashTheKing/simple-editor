@@ -167,6 +167,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         if let Some(g) = resp.set_guide {
             g.apply(&mut app.settings);
         }
+        if resp.open_emulator {
+            super::emulator_ctl::open(app); // ws:device-emulator
+        }
         // ---- ws:canvas-handles-monitor ----
         if let Some(on) = resp.set_canvas_snap {
             app.settings.canvas_snap = on;

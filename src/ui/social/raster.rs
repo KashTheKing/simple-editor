@@ -180,9 +180,50 @@ impl Canvas {
                     }
                 }
                 Op::Text { p, s, col, bold, t, al } => self.text(*p, *s, straight(*col), *bold, t, *al),
+                Op::Icon { r, i, col, flip } => {
+                    let uv = super::icons::uv(*i);
+                    self.icon(*r, if *flip { Rect::from_min_max(uv.max, uv.min) } else { uv }, straight(*col))
+                }
             }
         }
         self.clip = full;
+    }
+    /// The atlas part `uv` into `r`, multiplied by `col`: box-filtered when shrinking (an icon is 64 px in the
+    /// atlas and usually drawn at 12..40).
+    fn icon(&mut self, r: Rect, uv: Rect, col: [u8; 4]) {
+        let a = super::icons::atlas();
+        if r.width() < 0.5 || r.height() < 0.5 || a.width < 2 {
+            return;
+        }
+        let k = (uv.width().abs() * a.width as f32 / r.width()).clamp(1.0, 6.0).ceil() as i32;
+        let (x0, y0) = ((r.min.x.floor() as i32).max(self.clip.0), (r.min.y.floor() as i32).max(self.clip.1));
+        let (x1, y1) = ((r.max.x.ceil() as i32).min(self.clip.2), (r.max.y.ceil() as i32).min(self.clip.3));
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let mut acc = [0.0f32; 4];
+                for sy in 0..k {
+                    for sx in 0..k {
+                        let fx = (x as f32 + (sx as f32 + 0.5) / k as f32 - r.min.x) / r.width();
+                        let fy = (y as f32 + (sy as f32 + 0.5) / k as f32 - r.min.y) / r.height();
+                        if !(0.0..1.0).contains(&fx) || !(0.0..1.0).contains(&fy) {
+                            continue;
+                        }
+                        let px = sample(a, uv.min.x + uv.width() * fx, uv.min.y + uv.height() * fy);
+                        let w = px[3] as f32 / 255.0;
+                        for c in 0..3 {
+                            acc[c] += px[c] as f32 * w;
+                        }
+                        acc[3] += w;
+                    }
+                }
+                let n = (k * k) as f32;
+                if acc[3] <= 0.001 {
+                    continue;
+                }
+                let rgb = |c: usize| (acc[c] / acc[3] * col[c] as f32 / 255.0) as u8;
+                self.blend(x, y, [rgb(0), rgb(1), rgb(2), col[3]], acc[3] / n);
+            }
+        }
     }
     fn text(&mut self, p: Pos2, s: f32, col: [u8; 4], bold: bool, t: &str, al: u8) {
         static R: Mutex<Option<TextRasterizer>> = Mutex::new(None);
@@ -262,14 +303,24 @@ pub fn render_overlay(frame: Frame, g: &GuideView) -> Frame {
 
 /// The device picture `width` px wide (height follows the device); `frame` = the video (None = a stand-in).
 pub fn render_device(frame: Option<&Frame>, g: &GuideView, open: Option<Sheet>, width: u32) -> Frame {
+    render_device_with(frame, g, open, width, false, device::Player::default())
+}
+
+/// `render_device`, turned to landscape when `land` (a phone or tablet), with the player state `pl` (captions,
+/// buffering, the settings menu).
+pub fn render_device_with(frame: Option<&Frame>, g: &GuideView, open: Option<Sheet>, width: u32, land: bool, pl: device::Player) -> Frame {
     let dev = g.dev();
+    let land = land && dev.turns();
     let w = width.clamp(160, 2400) as f32;
-    let (bz, bar) = if dev.k == "desktop" { (0.0, 40.0) } else { (if dev.k == "tablet" { 12.0 } else { 7.0 }, 0.0) };
-    let m = 0.03 * w;
-    let k = (w - 2.0 * m) / (dev.w + 2.0 * bz);
-    let h = ((dev.h + 2.0 * bz + bar) * k + 2.0 * m).round();
+    let (ow, oh) = super::frame::outer_dp(&if land { dev.turned() } else { dev.clone() });
+    // the body's own margin (4 % of the shorter side, 10 pt at least) and the 4 pt left for the side buttons
+    let m = (0.04f32 * w).max(10.0) + 4.0;
+    let k = (w - 2.0 * m) / ow;
+    let h = (oh * k + 2.0 * m).round();
     let area = Rect::from_min_size(Pos2::ZERO, egui::vec2(w, h));
-    let scene = device::build(&g.device_view(open, if open.is_some() { 1.0 } else { 0.0 }), area);
+    let mut v = g.device_view(open, if open.is_some() { 1.0 } else { 0.0 });
+    (v.land, v.pl) = (land, pl);
+    let scene = device::build(&v, area);
     let mut c = Canvas::new(Frame::new(w as u32, h as u32));
     let av = super::profile::avatar(&g.profile, true);
     c.run(&scene.under, av.as_deref());

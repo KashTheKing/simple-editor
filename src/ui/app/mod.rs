@@ -177,6 +177,7 @@ mod voiceover_pane;
 mod template_ctl; // ws:animator-templates
 mod beats_ctl; // ws:beat-aligner
 mod music_ctl; // ws:music-burn
+mod emulator_ctl; // ws:device-emulator
 mod audio_only; // ws:preview-audio-only
 mod media_api; // ws:assistant-luau
 mod script_ctl; // ws:assistant-luau
@@ -528,6 +529,10 @@ pub struct App {
     music: crate::ui::music_ui::MusicState,
     /// "Draw a motion path" is armed: the next Viewer stroke becomes a path the selection follows.
     path_armed: bool,
+    // ---- ws:device-emulator ----
+    emulator: crate::ui::emulator::EmuState,
+    /// The Device Emulator's own copy of the picture when the Preview pane is hidden (nobody else uploads it).
+    emulator_tex: Option<egui::TextureHandle>,
     // ---- ws:pro-schema ----
     /// The Assistant pane's prompt / pending requests / log (`ui::assistant_ui`).
     pub(crate) assistant: crate::ui::assistant_ui::AssistantState,
@@ -1009,6 +1014,8 @@ impl App {
             beats_run_undo: false,
             music: crate::ui::music_ui::MusicState::new(), // ws:music-burn
             path_armed: false,
+            emulator: Default::default(), // ws:device-emulator
+            emulator_tex: None,
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -1782,6 +1789,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     beats_ctl::TOOLS,
     // ---- ws:music-burn ----
     music_ctl::TOOLS,
+    // ---- ws:device-emulator ----
+    emulator_ctl::TOOLS,
     // ---- ws:preview-audio-only ----
     audio_only::TOOLS,
     // ---- ws:assistant-luau ----
@@ -2122,6 +2131,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     beats_ctl::draw,
     // ---- ws:music-burn ----
     music_ctl::draw,
+    // ---- ws:device-emulator ----
+    emulator_ctl::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without
