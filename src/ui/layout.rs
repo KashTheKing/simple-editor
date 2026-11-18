@@ -141,6 +141,10 @@ pub enum Pane {
     Grade,
     /// The Color page's clip thumbnail strip: one card per video clip, click to grade it.
     Clips,
+    // ---- ws:perf-window ----
+    /// Where the performance goes: the donut, the live tiles and the Project tab (was the Performance
+    /// window; `ui::perf_ui`, `ui::app::perf_ctl`). A tab beside Jobs on the Export page.
+    Performance,
     // ---- ws:pro-schema ----
     /// The AI assistant: a prompt box and a log of what the agent said and did (`ui::assistant_ui`).
     /// Declared by pro-schema with a placeholder drawer; ws:assistant-pane fills it in. Tab-stacked
@@ -225,6 +229,7 @@ impl Pane {
         Pane::Grade,
         Pane::Clips,
         // ---- ws:perf-baseline ----
+        Pane::Performance,
         // ---- ws:pro-schema ----
         Pane::Assistant,
         // ---- ws:play-decode-path ----
@@ -283,6 +288,7 @@ impl Pane {
             Pane::MediaBrowser => Glyph::Link,
             Pane::Grade => Glyph::Wheel,
             Pane::Clips => Glyph::FilmStrip,
+            Pane::Performance => Glyph::Perf,
             Pane::Assistant => Glyph::Assistant,
             Pane::Animator => Glyph::CurveIcon,
             Pane::Voiceover => Glyph::Mic,
@@ -328,6 +334,7 @@ impl Pane {
             Pane::MediaBrowser => "Media Browser",
             Pane::Grade => "Color Wheels",
             Pane::Clips => "Clips",
+            Pane::Performance => "Performance",
             Pane::Assistant => "Assistant",
             Pane::Animator => "Animator",
             Pane::Voiceover => "Voiceover",
@@ -605,16 +612,16 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Export page: [Export settings] · [Preview] · [Jobs, the render queue] over the Timeline. No
-    /// Inspector: the Export pane shows the project settings itself (the `+` / Window menu brings the
-    /// Inspector back, hidden behind the Export tab).
+    /// The Export page: [Export settings] · [Preview] · [Jobs | Performance, the render queue and the
+    /// meters] over the Timeline. No Inspector: the Export pane shows the project settings itself (the `+` /
+    /// Window menu brings the Inspector back, hidden behind the Export tab).
     pub fn export_layout() -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
         let export = Self::tabs(t, &[Pane::Export], 0);
         let preview = t.insert_pane(Pane::Preview);
-        let jobs = t.insert_pane(Pane::Jobs);
+        let jobs = Self::tabs(t, &[Pane::Jobs, Pane::Performance], 0);
         let top = Self::linear(t, Horizontal, &[(export, 0.32), (preview, 0.48), (jobs, 0.2)]);
         let timeline = t.insert_pane(Pane::Timeline);
         let root = Self::linear(t, Vertical, &[(top, 0.6), (timeline, 0.4)]);
@@ -2016,7 +2023,7 @@ mod tests {
             ("Animate", &[Presets, Preview, Inspector, Timeline, Animator]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
             ("Audio", &[Library, MediaBrowser, Presets, Preview, Mixer, Voiceover, Transcript, Subtitles, Inspector, Timeline, BeatAligner]),
-            ("Export", &[Export, Preview, Jobs, Timeline]),
+            ("Export", &[Export, Preview, Jobs, Performance, Timeline]),
         ];
         assert_eq!(PAGES, shown.map(|(p, _)| p), "the pages in order (Alt+1..6 are the first six)");
         for (name, visible) in shown {
@@ -2141,6 +2148,40 @@ mod tests {
         ] {
             assert!(Pane::ALL.contains(&p), "{p:?} is still a pane");
             assert!(!Pane::ROUND3.contains(&p), "{p:?} must not make a stored layout unloadable");
+        }
+    }
+
+    // ---- ws:perf-window ----
+    /// The Export page: Jobs and Performance share one tab group, Jobs in front.
+    #[test]
+    fn export_page_has_jobs_and_performance_in_one_group() {
+        use egui_tiles::{Container, Tile};
+        let l = Layout::export_layout();
+        let t = &l.tree.tiles;
+        let (jobs, perf) = (t.find_pane(&Pane::Jobs).unwrap(), t.find_pane(&Pane::Performance).unwrap());
+        let group = t.parent_of(jobs).expect("Jobs is in a container");
+        assert_eq!(t.parent_of(perf), Some(group), "Performance sits beside Jobs");
+        match t.get(group) {
+            Some(Tile::Container(Container::Tabs(tabs))) => {
+                assert_eq!(tabs.children, vec![jobs, perf], "Jobs first, then Performance");
+                assert_eq!(tabs.active, Some(jobs), "Jobs in front");
+            }
+            other => panic!("Jobs and Performance are tabs, not {other:?}"),
+        }
+        assert!(Pane::ALL.contains(&Pane::Performance) && !Pane::ROUND3.contains(&Pane::Performance));
+    }
+
+    /// The pane renders in a tab group: its tab has its title and glyph, and the pages place it in a tab
+    /// group (behind another tab outside the Export page).
+    #[test]
+    fn performance_pane_renders_in_a_tab_group() {
+        use egui_tiles::{Container, Tile};
+        assert_eq!((Pane::Performance.title(), Pane::Performance.glyph()), ("Performance", Glyph::Perf));
+        for (name, l) in [("export", Layout::export_layout()), ("blank", Layout::blank_layout())] {
+            let t = &l.tree.tiles;
+            let id = t.find_pane(&Pane::Performance).unwrap_or_else(|| panic!("{name}: no Performance tile"));
+            let parent = t.parent_of(id).and_then(|p| t.get(p));
+            assert!(matches!(parent, Some(Tile::Container(Container::Tabs(_)))), "{name}: in a tab group");
         }
     }
 

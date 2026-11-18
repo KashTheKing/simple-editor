@@ -80,6 +80,9 @@
   Preview the third. Each page keeps an arrangement per screen count; move any panel with its tab's right-click ▸
   Move to window, or drag a tab out of the window onto another screen. A window whose monitor is gone folds back
   into the main one.
+- **Performance is a panel now** (a tab beside Jobs on the Export page): open it from the new chart button at the
+  top right, the Window menu or Ctrl+P; `perf.window` opens or focuses it. The whole Jobs button in the top bar is
+  clickable, count and icon.
 
 ### Quick Export
 - **A Quick Export button in the top bar** (top right, beside Jobs; also File ▸ Export ▸ Quick Export… and the

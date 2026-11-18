@@ -405,8 +405,8 @@ actions! {
     MakeVisualizerVideo => "make_visualizer_video", "Make Visualizer Video", None;
     NewPlaylist => "new_playlist", "New Playlist", None;
     // ---- ws:perf-window ----
-    // The Performance window (Window menu / palette / `perf.window`). Unbound by design.
-    PerfWindow => "performance", "Performance…", None;
+    // Open / focus the Performance pane (Window menu, palette, top-bar button, `perf.window`). Unbound by design.
+    PerfWindow => "performance", "Performance", None;
     // ---- ws:quick-export ----
     // The top bar's Quick Export button: Save As dialog with a type dropdown, then export. Unbound by design
     // (Ctrl+M is QuickExport, which re-runs the last export without a dialog).
