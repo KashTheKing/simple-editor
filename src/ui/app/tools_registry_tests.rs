@@ -12,6 +12,9 @@ use super::*;
 const OP_TOOLS: &[(&str, &str)] = &[
     ("add_asset", "media.import"),
     ("add_subclip", "media.subclip"),
+    ("link_bin", "media.import_folder"),
+    ("unlink_bin", "media.linked_bin"),
+    ("relink_bin", "media.linked_bin"),
     ("auto_cut", "timeline.auto_cut"),
     // ---- ws:beat-aligner ----
     ("set_beat_source", "beats.source"),
@@ -20,6 +23,15 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("beats_sfx", "beats.apply"),
     ("beats_snap_clips", "beats.apply"),
     ("beats_effect", "beats.apply"),
+    // ---- ws:music-burn ----
+    ("add_playlist", "playlist.create"),
+    ("rename_playlist", "playlist.rename"),
+    ("delete_playlist", "playlist.delete"),
+    ("playlist_add", "playlist.add"),
+    ("playlist_remove", "playlist.remove"),
+    ("playlist_move", "playlist.move"),
+    ("playlist_set_spacing", "playlist.set"),
+    ("playlist_to_timeline", "playlist.to_timeline"),
     ("add_bus", "audio.add_bus"),
     ("insert_asset_clips", "timeline.add_clip"),
     ("add_text_clip", "timeline.add_clip"),
@@ -118,6 +130,8 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("refresh_spans", "animate.span_set"),
     ("trim_clip", "timeline.trim"),
     ("block_from_keys", "keyblocks.from_keys"),
+    ("convert_keys_to_blocks", "keyblocks.convert_all"),
+    ("spans_from_transitions", "animate.spans_from_transitions"),
     ("loop_key_block", "keyblocks.loop"),
     ("loop_keys", "keyblocks.loop_keys"),
     ("collide_drop", "animate.collide"),
@@ -205,12 +219,14 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/assets.rs"),
     include_str!("../../model/ops/attrs.rs"),
     include_str!("../../model/ops/browser.rs"),
+    include_str!("../../model/ops/playlists.rs"), // ws:music-burn
     include_str!("../../model/ops/beats.rs"), // ws:beat-aligner
     include_str!("../../model/ops/autocut.rs"),
     include_str!("../../model/ops/buses.rs"),
     include_str!("../../model/ops/editing.rs"),
     include_str!("../../model/ops/effects.rs"),
     include_str!("../../model/ops/graph.rs"),
+    include_str!("../../model/ops/linked_bins.rs"),
     include_str!("../../model/ops/markers.rs"),
     // ---- ws:pro-monitor ----
     include_str!("../../model/ops/multicam.rs"),

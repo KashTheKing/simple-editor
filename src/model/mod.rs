@@ -668,6 +668,7 @@ mod keyblocks;
 mod marker;
 pub mod ops;
 mod path;
+mod playlist; // ws:music-burn
 mod project;
 mod repair;
 mod shape;
@@ -690,6 +691,7 @@ pub use animate::*;
 pub use keyblocks::*;
 pub use marker::*;
 pub use path::*;
+pub use playlist::Playlist; // ws:music-burn
 pub use project::*;
 pub use shape::*;
 pub use subtitle::*;

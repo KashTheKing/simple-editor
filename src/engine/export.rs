@@ -99,6 +99,12 @@ pub struct ExportOptions {
     pub stem_by: StemBy,
     /// Drawn over each frame before encoding (None = nothing). Forces the RGBA readback.
     pub overlay: Option<FrameOverlay>,
+    /// Output frame rate; None = the project's. Frames are sampled from the timeline at this rate.
+    pub fps: Option<f64>,
+    // ---- ws:export-size ----
+    /// Target size: aim the file at about this many bytes (average bitrate, `target_args`) instead
+    /// of the constant quality `crf`. None = quality mode.
+    pub target_bytes: Option<u64>,
 }
 
 // ---- ws:pro-schema ----
@@ -286,6 +292,9 @@ pub struct ExportPreset {
     /// Card accent colour; None = the icon's own.
     #[serde(default)]
     pub color: Option<[u8; 3]>,
+    /// Output frame rate; 0 = the project's.
+    #[serde(default)]
+    pub fps: f64,
 }
 
 /// The 4 shipped tiles - also the serde field default for `Settings.export_presets`, so a
@@ -302,15 +311,18 @@ pub fn default_export_presets() -> Vec<ExportPreset> {
         ..Default::default()
     };
     vec![
-        p("YouTube 1080p", 1920, 1080, 18, "youtube"),
-        p("YouTube 4K", 3840, 2160, 18, "youtube"),
-        p("Shorts / Reels / TikTok", 1080, 1920, 20, "youtubeshorts,instagram,tiktok"),
-        p("Instagram 1:1", 1080, 1080, 20, "instagram"),
+        // ws:export-size: YouTube re-encodes everything, so its tiles upload a little above the default
+        p("YouTube 1080p", 1920, 1080, DEFAULT_CRF - 2, "youtube"),
+        p("YouTube 4K", 3840, 2160, DEFAULT_CRF - 2, "youtube"),
+        p("Shorts / Reels / TikTok", 1080, 1920, DEFAULT_CRF, "youtubeshorts,instagram,tiktok"),
+        p("Instagram 1:1", 1080, 1080, DEFAULT_CRF, "instagram"),
     ]
 }
 
 /// The built-in preset that exports exactly the project (size, fps) at the best quality.
-pub const PRESET_MAX_QUALITY: &str = "Project settings — Max quality";
+pub const PRESET_MAX_QUALITY: &str = "Max quality";
+/// Its name before 1.3.1, still found by `Settings::export_preset` (a stored Quick Export target).
+pub const PRESET_MAX_QUALITY_OLD: &str = "Project settings \u{2014} Max quality";
 /// The built-in quick-look preset: project size and fps, fastest encode, smaller file.
 pub const PRESET_FAST_PREVIEW: &str = "Fast preview";
 
@@ -528,7 +540,7 @@ pub(crate) fn spawn_job(
 ) -> Arc<Progress> {
     let prog = Progress::new();
     let p = prog.clone();
-    let background = matches!(name, "proxy" | "transcribe" | "whisper-model" | "html-render" | "html-helper");
+    let background = matches!(name, "proxy" | "size-probe" | "transcribe" | "whisper-model" | "html-render" | "html-helper");
     let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
         if background {
             crate::media::bg::lower_thread();
@@ -555,7 +567,7 @@ pub(crate) fn ext_of(path: &Path) -> String {
 /// as "it could not start" (driver/GPU changed since the probe) rather than a mid-export error.
 const HW_START_FRAMES: u64 = 30;
 
-fn run_export(
+pub(crate) fn run_export(
     project: &Project,
     opts: &ExportOptions,
     text: &Arc<Mutex<TextRasterizer>>,
@@ -590,7 +602,7 @@ fn run_export_with(
     let tmp = temp_output(&opts.out_path);
     let audio_only = AUDIO_EXTS.contains(&ext.as_str());
     let is_gif = ext == "gif";
-    let fps = project.fps.max(1.0);
+    let fps = opts.fps.filter(|f| *f > 0.0).unwrap_or(project.fps).max(1.0);
     // ws:export-deliver: a range export renders [start, start+dur) instead of the whole timeline
     let (start, dur, n) = frame_plan(project.duration(), fps, opts.range)?;
     let (w, h) = (project.width.max(1), project.height.max(1));
@@ -646,7 +658,11 @@ fn run_export_with(
     if !enc_note.is_empty() {
         prog.set(0.0, enc_note.trim_start_matches(" · "));
     }
-    let args = codec_args(&ext, &encoder, opts.crf.max(CRF_BEST as u32), &opts.preset, &detect_encoders());
+    let mut args = codec_args(&ext, &encoder, opts.crf.max(CRF_BEST as u32), &opts.preset, &detect_encoders());
+    args.extend(gop_args(&ext, fps));
+    if let Some(bytes) = opts.target_bytes.filter(|_| !audio_only && !is_gif) {
+        args = target_args(args, target_video_kbps(bytes, dur, &ext, main_audio as u32));
+    }
     let gpu_tx = match &opts.frames {
         FrameSource::Gpu(tx) => Some(tx.clone()),
         FrameSource::Cpu => None,
@@ -702,7 +718,30 @@ fn run_export_with(
     let stop = AtomicBool::new(false);
     let audio_done: Vec<AtomicU32> = inputs.iter().map(|_| AtomicU32::new(0)).collect();
     let mut sent = 0u64;
+    let killer = ChildKiller::of(&child);
+    let swept = AtomicBool::new(false);
     let r = std::thread::scope(|s| {
+        // cancel kills ffmpeg at once (not after the frame in hand): its pipe and sockets break, which
+        // frees the writer and the audio threads wherever they are blocked. The job is reported stopped
+        // right here, partial file gone, while this thread finishes the frame it is on and unwinds.
+        s.spawn(|| {
+            while !stop.load(Ordering::SeqCst) {
+                if prog.is_cancelled() {
+                    killer.kill();
+                    // (a scanner may hold the just-closed file a moment: retry briefly)
+                    for _ in 0..50 {
+                        if std::fs::remove_file(&tmp.0).is_ok() || !tmp.0.exists() {
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(4));
+                    }
+                    swept.store(true, Ordering::SeqCst);
+                    prog.finish(Some(CANCELLED.into()));
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
         for ((input, listener), done) in inputs.iter().zip(listeners).zip(&audio_done) {
             let stop = &stop;
             s.spawn(move || feed_audio(input, listener, backend, start, dur, prog, stop, done, audio_only));
@@ -743,7 +782,10 @@ fn run_export_with(
                         }
                         next_req += 1;
                     }
-                    frame = g.window.pop(GPU_TIMEOUT);
+                    frame = g.window.pop(GPU_TIMEOUT, || prog.is_cancelled());
+                    if prog.is_cancelled() {
+                        break;
+                    }
                     if frame.is_none() {
                         // the renderer died or the UI stopped answering: finish on the CPU from this very
                         // frame (requests still in flight are dropped with the window) and say so
@@ -793,6 +835,11 @@ fn run_export_with(
         stop.store(true, Ordering::SeqCst);
         r
     });
+    if swept.load(Ordering::SeqCst) {
+        // already deleted when the cancel landed - a new export to the same name may own it by now
+        std::mem::forget(tmp);
+        return Err(CANCELLED.into());
+    }
     if r.is_err() && auto_hw && sent <= HW_START_FRAMES {
         *hw_failed = Some(encoder.clone());
     }
@@ -1048,9 +1095,17 @@ impl ReplyWindow {
         self.rx.push_back(rx);
     }
     /// The oldest request's frame. None = it failed (renderer gone / sender dropped), it took longer
-    /// than `timeout`, or nothing is in flight.
-    fn pop(&mut self, timeout: Duration) -> Option<Frame> {
-        self.rx.pop_front()?.recv_timeout(timeout).ok().flatten()
+    /// than `timeout`, nothing is in flight, or `quit` (polled every 10 ms) said stop.
+    fn pop(&mut self, timeout: Duration, quit: impl Fn() -> bool) -> Option<Frame> {
+        let rx = self.rx.pop_front()?;
+        let end = std::time::Instant::now() + timeout;
+        loop {
+            match rx.recv_timeout(Duration::from_millis(10)) {
+                Ok(f) => return f,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) if !quit() && std::time::Instant::now() < end => {}
+                Err(_) => return None,
+            }
+        }
     }
 }
 
@@ -1148,6 +1203,26 @@ fn cpu_gaps(project: &Project) -> String {
     }
 }
 
+/// Terminates a child process from another thread while its `Child` is borrowed elsewhere (the raw
+/// handle stays valid as long as that `Child` lives - it outlives the scope that uses this).
+struct ChildKiller(isize);
+impl ChildKiller {
+    fn of(child: &Child) -> Self {
+        use std::os::windows::io::AsRawHandle;
+        Self(child.as_raw_handle() as isize)
+    }
+    /// Terminate it and wait (up to 1 s) until it is gone, so its files are closed.
+    fn kill(&self) {
+        use windows::Win32::{
+            Foundation::HANDLE,
+            System::Threading::{TerminateProcess, WaitForSingleObject},
+        };
+        let h = HANDLE(self.0 as _);
+        let _ = unsafe { TerminateProcess(h, 1) };
+        let _ = unsafe { WaitForSingleObject(h, 1000) };
+    }
+}
+
 /// Deleted on drop (a no-op once `commit`ted into place).
 pub(crate) struct TempFile(pub(crate) PathBuf);
 impl TempFile {
@@ -1197,7 +1272,7 @@ pub(crate) fn wait_ffmpeg(child: &mut Child, tail: Option<JoinHandle<String>>, p
         }
         match child.try_wait() {
             Ok(Some(st)) => break st,
-            Ok(None) => std::thread::sleep(Duration::from_millis(30)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(e) => return Err(format!("ffmpeg: {e}")),
         }
     };
@@ -1521,7 +1596,19 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
                 format!("-c:v {enc} -preset {preset} -crf {crf} -pix_fmt yuv420p")
             }
             "h264_nvenc" | "hevc_nvenc" | "av1_nvenc" => {
-                format!("-c:v {enc} -preset {nv} -cq {crf} -b:v 0 -pix_fmt yuv420p")
+                // VBR at a constant-quality target with lookahead, B-frames and adaptive quantisation:
+                // ffmpeg's NVENC defaults (no B-frames, no lookahead, Main profile) spent 16 Mb/s on a
+                // 720p60 export that x264 fits in a fifth of that (notes: export-size measurements).
+                // NVENC's CQ scale runs finer than x264's CRF, hence `nvenc_cq`.
+                let cq = nvenc_cq(crf);
+                let mut s = format!(
+                    "-c:v {enc} -preset {nv} -tune hq -rc vbr -cq {cq} -b:v 0 -rc-lookahead 20 \
+                     -spatial-aq 1 -temporal-aq 1 -bf 3 -pix_fmt yuv420p"
+                );
+                if enc == "h264_nvenc" {
+                    s.push_str(" -profile:v high -b_ref_mode middle");
+                }
+                s
             }
             "h264_qsv" | "hevc_qsv" => {
                 format!("-c:v {enc} -preset {qsv} -global_quality {crf_qsv} -pix_fmt nv12")
@@ -1540,6 +1627,9 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
         };
         if matches!(ext.as_str(), "mp4" | "mov" | "m4v") {
             video.push_str(" -movflags +faststart");
+            if enc.starts_with("hevc") || enc == "libx265" {
+                video.push_str(" -tag:v hvc1"); // Apple players refuse HEVC tagged hev1
+            }
         }
     }
     let mut v: Vec<String> = video.split(' ').filter(|s| !s.is_empty()).map(String::from).collect();
@@ -1549,11 +1639,87 @@ pub fn codec_args(ext: &str, encoder: &str, crf: u32, preset: &str, available: &
     v
 }
 
+/// x264 CRF -> the NVENC `-cq` that lands at about the same VMAF (measured, see notes.md "export size").
+fn nvenc_cq(crf: u32) -> u32 {
+    (crf + NVENC_CQ_OFFSET).min(51)
+}
+/// Measured: NVENC CQ 26 matched x264 CRF 20 in VMAF on both the reference project (90.1 vs 89.1) and
+/// the synthetic clip (95.9 vs 95.8).
+const NVENC_CQ_OFFSET: u32 = 6;
+
+/// A keyframe every 2 seconds: what YouTube asks for, quick seeking, and no size cost worth measuring.
+/// Every video encoder takes `-g`; a gif / audio-only export gets nothing.
+pub fn gop_args(ext: &str, fps: f64) -> Vec<String> {
+    if ext == "gif" || AUDIO_EXTS.contains(&ext) {
+        return Vec::new();
+    }
+    vec!["-g".into(), ((fps.max(1.0) * 2.0).round() as u32).to_string()]
+}
+
+/// The audio bitrate `codec_args` gives a container, in bits/s (for the target-size maths).
+pub fn audio_bps(ext: &str) -> u64 {
+    match ext {
+        "webm" | "ogg" | "opus" => 160_000,
+        "avi" | "mp3" => 190_000, // lame -q:a 2 ≈ 190 kb/s
+        "wav" => 1_536_000,
+        _ => 192_000,
+    }
+}
+
+/// Video bitrate (kb/s) that makes a `dur`-second file about `target_bytes` big, after `streams`
+/// audio streams and ~1 % container overhead. Never below 100 kb/s.
+pub fn target_video_kbps(target_bytes: u64, dur: f64, ext: &str, streams: u32) -> u32 {
+    let total_bps = target_bytes as f64 * 8.0 * 0.99 / dur.max(0.1);
+    let video = total_bps - (audio_bps(ext) * streams as u64) as f64;
+    ((video / 1000.0).round() as u32).max(100)
+}
+
+/// Swap `codec_args`' constant-quality rate control for an average bitrate (Target size). NVENC runs
+/// two passes inside the encoder (`-multipass fullres`) and x264/x265 an average bitrate with a VBV
+/// cap, both with the lookahead `codec_args` already set - measured within ±5 % of the target on the
+/// reference project and the synthetic clip (notes.md). Encoders without a bitrate mode keep theirs.
+pub fn target_args(args: Vec<String>, kbps: u32) -> Vec<String> {
+    let quality_flags = ["-crf", "-cq", "-global_quality", "-qp_i", "-qp_p", "-q:v", "-rc", "-b:v"];
+    let enc = args.windows(2).find(|w| w[0] == "-c:v").map(|w| w[1].clone()).unwrap_or_default();
+    if matches!(enc.as_str(), "gif" | "") {
+        return args;
+    }
+    let mut out = Vec::with_capacity(args.len() + 8);
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if quality_flags.contains(&a.as_str()) {
+            it.next(); // and its value
+        } else {
+            out.push(a);
+        }
+    }
+    let rate = [
+        "-b:v".to_string(),
+        format!("{kbps}k"),
+        "-maxrate".into(),
+        format!("{}k", kbps * 3 / 2),
+        "-bufsize".into(),
+        format!("{}k", kbps * 2),
+    ];
+    let at = out.iter().position(|a| a == "-pix_fmt" || a == "-c:a" || a == "-movflags").unwrap_or(out.len());
+    let mut extra: Vec<String> = rate.to_vec();
+    if enc.ends_with("_nvenc") {
+        extra.splice(0..0, ["-rc", "vbr", "-multipass", "fullres"].map(String::from));
+    } else if enc.ends_with("_amf") {
+        extra.splice(0..0, ["-rc", "vbr_peak"].map(String::from));
+    }
+    out.splice(at..at, extra);
+    out
+}
+
 /// User-facing quality percent (100 = best) -> the CRF `codec_args` actually uses (0 = best, 51 = worst).
 /// `pct` is expected pre-clamped to 0..=100 (the slider's own range); clamps again here as a safety net.
 /// 100% is CRF 16 (visually lossless), not CRF 0 (mathematically lossless, ~10x the size for no
 /// visible gain); 0% is CRF 36 (tiny, blocky). Everything below 36 is unwatchable, so it is off the scale.
 pub const CRF_BEST: f64 = 16.0;
+/// The Quality default (fresh settings, Quick Export, the platform tiles): transparent on screen-recorded
+/// and rendered footage at a third of CRF 18's size (notes.md "export size").
+pub const DEFAULT_CRF: u32 = 23;
 pub const CRF_WORST: f64 = 36.0;
 pub fn crf_from_quality_percent(pct: u32) -> u32 {
     let pct = pct.min(100) as f64;
@@ -1567,16 +1733,17 @@ pub fn quality_percent_from_crf(crf: u32) -> u32 {
 }
 
 /// Rough estimated output size in bytes for the export progress/quality UI - NOT a guarantee, since CRF
-/// targets a quality level, not a bitrate. Video bitrate is extrapolated from a "reasonable quality" x264
-/// ballpark at CRF 23 (0.1 bits/pixel/frame), scaled by the x264 rule of thumb that every 6 CRF steps
-/// roughly halves/doubles bitrate; audio assumes ~128kbps AAC-ish stereo per stream in the file
+/// targets a quality level, not a bitrate. The Export pane shows it only until `size_probe` has measured the
+/// real thing. Video bitrate is extrapolated from 0.075 bits/pixel/frame at CRF 23 (measured: the
+/// reference project and the synthetic grain clip both landed at 0.072 with x264, NVENC ~10 % above), scaled by the x264 rule of thumb that every 6 CRF steps
+/// roughly halves/doubles bitrate; audio assumes the 192 kb/s AAC `codec_args` writes, per stream per stream in the file
 /// (`audio_streams`: 1 for a mix, 1 + stems for "Separate tracks in file").
 pub fn estimate_export_bytes(width: u32, height: u32, fps: f64, duration_secs: f64, crf: u32, audio_streams: u32) -> u64 {
     let pixels_per_sec = width as f64 * height as f64 * fps;
-    let base_bitrate_bps = pixels_per_sec * 0.1;
+    let base_bitrate_bps = pixels_per_sec * 0.075;
     let scale = 2f64.powf((23.0 - crf as f64) / 6.0);
     let video_bitrate_bps = (base_bitrate_bps * scale).clamp(50_000.0, (pixels_per_sec * 2.0).max(50_000.0));
-    let audio_bitrate_bps = 128_000.0 * audio_streams as f64;
+    let audio_bitrate_bps = 192_000.0 * audio_streams as f64;
     ((video_bitrate_bps + audio_bitrate_bps) / 8.0 * duration_secs.max(0.0)) as u64
 }
 
@@ -1720,6 +1887,142 @@ pub(crate) mod tests {
         String::from_utf8_lossy(&o.stdout).trim().parse().ok()
     }
 
+    // ---- ws:export-size ----
+    /// 30 s, 640x360 @ 30: 15 s of moving test pattern, then the same with heavy grain (a cheap scene
+    /// and an expensive one, so a size estimate can't just extrapolate the first seconds), one sine.
+    fn gen_varied(dir: &Path) -> Option<PathBuf> {
+        let exe = ffpipe::ffmpeg_exe()?;
+        let out = dir.join("varied.mp4");
+        let st = ffpipe::command(&exe)
+            .args(["-y", "-hide_banner", "-loglevel", "error"])
+            .args(["-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=15"])
+            .args(["-f", "lavfi", "-i", "testsrc2=s=640x360:r=30:d=15,noise=alls=14:allf=t"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=30"])
+            .args(["-filter_complex", "[0:v][1:v]concat=n=2:v=1[v]", "-map", "[v]", "-map", "2:a"])
+            .args(["-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "8", "-c:a", "aac"])
+            .arg(&out)
+            .status()
+            .expect("run ffmpeg");
+        assert!(st.success(), "ffmpeg could not generate test media");
+        Some(out)
+    }
+
+    /// `gen_varied`'s file as an asset: 30 s of 640x360 at 30 fps with one audio stream.
+    fn varied_asset(src: &Path) -> Asset {
+        Asset { duration: 30.0, width: 640, height: 360, ..asset(&src.to_string_lossy(), 1) }
+    }
+
+    fn nvenc_runs() -> bool {
+        let Some(exe) = ffpipe::ffmpeg_exe() else { return false };
+        ffpipe::command(&exe)
+            .args(["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=black:s=256x144:r=30"])
+            .args(["-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-"])
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    #[test]
+    fn encoder_args_quality_gop_pixfmt_audio() {
+        let has = |v: &[String], k: &str, val: &str| v.windows(2).any(|w| w[0] == k && w[1] == val);
+        let crf = DEFAULT_CRF;
+        let x = codec_args("mp4", "libx264", crf, "balanced", &[]);
+        assert!(has(&x, "-crf", &crf.to_string()) && has(&x, "-preset", "medium") && has(&x, "-pix_fmt", "yuv420p"));
+        assert!(has(&x, "-c:a", "aac") && has(&x, "-b:a", "192k"), "{x:?}");
+        let nv = codec_args("mp4", "h264_nvenc", crf, "balanced", &[]);
+        for (k, v) in [("-rc", "vbr"), ("-cq", &nvenc_cq(crf).to_string()), ("-b:v", "0"), ("-bf", "3"), ("-rc-lookahead", "20")] {
+            assert!(has(&nv, k, v), "nvenc {k} {v}: {nv:?}");
+        }
+        assert!(has(&nv, "-profile:v", "high") && has(&nv, "-spatial-aq", "1") && has(&nv, "-pix_fmt", "yuv420p"));
+        let hevc = codec_args("mp4", "hevc_nvenc", crf, "balanced", &[]);
+        assert!(has(&hevc, "-tag:v", "hvc1") && !hevc.iter().any(|a| a == "-profile:v"), "{hevc:?}");
+        assert!(!codec_args("mkv", "hevc_nvenc", crf, "", &[]).iter().any(|a| a == "-tag:v"), "hvc1 is an mp4/mov tag");
+        assert!(has(&codec_args("mp4", "libx265", crf, "", &[]), "-tag:v", "hvc1"));
+        let q = codec_args("mp4", "h264_qsv", crf, "", &[]);
+        assert!(has(&q, "-global_quality", &crf.to_string()) && has(&q, "-pix_fmt", "nv12"));
+        let a = codec_args("mp4", "h264_amf", crf, "", &[]);
+        assert!(has(&a, "-rc", "cqp") && has(&a, "-qp_i", &crf.to_string()));
+        let w = codec_args("webm", "auto", crf, "", &[]);
+        assert!(has(&w, "-c:a", "libopus") && has(&w, "-b:a", "160k") && has(&w, "-pix_fmt", "yuv420p"));
+        // GOP: 2 s at the project frame rate, nothing for gif / audio
+        assert_eq!(gop_args("mp4", 60.0), ["-g", "120"]);
+        assert_eq!(gop_args("webm", 29.97), ["-g", "60"]);
+        assert!(gop_args("gif", 30.0).is_empty() && gop_args("wav", 30.0).is_empty());
+        // NVENC's scale: never past 51, and the default lands on a sane CQ
+        assert_eq!(nvenc_cq(51), 51);
+        assert!((18..=32).contains(&nvenc_cq(DEFAULT_CRF)));
+    }
+
+    #[test]
+    fn target_args_swap_quality_for_bitrate() {
+        let has = |v: &[String], k: &str, val: &str| v.windows(2).any(|w| w[0] == k && w[1] == val);
+        let x = target_args(codec_args("mp4", "libx264", 23, "balanced", &[]), 3000);
+        assert!(!x.iter().any(|a| a == "-crf"), "{x:?}");
+        assert!(has(&x, "-b:v", "3000k") && has(&x, "-maxrate", "4500k") && has(&x, "-bufsize", "6000k"));
+        assert!(has(&x, "-preset", "medium") && has(&x, "-c:a", "aac") && has(&x, "-b:a", "192k"), "audio untouched");
+        let nv = target_args(codec_args("mp4", "h264_nvenc", 23, "balanced", &[]), 3000);
+        assert!(!nv.iter().any(|a| a == "-cq") && nv.iter().filter(|a| *a == "-b:v").count() == 1, "{nv:?}");
+        assert!(has(&nv, "-rc", "vbr") && has(&nv, "-multipass", "fullres") && has(&nv, "-bf", "3"));
+        let vp9 = target_args(codec_args("webm", "auto", 23, "", &[]), 800);
+        assert!(has(&vp9, "-b:v", "800k") && !vp9.iter().any(|a| a == "-crf"), "{vp9:?}");
+        let gif = codec_args("gif", "auto", 23, "", &[]);
+        assert_eq!(target_args(gif.clone(), 800), gif);
+        // 50 MB over 130 s with one 192k AAC stream: ~2.85 Mb/s of video
+        assert_eq!(target_video_kbps(50_000_000, 130.0, "mp4", 1), 2854);
+        assert_eq!(target_video_kbps(1_000, 600.0, "mp4", 1), 100, "floor");
+    }
+
+    #[test]
+    fn size_estimate_matches_the_real_export() {
+        let dir = temp_dir("estimate");
+        let Some(src) = gen_varied(&dir) else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        let p = Project::from_media(varied_asset(&src));
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        let opts = ExportOptions {
+            encoder: "libx264".into(),
+            crf: DEFAULT_CRF,
+            preset: "balanced".into(),
+            ..opts_for(dir.join("full.mp4"))
+        };
+        assert_eq!(wait_done(&start_export(p.clone(), opts.clone(), text.clone())), None);
+        let real = std::fs::metadata(dir.join("full.mp4")).unwrap().len() as f64;
+        let est = crate::engine::size_probe::sample(&p, &opts, &text, &Progress::new()).unwrap() as f64;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!((est / real - 1.0).abs() < 0.15, "estimate {est} vs real {real}");
+    }
+
+    #[test]
+    fn target_size_lands_within_ten_percent() {
+        let dir = temp_dir("target");
+        let Some(src) = gen_varied(&dir) else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        let p = Project::from_media(varied_asset(&src));
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        let mut encs = vec!["libx264"];
+        if nvenc_runs() {
+            encs.push("h264_nvenc");
+        }
+        for enc in encs {
+            for target in [1_500_000u64, 4_000_000] {
+                let out = dir.join(format!("{enc}-{target}.mp4"));
+                let opts = ExportOptions {
+                    encoder: enc.into(),
+                    preset: "balanced".into(),
+                    target_bytes: Some(target),
+                    ..opts_for(out.clone())
+                };
+                assert_eq!(wait_done(&start_export(p.clone(), opts, text.clone())), None);
+                let got = std::fs::metadata(&out).unwrap().len() as f64;
+                assert!((got / target as f64 - 1.0).abs() < 0.10, "{enc}: {got} bytes for a {target} target");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn codec_args_by_ext() {
         let j = |v: Vec<String>| v.join(" ");
@@ -1734,7 +2037,7 @@ pub(crate) mod tests {
         assert_eq!(j(codec_args("gif", "auto", 18, "", &[])), "-c:v gif");
         let s = j(codec_args("mkv", "hevc_nvenc", 20, "slow", &["hevc_nvenc".into(), "libx264".into()]));
         // ws:export-encoders: an x264 preset name picks the hardware tier (slow → p7)
-        assert!(s.contains("-c:v hevc_nvenc -preset p7 -cq 20 -b:v 0"), "{s}");
+        assert!(s.contains("-c:v hevc_nvenc -preset p7 -tune hq -rc vbr -cq 26 -b:v 0"), "{s}");
         // requested encoder unavailable → libx264
         let s = j(codec_args("mp4", "h264_nvenc", 20, "slow", &["libx264".into()]));
         assert!(s.contains("-c:v libx264 -preset slow -crf 20"), "{s}");
@@ -1762,7 +2065,7 @@ pub(crate) mod tests {
             ("small", "slow", "p7", "veryslow", "quality"),
         ] {
             assert!(j("libx264", speed).contains(&format!("-preset {x264} -crf 20")), "{speed}");
-            assert!(j("h264_nvenc", speed).contains(&format!("-preset {nv} -cq 20")), "{speed}");
+            assert!(j("h264_nvenc", speed).contains(&format!("-preset {nv} -tune hq -rc vbr -cq 26")), "{speed}");
             assert!(j("h264_qsv", speed).contains(&format!("-preset {qsv} -global_quality 20")), "{speed}");
             assert!(j("h264_amf", speed).contains(&format!("-quality {amf} -rc cqp")), "{speed}");
         }
@@ -1839,12 +2142,12 @@ pub(crate) mod tests {
 
     #[test]
     fn estimate_bytes_sane_ballpark() {
-        // 1920x1080 @ 30fps, 60s, CRF 23, by hand: base = 1920*1080*30*0.1 = 6,220,800 bps;
-        // scale(23) = 1; + 128kbps audio = 6,348,800 bps; /8 * 60s = 47,616,000 bytes (~47.6 MB).
+        // 1920x1080 @ 30fps, 60s, CRF 23, by hand: base = 1920*1080*30*0.075 = 4,665,600 bps;
+        // scale(23) = 1; + 192kbps audio = 4,857,600 bps; /8 * 60s = 36,432,000 bytes (~36.4 MB).
         let bytes = estimate_export_bytes(1920, 1080, 30.0, 60.0, 23, 1);
-        assert!((40_000_000..55_000_000).contains(&bytes), "{bytes}");
-        // each extra audio stream adds 128 kbps * 60 s / 8 = 960,000 bytes
-        assert_eq!(estimate_export_bytes(1920, 1080, 30.0, 60.0, 23, 3) - bytes, 1_920_000);
+        assert!((32_000_000..40_000_000).contains(&bytes), "{bytes}");
+        // each extra audio stream adds 192 kbps * 60 s / 8 = 1,440,000 bytes
+        assert_eq!(estimate_export_bytes(1920, 1080, 30.0, 60.0, 23, 3) - bytes, 2_880_000);
     }
 
     #[test]
@@ -2037,16 +2340,16 @@ pub(crate) mod tests {
             t.send(Some(Frame { pts: i as f64, ..Frame::default() })).unwrap();
         }
         let short = Duration::from_millis(50);
-        assert_eq!(win.pop(short).map(|f| f.pts), Some(0.0));
+        assert_eq!(win.pop(short, || false).map(|f| f.pts), Some(0.0));
         assert!(win.has_room());
-        assert_eq!(win.pop(short).map(|f| f.pts), Some(1.0));
+        assert_eq!(win.pop(short, || false).map(|f| f.pts), Some(1.0));
         // a dropped sender / None reply / nothing in flight = give up on the GPU
         let (t, r) = std::sync::mpsc::sync_channel::<Option<Frame>>(1);
         win.push(r);
         drop(t);
-        assert_eq!(win.pop(short).map(|f| f.pts), Some(2.0));
-        assert!(win.pop(short).is_none());
-        assert!(win.pop(short).is_none());
+        assert_eq!(win.pop(short, || false).map(|f| f.pts), Some(2.0));
+        assert!(win.pop(short, || false).is_none());
+        assert!(win.pop(short, || false).is_none());
     }
 
     #[test]
@@ -2153,6 +2456,8 @@ pub(crate) mod tests {
             audio: Default::default(),
             stem_by: Default::default(),
             overlay: None,
+            fps: None,
+            target_bytes: None,
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         assert_eq!(wait_done(&start_export(p, opts, text)), None);
@@ -2193,6 +2498,8 @@ pub(crate) mod tests {
             audio: Default::default(),
             stem_by: Default::default(),
             overlay: None,
+            fps: None,
+            target_bytes: None,
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         let prog = start_export(p.clone(), opts.clone(), text.clone());
@@ -2232,6 +2539,8 @@ pub(crate) mod tests {
             audio: Default::default(),
             stem_by: Default::default(),
             overlay: None,
+            fps: None,
+            target_bytes: None,
         }
     }
 
@@ -2258,6 +2567,69 @@ pub(crate) mod tests {
         assert_eq!(wait_done(&start_export(p, opts, text)), None);
         let d = probe_duration(&out).expect("probe");
         assert!((d - 2.0).abs() < 0.1, "duration {d}, expected the 2 s range");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `fps` resamples the timeline: a 4 s 30 fps project written at 15 and 60 fps (ffprobe reads the
+    /// stream's rate and frame count back).
+    #[test]
+    fn fps_option_sets_output_rate_and_frame_count() {
+        let dir = temp_dir("fps");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        let p = Project::from_media(asset(&src.to_string_lossy(), 2));
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        for (fps, rate, frames) in [(15.0, "15/1", 60), (60.0, "60/1", 240)] {
+            let out = dir.join(format!("fps{fps}.mp4"));
+            let opts = ExportOptions { fps: Some(fps), ..opts_for(out.clone()) };
+            assert_eq!(wait_done(&start_export(p.clone(), opts, text.clone())), None);
+            let o = ffpipe::command(&ffpipe::ffprobe_exe().unwrap())
+                .args(["-v", "error", "-select_streams", "v:0", "-count_frames"])
+                .args(["-show_entries", "stream=r_frame_rate,nb_read_frames", "-of", "csv=p=0"])
+                .arg(&out)
+                .output()
+                .unwrap();
+            let got = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            assert_eq!(got, format!("{rate},{frames}"), "{fps} fps");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Cancel stops a running 1080p export at once: done within 300 ms of the click, ffmpeg gone, no
+    /// partial file and no temp file left behind.
+    #[test]
+    fn cancel_stops_a_1080p_export_within_300ms() {
+        let dir = temp_dir("cancel-fast");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        let mut p = Project::from_media(asset(&src.to_string_lossy(), 2));
+        (p.width, p.height, p.fps) = (1920, 1080, 60.0);
+        let out = dir.join("big.mp4");
+        let opts = ExportOptions { encoder: "libx264".into(), preset: "medium".into(), ..opts_for(out.clone()) };
+        let prog = start_export(p, opts, Arc::new(Mutex::new(TextRasterizer::new())));
+        // let it get going: frames flowing into ffmpeg
+        for _ in 0..200 {
+            if prog.fraction() > 0.02 || prog.is_done() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!prog.is_done(), "the export finished before it could be cancelled: {:?}", prog.error());
+        let t0 = std::time::Instant::now();
+        prog.cancel.store(true, Ordering::SeqCst);
+        while !prog.is_done() && t0.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let took = t0.elapsed();
+        eprintln!("cancel-to-stopped: {} ms", took.as_millis());
+        assert_eq!(prog.error().as_deref(), Some(CANCELLED));
+        assert!(took < Duration::from_millis(300), "cancel took {} ms", took.as_millis());
+        assert!(!out.exists(), "no partial file");
+        assert!(!dir.join(".big.simple-editor-tmp.mp4").exists(), "no temp file");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

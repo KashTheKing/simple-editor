@@ -63,6 +63,9 @@ pub struct SourceState {
     /// The canvas last handed to `player.set_canvas` (before its `max_width` clamp) - the size the
     /// GPU path renders the player's layers at.
     pub(crate) canvas: (u32, u32),
+    // ---- ws:preview-audio-only ----
+    /// Right-click ▸ Audio Only: the file's sound with the visualizer, no picture decoded.
+    pub audio_only: bool,
 }
 
 impl SourceState {
@@ -86,7 +89,15 @@ impl SourceState {
             width: asset.width,
             project: Project::from_media(asset.clone()),
             canvas: (0, 0),
+            audio_only: false,
         }
+    }
+
+    /// Audio Only on / off: the player swaps to the same project without (or with) its picture.
+    pub fn set_audio_only(&mut self, on: bool) {
+        self.audio_only = on;
+        self.project.audio_only_preview = on;
+        self.player.set_project(&self.project);
     }
 
     /// The marked source range, if any mark is set (an unset in = 0, an unset out = the end). None
@@ -127,15 +138,17 @@ impl SourceState {
     pub fn set_tape(&mut self, tape: Option<Tape>, own: &Project) {
         match &tape {
             Some(t) => {
-                self.player.set_project(&t.project);
                 self.project = t.project.clone();
+                self.project.audio_only_preview = self.audio_only;
+                self.player.set_project(&self.project);
                 self.duration = t.project.duration().max(MIN_CLIP);
                 self.has_video = t.project.assets.iter().any(|a| a.has_video());
                 self.is_image = false;
             }
             None => {
-                self.player.set_project(own);
                 self.project = own.clone();
+                self.project.audio_only_preview = self.audio_only;
+                self.player.set_project(&self.project);
                 self.duration = own.duration().max(MIN_CLIP);
             }
         }
@@ -320,11 +333,14 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
         if resp.buffering {
             ui.put(egui::Rect::from_center_size(lb.center(), egui::vec2(32.0, 32.0)), egui::Spinner::new().size(32.0));
         }
-        if !has_video {
+        if !has_video || st.audio_only {
             // cover art (an audio file's embedded picture) wins over the visualizer when there is one
+            // (not in Audio Only: a video's "cover" would be its own first frame)
+            let cover = thumbs
+                .filter(|_| !st.audio_only)
+                .and_then(|t| t.texture(ui.ctx(), &path, 0.0, (rect.height() * ui.pixels_per_point()) as u32));
             let cover =
-                thumbs.and_then(|t| t.texture(ui.ctx(), &path, 0.0, (rect.height() * ui.pixels_per_point()) as u32));
-            let cover = cover.or_else(|| crate::ui::audio_card::cover(ui.ctx(), &path));
+                if st.audio_only { None } else { cover.or_else(|| crate::ui::audio_card::cover(ui.ctx(), &path)) };
             if cover.is_some() || !settings.audio_visualizer {
                 // ws:audio-visualizer: the "now playing" card - cover (or the music-note icon) + title
                 let title = crate::ui::audio_card::title(ui.ctx(), &path);
@@ -393,7 +409,17 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
                     }
                 });
             }
-            if !has_video {
+            // ws:preview-audio-only: a video's sound with the visualizer, no picture
+            if has_video && !is_image {
+                if menu::check(ui, st.audio_only, "Audio Only", "")
+                    .on_hover_text("Play the sound with a visualizer, no picture")
+                    .clicked()
+                {
+                    let on = !st.audio_only;
+                    st.set_audio_only(on);
+                }
+            }
+            if !has_video || st.audio_only {
                 // ws:audio-visualizer: Off, or one of the styles (built-ins + custom library shaders)
                 menu::sub(ui, None, "Audio Visualizer", |ui| {
                     if menu::check(ui, !settings.audio_visualizer, "Off", "").clicked() {
@@ -476,6 +502,28 @@ mod tests {
     use crate::engine::text::TextRasterizer;
     use crate::media::Backend;
     use std::sync::{Arc, Mutex};
+
+    // ---- ws:preview-audio-only ----
+    /// Right-click ▸ Audio Only: the player's project loses its picture for playback (the render thread's
+    /// view), keeps the file's sound, and the choice survives switching the tape on and off.
+    #[test]
+    fn audio_only_plays_the_sound_without_the_picture() {
+        let path = crate::media::ffpipe::tests::test_mp4();
+        let asset = crate::media::probe(&path, Backend::Auto).unwrap();
+        let player = Player::new(egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        let mut st = SourceState::new(player, &asset, PathBuf::from(&path), None);
+        st.set_audio_only(true);
+        let view = crate::playback::played_view(&st.player.project());
+        let n = |k: crate::model::TrackKind| {
+            view.tracks.iter().filter(|t| t.kind == k).map(|t| t.clips.len()).sum::<usize>()
+        };
+        assert_eq!(n(crate::model::TrackKind::Video), 0, "no picture decoded");
+        assert!(n(crate::model::TrackKind::Audio) > 0, "the sound plays");
+        st.set_tape(None, &Project::from_media(asset.clone()));
+        assert!(st.audio_only && st.player.project().audio_only_preview, "kept across a tape switch");
+        st.set_audio_only(false);
+        assert!(!st.player.project().audio_only_preview);
+    }
 
     fn asset(dur: f64) -> Asset {
         Asset {

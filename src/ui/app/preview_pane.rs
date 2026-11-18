@@ -10,6 +10,12 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     // (Space/JKL/I/O) back to the timeline, exactly like a press on the timeline itself.
     if source_pane::pressed_in(ui) {
         app.source_focus = false;
+        // a Source playing in a hidden tab stops when the Preview is clicked
+        if !app.pane_drawn(Pane::Source) {
+            if let Some(s) = app.source.as_mut() {
+                s.player.pause();
+            }
+        }
     }
     // ---- ws:viewer-surface ----
     // the rail's options strip holds the Draw tool's Record button (#87's playback path)
@@ -104,7 +110,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             )
         };
         // ---- ws:audio-visualizer ---- a stretch with only sound: the "now playing" card over the frame
-        if let Some(aid) = crate::ui::audio_card::audio_only_at(&app.project, app.playhead) {
+        // (ws:preview-audio-only: Audio Only paints the mix's visualizer over the whole canvas instead)
+        if app.project.audio_only_preview {
+            super::audio_only::paint(app, ui);
+        } else if let Some(aid) = crate::ui::audio_card::audio_only_at(&app.project, app.playhead) {
             let path = app.project.clip(aid).and_then(|c| app.project.asset(c.asset)).map(|a| a.path.clone());
             if let Some(path) = path {
                 let aspect = app.project.width.max(1) as f32 / app.project.height.max(1) as f32;
@@ -157,6 +166,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         }
         if let Some(g) = resp.set_guide {
             g.apply(&mut app.settings);
+        }
+        if resp.open_emulator {
+            super::emulator_ctl::open(app); // ws:device-emulator
         }
         // ---- ws:canvas-handles-monitor ----
         if let Some(on) = resp.set_canvas_snap {

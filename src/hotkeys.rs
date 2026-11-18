@@ -133,6 +133,8 @@ actions! {
     Voiceover => "voiceover", "Record Voiceover", sc(CTRL_ALT, Key::R);
     ImportTimeline => "import_timeline", "Import Timeline (Premiere / Resolve XML, EDL)…", None;
     MovieMode => "movie_mode", "Movie Mode (pre-render)", None;
+    // ws:preview-audio-only: unbound; Preview right-click, Playback menu, Ctrl+P, `preview.audio_only`
+    AudioOnlyPreview => "audio_only_preview", "Audio Only", None;
     // ---- clip clipboard (Copy/Paste *Attributes* above is a different feature) ----
     CopyClips => "copy_clips", "Copy Clips", sc(CTRL, Key::C);
     CutClips => "cut_clips", "Cut Clips", sc(CTRL, Key::X);
@@ -258,7 +260,7 @@ actions! {
     // ws:pages: Workspace1..6 are the first six pages of `Settings.pages` (default: `layout::PAGES`). A rebind stored
     // under an id now names the page in that slot (workspace_1 was Edit before Media and Cut came).
     Workspace1 => "workspace_1", "Media page", sc(ALT, Key::Num1);
-    Workspace2 => "workspace_2", "Cut page", sc(ALT, Key::Num2);
+    Workspace2 => "workspace_2", "Plan page", sc(ALT, Key::Num2);
     Workspace3 => "workspace_3", "Edit page", sc(ALT, Key::Num3);
     // ws:animator: Animate came after Edit, so Export (Ctrl+E) is the seventh page, without an Alt+N
     Workspace4 => "workspace_4", "Animate page", sc(ALT, Key::Num4);
@@ -398,6 +400,10 @@ actions! {
     AiUpscale4Real => "ai_upscale_4_real", "AI Upscale ×4 (Real-World)", None;
     SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
     PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
+    // ---- ws:music-burn ----
+    BurnDisc => "burn_disc", "Burn to Discâ€¦", None;
+    MakeVisualizerVideo => "make_visualizer_video", "Make Visualizer Video", None;
+    NewPlaylist => "new_playlist", "New Playlist", None;
     // ---- ws:perf-window ----
     // The Performance window (Window menu / palette / `perf.window`). Unbound by design.
     PerfWindow => "performance", "Performance…", None;
@@ -681,7 +687,7 @@ pub fn group(a: Action) -> &'static str {
         | SelectAtPlayhead | Find => "Edit",
         PlayPause | Stop | ShuttleBack | ShuttleFwd | PlayInOut | LoopInOut | PlayAround | PlayToOut | FastReview
         | StepBack | StepForward | StepBack10 | StepFwd10 | PrevCut | NextCut | GoStart | GoEnd | PrevKeyframe
-        | NextKeyframe | Fullscreen | MovieMode | ToggleProxies => "Playback",
+        | NextKeyframe | Fullscreen | MovieMode | AudioOnlyPreview | ToggleProxies => "Playback",
         MarkIn | MarkOut | MarkClip | ClearInOut | GoToIn | GoToOut | AddMarker => "Marking",
         SelectEditPoint | CycleEditSide | TrimLeft1 | TrimRight1 | TrimLeft10 | TrimRight10 | ExtendEdit | TrimTop
         | TrimTail | SlipLeft | SlipRight | ToggleTrimView => "Trimming",
@@ -751,6 +757,9 @@ pub fn group(a: Action) -> &'static str {
         // ---- ws:browser-layer ----
         AddBrowser | ImportWebPage => "Add",
         BrowserFitPages | BrowserNextPage | RecordMouse | CursorWaypoints | CursorPress | SharpenZooms | PageMakeEditable => "Clip",
+        // ---- ws:music-burn ----
+        BurnDisc => "File",
+        MakeVisualizerVideo | NewPlaylist => "Add",
         // ---- ws:ai-enhancer ----
         AiUpscale2Game | AiUpscale2Real | AiUpscale4Game | AiUpscale4Real => "Clip",
         // ---- ws:perf-window ----

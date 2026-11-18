@@ -14,12 +14,15 @@ on the left of the Edit page (<kbd>Ctrl+1</kbd> shows or hides it).
 - Or drag files from Explorer onto the Library.
 - **Import a whole folder as a bin**: drag a folder from Explorer onto the window, click the folder button
   next to **+ Import**, or choose **File ▸ Import ▸ Import Folder as Bin…** (also in the
-  <kbd>Ctrl+P</kbd> palette and the empty-spot menu). The folder becomes a bin named after it, holding every
-  video, audio and image file inside, in name order (`take2` before `take10`); sub-folders become nested
-  bins (up to 8 levels). Hidden and system files and anything Simple Editor can't import are skipped, and
-  the toast tells you how many ("Imported 84 files into 'SFX' (3 skipped)"). Files already in the Library
-  are reused, not added twice, and stay in the bin they were in. It's one **Undo** step, runs in the
-  background, and asks first above 500 files. In **Browse**, right-click a folder ▸ **Import folder as bin**.
+  <kbd>Ctrl+P</kbd> palette and the empty-spot menu). It comes in at once as a **linked bin** named after the
+  folder: nothing is copied or scanned up front, so even a huge folder is instant. Its sub-folders show as
+  nested bins, and a bin lists its files (in name order, `take2` before `take10`) when you open it; durations
+  and thumbnails fill in for the rows you can see. Files added to or removed from the folder show up by
+  themselves. A file becomes part of the project the moment you use it (drag it to the timeline, or
+  right-click ▸ **Add to the project**), and stays filed under its bin. Right-click the bin for **Refresh**,
+  **Relink…** (the folder moved), **Convert to regular bin** (import every file now, the old way: one **Undo**
+  step, asks first above 500 files) and **Unlink** (files you already used stay). A bin whose folder is
+  missing shows a warning sign until you relink it. In **Browse**, right-click a folder ▸ **Import folder as bin**.
 - **Right-click an empty spot ▸ Import from URL…** downloads a video from YouTube, TikTok, X, Vimeo or a
   direct link. This needs [yt-dlp](https://github.com/yt-dlp/yt-dlp) (`winget install yt-dlp.yt-dlp`);
   the item only appears once it's found. **File ▸ Import ▸ From URL…** does the same.
@@ -36,14 +39,16 @@ The header is one row:
 
 - **Search** filters by name, description and tags.
 - **Filter ▾** narrows by kind (Video, Audio, Image, Seq, Short SFX, Music), by label, or to
-  **Unused only**. The button shows how many filters are on; **Clear filters** turns them off.
+  **Unused only**. The button lights up and shows how many filters are on. Each active filter also shows as a
+  chip under the search box: its ✕ turns off just that one, **Clear filter** turns them all off.
+- **Shift+click a bin's arrow** to open or close it with every bin inside it.
 - **View ▾** switches between **List** and **Gallery**, changes the thumbnail **Size**, sets the sort
   order, and (in List view) picks the **Columns**. <kbd>Ctrl</kbd>+scroll also resizes thumbnails.
 - **Project | Browse** under the header switches between your project's media and **Browse**, which shows
   your recent files and any folders you've linked (right-click ▸ **Link folder…**). Double-click a file there
   to play it in Source; right-click ▸ **Add to the project** imports it.
 
-With a search or filter on, **Save filter…** keeps it as a **Smart Bin** you can click later.
+With a search or filter on, **Save filter…** (in the Smart Bins header) keeps it as a **Smart Bin** you can click later.
 
 ## Use a clip
 

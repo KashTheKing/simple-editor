@@ -96,6 +96,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         }
     }
     let autocut_shown = app.pane_drawn(Pane::AutoCut);
+    let animator_shown = app.pane_drawn(Pane::Animator);
     let resp = {
         let App {
             project,
@@ -182,6 +183,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 realtime: &realtime_bar,
                 views: &settings.timeline_views,
                 wave_detailed: settings.timeline_waveform == "detailed",
+                animator_shown,
             },
         )
     };
@@ -211,6 +213,17 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             app.place_assets(&ids, t, vt, DropMode::Place);
         }
         app.after_edit();
+    }
+    // ws:preview-audio-only: Ctrl+Shift drops - songs with a linked visualizer, the rest placed as usual
+    for (payload, t) in resp.dropped_with_visualizer {
+        let ids = match payload {
+            DragPayload::Asset(id) => vec![id],
+            DragPayload::Assets(ids) => ids,
+            DragPayload::Path(p) => super::audio_actions::import_now(app, &[p]),
+            DragPayload::Paths(ps) => super::audio_actions::import_now(app, &ps),
+            _ => Vec::new(),
+        };
+        super::audio_actions::add_media_with_visualizer(app, &ids, t);
     }
     let mut aims = resp.dropped_aims.into_iter();
     for (payload, t, track) in resp.dropped_other {

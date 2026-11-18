@@ -24,7 +24,10 @@ type Range = std::ops::RangeInclusive<f64>;
 #[inline(never)]
 fn anim_drag(ui: &mut egui::Ui, g: &mut Gesture, a: &mut Animated, lt: f64, range: Range, speed: f64, label: &str) {
     let mut v = a.at(lt);
-    let r = ui.add(DragValue::new(&mut v).range(range).speed(speed));
+    let r = ui.add_sized(
+        [crate::ui::PROP_VAL_W, ui.spacing().interact_size.y],
+        DragValue::new(&mut v).range(range).speed(speed),
+    );
     if r.changed() {
         a.set_at(lt, v);
     }
@@ -35,7 +38,7 @@ fn anim_drag(ui: &mut egui::Ui, g: &mut Gesture, a: &mut Animated, lt: f64, rang
 /// A keyframable number row: label, the value and the ◆ button.
 #[inline(never)]
 fn animated(ui: &mut egui::Ui, g: &mut Gesture, palette: &Palette, lt: f64, label: &str, a: &mut Animated, range: Range, speed: f64) {
-    ui.label(label);
+    crate::ui::prop_label(ui, label);
     ui.horizontal(|ui| {
         anim_drag(ui, g, a, lt, range, speed, label);
         key_buttons(ui, a, lt, palette, g, label, &[]);
@@ -324,7 +327,7 @@ pub(super) fn section(
             });
             ui.end_row();
             animated(ui, g, palette, lt, "Page zoom", &mut b.zoom, 0.05..=64.0, 0.01);
-            ui.label("Load bar");
+            crate::ui::prop_label(ui, "Load bar");
             ui.horizontal(|ui| {
                 anim_drag(ui, g, &mut b.load, lt, 0.0..=1.0, 0.01, "Load bar");
                 key_buttons(ui, &mut b.load, lt, palette, g, "Load bar", &[]);

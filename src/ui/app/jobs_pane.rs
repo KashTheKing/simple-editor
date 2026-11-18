@@ -71,6 +71,7 @@ pub(super) fn progress_jobs(app: &App) -> Vec<ProgJob> {
     v.extend(app.html.jobs()); // ws:html-layer: HTML layer renders
     v.extend(enhance_ctl::progress_jobs()); // ws:ai-enhancer
     v.extend(caches::move_jobs()); // ws:neutral-web: Settings ▸ General ▸ Cache folder
+    v.extend(music_ctl::progress_jobs()); // ws:music-burn: burns, erases, visualizer video prep
     if let Some((c, out)) = &app.screen_rec {
         v.push((JobKind::ScreenRec, format!("Recording screen · {}", file_name(out)), c.progress()));
     }
@@ -105,10 +106,11 @@ pub(super) fn rows_from(h: &Holders) -> Vec<JobRow> {
         r.status = p.status();
         r.eta = p.eta();
         r.elapsed = p.elapsed();
-        r.state = if !p.is_done() {
-            JobState::Running
-        } else if p.is_cancelled() {
+        // a cancelled job reads as cancelled at once, while its thread is still winding down
+        r.state = if p.is_cancelled() {
             JobState::Cancelled
+        } else if !p.is_done() {
+            JobState::Running
         } else if let Some(e) = p.error() {
             JobState::Failed(e)
         } else {

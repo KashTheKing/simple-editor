@@ -131,7 +131,7 @@ pub(super) fn draw_waveform(
         let t1 = clip.src_time(state.time_at(x + 1.0));
         if let Some(col) = d.col(t0, t1) {
             let peak = db_h(col.lo.abs().max(col.hi.abs())) * half;
-            let body = if d.has_bands { db_h(col.rms) * half } else { 0.0 };
+            let body = if d.has_rms { db_h(col.rms) * half } else { 0.0 };
             if detailed {
                 let c = if d.has_bands { band_color(col.bands) } else { color };
                 quad(x, peak, c.gamma_multiply(0.75));

@@ -39,10 +39,7 @@ use std::time::{Duration, Instant};
 windows::core::link!("user32.dll" "system" fn GetCursorPos(p: *mut windows::Win32::Foundation::POINT) -> windows::core::BOOL);
 
 const PROJECT_EXT: &str = "sedit";
-const MEDIA_EXTS: &[&str] = &[
-    "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "ts", "m2ts", "mts", "flv", "3gp", "mpg", "mpeg", "gif", "mp3",
-    "wav", "m4a", "aac", "flac", "ogg", "opus", "wma", "png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff",
-];
+const MEDIA_EXTS: &[&str] = crate::engine::folder_import::MEDIA_EXTS;
 
 mod actions;
 // ---- ws:pro-schema ----
@@ -171,6 +168,7 @@ mod whatsnew;
 mod perf_ctl; // ws:perf-window
 mod quick_export; // ws:quick-export
 mod animator_ctl; // ws:animator
+mod tools_animate_bulk; // ws:animator: animate.audit, keyblocks.convert_all, animate.spans_from_transitions
 // ---- ws:panels-multiscreen ----
 mod render_pane;
 mod screens_ctl;
@@ -178,6 +176,11 @@ mod transcript_pane;
 mod voiceover_pane;
 mod template_ctl; // ws:animator-templates
 mod beats_ctl; // ws:beat-aligner
+mod music_ctl; // ws:music-burn
+mod emulator_ctl; // ws:device-emulator
+mod audio_only; // ws:preview-audio-only
+mod media_api; // ws:assistant-luau
+mod script_ctl; // ws:assistant-luau
 #[path = "windows.rs"]
 mod windows_dlg;
 
@@ -526,8 +529,14 @@ pub struct App {
     beats: crate::ui::beat_aligner::AlignState,
     /// Continuous marking has its undo step for this play.
     beats_run_undo: bool,
+    // ---- ws:music-burn ----
+    music: crate::ui::music_ui::MusicState,
     /// "Draw a motion path" is armed: the next Viewer stroke becomes a path the selection follows.
     path_armed: bool,
+    // ---- ws:device-emulator ----
+    emulator: crate::ui::emulator::EmuState,
+    /// The Device Emulator's own copy of the picture when the Preview pane is hidden (nobody else uploads it).
+    emulator_tex: Option<egui::TextureHandle>,
     // ---- ws:pro-schema ----
     /// The Assistant pane's prompt / pending requests / log (`ui::assistant_ui`).
     pub(crate) assistant: crate::ui::assistant_ui::AssistantState,
@@ -1044,7 +1053,10 @@ impl App {
             animator: Default::default(), // ws:animator
             beats: Default::default(), // ws:beat-aligner
             beats_run_undo: false,
+            music: crate::ui::music_ui::MusicState::new(), // ws:music-burn
             path_armed: false,
+            emulator: Default::default(), // ws:device-emulator
+            emulator_tex: None,
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -1112,7 +1124,8 @@ impl App {
         }
         // ---- ws:media-library ----: a frame of a numbered still run bakes as one clip instead
         let paths = media_sync::intercept_sequences(self, &paths);
-        if self.project.is_empty() && self.project.assets.is_empty() && paths.len() == 1 {
+        // (a project with a linked bin is not empty: opening the file as the project would drop the bin)
+        if self.project.is_empty() && self.project.assets.is_empty() && self.project.linked_bins.is_empty() && paths.len() == 1 {
             self.open_media(&paths[0]);
             return Vec::new();
         }
@@ -1129,6 +1142,7 @@ impl App {
         let p = &self.project;
         self.selection.retain(|id| p.clip(*id).is_some());
         self.player.set_project(&self.project);
+        audio_only::edited(&self.project); // ws:preview-audio-only: the mix is analysed / baked again
         if self.settings.movie_mode {
             // the picture changed: drop what was pre-rendered and render the range again
             let end = self.project.duration();
@@ -1160,6 +1174,7 @@ impl App {
         // ws:browser-layer: zoom details are per project (and old builds' picture clips go)
         browser_ctl::project_loaded(self);
         self.player.set_project(&self.project);
+        audio_only::edited(&self.project);
         self.player.seek(0.0);
         self.timeline.zoom_to_fit(self.project.duration(), self.timeline.lanes_rect.width().max(800.0));
     }
@@ -1321,11 +1336,24 @@ impl eframe::App for App {
         }
         // carry last frame's drawn panes into this frame; a Source monitor that went off screen gives
         // transport focus back to the timeline (a click in it takes it again)
-        let source_was = self.pane_drawn(Pane::Source);
+        let (source_was, preview_was) = (self.pane_drawn(Pane::Source), self.pane_drawn(Pane::Preview));
         std::mem::swap(&mut self.panes_shown, &mut self.panes_drawing);
         self.panes_drawing.clear();
         if source_was && !self.pane_drawn(Pane::Source) {
             self.source_focus = false;
+        }
+        // Source and Preview as tabs of one group: the monitor a tab switch hid stops playing (both on
+        // screen at once, both may play)
+        let front = self.layout.stacked_front(Pane::Source, Pane::Preview);
+        let now = (self.pane_drawn(Pane::Source), self.pane_drawn(Pane::Preview));
+        match source_pane::hidden_by_switch((source_was, preview_was), now, front) {
+            Some(Pane::Source) => {
+                if let Some(s) = self.source.as_mut() {
+                    s.player.pause();
+                }
+            }
+            Some(_) => self.player.pause(),
+            None => {}
         }
         // the tracking job runs whether or not its pane is on screen
         self.tracking.poll(ctx);
@@ -1381,7 +1409,14 @@ impl eframe::App for App {
         self.sync_gpu();
         // leave the layers in place until the preview pane has reported its size (first frame), so the
         // very first decode is not thrown away
-        if self.canvas.0 > 0 && self.canvas.1 > 0 {
+        // ws:preview-audio-only: playback publishes no picture layers; nothing is composited (the Preview
+        // paints the mix's visualizer instead)
+        let audio_only = self.project.audio_only_preview;
+        if audio_only {
+            let _ = self.player.take_layers();
+            self.gpu_tex = None;
+            self.pending_frame = None;
+        } else if self.canvas.0 > 0 && self.canvas.1 > 0 {
             if let Some(layers) = self.player.take_layers() {
                 let (w, h) = self.canvas;
                 let t = self.player.time();
@@ -1396,11 +1431,11 @@ impl eframe::App for App {
             }
         }
         self.source_gpu_render(_frame); // ws:play-source-monitor: needs `eframe::Frame`, which FRAME_HOOKS lack
-        if let Some(f) = self.player.take_frame() {
+        if let Some(f) = self.player.take_frame().filter(|_| !audio_only) {
             self.pending_frame = Some(f);
         }
         // (a frame still missing a layer that is being opened is not the first picture: `--screenshot` waits)
-        if self.pending_frame.is_some() && self.first_frame_at.is_none() && !self.player.is_partial() {
+        if (self.pending_frame.is_some() || audio_only) && self.first_frame_at.is_none() && !self.player.is_partial() {
             self.first_frame_at = Some(Instant::now());
             #[cfg(debug_assertions)]
             eprintln!("first frame after {} ms", self.started.elapsed().as_millis());
@@ -1791,12 +1826,22 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     quick_export::TOOLS,
     // ---- ws:animator ----
     animator_ctl::TOOLS,
+    tools_animate_bulk::TOOLS,
     // ---- ws:panels-multiscreen ----
     screens_ctl::TOOLS,
     // ---- ws:animator-templates ----
     template_ctl::TOOLS,
     // ---- ws:beat-aligner ----
     beats_ctl::TOOLS,
+    // ---- ws:music-burn ----
+    music_ctl::TOOLS,
+    // ---- ws:device-emulator ----
+    emulator_ctl::TOOLS,
+    // ---- ws:preview-audio-only ----
+    audio_only::TOOLS,
+    // ---- ws:assistant-luau ----
+    media_api::TOOLS,
+    script_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1888,6 +1933,10 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     screens_ctl::act,
     // ---- ws:animator-templates ----
     template_ctl::act,
+    // ---- ws:music-burn ----
+    music_ctl::act,
+    // ---- ws:preview-audio-only ----
+    audio_only::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1976,6 +2025,10 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     screens_ctl::tick,
     // ---- ws:beat-aligner ----
     beats_ctl::frame,
+    // ---- ws:music-burn ----
+    music_ctl::frame,
+    // ---- ws:preview-audio-only ----
+    audio_only::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -2052,6 +2105,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     screens_ctl::window,
     // ---- ws:animator-templates ----
     template_ctl::windows,
+    // ---- ws:music-burn ----
+    music_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -2120,6 +2175,10 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     render_pane::draw,
     // ---- ws:beat-aligner ----
     beats_ctl::draw,
+    // ---- ws:music-burn ----
+    music_ctl::draw,
+    // ---- ws:device-emulator ----
+    emulator_ctl::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

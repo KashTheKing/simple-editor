@@ -1,0 +1,95 @@
+---
+title: Music, playlists and discs
+description: Edit song and video tags and cover art, make playlists, turn them into a mix or visualizer video, and burn audio CDs and data discs (or disc images).
+---
+
+![The Playlists panel beside the Library](/img/tutorial/music-playlists.png)
+
+Simple Editor can look after a music collection as well as a video: edit the tags of songs and videos, collect songs
+into playlists, play them, make a mix video with a visualizer, and burn an audio CD or a data disc.
+
+## Tags and cover art
+
+Click a song or a video in the **Library** and the **Inspector** shows its **Tags**:
+
+- **Music**: Title, Artist, Album, Album artist, Genre, Year, Track, Disc, Comment and Lyrics, plus the **cover art**.
+- **Video**: Title, Genre, Description, Rating (stars), Comment and the **thumbnail**.
+
+Select several files (Ctrl or Shift + click) to edit them together. A field the files disagree on is empty with a
+grey **Mixed** hint: leave it alone and each file keeps its own value; type in it and they all get what you typed.
+
+For the picture, **From file…** picks a JPG or PNG, **From video frame** uses the frame under the **Source** monitor's
+playhead (open the video there and park on the frame you like), and **Remove** takes it out.
+
+**Save** writes everything into the files. Nothing is re-encoded: the sound and picture are copied as they are and
+only the tags change. The new file is written next to the old one first; the old one is kept as `name.bak` until the
+new one checks out, then removed. If a file is open in another program, you are told and it stays as it was.
+
+![The Tags section in the Inspector](/img/tutorial/music-tags.png)
+
+What each file type keeps: MP3, M4A / MP4 and FLAC keep every field and the cover. MP4 has no rating tag, FLAC folds
+Description into Comment, WAV keeps the basic fields only, and Ogg / Opus / WAV files cannot hold a cover.
+
+## Playlists
+
+The **Playlists** panel is a tab beside the **Media Browser** on the **Media** page (on any other page, add it with a
+tab bar's **+**).
+
+- **New**, **Rename** and **Delete** at the top. Deleting a playlist never removes the songs from the Library.
+- **Add songs** by dragging them from the Library onto the list, or select them in the Library and press **Add N
+  selected**. Videos work too (music videos).
+- **Reorder** with the grip on the left of a row (drag), or select a row and press **Alt+Up / Alt+Down**. The ✕ at the
+  right removes a song.
+- The footer shows the number of songs and the **total length**.
+- **Gap** adds silence between songs; **Crossfade** makes them overlap and fade into each other instead.
+
+Playlists are saved in the project.
+
+- **▶ Play** (or the ▶ on a row, or a double-click) plays the playlist back to back in the **Source** monitor.
+- **To timeline** puts the songs on the timeline at the playhead, back to back with the gap, or overlapping with
+  fades when there is a crossfade: a mix.
+- **Export .m3u8** saves the playlist for any music player (lengths and titles included; paths relative to the
+  playlist file where they can be).
+
+## Make a visualizer video
+
+Pick a **Visualizer** style in the Playlists footer, tick **Cover art** and **Title card**, and press **Make
+visualizer video**. Every song is put on the timeline with its own [audio visualizer](./audio-visualizers.mdx) layer
+(linked to the song, so moving or trimming one moves the other), its cover art in the middle and its title and artist
+underneath. Select songs in the Library and run **Make Visualizer Video** from the command palette (Ctrl+K) to do the
+same without a playlist. Everything is one undo step.
+
+## Burn to Disc
+
+Press **Burn…** in the Playlists panel, or run **Burn to Disc…** from the command palette.
+
+![The Burn to Disc window](/img/tutorial/music-burn.png)
+
+- **Audio CD**: plays in any CD player. Each song is converted to CD audio (44.1 kHz, 16-bit stereo), with the gap you
+  choose between tracks. The **Album** and **Artist** fields and each song's title go on as CD-Text where the burner
+  supports it. The bar shows how much of the disc the music fills; an 80-minute CD holds 80:00, a 74-minute one 74:00,
+  and a track is at least 4 seconds long.
+- **Data disc**: files for a computer or a car stereo that plays MP3s. The playlist's songs go in a folder of their
+  own with an `.m3u8` playlist, plus any files and folders you add. The disc works on Windows, macOS and Linux
+  (ISO 9660 + Joliet + UDF).
+- **Video DVD** is not offered: a DVD player needs a specially authored disc that Simple Editor cannot make. Put the
+  video files on a data disc instead.
+
+**Burn to** picks the drive, or **Disc image file** when you have no burner (or want to burn later): a data disc
+becomes an `.iso` and an audio CD a `.bin` with its `.cue`, which any burning program (or Windows' own "Burn disc
+image") can write.
+
+With a drive picked, **In the drive** says what disc is in it (type, blank or not, free space). **Erase** quick-erases
+a rewritable disc, **Eject** opens the tray, **Speed** picks the write speed, **Verify after burning** reads a data
+disc back, and **Test only** does every check a burn does (drive, disc, space, the files) and writes nothing.
+
+The burn runs in the background: it shows in the window and in the **Jobs** panel, where **Cancel** stops it. A burn
+to a drive always leaves at least 2 seconds between audio tracks (that is how track-by-track burning works). Clear
+messages tell you when there is no drive, no disc, the disc is not blank, or the music does not fit.
+
+## For scripts and the Assistant
+
+`playlist.list`, `playlist.create`, `playlist.add`, `playlist.remove`, `playlist.move`, `playlist.set`,
+`playlist.rename`, `playlist.delete`, `playlist.play`, `playlist.to_timeline`, `playlist.export_m3u8` and
+`playlist.visualizer_video`; `media.tags_get` and `media.tags_set`; `disc.drives` and `disc.burn`
+(`target: "image"` writes a disc image, `target: "drive"` burns).

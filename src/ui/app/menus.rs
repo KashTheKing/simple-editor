@@ -30,7 +30,7 @@ fn acts_if(ui: &mut egui::Ui, on: bool, items: &[Option<Action>]) {
 }
 
 /// Window menu: the everyday panels first, then the niche ones under More ▸ (hidden, not deleted).
-const MAIN_PANES: [Pane; 17] = [
+const MAIN_PANES: [Pane; 18] = [
     Pane::Library,
     Pane::MediaBrowser,
     Pane::Presets,
@@ -50,6 +50,8 @@ const MAIN_PANES: [Pane; 17] = [
     Pane::Voiceover,
     Pane::Transcript,
     Pane::Rendering,
+    // ---- ws:device-emulator ----
+    Pane::Emulator,
 ];
 const MORE_PANES: [Pane; 9] = [
     Pane::Grade,
@@ -150,7 +152,7 @@ impl App {
     fn file_menu(&mut self, ui: &mut egui::Ui) {
         use Action::*;
         let has_clips = !self.timeline_is_empty();
-        acts(ui, &[Some(NewProject), Some(OpenFile)]);
+        acts(ui, &[Some(NewProject), Some(OpenProject), Some(OpenFile)]);
         self.recent_menu(ui);
         acts(ui, &[Some(Save), Some(SaveProjectAs), None]);
         menu::sub(ui, Some(tools::Glyph::ImportArrow), "Import", |ui| {
@@ -334,6 +336,10 @@ impl App {
         }
         if menu::check(ui, self.settings.movie_mode, "Movie Mode (pre-render)", &menu::shortcut(MovieMode)).clicked() {
             out.push(MovieMode);
+        }
+        // ws:preview-audio-only
+        if menu::check(ui, self.project.audio_only_preview, "Audio Only", &menu::shortcut(AudioOnlyPreview)).clicked() {
+            out.push(AudioOnlyPreview);
         }
         // ws:perf-baseline
         if menu::check(ui, self.settings.hud, "Performance HUD", &menu::shortcut(ToggleHud)).clicked() {

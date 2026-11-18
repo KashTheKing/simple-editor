@@ -9,13 +9,13 @@ module.exports = {
       type: 'category',
       label: 'Editing',
       collapsed: false,
-      items: ['library', 'viewer', 'social-guides', 'timeline', 'inspector', 'effects', 'html-layers', 'chat-forum-threads', 'browser-layer', 'online-library', 'my-gallery', 'templates'],
+      items: ['library', 'viewer', 'social-guides', 'device-emulator', 'timeline', 'inspector', 'effects', 'html-layers', 'chat-forum-threads', 'browser-layer', 'online-library', 'my-gallery', 'templates'],
     },
     {
       type: 'category',
       label: 'Finishing',
       collapsed: false,
-      items: ['captions', 'color', 'audio', 'audio-visualizers', 'beat-aligner', 'export', 'export-audio-tracks', 'faster-exports', 'handoff'],
+      items: ['captions', 'color', 'audio', 'audio-visualizers', 'beat-aligner', 'music-and-discs', 'export', 'export-audio-tracks', 'faster-exports', 'handoff'],
     },
     {
       type: 'category',
