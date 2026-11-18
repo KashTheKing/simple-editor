@@ -10,7 +10,9 @@ pub mod browser;
 pub mod browsers; // the user's web browser (default or picked in Settings)
 pub mod cache_lru;
 pub mod cache_move; // Settings ▸ General ▸ Cache folder
+pub mod audio_tap; // screen recording: system audio (WASAPI loopback) + mic to raw side files
 pub mod capture;
+pub mod screen_grab; // the Screen Recording pane: live preview + window list (GDI)
 pub mod compose;
 pub mod convert;
 // ---- ws:interchange ----

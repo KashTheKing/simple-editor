@@ -258,19 +258,6 @@ impl App {
                 self.paste_ui.open = false;
             }
         }
-        // screen recording (the voiceover is a pane now: voiceover_pane.rs)
-        if self.capture_ui.screen_open {
-            let resp = {
-                let App { capture_ui: st, settings, palette, screen_rec, .. } = self;
-                capture_ui::show(ctx, st, settings, screen_rec.is_some(), palette)
-            };
-            if resp.stop_screen {
-                self.stop_screen_capture();
-            }
-            if let Some(o) = resp.screen.filter(|_| resp.start_screen) {
-                self.start_screen_capture(o);
-            }
-        }
         // imported timeline report - "Use this project" swaps it in
         if self.import_ui.open {
             let accept = {
