@@ -11,15 +11,22 @@ use eframe::egui::{Color32, Rect};
 pub fn feed(pg: &Pg, under: &mut B, over: &mut B, hits: &mut Vec<(Rect, Hit)>) -> Placed {
     #[allow(unused_variables)]
     let Pg { v, dev, plat, lay, screen, outer, app, k, st_h, desktop, fade, vm, e, sheet_m, cx, ink } = *pg;
+    if plat.net == "x" {
+        return x_post(pg, under, over, hits);
+    }
     let (base, video, uv, sheet_top);
     let col = if desktop || dev.k == "tablet" {
         Rect::from_center_size(app.center(), vec2(app.width().min(460.0 * k), app.height())).intersect(app)
     } else {
-        app
+        landscape_safe(app, dev, k)
     };
     let hdr = 52.0 * k;
     let top = col.min.y + if desktop { 16.0 * k } else { st_h };
-    let media = Rect::from_min_size(pos2(col.min.x, top + hdr), vec2(col.width(), col.width() / plat.aspect()));
+    // the media is as wide as the column, but never taller than the screen leaves above the footer (a phone
+    // turned landscape): then it is centred at the height that fits
+    let fit_h = (col.max.y - (top + hdr) - 110.0 * k).max(40.0 * k);
+    let mw = col.width().min(fit_h * plat.aspect());
+    let media = Rect::from_min_size(pos2(col.center().x - mw / 2.0, top + hdr), vec2(mw, mw / plat.aspect()));
     under.rect(col.intersect(Rect::from_min_max(pos2(col.min.x, top), pos2(col.max.x, col.max.y))), 0.0, rgba(0, 0, 0, 255));
     // header
     under.circle(pos2(col.min.x + 28.0 * k, top + hdr / 2.0), 17.0 * k, rgba(70, 70, 76, 255));
@@ -71,6 +78,96 @@ pub fn feed(pg: &Pg, under: &mut B, over: &mut B, hits: &mut Vec<(Rect, Hit)>) -
     sheet_top = media.min.y;
 
     Placed { base, video, uv, sheet_top }
+}
+
+/// A phone turned landscape keeps a feed app out of the cut-out / rounded corners at the sides and off the home
+/// indicator at the bottom, like iOS's and Android's landscape safe area; upright, the app rect already is.
+fn landscape_safe(app: Rect, dev: &Device, k: f32) -> Rect {
+    if dev.k == "phone" && app.width() > app.height() {
+        Rect::from_min_max(pos2(app.min.x + 48.0 * k, app.min.y), pos2(app.max.x - 48.0 * k, app.max.y - 22.0 * k))
+    } else {
+        app
+    }
+}
+
+/// An X post with video, the way x.com's dark theme draws it (measured on a logged-out post page, 2026-11-17):
+/// avatar, bold name, grey @handle; the post text ABOVE the video; the video in a 16 px rounded frame; then
+/// the action row - reply, repost, like, views with their counts, bookmark and share on the right - in X's
+/// own icons (`x/*`).
+fn x_post(pg: &Pg, under: &mut B, over: &mut B, hits: &mut Vec<(Rect, Hit)>) -> Placed {
+    #[allow(unused_variables)]
+    let Pg { v, dev, plat, lay, screen, outer, app, k, st_h, desktop, fade, vm, e, sheet_m, cx, ink } = *pg;
+    let grey = rgba(113, 118, 123, 255);
+    let text_col = rgba(231, 233, 234, 255);
+    let col = if desktop || dev.k == "tablet" {
+        Rect::from_center_size(app.center(), vec2(app.width().min(600.0 * k), app.height())).intersect(app)
+    } else {
+        landscape_safe(app, dev, k)
+    };
+    let top = col.min.y + if desktop { 12.0 * k } else { st_h + 8.0 * k };
+    under.rect(Rect::from_min_max(pos2(col.min.x, top - 8.0 * k), col.max), 0.0, rgba(0, 0, 0, 255));
+    let pad = 16.0 * k;
+    let ava = pos2(col.min.x + pad + 20.0 * k, top + 20.0 * k);
+    under.circle(ava, 20.0 * k, rgba(51, 54, 57, 255));
+    under.avatar(ava, 20.0 * k);
+    let tx = col.min.x + pad + 52.0 * k;
+    let name = v.prof.display.clone();
+    under.text(pos2(tx, top + 4.0 * k), 15.0 * k, text_col, true, &name, 0);
+    under.text(pos2(tx, top + 23.0 * k), 15.0 * k, grey, false, &v.prof.handle_text(), 0);
+    glyph(under, "more", pos2(col.max.x - pad - 8.0 * k, top + 12.0 * k), 8.0 * k, grey);
+    // the post text, then the video
+    let s = 17.0 * k;
+    let tw = col.width() - 2.0 * pad;
+    let (lines, _) = collapse(wrap(&v.prof.caption_full(), s, false, tw), 4, s, false, tw, text_w("… Show more", s, false));
+    let mut y = top + 52.0 * k;
+    for l in &lines {
+        under.text(pos2(col.min.x + pad, y), s, text_col, false, l, 0);
+        y += s * 1.3;
+    }
+    hits.push((Rect::from_min_max(pos2(col.min.x, top + 48.0 * k), pos2(col.max.x, y)), Hit::Open(Sheet::Desc)));
+    // as wide as the column, never taller than the screen leaves above the action row (a phone turned landscape)
+    let fit_h = (col.max.y - (y + 10.0 * k) - 48.0 * k).max(40.0 * k);
+    let mw = (col.width() - 2.0 * pad).min(fit_h * plat.aspect());
+    let media = Rect::from_min_size(pos2(col.min.x + pad, y + 10.0 * k), vec2(mw, mw / plat.aspect()));
+    under.rect(media, 16.0 * k, rgba(22, 24, 28, 255));
+    under.frame(media, 16.0 * k, 1.0 * k, rgba(47, 51, 54, 255));
+    let (r, u) = place(media, false, v.pa);
+    let map = Map::fill(lay.refsz, media);
+    let tap = draw_ui(over, lay, &map, &cx, false);
+    // the action row: four counted actions spread across the width, bookmark + share at the right
+    let fy = media.max.y + 22.0 * k;
+    let mut foot = B::new();
+    let row = [("x/reply", v.prof.comments.as_str()), ("x/repost", v.prof.shares.as_str()), ("x/like", v.prof.likes.as_str()), ("x/views", v.prof.views.as_str())];
+    let span = (col.width() - 2.0 * pad - 70.0 * k) / row.len() as f32;
+    for (i, (icon, n)) in row.iter().enumerate() {
+        let c = pos2(col.min.x + pad + 10.0 * k + i as f32 * span, fy);
+        if !foot.icon_at(icon, c, 19.0 * k, grey) {
+            glyph(&mut foot, if *icon == "x/like" { "like" } else { "comment" }, c, 9.0 * k, grey);
+        }
+        foot.text(pos2(c.x + 16.0 * k, fy - 7.0 * k), 13.0 * k, grey, false, n, 0);
+        let hit = Rect::from_center_size(pos2(c.x + 14.0 * k, fy), vec2(44.0, 36.0) * k);
+        match *icon {
+            "x/reply" => hits.push((hit, Hit::Open(Sheet::Comments))),
+            "x/repost" => hits.push((hit, Hit::Open(Sheet::Share))),
+            _ => {}
+        }
+    }
+    for (i, icon) in ["x/share", "x/bookmark"].iter().enumerate() {
+        let c = pos2(col.max.x - pad - 10.0 * k - i as f32 * 34.0 * k, fy);
+        foot.icon_at(icon, c, 19.0 * k, grey);
+        if *icon == "x/share" {
+            hits.push((Rect::from_center_size(c, vec2(36.0, 36.0) * k), Hit::Open(Sheet::Share)));
+        }
+    }
+    over.ops.extend(foot.ops);
+    if e <= 0.0 {
+        hits.push((r, Hit::Play));
+        hits.extend(tap.into_iter().filter_map(|(r, t)| tap_hit(&t).map(|h| (r, h))));
+    }
+    if v.pl.buffering {
+        buffering(over, &plat.net, r, k, v.pl.t);
+    }
+    Placed { base: r, video: r, uv: u, sheet_top: media.min.y }
 }
 
 pub fn full(pg: &Pg, under: &mut B, over: &mut B, hits: &mut Vec<(Rect, Hit)>) -> Placed {

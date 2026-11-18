@@ -86,3 +86,9 @@ yt/theater
 yt/volume_high
 yt/volume_low
 yt/volume_mute
+x/reply
+x/repost
+x/like
+x/views
+x/bookmark
+x/share

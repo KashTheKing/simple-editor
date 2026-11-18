@@ -209,7 +209,7 @@ fn gallery(ui: &mut egui::Ui, st: &mut EmuState, c: &EmuCtx, d: &social::Data) -
                 let (ow, oh) = social::frame::outer_dp(device);
                 let h = 300.0f32;
                 let w = (h * ow / oh).clamp(140.0, 520.0) + 16.0;
-                let (cell, resp) = ui.allocate_exact_size(vec2(w, h + 22.0), Sense::click());
+                let (cell, resp) = ui.allocate_exact_size(vec2(w, h + 36.0), Sense::click());
                 if !ui.is_rect_visible(cell) {
                     continue;
                 }
@@ -233,15 +233,20 @@ fn gallery(ui: &mut egui::Ui, st: &mut EmuState, c: &EmuCtx, d: &social::Data) -
                 if let Some((_, s)) = st.cards.get(&name) {
                     paint_scene(&ui.painter_at(area), s, c.video, av);
                 }
-                let label = format!("{} · {}", g.platform().n, device.n);
+                // platform over device, each cut to the cell's width (a narrow phone cell must not run into
+                // its neighbour's caption)
                 let hover = resp.hovered();
-                ui.painter().text(
-                    pos2(cell.center().x, area.max.y + 4.0),
-                    egui::Align2::CENTER_TOP,
-                    &label,
-                    egui::FontId::proportional(12.0),
-                    if hover { ui.visuals().strong_text_color() } else { ui.visuals().text_color() },
-                );
+                let col = if hover { ui.visuals().strong_text_color() } else { ui.visuals().text_color() };
+                for (i, line) in [g.platform().n.as_str(), device.n.as_str()].into_iter().enumerate() {
+                    let mut job = egui::text::LayoutJob::single_section(
+                        line.to_string(),
+                        egui::TextFormat { font_id: egui::FontId::proportional(12.0), color: col, ..Default::default() },
+                    );
+                    job.wrap = egui::text::TextWrapping::truncate_at_width(cell.width());
+                    let galley = ui.painter().layout_job(job);
+                    let at = pos2(cell.center().x - galley.size().x / 2.0, area.max.y + 4.0 + i as f32 * 15.0);
+                    ui.painter().galley(at, galley, col);
+                }
                 if hover {
                     ui.painter().rect_stroke(cell.expand(2.0), 6.0, egui::Stroke::new(1.5, ui.visuals().selection.stroke.color), egui::StrokeKind::Outside);
                 }

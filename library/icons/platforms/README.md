@@ -16,7 +16,7 @@ Collected on 2026-11-17 in Chrome (desktop, dark theme, 1024 x 605 viewport) fro
 | `ys/` | YouTube Shorts | `https://www.youtube.com/shorts/...`, the `ytd-shorts` player |
 | `tt/` | TikTok | `https://www.tiktok.com/foryou`: the action column, the player bar, the side navigation and the comments panel |
 | `ig/` | Instagram | `https://www.instagram.com/reels/` and a post page `https://www.instagram.com/p/...` (logged out) |
-| `x/` | X | `https://x.com/search?q=...%20filter%3Anative_video`: the post's action row and the video player |
+| `x/` | X | `https://x.com/search?q=...%20filter%3Anative_video`: the post's action row and the video player; the action icons (reply, repost, like, views, bookmark, share) from a post page's `<symbol id="icon-*">` sprite definitions (2026-11-18) |
 | `android/` | Android status bar | Material Symbols Rounded, filled (`google/material-design-icons`, `symbols/web/<name>/materialsymbolsrounded/<name>_fill1_24px.svg`), Apache License 2.0 |
 
 Drawn in code rather than copied (no page carries them, or they are simple shapes the apps draw the same

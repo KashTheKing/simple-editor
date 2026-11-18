@@ -806,3 +806,11 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - Estimate: `engine::size_probe` encodes 5 x 2 s samples (one GOP each) with the real settings (GPU frames, waits while playing, cancelled by a new key) and scales up; the formula (0.075 bpp at CRF 23) only shows, with a trailing "…", until it has measured.
 - QSV/AMF arg mapping untouched (no hardware here to measure).
 - D: filled to 111 MB free mid-task (other sessions' builds); this worktree builds with CARGO_TARGET_DIR on C:.
+
+## Device emulator (2026-11-18, feat/device-emulator)
+- Panes / tools: `ui::emulator` (gallery + large view), `app::emulator_ctl` (`emulator.open`, `emulator.screenshot`); pages in `ui::social::{youtube, vertical, sheets, frame}`; devices + layouts in `assets/guides.json`.
+- Icons: `library/icons/platforms/<net>/*.svg` -> `bash scripts/platform-icons.sh` (headless Edge) -> `assets/social_icons.png`, order = `atlas.txt`. X's action icons come from the post page's `<symbol id="icon-*">` defs (the buttons only hold `<use href>`): read `document.getElementById(id)` paths, not the button's SVG.
+- Shorts' own comment / remix icons are still the drawn shapes: youtube.com/shorts never lays out its action bar in the Claude browser pane (desktop or mobile emulation, pane hidden = throttled page). Try again from a visible, real Chrome window.
+- `emulator_shots` (ignored) renders every platform x device x state: `SE_SHOT_DIR=<dir> cargo test emulator_shots -- --ignored`; compare with the refs in the side-session notes `device-emulator/refs`.
+- With the Preview pane hidden (another page, or the emulator maximised) the pane uploads the pending frame itself (`emulator_ctl::draw`): checked live.
+- Launching a scratch instance from a Claude Code session: strip CLAUDE_* / ANTHROPIC_* from the child's environment, or the in-app Assistant inherits the host session's auth.

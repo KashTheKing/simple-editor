@@ -293,7 +293,11 @@ pub fn build(v: &View, area: Rect) -> Scene {
                 over.rect(Rect::from_min_max(region.min, pos2(region.max.x, top.max(region.min.y))).intersect(region), 0.0, Color32::from_black_alpha((120.0 * e) as u8));
                 hits.push((Rect::from_min_max(region.min, pos2(region.max.x, top_final)), Hit::Close));
             }
-            let panel = Rect::from_min_max(pos2(region.min.x, top), region.max);
+            let mut panel = Rect::from_min_max(pos2(region.min.x, top), region.max);
+            // a phone turned landscape keeps the sheet clear of the camera cut-out and the rounded corners
+            if dev.k == "phone" && region.width() > region.height() {
+                (panel.min.x, panel.max.x) = (region.min.x + 48.0 * k, region.max.x - 48.0 * k);
+            }
             sheet_body(&mut over, v, s, panel, k, true, &mut hits);
         }
     }

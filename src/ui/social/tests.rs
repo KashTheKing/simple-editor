@@ -210,7 +210,9 @@ fn every_platform_builds_in_every_mode_and_device() {
                 assert!(!ops.is_empty());
                 for open in [None, Some(Sheet::Comments), Some(Sheet::Desc), Some(Sheet::Share), Some(Sheet::More), Some(Sheet::Profile), Some(Sheet::Sound)] {
                     let sc = device::build(&g.device_view(open, 1.0), Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 900.0)));
-                    assert!(sc.video.width() > 10.0 && sc.video.height() > 10.0, "{} on {} has a video", plat.id, dev.id);
+                    // a desktop watch page scrolls to its comments like the real one: the player goes under the top bar
+                    let scrolled_away = dev.k == "desktop" && plat.pg == "watch" && open == Some(Sheet::Comments);
+                    assert!(scrolled_away || (sc.video.width() > 10.0 && sc.video.height() > 10.0), "{} on {} has a video ({open:?})", plat.id, dev.id);
                     assert!(sc.video.is_finite() && sc.uv.is_finite());
                     assert!(!sc.over.is_empty() && !sc.under.is_empty());
                 }
@@ -651,11 +653,11 @@ fn youtube_guides_have_no_dislike() {
             }
         }
     }
-    // the YouTube like is a thumbs-up, the others' a heart; no glyph is named after the old shape
+    // the YouTube like is YouTube's own thumbs-up icon, TikTok's its own heart (the real icons, `library/icons/platforms`)
     let d = data();
     let like_of = |id: &str| d.platform(id).unwrap().lay["phone"].ui.iter().find(|e| e.n == "likes").map(|e| e.i.clone());
-    assert_eq!(like_of("yt_shorts").as_deref(), Some("thumb"));
-    assert_eq!(like_of("tiktok").as_deref(), Some("like"));
+    assert_eq!(like_of("yt_shorts").as_deref(), Some("yt/like_filled"));
+    assert_eq!(like_of("tiktok").as_deref(), Some("tt/heart"));
     assert!(!EMBEDDED.contains("dislike"));
 }
 
