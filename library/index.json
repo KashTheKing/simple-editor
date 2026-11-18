@@ -3370,6 +3370,25 @@
       "thumb": ""
     },
     {
+      "id": "skills/blocks-from-keys",
+      "kind": "skill",
+      "name": "blocks-from-keys",
+      "desc": "Convert the timeline's hand-made keyframes into animation blocks and its per-cut transitions into transition spans, the motion unchanged.",
+      "tags": [
+        "animator",
+        "keyframes",
+        "blocks",
+        "transitions",
+        "spans",
+        "simplify",
+        "convert"
+      ],
+      "file": "skills/blocks-from-keys.md",
+      "size": 2431,
+      "credit": "",
+      "thumb": ""
+    },
+    {
       "id": "skills/captions",
       "kind": "skill",
       "name": "captions",
