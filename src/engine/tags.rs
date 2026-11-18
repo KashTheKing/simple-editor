@@ -114,7 +114,7 @@ fn canonical(key: &str) -> Option<&'static str> {
 /// Parse `ffprobe -print_format json -show_format -show_streams` output.
 pub fn parse_probe(v: &Value) -> MediaTags {
     let mut t = MediaTags::default();
-    let mut put = |tags: Option<&Value>, t: &mut MediaTags| {
+    let put = |tags: Option<&Value>, t: &mut MediaTags| {
         if let Some(obj) = tags.and_then(Value::as_object) {
             for (k, val) in obj {
                 if let (Some(c), Some(s)) = (canonical(k), val.as_str()) {
@@ -386,7 +386,10 @@ pub fn extract_cover(path: &Path, out_dir: &Path) -> Result<Option<PathBuf>, Str
     let Some(idx) = t.cover else { return Ok(None) };
     let ext = if t.cover_codec == "png" { "png" } else { "jpg" };
     let _ = std::fs::create_dir_all(out_dir);
-    let out = out_dir.join(format!("{}.{ext}", cover_key(path)));
+    // named after the song (the Library shows it), the key keeps two "cover.jpg"s of different songs apart
+    let stem = path.file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+    let key = cover_key(path);
+    let out = out_dir.join(format!("{stem} cover {}.{ext}", &key[..key.len().min(6)]));
     let codec = if matches!(t.cover_codec.as_str(), "png" | "mjpeg") { "copy" } else { "png" };
     run_ffmpeg(&[
         "-i".into(),

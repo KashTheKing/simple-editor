@@ -85,6 +85,7 @@ fn build_inner(p: &mut Project, songs: &[Song], at: f64, style: &Style, opts: &M
             }
         }
         let vis = visualizer::add(p, audio, style, backend)?;
+        settle_low(p, vis); // every song's visualizer on the same (lowest free) track, its layers above
         let mut made = Made { audio, visualizer: vis, cover: None, title: None };
         if opts.cover {
             if let Some(img) = s.cover.and_then(|id| p.asset(id).cloned()) {
@@ -93,9 +94,9 @@ fn build_inner(p: &mut Project, songs: &[Song], at: f64, style: &Style, opts: &M
                     if let Some(clip) = p.clip_mut(cid) {
                         clip.duration = len;
                         clip.name = "Cover".into();
-                        // a square-ish picture, 45 % of the frame high, a little above centre
-                        let ih = if img.height > 0 { img.height as f64 } else { h };
-                        clip.scale = Animated::new((0.45 * h / ih).clamp(0.01, 50.0));
+                        // 45 % of the frame high, a little above centre (the compositor fits a picture into the
+                        // frame first, so the scale is that share whatever the picture's own size)
+                        clip.scale = Animated::new(0.45);
                         clip.y = Animated::new(-0.06 * h);
                         if xf > 0.0 && prev.is_some() {
                             clip.opacity = Animated::new(1.0);
@@ -103,6 +104,7 @@ fn build_inner(p: &mut Project, songs: &[Song], at: f64, style: &Style, opts: &M
                             clip.opacity.key_at(xf, 1.0);
                         }
                     }
+                    lift_above(p, cid, vis);
                     made.cover = Some(cid);
                 }
             }
@@ -121,6 +123,7 @@ fn build_inner(p: &mut Project, songs: &[Song], at: f64, style: &Style, opts: &M
                 }
                 let _ = w;
             }
+            lift_above(p, id, made.cover.unwrap_or(vis));
             made.title = Some(id);
         }
         let end = p.clip(audio).map_or(t + len, |c| c.end());
@@ -130,6 +133,34 @@ fn build_inner(p: &mut Project, songs: &[Song], at: f64, style: &Style, opts: &M
     }
     p.tidy();
     Ok(out)
+}
+
+/// Move clip `id` down to the lowest video track it fits on (so a mix keeps to three tracks, not a stair).
+fn settle_low(p: &mut Project, id: Id) {
+    let Some(from) = p.tracks.iter().position(|t| t.clips.iter().any(|x| x.id == id)) else { return };
+    let Some(i) = p.tracks[from].clips.iter().position(|c| c.id == id) else { return };
+    let (start, dur) = (p.tracks[from].clips[i].start, p.tracks[from].clips[i].duration);
+    let Some(to) = p.video_tracks().into_iter().find(|&t| t < from && p.tracks[t].fits(start, dur, &[])) else { return };
+    let clip = p.tracks[from].clips.remove(i);
+    p.tracks[to].clips.push(clip);
+    p.tracks[to].clips.sort_by(|a, b| a.start.total_cmp(&b.start));
+}
+
+/// Move clip `id` onto a video track drawn over `below`'s (a free one, else a new top track).
+fn lift_above(p: &mut Project, id: Id, below: Id) {
+    let track_of = |p: &Project, c: Id| p.tracks.iter().position(|t| t.clips.iter().any(|x| x.id == c));
+    let (Some(from), Some(floor)) = (track_of(p, id), track_of(p, below)) else { return };
+    let Some(i) = p.tracks[from].clips.iter().position(|c| c.id == id) else { return };
+    let (start, dur) = (p.tracks[from].clips[i].start, p.tracks[from].clips[i].duration);
+    // the lowest free track above `below` (the clip's own track counts as free for it)
+    let free = p.video_tracks().into_iter().find(|&t| t > floor && (t == from || p.tracks[t].fits(start, dur, &[])));
+    if free == Some(from) {
+        return;
+    }
+    let clip = p.tracks[from].clips.remove(i);
+    let to = free.unwrap_or_else(|| p.add_track(TrackKind::Video));
+    p.tracks[to].clips.push(clip);
+    p.tracks[to].clips.sort_by(|a, b| a.start.total_cmp(&b.start));
 }
 
 /// The topmost video track (layers placed there sit over the visualizer; a busy one makes a new one).
@@ -206,8 +237,10 @@ mod tests {
         let c = p.clip(made[0].cover.unwrap()).unwrap();
         assert_eq!((c.kind, c.start, c.duration), (ClipKind::Image, 0.0, p.clip(made[0].audio).unwrap().duration));
         assert!(track_of(c.id) > track_of(made[0].visualizer), "the cover sits over the visualizer");
-        assert!((c.scale.value - 0.45 * 1080.0 / 400.0).abs() < 1e-9);
+        assert!((c.scale.value - 0.45).abs() < 1e-9, "a share of the frame, not of the picture's pixels");
         assert!(made[1].cover.is_none(), "no cover, no cover layer");
+        let vtrack = |id: Id| track_of(id);
+        assert_eq!(vtrack(made[0].visualizer), vtrack(made[1].visualizer), "every visualizer on one track");
         // a failure leaves nothing behind
         let before = p.to_json();
         assert!(build(&mut p, &[Song { asset: cov, cover: None, title: String::new() }], 9.0, &style, &opts, Backend::Ffmpeg).is_err());

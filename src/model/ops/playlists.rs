@@ -149,7 +149,12 @@ impl Project {
         s += &format!("#PLAYLIST:{}\n", p.name);
         for aid in &p.items {
             let Some(a) = self.asset(*aid) else { continue };
-            let title = titles(*aid).unwrap_or_else(|| self.asset_display_name(a));
+            // no tag title: the user's rename, else the file name without its extension
+            let title = titles(*aid).unwrap_or_else(|| {
+                self.asset_names.get(&a.id).cloned().unwrap_or_else(|| {
+                    Path::new(&a.path).file_stem().map_or_else(|| a.name(), |s| s.to_string_lossy().into_owned())
+                })
+            });
             s += &format!("#EXTINF:{},{}\n", a.duration.round() as i64, title.replace(['\r', '\n'], " "));
             let path = Path::new(&a.path);
             let rel = dir.and_then(|d| path.strip_prefix(d).ok()).map(|r| r.to_string_lossy().replace('\\', "/"));

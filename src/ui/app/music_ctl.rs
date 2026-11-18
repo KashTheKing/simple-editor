@@ -429,7 +429,21 @@ fn titles_fn(app: &App) -> impl Fn(Id) -> Option<String> + '_ {
     }
 }
 
-fn export_m3u8(app: &App, id: Id, path: &Path) -> Result<(), String> {
+fn export_m3u8(app: &mut App, id: Id, path: &Path) -> Result<(), String> {
+    // an export is a deliberate act: read the tags of songs the Playlists pane has not looked at yet
+    let missing: Vec<(Id, String)> = app
+        .project
+        .playlist(id)
+        .map(|p| p.items.iter().filter(|i| !app.music.titles.contains_key(i)).copied().collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|i| app.project.asset(i).map(|a| (i, a.path.clone())))
+        .collect();
+    for (i, p) in missing {
+        if let Ok(t) = tags::read(Path::new(&p)) {
+            app.music.titles.insert(i, (t.get("artist").to_string(), t.get("title").to_string()));
+        }
+    }
     let titles = titles_fn(app);
     let text = app.project.playlist_m3u8(id, path.parent(), &titles).ok_or("no such playlist")?;
     std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
@@ -1069,7 +1083,8 @@ pub const TOOLS: &[ToolDef] = &[
                 let a = app.project.asset(id).ok_or_else(|| format!("no asset {id}"))?.clone();
                 let p = Path::new(&a.path);
                 let t = tags::read(p).unwrap_or_default();
-                let title = crate::engine::mixvideo::title_line(t.get("artist"), if t.get("title").is_empty() { &app.project.asset_display_name(&a) } else { t.get("title") });
+                let shown = app.project.asset_display_name(&a);
+                let title = crate::engine::mixvideo::title_line(t.get("artist"), if t.get("title").is_empty() { &shown } else { t.get("title") });
                 let cover = tags::extract_cover(p, &tags::covers_dir()).ok().flatten().and_then(|c| crate::media::probe(&c.to_string_lossy(), backend).ok()).map(|mut c| {
                     c.folder = "Covers".into();
                     app.project.add_asset(c)
