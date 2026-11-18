@@ -78,6 +78,10 @@ pub enum GalleryTab {
     AudioTransitions,
     /// Bus chains (`mixer_fx::AUDIO_FX` / `AUDIO_SWEEPS`): reverb, echo, EQ looks, dynamics, pitch, sweeps.
     AudioEffects,
+    // ---- ws:preview-audio-only ----
+    /// The audio visualizer types (`engine::visualizer::styles`): a layer of its own that shows the timeline's
+    /// mixed sound. Click = one at the playhead, drag onto a video track = one there.
+    Visualizers,
 }
 
 /// The Audio ▸ Transitions cards, in order.
@@ -89,7 +93,7 @@ pub fn is_audio_block(b: &crate::model::KeyBlock) -> bool {
 }
 
 impl GalleryTab {
-    pub const ALL: [GalleryTab; 13] = [
+    pub const ALL: [GalleryTab; 14] = [
         Self::Animate,
         Self::Looks,
         Self::Luts,
@@ -103,6 +107,7 @@ impl GalleryTab {
         Self::AudioAnimate,
         Self::AudioTransitions,
         Self::AudioEffects,
+        Self::Visualizers,
     ];
     /// The tab strip of each side of the Video | Audio switch.
     pub const VIDEO: [GalleryTab; 9] = [
@@ -116,7 +121,8 @@ impl GalleryTab {
         Self::Templates,
         Self::Titles,
     ];
-    pub const AUDIO: [GalleryTab; 4] = [Self::AudioAnimate, Self::AudioTransitions, Self::AudioEffects, Self::Sounds];
+    pub const AUDIO: [GalleryTab; 5] =
+        [Self::AudioAnimate, Self::AudioTransitions, Self::AudioEffects, Self::Visualizers, Self::Sounds];
     /// On the Audio side of the switch.
     pub fn is_audio(self) -> bool {
         Self::AUDIO.contains(&self)
@@ -136,6 +142,7 @@ impl GalleryTab {
             Self::AudioAnimate => "AudioAnimate",
             Self::AudioTransitions => "AudioTransitions",
             Self::AudioEffects => "AudioEffects",
+            Self::Visualizers => "Visualizers",
         }
     }
     pub fn from_name(s: &str) -> Option<Self> {
@@ -271,7 +278,7 @@ fn sources(tab: GalleryTab, lib_tab: bool) -> &'static [Src] {
         GalleryTab::Effects | GalleryTab::Transitions => {
             &[Src::All, Src::BuiltIn, Src::Mine, Src::Installed, Src::Online]
         }
-        GalleryTab::Sounds | GalleryTab::AudioTransitions | GalleryTab::AudioEffects => &[],
+        GalleryTab::Sounds | GalleryTab::AudioTransitions | GalleryTab::AudioEffects | GalleryTab::Visualizers => &[],
         _ => &[Src::All, Src::BuiltIn, Src::Mine],
     }
 }
@@ -1254,7 +1261,9 @@ pub fn mine_kind(tab: GalleryTab) -> Option<GKind> {
         GalleryTab::Templates | GalleryTab::Titles => GKind::Template,
         GalleryTab::Animate | GalleryTab::AudioAnimate => GKind::Animate,
         GalleryTab::Sounds => GKind::Sound,
-        GalleryTab::Luts | GalleryTab::AudioTransitions | GalleryTab::AudioEffects => return None,
+        GalleryTab::Luts | GalleryTab::AudioTransitions | GalleryTab::AudioEffects | GalleryTab::Visualizers => {
+            return None
+        }
     })
 }
 
@@ -1342,7 +1351,7 @@ pub fn is_mine(tab: GalleryTab, name: &str, settings: &Settings, now: f64) -> bo
         GalleryTab::SpeedRamps | GalleryTab::Effects | GalleryTab::Transitions | GalleryTab::Sounds => {
             mine_kind(tab).is_some_and(|k| mine_items(k, now).iter().any(|i| i.name == name))
         }
-        GalleryTab::Luts | GalleryTab::AudioTransitions | GalleryTab::AudioEffects => false,
+        GalleryTab::Luts | GalleryTab::AudioTransitions | GalleryTab::AudioEffects | GalleryTab::Visualizers => false,
     }
 }
 
@@ -1639,7 +1648,38 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
             .collect(),
         GalleryTab::AudioTransitions => AUDIO_TRANSITIONS.iter().map(|s| s.to_string()).collect(),
         GalleryTab::AudioEffects => crate::engine::mixer_fx::audio_fx_cards().map(|(_, l)| l.to_string()).collect(),
+        GalleryTab::Visualizers => visualizer_styles().into_iter().map(|s| s.name).collect(),
     }
+}
+
+// ---- ws:preview-audio-only ----
+/// The visualizer styles, re-read from the library folder at most every 2 s (the card grid asks every frame).
+fn visualizer_styles() -> Vec<crate::engine::visualizer::Style> {
+    thread_local! {
+        static CACHE: RefCell<Option<(std::time::Instant, Vec<crate::engine::visualizer::Style>)>> =
+            const { RefCell::new(None) };
+    }
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.as_ref().is_none_or(|(at, _)| at.elapsed().as_secs_f32() > 2.0) {
+            *c = Some((std::time::Instant::now(), crate::engine::visualizer::styles()));
+        }
+        c.as_ref().map(|(_, s)| s.clone()).unwrap_or_default()
+    })
+}
+
+/// A Visualizers card's picture: the style itself, still, at a lively level.
+fn visualizer_picture(p: &egui::Painter, tile: Rect, name: &str) {
+    thread_local! {
+        static ORBS: RefCell<HashMap<String, crate::ui::spiky_ball::Orb>> = RefCell::new(HashMap::new());
+    }
+    let Some(style) = visualizer_styles().into_iter().find(|s| s.name == name) else { return };
+    ORBS.with(|o| {
+        let mut o = o.borrow_mut();
+        let orb = o.entry(style.name.clone()).or_default();
+        orb.show_level(0.6, 1.5);
+        orb.paint(p, tile.shrink(1.0), &style.src);
+    });
 }
 
 /// An Animate card's picture: each animated property's curve over the block, normalised to the tile,
@@ -2141,6 +2181,12 @@ pub fn show(
                         let drag = DragPayload::GalleryCard(tab, name.clone());
                         card(ui, ("afx", name), name, Some(drag), false, |p, t| audio_fx_picture(p, t, name, palette.accent))
                     }
+                    // ---- ws:preview-audio-only ----: each style drawn by its own shader
+                    GalleryTab::Visualizers => {
+                        let drag = DragPayload::GalleryCard(tab, name.clone());
+                        card(ui, ("viz", name), name, Some(drag), false, |p, t| visualizer_picture(p, t, name))
+                            .on_hover_text(format!("{name} - click: at the playhead · drag onto a video track"))
+                    }
                     _ => {
                         let drag = DragPayload::GalleryCard(tab, name.clone());
                         card(ui, ("card", tab.name(), name), name, Some(drag), false, |_, _| {})
@@ -2154,7 +2200,9 @@ pub fn show(
                         palette.accent,
                     );
                 }
-                if tab.is_audio() {
+                if tab == GalleryTab::Visualizers {
+                    // (nothing to hear: a picture)
+                } else if tab.is_audio() {
                     // hear it on the selected clip (`gallery_audition`), unless previews are off
                     if !state.no_hover_preview && crate::ui::hover_after(ui, r.id, &r, 300.0) {
                         out.audition = Some((tab, name.clone()));
@@ -2165,7 +2213,9 @@ pub fn show(
                 let mut go = r.clicked();
                 let menu = menu::context(&r, |ui| {
                     let (label, needs_clip) = match tab {
-                        GalleryTab::Templates | GalleryTab::Titles => ("Place at playhead", false),
+                        GalleryTab::Templates | GalleryTab::Titles | GalleryTab::Visualizers => {
+                            ("Place at playhead", false)
+                        }
                         GalleryTab::Captions => ("Apply to every caption", false),
                         _ => ("Apply to selection", true),
                     };
@@ -3647,13 +3697,36 @@ mod tests {
 
     #[test]
     fn assert_no_idle_repaint_gallery_audio_side() {
-        for tab in [GalleryTab::AudioAnimate, GalleryTab::AudioTransitions, GalleryTab::AudioEffects] {
+        for tab in
+            [GalleryTab::AudioAnimate, GalleryTab::AudioTransitions, GalleryTab::AudioEffects, GalleryTab::Visualizers]
+        {
             let mut g = Gx::new(tab);
             for _ in 0..30 {
                 g.frame(vec![]);
             }
             assert!(!g.ctx.has_requested_repaint(), "an idle {tab:?} tab requested a repaint");
         }
+    }
+
+    // ---- ws:preview-audio-only ----
+    /// Audio ▸ Visualizers lists the types as cards; a click places one (at the playhead), a card drags as
+    /// a Gallery card the timeline puts on a video track.
+    #[test]
+    fn visualizer_cards_place_a_visualizer() {
+        assert!(GalleryTab::AUDIO.contains(&GalleryTab::Visualizers));
+        assert_eq!(GalleryTab::from_name("visualizers"), Some(GalleryTab::Visualizers));
+        let names = card_names(GalleryTab::Visualizers, &Settings::default());
+        for n in ["Neon Orb", "Spectrum Bars", "Voxel Blocks"] {
+            assert!(names.iter().any(|x| x == n), "{n} in {names:?}");
+        }
+        let mut g = Gx::new(GalleryTab::Visualizers);
+        g.click("Spectrum Bars");
+        assert_eq!(g.take().apply, Some((GalleryTab::Visualizers, "Spectrum Bars".to_string(), 1.0)));
+        let card = crate::ui::DragPayload::GalleryCard(GalleryTab::Visualizers, "Neon Orb".into());
+        assert_eq!(
+            crate::ui::timeline::gallery_drop::drop_kind(&card),
+            Some(crate::ui::timeline::gallery_drop::DropKind::OnTrack)
+        );
     }
 
     #[test]

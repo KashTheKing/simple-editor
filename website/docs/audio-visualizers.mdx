@@ -7,8 +7,16 @@ description: Turn a song into moving pictures - built-in visualizer styles, your
 
 A visualizer is a layer that moves with the music. Right-click a song in the **Media Library** and pick
 **Add with Audio Visualizer**: the song goes on the timeline at the playhead with a full-frame visualizer layer
-above it, exactly as long. For a song already on the timeline, right-click it and open **Audio ▸ Add Audio
-Visualizer**. Either way the two are **linked**, like a video and its own sound: move, trim or delete one and
+above it, exactly as long. The other ways in:
+
+- Drag a song from the **Media Library** or the **Media Browser** onto the timeline with **Ctrl+Shift** held.
+- Right-click a song already on the timeline ▸ **Add Audio Visualizer**.
+- **Gallery ▸ Audio ▸ Visualizers**: click a type to add one at the playhead, or drag it onto a video track.
+  This one is not tied to a song: it shows **everything the timeline plays** under it (every audio track, as
+  mixed), and is analysed again in the background after each edit.
+- **Ctrl+P** ▸ *Add Audio Visualizer* (for the selected song).
+
+Either way the two are **linked**, like a video and its own sound: move, trim or delete one and
 the other follows, and exporting the timeline renders the visualizer with the song. A new visualizer gets the
 style you picked last. The sound is analysed **once** when the visualizer is made (loudness, six frequency bands from bass to
 treble, and the beats), and the result is stored as keyframes on the layer. Playback and export only read
@@ -16,8 +24,9 @@ those keyframes, so a visualizer never makes playback stutter, and the export lo
 
 ## Picking a style
 
-Select the visualizer clip. The Inspector's **Visualizer** section has a **Style** list and shows which audio
-clip it listens to (the one under it on the timeline).
+Select the visualizer clip. The Inspector's **Visualizer** section has a **Type** list, **Import shader…** (load
+a GLSL visualizer file: it is checked and joins your types), and a **Source**: the song it is linked to, or
+**Timeline mix**. Switch a linked one to Timeline mix to make it follow everything that plays.
 
 ![The Visualizer section in the Inspector](/img/tutorial/visualizer-inspector.png)
 
@@ -43,23 +52,31 @@ Visualizer** to pick the style or turn it off.
 ## Tuning it to the song: the band mixer
 
 Every song hits differently: an EDM drop lives in the sub-bass, a rock song in its snare and guitars, a ballad
-in the voice. Under the style, the Visualizer section has a **band mixer**:
+in the voice. Under the style, the Visualizer section has a band mixer titled **Frequency bands**:
 
-- A small **spectrum** of the song under the clip: six bands from **Sub** (20-80 Hz) through **Bass**
+- A **curve** over the song's spectrum: frequency left to right, weight bottom to top. Drag a band's point up
+  to make it drive the visualizer harder, down to ignore it; double-click puts it back. Six bands from **Sub** (20-80 Hz) through **Bass**
   (80-250), **Low-mid** (250-500), **Mid** (0.5-2 kHz) and **High-mid** (2-6 kHz) to **Air** (6-16 kHz). The
   dim bars are what the song has, the bright ones what the visualizer will react to.
 - **Intensity** per band: 0 ignores the band, 1 is normal, up to 3 boosts it.
-- **Beat**: tick the bands the beat detection listens to - the kick lives in Sub / Bass (EDM, hip-hop), the
+- **Beat source**: tick the bands the beat detection listens to - the kick lives in Sub / Bass (EDM, hip-hop), the
   snare in Mid (rock). Nothing ticked = the whole sound.
 - **Sensitivity** scales everything; **Attack** is how fast it rises to a hit (0 = instantly), **Release** how
   slowly it falls back (short = punchy, long = smooth).
-- **Listen like**: presets for EDM, Hip-hop, Rock, Vocal, Lo-fi and Classical as quick starting points, and
+- **Preset**: presets for EDM, Hip-hop, Rock, Vocal, Lo-fi and Classical as quick starting points, and
   **Reset** for every band equal.
 
 Every change shows at once, playing or paused, and is one undo step. The song is analysed once and kept, so
 tuning never makes playback stutter. The built-in styles use it as they are: Neon Orb pulses with the mixed
 level, Spectrum Bars and Voxel Blocks raise each band by its own intensity. The mix is saved with the project
 and stays when you change the style.
+
+## Hearing a cut without the picture: Audio Only
+
+Right-click the **Preview** ▸ **Audio Only** (also in the **Playback** menu and **Ctrl+P**) to play the timeline's
+sound with a visualizer of the whole mix in place of the picture. No video is decoded, so it is light even on a
+heavy timeline. The visualizer uses the style you picked last, follows the mix at the playhead, and an **Audio
+Only** badge sits in the corner. The setting is saved with the project; exports always have the picture.
 
 ## Flying the camera (3D styles)
 

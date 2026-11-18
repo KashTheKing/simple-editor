@@ -335,6 +335,10 @@ impl App {
         if menu::check(ui, self.settings.movie_mode, "Movie Mode (pre-render)", &menu::shortcut(MovieMode)).clicked() {
             out.push(MovieMode);
         }
+        // ws:preview-audio-only
+        if menu::check(ui, self.project.audio_only_preview, "Audio Only", &menu::shortcut(AudioOnlyPreview)).clicked() {
+            out.push(AudioOnlyPreview);
+        }
         // ws:perf-baseline
         if menu::check(ui, self.settings.hud, "Performance HUD", &menu::shortcut(ToggleHud)).clicked() {
             out.push(ToggleHud);

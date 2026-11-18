@@ -462,6 +462,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `preview.compare` | Ui | mode, x | Set the monitor's grade-compare mode (state only — no bypass render exists yet, see the PR body). |
 | `preview.drop` | Mutate | asset_ids | Place assets on a free video track at the playhead, as if dropped on the monitor. |
+| `preview.audio_only` | Ui | on | Audio Only preview: the Preview plays the sound with a visualizer of the mix, no picture decoded; omit `on` to toggle. Saved with the project, not an undo step; export unaffected. |
 | `preview.hover` | Ui | kind, name | Manually drive the monitor's alt-render preview. Same App.alt_render pipeline inspector-gallery's gallery.hover targets via AltRequest::Gallery. |
 | `preview.view` | Ui | fit, pan_x, pan_y, zoom | Read or set the canvas zoom/pan. |
 

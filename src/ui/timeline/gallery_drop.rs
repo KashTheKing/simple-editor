@@ -42,7 +42,7 @@ pub(crate) fn drop_kind(p: &DragPayload) -> Option<DropKind> {
             | GalleryTab::AudioTransitions => Some(DropKind::OnClip),
             GalleryTab::Transitions => Some(DropKind::OnEdge),
             GalleryTab::Sounds => Some(DropKind::OnAudio),
-            GalleryTab::Titles | GalleryTab::Templates => Some(DropKind::OnTrack),
+            GalleryTab::Titles | GalleryTab::Templates | GalleryTab::Visualizers => Some(DropKind::OnTrack),
             _ => None,
         },
         DragPayload::LibItem(id) => match split_id(id)?.0 {

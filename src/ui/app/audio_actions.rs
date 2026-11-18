@@ -143,6 +143,44 @@ pub fn act(app: &mut App, a: Action) -> bool {
     }
 }
 
+/// Files dropped to be placed right away: each probed on the spot (one metadata read) so its kind and
+/// length are known now - an async import's placeholder would be rebuilt under the new clips later.
+/// A file that will not probe goes through the normal import.
+pub(super) fn import_now(app: &mut App, paths: &[String]) -> Vec<Id> {
+    let backend = app.backend();
+    let mut ids = Vec::new();
+    for p in paths {
+        if let Some(a) = app.project.asset_by_path(p) {
+            ids.push(a.id);
+            continue;
+        }
+        match crate::media::probe(p, backend) {
+            Ok(mut a) => {
+                a.id = 0;
+                ids.push(app.project.add_asset(a));
+            }
+            Err(_) => ids.extend(app.import_files(&[PathBuf::from(p)])),
+        }
+    }
+    ids
+}
+
+/// A drop with Ctrl+Shift (ws:preview-audio-only): the songs among `assets` with their visualizers from
+/// `at`, anything else placed after them as a plain drop would.
+pub(super) fn add_media_with_visualizer(app: &mut App, assets: &[Id], at: f64) {
+    let (songs, rest): (Vec<Id>, Vec<Id>) =
+        assets.iter().partition(|&&a| app.project.asset(a).is_some_and(|a| a.kind == ClipKind::Audio));
+    let pairs = add_songs_with_visualizer(app, &songs, at);
+    if !rest.is_empty() {
+        let end =
+            pairs.iter().filter_map(|&(s, _)| app.project.clip(s)).map(|c| c.start + c.duration).fold(at, f64::max);
+        let before = app.project.to_json();
+        app.place_assets(&rest, end, None, DropMode::Place);
+        app.push_undo_labeled(before, "Place Media");
+        app.after_edit();
+    }
+}
+
 /// Library ▸ Add with Audio Visualizer / `audio.visualizer {asset_id}`: each audio asset placed from
 /// `at` (one after another) with its linked visualizer in the last-used style, as ONE undo step.
 /// Returns the (song, visualizer) pairs; assets that fail are skipped and toasted.
