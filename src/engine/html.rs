@@ -1488,7 +1488,7 @@ fn kill_pid_tree(pid: u32) {
 }
 
 /// Kill a process tree by the root's own pid (never by image name).
-fn kill_tree(child: &mut Child) {
+pub(crate) fn kill_tree(child: &mut Child) {
     let pid = child.id().to_string();
     let _ = ffpipe::command(Path::new("taskkill"))
         .args(["/PID", &pid, "/T", "/F"])

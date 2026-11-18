@@ -174,6 +174,7 @@ mod render_pane;
 mod screens_ctl;
 mod transcript_pane;
 mod voiceover_pane;
+mod recorder_pane; // fix/screen-record: the Screen Recording pane
 mod template_ctl; // ws:animator-templates
 mod beats_ctl; // ws:beat-aligner
 mod music_ctl; // ws:music-burn
@@ -257,6 +258,8 @@ pub struct App {
     close_confirmed: bool,
     /// Close was requested during an export: cancel it, then re-request the close once it has finished.
     close_after_export: bool,
+    /// fix/screen-record: the window was closed mid-recording - close once the mp4 is finished.
+    close_after_recording: bool,
     was_playing: bool,
     /// Last title sent to the OS - `send_viewport_cmd` forces a repaint, so only send on change.
     last_title: String,
@@ -922,6 +925,7 @@ impl App {
             screenshot_requested: false,
             close_confirmed: false,
             close_after_export: false,
+            close_after_recording: false,
             was_playing: false,
             last_title: String::new(),
             palette,
@@ -1285,6 +1289,7 @@ impl eframe::App for App {
         if !self.window_shown {
             self.window_shown = true;
             boot::run(self); // ws:forgiveness: offers crash recovery, if any
+            self.recover_recordings(); // screen recordings a crash or power cut left unfinished
         }
         if just {
             if boot::bench_armed() {
@@ -1360,7 +1365,16 @@ impl eframe::App for App {
 
         // close handling: confirm unsaved changes
         if ctx.input(|i| i.viewport().close_requested()) && !self.close_confirmed {
-            if let Some((prog, _)) = &self.export {
+            if self.screen_rec.is_some() || self.capture_ui.finishing {
+                // finish the recording first (stop, mux, check, import); the close is re-sent after
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                if self.screen_rec.is_some() {
+                    self.stop_screen_capture();
+                    self.capture_ui.finishing = true;
+                    self.toast("Finishing the screen recording, then closing");
+                }
+                self.close_after_recording = true;
+            } else if let Some((prog, _)) = &self.export {
                 // let the export thread stop and clean up first; the close is re-requested once it has finished
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 prog.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -1488,7 +1502,7 @@ impl eframe::App for App {
         }
         // record-on-blur: start when the editor loses focus, stop (and import) when it comes back
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
-        if self.settings.capture_on_blur && self.capture_ui.screen_open {
+        if self.settings.capture_on_blur && self.layout.is_visible(Pane::ScreenRecording) {
             if self.was_focused && !focused && self.screen_rec.is_none() {
                 let opts = self.blur_capture_options();
                 self.start_screen_capture(opts);
@@ -1504,6 +1518,17 @@ impl eframe::App for App {
             let level = self.voice_rec.as_ref().and_then(|(_, out, _)| crate::ui::voiceover_ui::wav_tail_peak(out));
             self.capture_ui.level = level.unwrap_or(0.0);
             ctx.request_repaint_after(Duration::from_millis(if self.voice_rec.is_some() { 100 } else { 250 }));
+        }
+        // fix/screen-record: the preview grabber and the meter taps run only while the pane is on screen
+        if !self.pane_drawn(Pane::ScreenRecording) {
+            self.capture_ui.sleep();
+        }
+        self.capture_ui.finishing = self.pending_recordings.iter().any(|r| r.done.is_some() && r.at.is_none());
+        if self.close_after_recording && self.screen_rec.is_none() && !self.capture_ui.finishing {
+            self.close_after_recording = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        } else if self.close_after_recording {
+            self.animate_until(ctx, Instant::now() + Duration::from_millis(100));
         }
 
         // export progress
@@ -1803,6 +1828,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
     voice_ctl::TOOLS,
+    recorder_pane::TOOLS, // fix/screen-record: capture.screen
     // ---- ws:docs-release ----
     // ---- ws:html-layer ----
     tools_html::TOOLS,
@@ -2171,6 +2197,7 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     animator_ctl::draw,
     // ---- ws:panels-multiscreen ----
     voiceover_pane::draw,
+    recorder_pane::draw, // fix/screen-record
     transcript_pane::draw,
     render_pane::draw,
     // ---- ws:beat-aligner ----

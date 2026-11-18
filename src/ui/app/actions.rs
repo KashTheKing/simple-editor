@@ -418,7 +418,14 @@ impl App {
                     self.frame_ui.open = true; // drawn by the Rendering pane, which reveal_on_start brings up
                 }
             }
-            ScreenCapture => self.capture_ui.screen_open = !self.capture_ui.screen_open,
+            // a pane in its own window the first time (dock it like any other pane); again hides it
+            ScreenCapture => {
+                if self.layout.is_visible(Pane::ScreenRecording) {
+                    self.toggle_pane(Pane::ScreenRecording);
+                } else {
+                    recorder_pane::open(self);
+                }
+            }
             Voiceover => self.toggle_pane(Pane::Voiceover), // ws:panels-multiscreen: a pane, not a window
             ImportTimeline => self.act_import_timeline(),
             MovieMode => {

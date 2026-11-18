@@ -814,3 +814,30 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - `emulator_shots` (ignored) renders every platform x device x state: `SE_SHOT_DIR=<dir> cargo test emulator_shots -- --ignored`; compare with the refs in the side-session notes `device-emulator/refs`.
 - With the Preview pane hidden (another page, or the emulator maximised) the pane uploads the pending frame itself (`emulator_ctl::draw`): checked live.
 - Launching a scratch instance from a Claude Code session: strip CLAUDE_* / ANTHROPIC_* from the child's environment, or the in-app Assistant inherits the host session's auth.
+
+## Screen recording (2026-11-18, fix/screen-record)
+- Root cause of "moov atom not found" (user's screen-1795024517.mp4): the stop path was fine (`q` on stdin), but
+  `poll_recordings` imported as soon as `out.exists()`, which is true from the first mdat byte - before ffmpeg wrote
+  the moov. The user's file was finalised a moment later and plays (72.5 s, h264 + aac, decodes clean): nothing to recover.
+- Now: ffmpeg records video only (gdigrab, `-tune zerolatency`, `-g 2*fps`, `-cluster_time_limit 1000`,
+  `-flush_packets 1`) into `<name>.rec.mkv`; `engine::audio_tap` (cpal/WASAPI; loopback = input stream on the default
+  render device) writes raw f32 to `<name>.system.f32` / `.mic.f32`; `<name>.rec.json` holds paths, formats and start
+  times. gdigrab stamps frames with wall-clock µs (ffmpeg's `start:` line at -loglevel info), the taps stamp their
+  first sample on the same clock -> `adelay` / `atrim` in `capture::mux_args`. `finalize` muxes (video copy, AAC,
+  `-t <video length>`: `-shortest` never ends a graph with apad/anullsrc), probes, then deletes the pieces.
+  The app imports on the capture's Progress done + no error (`PendingRecording.done`), never on "exists".
+- Crash safety found by testing: x264's default frame threads held every frame of a 3.5 s recording in memory and
+  ffmpeg's write buffer held the rest (a killed MKV was 587 bytes) -> zerolatency + flush_packets. ffmpeg ignores
+  stdin closing, so after an app crash it kept recording forever -> `html::tie_to_us` (kill-on-close job). The
+  Chocolatey ffmpeg.exe is a shim: `Child::kill` kills only the shim -> the stop timeout uses `html::kill_tree`.
+- `unfinished(dir)` (pieces untouched for 30 s) runs at startup (`recover_recordings`); checked live: app killed
+  mid-recording -> relaunch -> mp4 rebuilt, imported, toast. Closing the window mid-recording stops, finishes,
+  imports, then closes.
+- Live (debug exe, scratch profile, port 7541, `capture.screen` MCP tool): 10 s in each mode with a 1 kHz tone
+  played; system and both have the tone at full level, mic only hears it acoustically (-34 dB), none has no audio
+  stream. NOT explained: in Both mode the tone's level varied run to run (-12 to -26 dB) while system-only stayed
+  at -12; the mux keeps levels (checked with a synthetic tone), so it is in Windows' playback chain - possibly
+  communications ducking when the mic opens (UserDuckingPreference is the default, reduce by 80 %).
+- gdigrab reached ~27 fps at 2560x1440 while other sessions were compiling. Tests that record for real write to
+  `SE_TEST_DIR` (else temp). Pre-existing on release/1.3.1: `library_index_matches_files` and
+  `connecting_loads_the_index_once` fail in CRLF worktree checkouts; `clear_forgets_rewritten_file` is flaky.

@@ -30,6 +30,16 @@ pub(super) fn capture_tab(ui: &mut egui::Ui, s: &mut Settings, audio_inputs: &[(
         });
         ui.end_row();
 
+        ui.label("Audio");
+        let mut key = s.capture_audio_mode().key().to_string();
+        let modes: Vec<(&str, &str)> =
+            crate::engine::capture::AudioMode::ALL.iter().map(|m| (m.key(), m.label())).collect();
+        if combo(ui, "cap_audio", &mut key, &modes, Some(260.0)) {
+            s.capture_audio = key;
+            changed = true;
+        }
+        ui.end_row();
+
         ui.label("Microphone");
         changed |= devices(ui, "cap_mic", &mut s.capture_mic, false);
         ui.end_row();
@@ -48,7 +58,6 @@ pub(super) fn capture_tab(ui: &mut egui::Ui, s: &mut Settings, audio_inputs: &[(
         });
         ui.end_row();
     });
-    changed |= ui.checkbox(&mut s.capture_desktop_audio, "Record desktop audio (needs a loopback device)").changed();
     changed |= ui.checkbox(&mut s.capture_cursor, "Record the mouse cursor").changed();
     changed |= ui
         .checkbox(&mut s.capture_on_blur, "Record while the editor is in the background (starts when it loses focus)")

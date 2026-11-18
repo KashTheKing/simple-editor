@@ -172,6 +172,10 @@ pub enum Pane {
     // ---- ws:device-emulator ----
     /// The video in real devices with each platform's UI round it (`ui::emulator`).
     Emulator,
+    // ---- fix/screen-record ----
+    /// Screen recording: live preview, source, audio choice, meters, Record / Stop (was the Screen
+    /// Recording popup; `ui::capture_ui`, `ui::app::recorder_pane`).
+    ScreenRecording,
 }
 
 impl Pane {
@@ -256,6 +260,8 @@ impl Pane {
         Pane::Playlists,
         // ---- ws:device-emulator ----
         Pane::Emulator,
+        // ---- fix/screen-record ----
+        Pane::ScreenRecording,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -297,6 +303,7 @@ impl Pane {
             Pane::BeatAligner => Glyph::Waveform,
             Pane::Playlists => Glyph::MusicNote,
             Pane::Emulator => Glyph::Guides,
+            Pane::ScreenRecording => Glyph::Record,
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -343,6 +350,7 @@ impl Pane {
             Pane::BeatAligner => "Beat Aligner",
             Pane::Playlists => "Playlists",
             Pane::Emulator => "Device Emulator",
+            Pane::ScreenRecording => "Screen Recording",
         }
     }
 }

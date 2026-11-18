@@ -270,7 +270,10 @@ pub struct Settings {
     pub capture_fps: u32,
     pub capture_bitrate_kbps: u32,
     pub capture_mic: String,
+    /// Retired with WASAPI loopback (kept so old settings files still load; `capture_audio` replaces it).
     pub capture_desktop_audio: bool,
+    /// Screen recording sound: "system" | "mic" | "both" | "none" (`AudioMode::key`; "" = system).
+    pub capture_audio: String,
     pub capture_cursor: bool,
     /// Start/stop screen recording automatically when the editor loses/gains focus.
     pub capture_on_blur: bool,
@@ -736,6 +739,7 @@ impl Default for Settings {
             capture_bitrate_kbps: 8000,
             capture_mic: String::new(),
             capture_desktop_audio: true,
+            capture_audio: String::new(),
             capture_cursor: true,
             capture_on_blur: false,
             capture_dir: String::new(),
@@ -1444,5 +1448,12 @@ mod tests {
         assert_eq!(back.page_layouts.get("Edit").map(String::as_str), Some("{}"));
         assert_eq!(back.page_defaults.get("Cut").map(String::as_str), Some("[]"));
         assert_eq!(back.pages, ["Color", "Mine"], "order and custom pages persist");
+    }
+}
+
+impl Settings {
+    /// The screen recorder's audio choice (an unset or unknown value is system audio).
+    pub fn capture_audio_mode(&self) -> crate::engine::capture::AudioMode {
+        crate::engine::capture::AudioMode::from_key(self.capture_audio.trim()).unwrap_or_default()
     }
 }
