@@ -135,7 +135,7 @@ fn run_player(path: PathBuf, size: Option<[f32; 2]>) {
         .with_app_id("SimpleEditor")
         .with_inner_size([1280.0, 720.0])
         .with_min_inner_size([320.0, 180.0])
-        // Media Player's own title bar (`player::chrome`), over the picture
+        // the player draws its own title strip (`player::chrome`), over the picture
         .with_decorations(false)
         .with_visible(false);
     if let Some(s) = size {

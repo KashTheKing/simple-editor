@@ -24,11 +24,14 @@ pub struct VideoTex {
     pub shown: Option<(egui::TextureId, (u32, u32), egui::Rect)>,
     /// The last frame went GPU-to-GPU.
     pub zero_copy: bool,
+    /// Source time of the frame on screen.
+    pub pts: f64,
 }
 
 impl VideoTex {
     /// Put `f` on screen. `gl` / `frame` are None in headless tests (CPU path only).
     pub fn show(&mut self, ctx: &egui::Context, f: &Frame, gl: Option<&Arc<glow::Context>>, frame: Option<&mut eframe::Frame>) {
+        self.pts = f.pts;
         if let (Some(g), Some(gl), Some(frame)) = (f.gpu.as_ref(), gl, frame) {
             if !self.interop_tried {
                 self.interop_tried = true;
