@@ -229,6 +229,8 @@ pub(super) struct ClipMenu<'a> {
     /// The clip's largest zoom (scale × the larger axis factor, keys included): past
     /// `enhance::OFFER_ZOOM` the AI Upscale entry says so (the zoom is where an upscale shows).
     pub zoom: f64,
+    /// The Animator is on screen: "Show Animations" reads "Hide Animations" and hides it.
+    pub animator_shown: bool,
 }
 
 /// The clip body / edge right-click menu. Actions run on the selection (a right-click on an unselected
@@ -309,7 +311,12 @@ pub(super) fn clip_menu(
         if m.audio {
             acts(ui, &[Some(AddAudioVisualizer)]);
         }
-        acts(ui, &[Some(ShowAnimations)]); // ws:animator: opens the Animator on the selection
+        // ws:animator: opens the Animator on the selection, or hides it when it is already shown
+        menu::action_item_as(
+            ui,
+            ShowAnimations,
+            if m.animator_shown { "Hide Animations" } else { ShowAnimations.label() },
+        );
         menu::sub(ui, Some(Glyph::Sequence), "Nest", |ui| {
             acts(ui, &[Some(NestSequence), Some(StackOverlays)]);
             if menu::item(ui, UnnestClip, m.sequence) {

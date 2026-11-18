@@ -273,7 +273,9 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
     }
     match a {
         Action::StackOverlays => stack(app),
-        // the timeline's "Show Animations": the Animator, on the clips that are selected
+        // the timeline's "Show Animations": the Animator, on the clips that are selected; "Hide Animations"
+        // (the same Action while it is on screen) hides it
+        Action::ShowAnimations if app.pane_drawn(Pane::Animator) => app.toggle_pane(Pane::Animator),
         Action::ShowAnimations => app.surface(Pane::Animator),
         _ => return false,
     }

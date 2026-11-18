@@ -63,6 +63,13 @@ pub struct Clip {
     /// Additional vertical-only multiplier on top of `scale` (1 = no-op). See `scale_x`.
     #[serde(default = "crate::model::a1")]
     pub scale_y: Animated,
+    /// Inspector: Scale X / Y edited separately (each its own axis factor). Default: linked, both edit the
+    /// uniform `scale`, which is also what every project from before the split had.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub scale_unlinked: bool,
+    /// Inspector: Position X / Y keyed together (off by default).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pos_linked: bool,
     #[serde(default = "crate::model::a0")]
     pub rotation: Animated,
     #[serde(default = "crate::model::a1")]
@@ -158,6 +165,8 @@ impl Clip {
             scale: a1(),
             scale_x: a1(),
             scale_y: a1(),
+            scale_unlinked: false,
+            pos_linked: false,
             rotation: a0(),
             opacity: a1(),
             blend: BlendMode::Normal,

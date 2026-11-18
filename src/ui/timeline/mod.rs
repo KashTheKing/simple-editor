@@ -350,6 +350,8 @@ pub struct TimelineCtx<'a> {
     pub views: &'a [TimelineView],
     /// `Settings.timeline_waveform == "detailed"` (a track's `wave_detailed` overrides it).
     pub wave_detailed: bool,
+    /// The Animator pane is on screen (the clip menu's Show / Hide Animations).
+    pub animator_shown: bool,
 }
 
 #[derive(Default)]
@@ -1226,6 +1228,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 // ---- ws:ai-enhancer ----
                 zoom: clip.scale.keys.iter().map(|k| k.v).fold(clip.scale.value, f64::max)
                     * clip.scale_x.value.max(clip.scale_y.value),
+                animator_shown: c.animator_shown,
             };
             let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();
