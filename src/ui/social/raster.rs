@@ -353,5 +353,162 @@ pub fn export_overlay(s: &crate::settings::Settings, project: &crate::model::Pro
             render_overlay(f, &g)
         }
         None => f,
-    })))
+    }), None))
+}
+
+/// The output size of a device export: the device body at its own pixel density (the iPhone SE at 2x, a Pro
+/// Max at 3x), the longest side at most 3840, both even.
+pub fn device_export_size(dev: &super::Device, land: bool) -> (u32, u32) {
+    let (ow, oh) = super::frame::outer_dp(&if land && dev.turns() { dev.turned() } else { dev.clone() });
+    let s = dev.sc.max(1.0).min(3840.0 / ow.max(oh));
+    // the viewer margin `device::build` keeps round the body (4 % of the shorter side)
+    let (w, h) = (ow * s / 0.92, oh * s / 0.92);
+    let even = |v: f32| ((v / 2.0).round() as u32 * 2).max(2);
+    (even(w), even(h))
+}
+
+/// Ops drawn once as premultiplied colour + coverage (on black and on white: the two differ by exactly
+/// 255 x (1 - coverage), so semi-transparent scrims and anti-aliased edges composite exactly).
+struct Premul {
+    ink: Vec<u8>,
+    cover: Vec<u8>,
+}
+
+impl Premul {
+    fn of(ops: &[Op], w: u32, h: u32, av: Option<&Frame>) -> Premul {
+        let on = |bg: u8| {
+            let mut f = Frame::new(w, h);
+            f.rgba.fill(bg);
+            let mut c = Canvas::new(f);
+            c.run(ops, av);
+            c.f.rgba
+        };
+        let (ink, white) = (on(0), on(255));
+        let cover = ink
+            .chunks_exact(4)
+            .zip(white.chunks_exact(4))
+            .map(|(b, wh)| {
+                let d = (0..3).map(|k| wh[k] as u32 - (b[k] as u32).min(wh[k] as u32)).sum::<u32>() / 3;
+                (255 - d.min(255)) as u8
+            })
+            .collect();
+        Premul { ink, cover }
+    }
+    fn onto(&self, f: &mut Frame) {
+        for (i, px) in f.rgba.chunks_exact_mut(4).enumerate() {
+            let a = self.cover[i] as u32;
+            if a == 0 {
+                continue;
+            }
+            for k in 0..3 {
+                px[k] = (self.ink[i * 4 + k] as u32 + px[k] as u32 * (255 - a) / 255).min(255) as u8;
+            }
+            px[3] = 255;
+        }
+    }
+}
+
+/// One device layout drawn once: everything under the video, the still part of what is over it, and the
+/// corner mask again on its own (laid back over the moving ops, which are drawn on each frame).
+struct Layers {
+    under: Frame,
+    over: Premul,
+    mask: Premul,
+}
+
+impl Layers {
+    fn new(under: &[Op], over: &[Op], mask: &[Op], w: u32, h: u32, av: Option<&Frame>) -> Layers {
+        let mut c = Canvas::new(Frame::new(w, h));
+        c.run(under, av);
+        Layers { under: c.f, over: Premul::of(over, w, h, av), mask: Premul::of(mask, w, h, av) }
+    }
+    /// The video `f` in its place, the still layers round and over it, then `moving` and the mask.
+    fn compose(&self, f: &Frame, scene: &device::Scene, moving: &[Op], av: Option<&Frame>) -> Frame {
+        let mut c = Canvas::new(self.under.clone());
+        c.blit(f, scene.video, scene.uv);
+        self.over.onto(&mut c.f);
+        if !moving.is_empty() {
+            c.run(moving, av);
+            self.mask.onto(&mut c.f);
+        }
+        c.f
+    }
+}
+
+/// The ops of `over` at `idx`, each with the clip it was drawn under.
+fn moving_ops(over: &[Op], idx: &[usize]) -> Vec<Op> {
+    let mut out = Vec::new();
+    let mut clip = None;
+    let mut next = idx.iter().peekable();
+    for (i, op) in over.iter().enumerate() {
+        if let Op::Clip(r) = op {
+            clip = *r;
+        }
+        if next.peek() == Some(&&i) {
+            next.next();
+            out.push(Op::Clip(clip));
+            out.push(op.clone());
+        }
+    }
+    out.push(Op::Clip(None));
+    out
+}
+
+/// The Device Emulator's Export: each exported frame (at timeline time `t`) inside `device` with `platform`'s
+/// UI round it, playing, its progress bar and time those of the exported video (`range`, else the timeline).
+/// The device and the still UI are drawn into `Layers` once; each frame costs a copy, the video's blit, two
+/// blends and the few ops that move (the progress bar, the time).
+#[allow(clippy::too_many_arguments)]
+pub fn device_export(
+    s: &crate::settings::Settings,
+    project: &crate::model::Project,
+    platform: &str,
+    device: &str,
+    land: bool,
+    view: super::ViewMode,
+    range: Option<(f64, f64)>,
+) -> Option<crate::engine::export::FrameOverlay> {
+    let (a, b) = range.unwrap_or((0.0, project.duration()));
+    let title = project.name.clone();
+    let aspect = project.width.max(1) as f32 / project.height.max(1) as f32;
+    let g = GuideView::with(s, platform, device, &title, aspect, 0.0, b - a)?;
+    let land = land && g.dev().turns();
+    let (w, h) = device_export_size(g.dev(), land);
+    let av = super::profile::avatar(&g.profile, true);
+    let cc = project.show_subtitles;
+    let (s, platform, device) = (s.clone(), platform.to_string(), device.to_string());
+    let area = Rect::from_min_size(Pos2::ZERO, egui::vec2(w as f32, h as f32));
+    let scene_at = move |t: f64| -> Option<device::Scene> {
+        let mut g = GuideView::with(&s, &platform, &device, &title, aspect, t - a, b - a)?;
+        g.playing = true;
+        g.export = true;
+        g.cc = cc;
+        g.view = view;
+        let mut v = g.device_view(None, 0.0);
+        v.land = land;
+        v.pl.cc = cc;
+        Some(device::build(&v, area))
+    };
+    // what moves: the ops that differ between the start and the end (the progress bar, the time); the rest
+    // of the layout is drawn once. A layout that changes shape over time is drawn whole on each frame.
+    let (s0, s1) = (scene_at(a)?, scene_at(a + (b - a) * 0.999)?);
+    let still = s0.under == s1.under && s0.over.len() == s1.over.len() && s0.video == s1.video;
+    let idx: Vec<usize> = if still { (0..s0.over.len()).filter(|&i| s0.over[i] != s1.over[i]).collect() } else { Vec::new() };
+    let mask_from = s0.over.len() - s0.mask_over;
+    let layers = still.then(|| {
+        let over: Vec<Op> = s0.over[..mask_from].iter().enumerate().filter(|(i, _)| !idx.contains(i)).map(|(_, o)| o.clone()).collect();
+        Layers::new(&s0.under, &over, &s0.over[mask_from..], w, h, av.as_deref())
+    });
+    let (n_under, n_over) = (s0.under.len(), s0.over.len());
+    Some(crate::engine::export::FrameOverlay(
+        std::sync::Arc::new(move |f: Frame, t: f64| {
+            let Some(scene) = scene_at(t) else { return f };
+            match &layers {
+                Some(l) if scene.under.len() == n_under && scene.over.len() == n_over => l.compose(&f, &scene, &moving_ops(&scene.over, &idx), av.as_deref()),
+                // the whole device on this frame
+                _ => Layers::new(&scene.under, &scene.over, &[], w, h, av.as_deref()).compose(&f, &scene, &[], av.as_deref()),
+            }
+        }),
+        Some((w, h)),
+    ))
 }

@@ -79,6 +79,8 @@ pub enum Asked {
     Saved,
     /// Save a picture of the large view.
     Screenshot,
+    /// Export the timeline (or the In/Out range) as a video inside the device.
+    Export,
 }
 
 /// The pairings the gallery shows: every platform on an iPhone, a Pixel and a Galaxy; long form also on the
@@ -157,6 +159,10 @@ fn toolbar(ui: &mut egui::Ui, st: &mut EmuState, before: &Prefs, prefs: &mut Pre
         }
         if ui.add_enabled(!prefs.gallery, egui::Button::new("Screenshot")).on_hover_text("Save a picture of the device").clicked() {
             asked.push(Asked::Screenshot);
+        }
+        let r = ui.add_enabled(!prefs.gallery, egui::Button::new("Export"));
+        if r.on_hover_text("Export the timeline, or the In/Out range, as a video inside this device with the platform's UI round it").clicked() {
+            asked.push(Asked::Export);
         }
     });
     // the gallery shows every pairing and ignores the pickers: a platform, device or orientation picked while it
