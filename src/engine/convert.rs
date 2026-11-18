@@ -33,6 +33,32 @@ pub struct ConvertOptions {
     pub vf_extra: Option<String>,
     /// An `-af` chain (`afftdn`); video and audio outputs.
     pub af_extra: Option<String>,
+    /// The source's audio streams to keep (0-based among its audio streams); None = all. A video output
+    /// keeps each as its own track, an audio output mixes them into one.
+    pub audio_streams: Option<Vec<usize>>,
+}
+
+/// The `-map` / `-filter_complex` arguments that keep `streams` of the source's audio: one track each
+/// in a video file (`mix` false), mixed down to one in an audio file (`mix` true). None = all of them
+/// (an audio file: ffmpeg's default pick, the first). `Some([])`: no audio at all.
+pub fn audio_map_args(streams: Option<&[usize]>, mix: bool) -> Vec<String> {
+    let s = |v: &str| v.to_string();
+    match streams {
+        None if mix => vec![],
+        None => vec![s("-map"), s("0:a?")],
+        Some([]) => vec![s("-an")],
+        Some([n]) => vec![s("-map"), format!("0:a:{n}")],
+        Some(v) if mix => {
+            let ins: String = v.iter().map(|n| format!("[0:a:{n}]")).collect();
+            vec![s("-filter_complex"), format!("{ins}amix=inputs={}:normalize=0[a]", v.len()), s("-map"), s("[a]")]
+        }
+        Some(v) => v.iter().flat_map(|n| [s("-map"), format!("0:a:{n}")]).collect(),
+    }
+}
+
+/// An image-sequence output: the file name holds a frame-number pattern (`frame_%05d.png`).
+pub fn is_sequence(out: &std::path::Path) -> bool {
+    out.file_name().is_some_and(|n| n.to_string_lossy().contains('%'))
 }
 
 // ---- ws:export-deliver ----
@@ -67,6 +93,7 @@ pub fn bake_filter_opts(
         }
     };
     ConvertOptions {
+        audio_streams: None,
         src,
         out,
         encoder,
@@ -137,12 +164,21 @@ fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
         chain.push_str(",split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse");
         cmd.args(["-filter_complex", &chain, "-an"]);
     } else if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "bmp" | "webp") {
-        if let Some(s) = &scale {
-            cmd.args(["-vf", s]);
+        let mut vf = scale.clone().unwrap_or_default();
+        if let Some(extra) = opts.vf_extra.as_deref().filter(|s| !s.is_empty()) {
+            vf = if vf.is_empty() { extra.to_string() } else { format!("{vf},{extra}") };
         }
-        cmd.args(["-frames:v", "1", "-update", "1"]);
+        if !vf.is_empty() {
+            cmd.args(["-vf", &vf]);
+        }
+        if is_sequence(&opts.out) {
+            cmd.args(["-an", "-start_number", "1"]);
+        } else {
+            cmd.args(["-frames:v", "1", "-update", "1"]);
+        }
     } else if AUDIO_EXTS.contains(&ext.as_str()) {
         cmd.arg("-vn");
+        cmd.args(audio_map_args(opts.audio_streams.as_deref(), true));
         if let Some(af) = &opts.af_extra {
             cmd.args(["-af", af]);
         }
@@ -175,11 +211,14 @@ fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
         if let Some(af) = &opts.af_extra {
             cmd.args(["-af", af]);
         }
-        // keep every audio stream - ffmpeg's default stream selection would keep only one
-        cmd.args(["-map", "0:v:0?", "-map", "0:a?"]);
+        // keep every audio stream (or the ones asked for) - ffmpeg's default selection keeps only one
+        cmd.args(["-map", "0:v:0?"]);
+        cmd.args(audio_map_args(opts.audio_streams.as_deref(), false));
         cmd.args(args);
     }
-    cmd.arg(&tmp.0);
+    // a sequence writes its frames straight into place (no single file to swap in)
+    let seq = is_sequence(&opts.out);
+    cmd.arg(if seq { opts.out.as_path() } else { tmp.0.as_path() });
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg: {e}"))?;
     let tail = export::stderr_tail(&mut child);
@@ -204,6 +243,9 @@ fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
         }
     }
     export::wait_ffmpeg(&mut child, tail, prog)?; // returns Err(CANCELLED) when cancelled
+    if seq {
+        return Ok(());
+    }
     tmp.commit(&opts.out)
 }
 
@@ -269,6 +311,7 @@ mod tests {
 
     fn opts(src: &std::path::Path, out: PathBuf) -> ConvertOptions {
         ConvertOptions {
+            audio_streams: None,
             src: src.to_path_buf(),
             out,
             encoder: "auto".into(),

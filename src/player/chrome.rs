@@ -1,12 +1,13 @@
-//! The player's look: Simple Editor's own theme (the palette, Look and accent picked in Settings ▸
-//! Appearance, read by `PlayerApp::new`) on a media player's layout - the picture edge to edge, a
-//! title strip on top (Editor button, title, window buttons) and a bottom bar over the video: a thick
-//! scrub bar, the timecode, Reverse - previous - back 10 s - play - forward 30 s - next - Loop, then
-//! speed, subtitles and audio tracks, volume, full screen, mini player and more. Both fade with the pointer
-//! (`ui::autohide`). Every control is a big target: 48-52 pt buttons, a 64 pt play button, a scrub
-//! bar that grabs anywhere in its 28 pt height.
+//! The player's look: the media-player layout of 1.3.0 (the picture edge to edge, a thin title bar,
+//! a full-width thin seek bar with elapsed / total at its ends, then one row: the file's name on the
+//! left, small line icons in the middle - shuffle, previous, back 10 s, the ringed play button,
+//! forward 30 s, next, loop, reverse - and speed, subtitles / audio, volume, full screen, mini player
+//! and ⋯ on the right), coloured from Simple Editor's theme (Settings ▸ Appearance's theme, palette,
+//! Look and accent, read by `PlayerApp::new`): the accent fills the progress, the knob, the play ring
+//! and every toggle that is on; text and icons are the theme's text / dim colours; the bars fade into
+//! its background. Hit areas are `HIT` bigger than the icons on every side, invisibly.
 //!
-//! Icons are the editor's glyphs (Windows' icon font, Segoe Fluent Icons / MDL2 Assets).
+//! Icons are Windows' own icon font (Segoe Fluent Icons / MDL2 Assets).
 
 use super::{Flyout, PlayerApp, Zoom, SKIP_BACK, SKIP_FORWARD};
 use crate::player::folder::Repeat;
@@ -16,21 +17,23 @@ use crate::ui::tools::on_accent;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, Ui};
 use std::path::Path;
 
-/// Icon-font codepoints; the transport's are the editor's `ui::tools::Glyph` ones.
+/// Segoe Fluent Icons / MDL2 Assets codepoints.
 pub mod icon {
-    pub const EDIT: char = '\u{E70F}'; // Glyph::Pencil
-    pub const PREVIOUS: char = '\u{F8AC}'; // Glyph::Jump(Left)
-    pub const NEXT: char = '\u{F8AD}'; // Glyph::Jump(Right)
-    pub const PLAY: char = '\u{F5B0}'; // Glyph::Play
-    pub const PAUSE: char = '\u{F8AE}'; // Glyph::Pause
-    pub const REVERSE: char = '\u{EDD9}'; // Glyph::Tri(Left)
-    pub const LOOP: char = '\u{E8EE}'; // RepeatAll
+    pub const EDIT: char = '\u{E70F}';
+    pub const SHUFFLE: char = '\u{E8B1}';
+    pub const PREVIOUS: char = '\u{E892}';
+    pub const NEXT: char = '\u{E893}';
+    pub const PLAY: char = '\u{E768}';
+    pub const PAUSE: char = '\u{E769}';
     pub const BACK10: char = '\u{ED3C}';
     pub const FORWARD30: char = '\u{ED3D}';
-    pub const CAPTIONS: char = '\u{E7F0}'; // Glyph::Subtitles
+    pub const REPEAT_ALL: char = '\u{E8EE}';
+    pub const LOOP: char = '\u{E8ED}'; // RepeatOne: this file over and over
+    pub const REVERSE: char = '\u{E7A7}'; // Undo arrow
+    pub const CAPTIONS: char = '\u{E7F0}';
     pub const VOLUME: [char; 4] = ['\u{E992}', '\u{E993}', '\u{E994}', '\u{E995}'];
-    pub const MUTE: char = '\u{E74F}'; // Glyph::SpeakerOff
-    pub const FULLSCREEN: char = '\u{E740}'; // Glyph::Fullscreen
+    pub const MUTE: char = '\u{E74F}';
+    pub const FULLSCREEN: char = '\u{E740}';
     pub const EXIT_FULLSCREEN: char = '\u{E73F}';
     pub const MINI: char = '\u{E92C}';
     pub const UNMINI: char = '\u{E92D}';
@@ -40,31 +43,26 @@ pub mod icon {
     pub const RESTORE: char = '\u{E923}';
     pub const CLOSE: char = '\u{E8BB}';
     pub const MUSIC: char = '\u{E8D6}';
-    pub const FOLDER: char = '\u{E8B7}'; // Glyph::Folder
+    pub const FOLDER: char = '\u{E838}';
     pub const INFO: char = '\u{E946}';
     pub const CHECK: char = '\u{E73E}';
-    pub const ALL: [char; 28] = [
-        EDIT, PREVIOUS, NEXT, PLAY, PAUSE, REVERSE, LOOP, BACK10, FORWARD30, CAPTIONS, VOLUME[0], VOLUME[1], VOLUME[2], VOLUME[3], MUTE,
-        FULLSCREEN, EXIT_FULLSCREEN, MINI, UNMINI, MORE, MINIMIZE, MAXIMIZE, RESTORE, CLOSE, MUSIC, FOLDER, INFO, CHECK,
+    pub const CONVERT: char = '\u{E8AB}'; // Switch
+    pub const ALL: [char; 31] = [
+        EDIT, SHUFFLE, PREVIOUS, NEXT, PLAY, PAUSE, BACK10, FORWARD30, REPEAT_ALL, LOOP, REVERSE, CAPTIONS, VOLUME[0], VOLUME[1],
+        VOLUME[2], VOLUME[3], MUTE, FULLSCREEN, EXIT_FULLSCREEN, MINI, UNMINI, MORE, MINIMIZE, MAXIMIZE, RESTORE, CLOSE, MUSIC,
+        FOLDER, INFO, CHECK, CONVERT,
     ];
 }
 
 const TOP_H: f32 = 40.0;
-/// The bottom bar and the margin around it.
-const BAR_H: f32 = 104.0;
-const MARGIN: f32 = 12.0;
-pub const BOTTOM_H: f32 = BAR_H + MARGIN;
-/// Button sides (points): the transport, the play button, the bar's other buttons.
-const BTN: f32 = 52.0;
-const PLAY: f32 = 64.0;
-const SIDE: f32 = 48.0;
-/// The scrub bar's grab height; the line drawn in it is `TRACK` thick (more under the pointer).
-const SCRUB_H: f32 = 28.0;
-const TRACK: f32 = 6.0;
+pub const BOTTOM_H: f32 = 116.0;
+/// Every button's hit area reaches this far past its drawn box.
+const HIT: f32 = 4.0;
 
-/// The editor's timecode (hh:mm:ss:ff) at the file's frame rate.
-fn tc(app: &PlayerApp, t: f64) -> String {
-    crate::ui::timecode(t, app.info.as_ref().map_or(30.0, |i| i.fps))
+/// "0:00:41": elapsed / total beside the seek bar.
+pub fn clock(t: f64) -> String {
+    let s = t.max(0.0).floor() as u64;
+    format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
 }
 
 fn icon_font(px: f32) -> FontId {
@@ -79,21 +77,18 @@ fn radius(ui: &Ui) -> CornerRadius {
     ui.visuals().widgets.inactive.corner_radius
 }
 
-/// A flat icon button, as the editor's: the hover fill under the pointer, accent while pressed, the
-/// glyph in the accent when `on`. The whole `rect` is the hit area.
+/// A flat icon button: a soft highlight under the pointer, the glyph in the theme's text colour (the
+/// accent when `on`). The hit area is `rect` grown by `HIT`.
 fn icon_button(ui: &mut Ui, pal: &Palette, rect: Rect, c: char, px: f32, on: bool, tip: &str) -> Response {
     let id = ui.id().with(("btn", c, rect.min.x as i32, rect.min.y as i32));
-    let r = ui.interact(rect, id, Sense::click()).on_hover_text(tip);
+    let r = ui.interact(rect.expand(HIT), id, Sense::click()).on_hover_text(tip);
     let p = ui.painter();
-    let cr = radius(ui);
-    let mut fg = if on { pal.accent } else { pal.text };
     if r.is_pointer_button_down_on() {
-        p.rect_filled(rect.shrink(2.0), cr, pal.accent);
-        fg = on_accent(pal.accent);
+        p.rect_filled(rect.shrink(2.0), 6.0, pal.text.gamma_multiply(0.06));
     } else if r.hovered() {
-        p.rect_filled(rect.shrink(2.0), cr, ui.visuals().widgets.hovered.weak_bg_fill);
+        p.rect_filled(rect.shrink(2.0), 6.0, pal.text.gamma_multiply(0.1));
     }
-    glyph(p, rect.center(), c, px, fg);
+    glyph(p, rect.center(), c, px, if on { pal.accent } else { pal.text });
     r
 }
 
@@ -114,53 +109,115 @@ fn lerp(a: Color32, b: Color32, k: f32) -> Color32 {
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
-/// The play button: an accent disc, lighter under the pointer, the glyph in the accent's text colour.
-fn play_button(ui: &mut Ui, pal: &Palette, center: Pos2, side: f32, playing: bool) -> Response {
-    let rect = Rect::from_center_size(center, vec2(side, side));
+/// The play button: a disc in the theme's panel colour with a ring in the accent (shading to a lighter
+/// accent and back round it).
+fn play_button(ui: &mut Ui, pal: &Palette, center: Pos2, radius: f32, playing: bool) -> Response {
+    let rect = Rect::from_center_size(center, vec2(radius * 2.0, radius * 2.0));
     let tip = if playing { "Pause (Space)" } else { "Play (Space)" };
-    let r = ui.interact(rect, ui.id().with(("play", center.x as i32, center.y as i32)), Sense::click()).on_hover_text(tip);
-    let fill = if r.is_pointer_button_down_on() {
-        lerp(pal.accent, Color32::BLACK, 0.15)
-    } else if r.hovered() {
-        lerp(pal.accent, Color32::WHITE, 0.15)
-    } else {
-        pal.accent
-    };
+    let id = ui.id().with(("play", center.x as i32, center.y as i32));
+    let r = ui.interact(rect.expand(HIT), id, Sense::click()).on_hover_text(tip);
     let p = ui.painter();
-    p.circle_filled(center, side / 2.0, fill);
+    let fill = if r.hovered() { lerp(pal.panel, pal.text, 0.12) } else { pal.panel };
+    p.circle_filled(center, radius, fill);
+    let light = lerp(pal.accent, Color32::WHITE, 0.45);
+    let n = 48;
+    for i in 0..n {
+        let (a0, a1) = (i as f32 / n as f32, (i + 1) as f32 / n as f32);
+        let ang = |a: f32| -std::f32::consts::FRAC_PI_2 + a * std::f32::consts::TAU;
+        let at = |a: f32| center + vec2(ang(a).cos(), ang(a).sin()) * (radius - 1.5);
+        let k = ((a0 * std::f32::consts::TAU).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+        p.line_segment([at(a0), at(a1)], Stroke::new(2.5, lerp(pal.accent, light, k)));
+    }
     let c = if playing { icon::PAUSE } else { icon::PLAY };
-    glyph(p, center + vec2(if playing { 0.0 } else { side * 0.03 }, 0.0), c, side * 0.38, on_accent(pal.accent));
+    glyph(p, center + vec2(if playing { 0.0 } else { 1.5 }, 0.0), c, radius * 0.8, pal.text);
     r
 }
 
-/// The scrub bar: the editor's border-coloured track with the played part in the accent, a thumb that
-/// grows under the pointer. All of `rect` grabs. Returns the time under the pointer while dragged /
-/// clicked.
-fn scrubber(app: &PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect, t: f64, dur: f64) -> (Response, Option<f64>) {
+/// The seek bar's tick steps for `dur` seconds over `px` pixels: (major, minor) in seconds. Majors are
+/// whole "nice" steps (1 s, 2 s, 5 s ... 1 h) at least 8 px apart; minors divide a major evenly and are
+/// at least 4 px apart (0 = none). So ticks never smear into a solid bar.
+pub fn tick_steps(dur: f64, px: f32) -> (f64, f64) {
+    const NICE: [f64; 18] = [0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0, 600.0, 900.0, 1800.0, 3600.0, 7200.0, 18000.0];
+    if dur <= 0.0 || px <= 0.0 {
+        return (0.0, 0.0);
+    }
+    let pps = px as f64 / dur;
+    let major = NICE.iter().copied().find(|&m| m >= 1.0 && m * pps >= 8.0).unwrap_or(36000.0);
+    let even = |m: f64| ((major / m) - (major / m).round()).abs() < 1e-6;
+    let minor = NICE.iter().copied().filter(|&m| m < major && m * pps >= 4.0 && even(m)).next().unwrap_or(0.0);
+    (major, minor)
+}
+
+/// Ticks across the line: a longer one per major step, a short one per minor, just above and below.
+fn ticks(p: &egui::Painter, pal: &Palette, x0: f32, x1: f32, y: f32, dur: f64) {
+    let (major, minor) = tick_steps(dur, x1 - x0);
+    let step = if minor > 0.0 { minor } else { major };
+    if step <= 0.0 {
+        return;
+    }
+    let (maj_c, min_c) = (pal.text_dim.gamma_multiply(0.7), pal.text_dim.gamma_multiply(0.35));
+    for k in 0..=(dur / step + 1e-6) as u64 {
+        let t = k as f64 * step;
+        let is_major = ((t / major) - (t / major).round()).abs() < 1e-6;
+        let x = (x0 + (x1 - x0) * (t / dur) as f32).round() + 0.5;
+        let (half, c) = if is_major { (5.5, maj_c) } else { (3.5, min_c) };
+        p.line_segment([pos2(x, y - half), pos2(x, y + half)], Stroke::new(1.0, c));
+    }
+}
+
+/// The seek bar: a thin track in the theme's dim text colour with the played part in the accent, ticks
+/// across it, a knob that grows under the pointer. All of `rect` grabs. Hovering shows the picture at that
+/// moment (the strip's nearest thumbnail) with the time. Returns the time under the pointer while
+/// dragged / clicked.
+fn scrubber(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect, t: f64, dur: f64) -> (Response, Option<f64>) {
     let r = ui.interact(rect, ui.id().with("scrub"), Sense::click_and_drag());
-    let p = ui.painter();
+    let p = ui.painter().clone();
     let (x0, x1) = (rect.left() + 8.0, rect.right() - 8.0);
     let y = rect.center().y;
     let k = if dur > 0.0 { (t / dur).clamp(0.0, 1.0) as f32 } else { 0.0 };
     let x = x0 + (x1 - x0) * k;
     let hot = r.hovered() || r.dragged();
-    let th = if hot { TRACK + 2.0 } else { TRACK };
+    let th = if hot { 5.0 } else { 3.0 };
+    ticks(&p, pal, x0, x1, y, dur);
     let line = |a: f32, b: f32, c| p.rect_filled(Rect::from_min_max(pos2(a, y - th / 2.0), pos2(b, y + th / 2.0)), th / 2.0, c);
-    line(x0, x1, pal.border);
+    line(x0, x1, pal.text_dim.gamma_multiply(0.45));
     line(x0, x, pal.accent);
-    let rad = if hot { 10.0 } else { 8.0 };
+    let rad = if hot { 8.0 } else { 6.0 };
     p.circle_filled(pos2(x, y), rad, pal.accent);
-    p.circle_stroke(pos2(x, y), rad, Stroke::new(2.0, pal.panel));
+    p.circle_stroke(pos2(x, y), rad, Stroke::new(1.5, pal.text));
     let at = |px: f32| (((px - x0) / (x1 - x0)).clamp(0.0, 1.0) as f64) * dur;
     let mut seek = None;
     if let Some(pos) = r.interact_pointer_pos().filter(|_| r.dragged() || r.clicked() || r.drag_started()) {
         seek = Some(at(pos.x));
     }
-    if let Some(h) = r.hover_pos() {
-        let g = p.layout_no_wrap(tc(app, at(h.x)), FontId::proportional(13.0), pal.text);
-        let box_ = Rect::from_center_size(pos2(h.x, rect.top() - 16.0), g.size() + vec2(14.0, 8.0));
-        p.rect(box_, radius(ui), pal.panel, Stroke::new(1.0, pal.border), egui::StrokeKind::Inside);
-        p.galley(box_.center() - g.size() / 2.0, g, pal.text);
+    let shot = app.shot_hover.map(|k| pos2(x0 + (x1 - x0) * k, y));
+    if let Some(h) = r.hover_pos().or_else(|| r.interact_pointer_pos().filter(|_| r.dragged())).or(shot) {
+        let ht = at(h.x);
+        let g = p.layout_no_wrap(clock(ht), FontId::proportional(12.0), pal.text);
+        let ctx = ui.ctx().clone();
+        let pic = app.strip.as_mut().and_then(|s| {
+            if !s.done() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100)); // still filling
+            }
+            s.texture(&ctx, ht)
+        });
+        let screen = ctx.screen_rect();
+        let place = |size: egui::Vec2| {
+            let left = (h.x - size.x / 2.0).clamp(screen.left() + 4.0, (screen.right() - 4.0 - size.x).max(screen.left() + 4.0));
+            Rect::from_min_size(pos2(left, rect.top() - 2.0 - size.y), size)
+        };
+        if let Some((id, px)) = pic {
+            let img = vec2(176.0, 176.0 * px.y / px.x.max(1.0));
+            let card = place(img + vec2(8.0, 8.0 + g.size().y + 6.0));
+            p.rect(card, radius(ui), pal.panel, Stroke::new(1.0, pal.border), egui::StrokeKind::Inside);
+            let img_r = Rect::from_min_size(card.min + vec2(4.0, 4.0), img);
+            p.image(id, img_r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            p.galley(pos2(card.center().x - g.size().x / 2.0, img_r.bottom() + 4.0), g, pal.text);
+        } else {
+            let box_ = place(g.size() + vec2(12.0, 6.0));
+            p.rect(box_, radius(ui), pal.panel, Stroke::new(1.0, pal.border), egui::StrokeKind::Inside);
+            p.galley(box_.center() - g.size() / 2.0, g, pal.text);
+        }
     }
     (r, seek)
 }
@@ -183,9 +240,10 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
     let vp = ctx.input(|i| i.viewport().clone());
     let maximized = vp.maximized.unwrap_or(false);
 
-    // ---- the picture (or the audio view)
+    // ---- the picture (or the audio view; Audio Only: the visualizer, nothing decoded)
+    let audio_only = app.engine.audio_only();
     let video_rect = match (&app.info, app.video.shown) {
-        (Some(info), Some((tex, _, uv))) if info.has_video => {
+        (Some(info), Some((tex, _, uv))) if info.has_video && !audio_only => {
             let r = app.zoom.place(full, info.size, ppp);
             ui.painter().with_clip_rect(full).image(tex, r, uv, Color32::WHITE);
             Some(r)
@@ -193,6 +251,7 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
         _ => None,
     };
     match app.info.as_ref().map(|i| (i.has_video, i.size)) {
+        Some(_) if audio_only => visualizer_view(app, ui, full),
         Some((true, size)) => {
             // the video processor scales to exactly the pixels the picture covers
             let target = app.zoom.place(full, size, ppp);
@@ -227,7 +286,7 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
 
     // ---- auto-hide
     let top = Rect::from_min_size(full.min, vec2(full.width(), TOP_H));
-    let bottom = Rect::from_min_max(pos2(full.left(), full.bottom() - if mini { 72.0 } else { BOTTOM_H }), full.max);
+    let bottom = Rect::from_min_max(pos2(full.left(), full.bottom() - if mini { 64.0 } else { BOTTOM_H }), full.max);
     let (pointer, moved) = ctx.input(|i| {
         let moved = i.events.iter().any(|e| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. }));
         (i.pointer.hover_pos(), moved)
@@ -241,7 +300,7 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
         // paused, over the controls, or a sound file (nothing to uncover): the controls stay up
         keep: over_chrome || !app.engine.is_playing() || app.info.as_ref().is_some_and(|i| !i.has_video),
         // (`SE_PLAYER_SHOT` pictures the controls: they hold for it)
-        hold: app.flyout.is_some() || app.scrub.is_some() || app.info_open || app.shot.is_some(),
+        hold: app.flyout.is_some() || app.scrub.is_some() || app.info_open || app.shot.is_some() || app.renaming.is_some() || app.convert.is_some(),
         // a click on the picture, not on a bar (the bars are drawn over `surface`)
         dismiss: clicked && !over_chrome,
     };
@@ -266,6 +325,8 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
         resize_edges(&ctx, full);
     }
     flyouts(app, &ctx, pal, full);
+    convert_window(app, &ctx, pal);
+    toast(app, &ctx, pal, full, out.opacity > 0.0 && !mini);
     if app.info_open {
         info_window(app, &ctx, pal);
     }
@@ -295,15 +356,10 @@ fn resize_edges(ctx: &egui::Context, full: Rect) {
     }
 }
 
-/// A strip in the theme's panel colour, a hair see-through over the picture.
-fn strip(p: &egui::Painter, pal: &Palette, rect: Rect, cr: CornerRadius) {
-    p.rect(rect, cr, pal.panel.gamma_multiply(0.94), Stroke::new(1.0, pal.border), egui::StrokeKind::Inside);
-}
-
 fn top_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, top: Rect, maximized: bool) {
     let ctx = ui.ctx().clone();
-    // edge to edge: the side and top borders fall just outside the window
-    strip(ui.painter(), pal, top.expand2(vec2(1.0, 0.0)).translate(vec2(0.0, -1.0)), CornerRadius::ZERO);
+    let shade = Rect::from_min_size(top.min, vec2(top.width(), TOP_H + 32.0));
+    vgrad(ui.painter(), shade, pal.bg.gamma_multiply(0.6), Color32::TRANSPARENT);
     // the empty bar drags the window, a double-click maximizes
     let bar = ui.interact(top, ui.id().with("titlebar"), Sense::click_and_drag());
     if bar.drag_started() && !app.fullscreen {
@@ -312,37 +368,24 @@ fn top_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, top: Rect, maximized
     if bar.double_clicked() && !app.fullscreen {
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
     }
-    // Editor: glyph + name, as the editor's toolbar buttons
-    let b = Rect::from_min_size(top.min + vec2(4.0, 4.0), vec2(92.0, TOP_H - 8.0));
-    let r = ui.interact(b, ui.id().with("editor"), Sense::click()).on_hover_text("Open in Editor (Esc)");
-    let p = ui.painter();
-    if r.hovered() {
-        p.rect_filled(b, radius(ui), ui.visuals().widgets.hovered.weak_bg_fill);
-    }
-    glyph(p, pos2(b.left() + 18.0, b.center().y), icon::EDIT, 15.0, pal.text);
-    p.text(pos2(b.left() + 34.0, b.center().y), Align2::LEFT_CENTER, "Editor", FontId::proportional(14.0), pal.text);
-    if r.clicked() {
+    let b = Rect::from_min_size(top.min + vec2(4.0, 4.0), vec2(40.0, 32.0));
+    if icon_button(ui, pal, b, icon::EDIT, 15.0, false, "Open in Editor (Esc)").clicked() {
         app.open_editor();
     }
-    let icon_at = pos2(b.right() + 12.0, top.center().y);
+    let icon_at = pos2(b.right() + 10.0, top.center().y);
     if app.icon.is_none() {
         app.icon = app_icon(&ctx);
     }
     if let Some(i) = &app.icon {
-        let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
-        ui.painter().image(i.id(), Rect::from_min_size(icon_at - vec2(0.0, 8.0), vec2(16.0, 16.0)), uv, Color32::WHITE);
+        let r = Rect::from_min_size(icon_at - vec2(0.0, 8.0), vec2(16.0, 16.0));
+        ui.painter().image(i.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
     }
-    let caption_w = if app.fullscreen { 0.0 } else { 3.0 * 46.0 };
-    let title_w = (top.right() - caption_w - icon_at.x - 40.0).max(0.0);
-    let mut job = egui::text::LayoutJob::simple_singleline(app.title(), FontId::proportional(14.0), pal.text);
-    job.wrap = egui::text::TextWrapping::truncate_at_width(title_w);
-    let g = ui.painter().layout_job(job);
-    ui.painter().galley(pos2(icon_at.x + 26.0, top.center().y - g.size().y / 2.0), g, pal.text);
+    ui.painter().text(icon_at + vec2(26.0, 0.0), Align2::LEFT_CENTER, app.title(), FontId::proportional(12.0), pal.text);
     if app.fullscreen {
         return;
     }
     let w = 46.0;
-    let close = Rect::from_min_size(pos2(top.right() - w, top.top()), vec2(w, TOP_H));
+    let close = Rect::from_min_size(pos2(top.right() - w, top.top()), vec2(w, TOP_H - 8.0));
     let max = close.translate(vec2(-w, 0.0));
     let min = max.translate(vec2(-w, 0.0));
     if caption_button(ui, pal, min, icon::MINIMIZE, false, "Minimize").clicked() {
@@ -374,115 +417,305 @@ fn caption_button(ui: &mut Ui, pal: &Palette, rect: Rect, c: char, close: bool, 
 
 fn bottom_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, bottom: Rect) {
     let ctx = ui.ctx().clone();
-    let bar = Rect::from_min_max(pos2(bottom.left() + MARGIN, bottom.top()), pos2(bottom.right() - MARGIN, bottom.bottom() - MARGIN));
-    strip(ui.painter(), pal, bar, ui.visuals().window_corner_radius);
+    let p = ui.painter().clone();
+    let shade = Rect::from_min_max(pos2(bottom.left(), bottom.top() - 60.0), bottom.max);
+    vgrad(&p, shade, Color32::TRANSPARENT, pal.bg.gamma_multiply(0.85));
     // the bar itself swallows clicks (no play/pause through it)
     ui.interact(bottom, ui.id().with("bottom"), Sense::click());
     let dur = app.engine.duration();
     let t = app.scrub.map_or_else(|| app.engine.time(), |(t, _)| t);
-    let scrub_rect = Rect::from_min_size(pos2(bar.left() + 10.0, bar.top() + 6.0), vec2(bar.width() - 20.0, SCRUB_H));
-    let (r, at) = scrubber(app, ui, pal, scrub_rect, t, dur);
+    // seek row: elapsed | bar | total
+    let row_y = bottom.top() + 24.0;
+    let font = FontId::proportional(12.0);
+    let left = p.layout_no_wrap(clock(t), font.clone(), pal.text);
+    let right = p.layout_no_wrap(clock(dur), font, pal.text);
+    p.galley(pos2(bottom.left() + 14.0, row_y - left.size().y / 2.0), left.clone(), pal.text);
+    p.galley(pos2(bottom.right() - 14.0 - right.size().x, row_y - right.size().y / 2.0), right.clone(), pal.text);
+    // drawn thin, grabs 28 pt tall
+    let bar = Rect::from_min_max(
+        pos2(bottom.left() + 22.0 + left.size().x, row_y - 14.0),
+        pos2(bottom.right() - 22.0 - right.size().x, row_y + 14.0),
+    );
+    let (r, at) = scrubber(app, ui, pal, bar, t, dur);
     scrub(app, &r, at);
 
-    // controls row: timecode | the five play buttons | tracks, volume, full screen, mini, more
-    let cy = (scrub_rect.bottom() + bar.bottom()) / 2.0 + 2.0;
-    let p = ui.painter().clone();
-    // narrow: the timecode without the length, a shorter volume slider
-    let wide = bar.width() >= 1180.0;
-    let now_g = p.layout_no_wrap(tc(app, t), FontId::proportional(16.0), pal.text);
-    let dur_text = if wide { format!(" / {}", tc(app, dur)) } else { String::new() };
-    let dur_g = p.layout_no_wrap(dur_text, FontId::proportional(16.0), pal.text_dim);
-    let x = bar.left() + 18.0;
-    let tc_right = x + now_g.size().x + dur_g.size().x;
-    p.galley(pos2(x, cy - now_g.size().y / 2.0), now_g.clone(), pal.text);
-    p.galley(pos2(x + now_g.size().x, cy - dur_g.size().y / 2.0), dur_g, pal.text_dim);
+    // controls row
+    let cy = bottom.top() + 74.0;
+    name_label(app, ui, pal, pos2(bottom.left() + 16.0, cy), (bottom.width() * 0.28).max(80.0));
+    let cx = bottom.center().x;
+    let step = 48.0;
+    let sq = |x: f32| Rect::from_center_size(pos2(x, cy), vec2(40.0, 40.0));
+    let playing = app.engine.is_playing();
+    let shuffle = app.playlist.shuffle;
+    let stip = if shuffle { "Shuffle: on" } else { "Shuffle: off" };
+    if icon_button(ui, pal, sq(cx - step * 3.4), icon::SHUFFLE, 16.0, shuffle, stip).clicked() {
+        app.set_shuffle(!shuffle);
+    }
+    if icon_button(ui, pal, sq(cx - step * 2.4), icon::PREVIOUS, 16.0, false, "Previous (Ctrl+Left)").clicked() {
+        app.prev(&ctx);
+    }
+    if icon_button(ui, pal, sq(cx - step * 1.35), icon::BACK10, 20.0, false, "Skip back 10 seconds (Left)").clicked() {
+        app.skip(-SKIP_BACK);
+    }
+    if play_button(ui, pal, pos2(cx, cy), 22.0, playing).clicked() {
+        app.toggle_play();
+    }
+    if icon_button(ui, pal, sq(cx + step * 1.35), icon::FORWARD30, 20.0, false, "Skip forward 30 seconds (Right)").clicked() {
+        app.skip(SKIP_FORWARD);
+    }
+    if icon_button(ui, pal, sq(cx + step * 2.4), icon::NEXT, 16.0, false, "Next (Ctrl+Right)").clicked() {
+        app.next(&ctx);
+    }
+    let looping = app.looping();
+    let ltip = if looping { "Loop: on" } else { "Loop: off" };
+    if icon_button(ui, pal, sq(cx + step * 3.4), icon::LOOP, 16.0, looping, ltip).clicked() {
+        app.set_loop(!looping);
+    }
+    let rev = app.engine.is_reverse();
+    let rtip = if rev { "Reverse: on" } else { "Reverse" };
+    if icon_button(ui, pal, sq(cx + step * 4.4), icon::REVERSE, 16.0, rev, rtip).clicked() {
+        app.toggle_reverse();
+    }
 
-    let side = |i: f32| Rect::from_center_size(pos2(bar.right() - 10.0 - SIDE / 2.0 - i * SIDE, cy), vec2(SIDE, SIDE));
-    let more = side(0.0);
-    if icon_button(ui, pal, more, icon::MORE, 18.0, app.flyout == Some(Flyout::More), "More").clicked() {
+    // right side: speed, subtitles / audio, volume, full screen, mini player, more
+    let rsq = |i: f32| Rect::from_center_size(pos2(bottom.right() - 30.0 - i * 44.0, cy), vec2(40.0, 40.0));
+    let more = rsq(0.0);
+    if icon_button(ui, pal, more, icon::MORE, 16.0, app.flyout == Some(Flyout::More), "More options").clicked() {
         toggle(app, Flyout::More);
     }
-    if icon_button(ui, pal, side(1.0), icon::MINI, 18.0, false, "Mini player").clicked() {
+    if icon_button(ui, pal, rsq(1.0), icon::MINI, 16.0, false, "Mini player").clicked() {
         app.toggle_mini(&ctx);
     }
     let (fc, ftip) = if app.fullscreen { (icon::EXIT_FULLSCREEN, "Exit full screen (F)") } else { (icon::FULLSCREEN, "Full screen (F)") };
-    if icon_button(ui, pal, side(2.0), fc, 18.0, false, ftip).clicked() {
+    if icon_button(ui, pal, rsq(2.0), fc, 16.0, false, ftip).clicked() {
         app.toggle_fullscreen(&ctx);
     }
-    let sw = if wide { 120.0 } else { 80.0 };
-    let slider = Rect::from_min_max(pos2(side(2.0).left() - 8.0 - sw, cy - 20.0), pos2(side(2.0).left() - 8.0, cy + 20.0));
-    volume_slider(app, ui, pal, slider);
-    let speaker = Rect::from_center_size(pos2(slider.left() - SIDE / 2.0, cy), vec2(SIDE, SIDE));
-    let mtip = if app.engine.muted() { "Unmute (M)" } else { "Mute (M)" };
-    if icon_button(ui, pal, speaker, volume_icon(app), 18.0, false, mtip).clicked() {
-        app.toggle_mute();
+    let von = app.flyout == Some(Flyout::Volume);
+    if icon_button(ui, pal, rsq(3.0), volume_icon(app), 16.0, von, "Volume (M mutes)").clicked() {
+        toggle(app, Flyout::Volume);
     }
-    let tracks = speaker.translate(vec2(-SIDE, 0.0));
-    let on = app.flyout == Some(Flyout::Tracks);
-    if icon_button(ui, pal, tracks, icon::CAPTIONS, 18.0, on, "Subtitles and audio").clicked() {
+    let ton = app.flyout == Some(Flyout::Tracks);
+    if icon_button(ui, pal, rsq(4.0), icon::CAPTIONS, 16.0, ton, "Subtitles and audio").clicked() {
         toggle(app, Flyout::Tracks);
         app.tracks();
     }
-    let speed = Rect::from_center_size(pos2(tracks.left() - 32.0, cy), vec2(60.0, SIDE));
+    let speed = Rect::from_center_size(pos2(rsq(4.0).left() - 24.0, cy), vec2(44.0, 28.0));
     if speed_button(ui, pal, speed, app.engine.rate(), app.flyout == Some(Flyout::Speed)).clicked() {
         toggle(app, Flyout::Speed);
     }
-    ANCHORS.with(|a| a.set([speed, tracks, more]));
+    ANCHORS.with(|a| a.set([speed, rsq(4.0), rsq(3.0), more]));
+}
 
-    // the play buttons, centred - pushed right of the timecode / left of the right group when narrow
-    let w = 6.0 * BTN + PLAY + 6.0 * 8.0;
-    let cx = bar.center().x.min(speed.left() - 12.0 - w / 2.0).max(tc_right + 12.0 + w / 2.0);
-    let sq = |dx: f32| Rect::from_center_size(pos2(cx + dx, cy), vec2(BTN, BTN));
-    let (near, far) = (PLAY / 2.0 + 8.0 + BTN / 2.0, PLAY / 2.0 + 16.0 + BTN * 1.5);
-    let outer = PLAY / 2.0 + 24.0 + BTN * 2.5;
-    let rev = app.engine.is_reverse();
-    if icon_button(ui, pal, sq(-outer), icon::REVERSE, 24.0, rev, if rev { "Reverse: on" } else { "Reverse" }).clicked() {
-        app.toggle_reverse();
+/// The file's name, bottom left: click it to rename the file (Enter renames, Esc cancels).
+fn name_label(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, at: Pos2, width: f32) {
+    let ctx = ui.ctx().clone();
+    if let Some(mut text) = app.renaming.take() {
+        let rect = Rect::from_min_size(pos2(at.x - 4.0, at.y - 14.0), vec2(width, 28.0));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+        let edit = egui::TextEdit::singleline(&mut text).font(FontId::proportional(14.0)).desired_width(width).text_color(pal.text);
+        let r = child.add(edit);
+        let id = r.id;
+        if !r.has_focus() && !r.lost_focus() {
+            ctx.memory_mut(|m| m.request_focus(id));
+        }
+        let (enter, esc) = ctx.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
+        if esc {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+        } else if enter || (r.lost_focus() && !esc) {
+            ctx.memory_mut(|m| m.surrender_focus(id));
+            app.rename(&ctx, &text);
+        } else {
+            app.renaming = Some(text);
+        }
+        return;
     }
-    let looping = app.looping();
-    if icon_button(ui, pal, sq(outer), icon::LOOP, 20.0, looping, if looping { "Loop: on" } else { "Loop" }).clicked() {
-        app.set_loop(!looping);
+    let p = ui.painter();
+    let g = p.layout(app.title(), FontId::proportional(14.0), pal.text, width);
+    let rect = Rect::from_min_size(pos2(at.x, at.y - g.size().y / 2.0), g.size());
+    let r = ui.interact(rect.expand(HIT), ui.id().with("name"), Sense::click()).on_hover_text("Rename");
+    if r.hovered() {
+        p.rect_filled(rect.expand(3.0), 4.0, pal.text.gamma_multiply(0.08));
+        ctx.set_cursor_icon(egui::CursorIcon::Text);
     }
-    if icon_button(ui, pal, sq(-far), icon::PREVIOUS, 20.0, false, "Previous (Ctrl+Left)").clicked() {
-        app.prev(&ctx);
-    }
-    if icon_button(ui, pal, sq(-near), icon::BACK10, 24.0, false, "Back 10 seconds (Left)").clicked() {
-        app.skip(-SKIP_BACK);
-    }
-    if play_button(ui, pal, pos2(cx, cy), PLAY, app.engine.is_playing()).clicked() {
-        app.toggle_play();
-    }
-    if icon_button(ui, pal, sq(near), icon::FORWARD30, 24.0, false, "Forward 30 seconds (Right)").clicked() {
-        app.skip(SKIP_FORWARD);
-    }
-    if icon_button(ui, pal, sq(far), icon::NEXT, 20.0, false, "Next (Ctrl+Right)").clicked() {
-        app.next(&ctx);
+    p.galley(rect.min, g, pal.text);
+    if r.clicked() {
+        app.renaming = Some(app.title());
     }
 }
 
-/// Volume, inline in the bar: the scrub bar's track and thumb; all of `rect` grabs.
-fn volume_slider(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect) {
-    let v = if app.engine.muted() { 0.0 } else { app.engine.volume() };
-    let r = ui.interact(rect, ui.id().with("volume"), Sense::click_and_drag());
-    let r = r.on_hover_text(format!("Volume {}", (v * 100.0).round() as u32));
-    let (x0, x1, y) = (rect.left() + 8.0, rect.right() - 8.0, rect.center().y);
-    let x = x0 + (x1 - x0) * v;
-    let hot = r.hovered() || r.dragged();
-    let th = if hot { TRACK } else { TRACK - 2.0 };
-    let p = ui.painter();
-    p.rect_filled(Rect::from_min_max(pos2(x0, y - th / 2.0), pos2(x1, y + th / 2.0)), th / 2.0, pal.border);
-    p.rect_filled(Rect::from_min_max(pos2(x0, y - th / 2.0), pos2(x, y + th / 2.0)), th / 2.0, pal.accent);
-    let rad = if hot { 9.0 } else { 7.0 };
-    p.circle_filled(pos2(x, y), rad, pal.accent);
-    p.circle_stroke(pos2(x, y), rad, Stroke::new(2.0, pal.panel));
-    if let Some(pos) = r.interact_pointer_pos().filter(|_| r.dragged() || r.clicked() || r.drag_started()) {
-        app.set_volume(((pos.x - x0) / (x1 - x0)).clamp(0.0, 1.0));
+/// Audio Only: the editor's visualizer (the style picked in ⋯ ▸ Visualizer, shared with the editor),
+/// driven by the sound being played (the ticked tracks, mixed).
+fn visualizer_view(app: &mut PlayerApp, ui: &mut Ui, full: Rect) {
+    if app.viz.1.is_empty() {
+        // (reads the library folder: only when the style changes)
+        app.viz.1 = crate::engine::visualizer::last_used(&app.viz.0).src;
     }
+    let tap = app.engine.tap();
+    let n = crate::engine::visualizer::BANDS;
+    let b = bands(&tap, n);
+    let peak = tap.iter().fold(0f32, |m, v| m.max(v.abs())).min(1.0);
+    let mut f = [0f32; 1 + crate::engine::visualizer::BANDS];
+    f[0] = peak;
+    f[1..].copy_from_slice(&b);
+    app.orb.show_frame(f, app.engine.time());
+    app.orb.paint(ui.painter(), full, &app.viz.1);
+    if app.engine.is_playing() {
+        ui.ctx().request_repaint();
+    }
+}
+
+/// The message at the bottom (rename, convert); a converted file gets Open / Open Folder / Add to
+/// Project. A running conversion shows its progress and Cancel here too.
+fn toast(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette, full: Rect, chrome_up: bool) {
+    let running = app.convert_job.as_ref().map(|j| (j.progress.clone(), j.progress.fraction()));
+    if app.toast.is_none() && running.is_none() {
+        return;
+    }
+    let bottom = full.bottom() - if chrome_up { BOTTOM_H + 8.0 } else { 16.0 };
+    egui::Area::new(egui::Id::new("player-toast"))
+        .order(egui::Order::Foreground)
+        .pivot(Align2::CENTER_BOTTOM)
+        .fixed_pos(pos2(full.center().x, bottom))
+        .show(ctx, |ui| {
+            flyout_frame(pal, ctx).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+                if let Some((prog, k)) = &running {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Converting").color(pal.text));
+                        ui.add(egui::ProgressBar::new(*k).desired_width(180.0).fill(pal.accent));
+                        if ui.button("Cancel").clicked() {
+                            prog.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    });
+                }
+                let Some((text, _, about)) = app.toast.clone() else { return };
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(&text).color(pal.text));
+                    let Some(out) = about else { return };
+                    let shown = if crate::engine::convert::is_sequence(&out) { out.parent().map(Path::to_path_buf).unwrap_or(out.clone()) } else { out.clone() };
+                    if ui.button("Open").clicked() {
+                        let _ = std::process::Command::new("explorer.exe").arg(&shown).spawn();
+                    }
+                    if ui.button("Open Folder").clicked() {
+                        let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", shown.display())).spawn();
+                    }
+                    if !crate::engine::convert::is_sequence(&out) && ui.button("Add to Project").clicked() {
+                        app.toast = None;
+                        app.handoff_file(out);
+                    }
+                });
+            });
+        });
+}
+
+/// Convert…: format, quality or size, resolution, frame rate and audio tracks; Convert starts it in the
+/// background (progress and Cancel in the message at the bottom).
+fn convert_window(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette) {
+    use super::convert::FORMATS;
+    let Some(mut spec) = app.convert.take() else { return };
+    let (mut open, mut go) = (true, false);
+    let has_video = app.info.as_ref().is_some_and(|i| i.has_video);
+    egui::Window::new("Convert")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(Align2::CENTER_CENTER, vec2(0.0, 0.0))
+        .frame(flyout_frame(pal, ctx).inner_margin(egui::Margin::same(14)))
+        .show(ctx, |ui| {
+            ui.set_width(340.0);
+            heading(ui, pal, "Format");
+            let labels: Vec<String> = FORMATS.iter().map(|f| f.0.to_string()).collect();
+            if let Some(i) = chips(ui, pal, &labels, spec.format) {
+                spec.format = i;
+            }
+            let ext = FORMATS[spec.format].1;
+            let audio_out = matches!(ext, "mp3" | "wav" | "m4a");
+            if !audio_out && ext != "png" && ext != "gif" {
+                heading(ui, pal, "Quality");
+                let q: Vec<String> = ["Smallest", "Small", "Good", "High", "Best", "Size"].map(String::from).to_vec();
+                let on = if spec.size_mb.is_some() { 5 } else { spec.quality as usize };
+                if let Some(i) = chips(ui, pal, &q, on) {
+                    if i == 5 {
+                        spec.size_mb.get_or_insert(25.0);
+                    } else {
+                        spec.size_mb = None;
+                        spec.quality = i as u8;
+                    }
+                }
+                if let Some(mb) = spec.size_mb.as_mut() {
+                    ui.add(egui::Slider::new(mb, 1.0..=2000.0).logarithmic(true).suffix(" MB"));
+                }
+            }
+            if has_video && !audio_out {
+                heading(ui, pal, "Resolution");
+                let hs = [None, Some(2160), Some(1440), Some(1080), Some(720), Some(480), Some(360)];
+                let labels: Vec<String> = hs.iter().map(|h| h.map_or("Original".into(), |h| format!("{h}p"))).collect();
+                let on = hs.iter().position(|h| *h == spec.height).unwrap_or(0);
+                if let Some(i) = chips(ui, pal, &labels, on) {
+                    spec.height = hs[i];
+                }
+                heading(ui, pal, "Frame rate");
+                let fs = [None, Some(60.0), Some(30.0), Some(24.0), Some(15.0), Some(10.0)];
+                let labels: Vec<String> = fs.iter().map(|f| f.map_or("Original".into(), |f| format!("{f}"))).collect();
+                let on = fs.iter().position(|f| *f == spec.fps).unwrap_or(0);
+                if let Some(i) = chips(ui, pal, &labels, on) {
+                    spec.fps = fs[i];
+                }
+            }
+            if ext != "gif" && ext != "png" && app.info.as_ref().is_some_and(|i| i.audio_streams.len() > 1) {
+                heading(ui, pal, "Audio tracks");
+                let labels = vec!["All".to_string(), "The ticked ones".to_string()];
+                if let Some(i) = chips(ui, pal, &labels, spec.ticked_only as usize) {
+                    spec.ticked_only = i == 1;
+                }
+            }
+            ui.add_space(8.0);
+            let busy = app.convert_job.is_some();
+            ui.horizontal(|ui| {
+                let b = egui::Button::new(egui::RichText::new("Convert").color(on_accent(pal.accent))).fill(pal.accent);
+                if ui.add_enabled(!busy, b).on_disabled_hover_text("A conversion is running").clicked() {
+                    go = true;
+                }
+                ui.label(egui::RichText::new("Saved next to the file").size(12.0).color(pal.text_dim));
+            });
+        });
+    if go {
+        app.start_convert(&spec);
+    } else if open {
+        app.convert = Some(spec);
+    }
+}
+
+/// Volume: a mute button and a slider (the seek bar's look).
+fn volume_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
+    ui.horizontal(|ui| {
+        let (rect, r) = ui.allocate_exact_size(vec2(36.0, 32.0), Sense::click());
+        if r.hovered() {
+            ui.painter().rect_filled(rect, 4.0, pal.text.gamma_multiply(0.08));
+        }
+        glyph(ui.painter(), rect.center(), volume_icon(app), 16.0, pal.text);
+        if r.on_hover_text(if app.engine.muted() { "Unmute (M)" } else { "Mute (M)" }).clicked() {
+            app.toggle_mute();
+        }
+        let (bar, r) = ui.allocate_exact_size(vec2(196.0, 32.0), Sense::click_and_drag());
+        let v = if app.engine.muted() { 0.0 } else { app.engine.volume() };
+        let y = bar.center().y;
+        let (x0, x1) = (bar.left() + 8.0, bar.right() - 8.0);
+        let x = x0 + (x1 - x0) * v;
+        let p = ui.painter();
+        p.rect_filled(Rect::from_min_max(pos2(x0, y - 2.0), pos2(x1, y + 2.0)), 2.0, pal.text_dim.gamma_multiply(0.45));
+        p.rect_filled(Rect::from_min_max(pos2(x0, y - 2.0), pos2(x, y + 2.0)), 2.0, pal.accent);
+        p.circle_filled(pos2(x, y), 7.0, pal.accent);
+        p.circle_stroke(pos2(x, y), 7.0, Stroke::new(1.5, pal.text));
+        if let Some(pos) = r.interact_pointer_pos().filter(|_| r.dragged() || r.clicked()) {
+            app.set_volume(((pos.x - x0) / (x1 - x0)).clamp(0.0, 1.0));
+        }
+        ui.label(egui::RichText::new(format!("{}", (v * 100.0).round() as u32)).size(13.0).color(pal.text));
+    });
 }
 
 thread_local! {
-    /// Where the flyout buttons were drawn this frame: speed, tracks, more.
-    static ANCHORS: std::cell::Cell<[Rect; 3]> = const { std::cell::Cell::new([Rect::NOTHING; 3]) };
+    /// Where the flyout buttons were drawn this frame: speed, tracks, volume, more.
+    static ANCHORS: std::cell::Cell<[Rect; 4]> = const { std::cell::Cell::new([Rect::NOTHING; 4]) };
 }
 
 /// "1×", "0.25×" ...
@@ -492,13 +725,13 @@ pub fn speed_label(rate: f64) -> String {
 
 /// The speed button: the current rate as text, in the accent when it is not 1×.
 fn speed_button(ui: &mut Ui, pal: &Palette, rect: Rect, rate: f64, open: bool) -> Response {
-    let r = ui.interact(rect, ui.id().with("speed"), Sense::click()).on_hover_text("Playback speed");
+    let r = ui.interact(rect.expand(HIT), ui.id().with("speed"), Sense::click()).on_hover_text("Playback speed");
     let p = ui.painter();
     let down = r.is_pointer_button_down_on();
     if down {
-        p.rect_filled(rect.shrink(2.0), radius(ui), pal.accent);
+        p.rect_filled(rect.shrink(2.0), 6.0, pal.accent);
     } else if r.hovered() || open {
-        p.rect_filled(rect.shrink(2.0), radius(ui), ui.visuals().widgets.hovered.weak_bg_fill);
+        p.rect_filled(rect.shrink(2.0), 6.0, pal.text.gamma_multiply(0.1));
     }
     let fg = if down {
         on_accent(pal.accent)
@@ -507,7 +740,7 @@ fn speed_button(ui: &mut Ui, pal: &Palette, rect: Rect, rate: f64, open: bool) -
     } else {
         pal.text
     };
-    p.text(rect.center(), Align2::CENTER_CENTER, speed_label(rate), FontId::proportional(16.0), fg);
+    p.text(rect.center(), Align2::CENTER_CENTER, speed_label(rate), FontId::proportional(13.0), fg);
     r
 }
 
@@ -551,27 +784,26 @@ fn scrub(app: &mut PlayerApp, r: &Response, at: Option<f64>) {
 fn mini_chrome(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, full: Rect) {
     let ctx = ui.ctx().clone();
     let p = ui.painter().clone();
-    p.rect_filled(full, 0.0, Color32::from_black_alpha(90));
-    let close = Rect::from_min_size(pos2(full.right() - 44.0, full.top() + 4.0), vec2(40.0, 36.0));
-    if icon_button(ui, pal, close, icon::CLOSE, 12.0, false, "Close").clicked() {
+    p.rect_filled(full, 0.0, pal.bg.gamma_multiply(0.35));
+    let close = Rect::from_min_size(pos2(full.right() - 36.0, full.top() + 4.0), vec2(32.0, 28.0));
+    if icon_button(ui, pal, close, icon::CLOSE, 11.0, false, "Close").clicked() {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
-    if icon_button(ui, pal, close.translate(vec2(-42.0, 0.0)), icon::UNMINI, 15.0, false, "Back to full view").clicked() {
+    if icon_button(ui, pal, close.translate(vec2(-34.0, 0.0)), icon::UNMINI, 14.0, false, "Back to full view").clicked() {
         app.toggle_mini(&ctx);
     }
-    let c = full.center() - vec2(0.0, 8.0);
-    let gap = PLAY / 2.0 + 8.0 + BTN / 2.0;
-    let sq = |dx: f32| Rect::from_center_size(c + vec2(dx, 0.0), vec2(BTN, BTN));
-    if icon_button(ui, pal, sq(-gap), icon::BACK10, 22.0, false, "Back 10 seconds").clicked() {
+    let c = full.center();
+    let sq = |dx: f32| Rect::from_center_size(c + vec2(dx, 0.0), vec2(40.0, 40.0));
+    if icon_button(ui, pal, sq(-56.0), icon::BACK10, 20.0, false, "Skip back 10 seconds").clicked() {
         app.skip(-SKIP_BACK);
     }
-    if play_button(ui, pal, c, 56.0, app.engine.is_playing()).clicked() {
+    if play_button(ui, pal, c, 22.0, app.engine.is_playing()).clicked() {
         app.toggle_play();
     }
-    if icon_button(ui, pal, sq(gap), icon::FORWARD30, 22.0, false, "Forward 30 seconds").clicked() {
+    if icon_button(ui, pal, sq(56.0), icon::FORWARD30, 20.0, false, "Skip forward 30 seconds").clicked() {
         app.skip(SKIP_FORWARD);
     }
-    let bar = Rect::from_min_max(pos2(full.left() + 6.0, full.bottom() - SCRUB_H - 4.0), pos2(full.right() - 6.0, full.bottom() - 4.0));
+    let bar = Rect::from_min_max(pos2(full.left() + 4.0, full.bottom() - 26.0), pos2(full.right() - 4.0, full.bottom() - 2.0));
     let t = app.scrub.map_or_else(|| app.engine.time(), |(t, _)| t);
     let (r, at) = scrubber(app, ui, pal, bar, t, app.engine.duration());
     scrub(app, &r, at);
@@ -630,10 +862,11 @@ pub const SPEEDS: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0];
 
 fn flyouts(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette, full: Rect) {
     let Some(f) = app.flyout else { return };
-    let [speed_at, tracks_at, more_at] = ANCHORS.with(|a| a.get());
+    let [speed_at, tracks_at, volume_at, more_at] = ANCHORS.with(|a| a.get());
     let (anchor, width) = match f {
         Flyout::Speed => (speed_at, 160.0),
         Flyout::Tracks => (tracks_at, 320.0),
+        Flyout::Volume => (volume_at, 300.0),
         Flyout::More => (more_at, 300.0),
     };
     if anchor == Rect::NOTHING {
@@ -644,13 +877,14 @@ fn flyouts(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette, full: Rect) 
     let area = egui::Area::new(egui::Id::new("player-flyout"))
         .order(egui::Order::Foreground)
         .pivot(Align2::LEFT_BOTTOM)
-        .fixed_pos(pos2(x, anchor.top() - 14.0))
+        .fixed_pos(pos2(x, anchor.top() - 8.0))
         .show(ctx, |ui| {
             flyout_frame(pal, ctx).show(ui, |ui| {
                 ui.set_width(width - 12.0);
                 match f {
                     Flyout::Speed => speed_flyout(app, ui, pal),
                     Flyout::Tracks => tracks_flyout(app, ui, pal),
+                    Flyout::Volume => volume_flyout(app, ui, pal),
                     Flyout::More => more_flyout(app, ui, pal),
                 }
             });
@@ -702,6 +936,13 @@ fn tracks_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
         flyout_row(ui, pal, None, None, "No audio");
     }
     let on = app.engine.audio_streams();
+    if !streams.is_empty() {
+        // none ticked: no audio decoded or played at all
+        let none = on.as_ref().is_some_and(|v| v.is_empty());
+        if flyout_row(ui, pal, Some(none), None, "None").clicked() {
+            app.set_audio_selection(if none { (0..streams.len()).collect() } else { vec![] }, streams.len());
+        }
+    }
     for (n, a) in streams.iter().enumerate() {
         let name = t.audio.get(n).map_or_else(|| a.label(), |tr| tr.label.clone());
         let ch = channels(a.channels);
@@ -725,7 +966,7 @@ fn tracks_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
 }
 
 fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
-    if app.info.as_ref().is_some_and(|i| i.has_video) {
+    if app.info.as_ref().is_some_and(|i| i.has_video) && !app.engine.audio_only() {
         heading(ui, pal, "Zoom");
         let labels: Vec<String> = Zoom::ALL.iter().map(|z| z.label().to_string()).collect();
         let on = Zoom::ALL.iter().position(|z| *z == app.zoom).unwrap_or(0);
@@ -735,16 +976,32 @@ fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
     }
     ui.add_space(6.0);
     ui.separator();
-    let shuffle = app.playlist.shuffle;
-    if flyout_row(ui, pal, Some(shuffle), None, "Shuffle").clicked() {
-        app.set_shuffle(!shuffle);
-    }
     // the whole folder, round and round (Loop on the bar repeats the one file)
     let all = app.playlist.repeat == Repeat::All;
     if flyout_row(ui, pal, Some(all), None, "Repeat folder").clicked() {
         app.set_repeat_folder(!all);
     }
     ui.separator();
+    if app.info.as_ref().is_some_and(|i| !i.audio_streams.is_empty()) {
+        let ao = app.engine.audio_only();
+        if flyout_row(ui, pal, Some(ao), None, "Audio Only").clicked() {
+            app.set_audio_only(!ao);
+        }
+        if ao {
+            heading(ui, pal, "Visualizer");
+            let cur = crate::engine::visualizer::last_used(&app.viz.0).name;
+            for name in crate::engine::visualizer::style_names() {
+                if flyout_row(ui, pal, Some(name == cur), None, &name).clicked() {
+                    app.set_visualizer(&name);
+                }
+            }
+        }
+        ui.separator();
+    }
+    if flyout_row(ui, pal, None, Some(icon::CONVERT), "Convert…").clicked() {
+        app.convert = Some(Default::default());
+        app.flyout = None;
+    }
     if flyout_row(ui, pal, None, Some(icon::INFO), "Media info").clicked() {
         app.info_open = true;
         app.flyout = None;
@@ -941,6 +1198,22 @@ mod tests {
             }
         }
         assert!(checked > 0, "no icon font installed");
+    }
+
+    #[test]
+    fn tick_steps_are_sane_for_short_medium_and_long_files() {
+        // a 1800 px bar
+        assert_eq!(tick_steps(10.0, 1800.0), (1.0, 0.1), "10 s: every second, tenths between");
+        assert_eq!(tick_steps(180.0, 1800.0), (1.0, 0.5), "3 min: every second, halves");
+        assert_eq!(tick_steps(7200.0, 1800.0), (60.0, 30.0), "2 h: every minute");
+        // narrow (mini player): steps grow, never denser than 8 px / 4 px
+        for (dur, px) in [(10.0, 300.0), (180.0, 300.0), (7200.0, 300.0), (36000.0, 300.0), (0.5, 1800.0)] {
+            let (maj, min) = tick_steps(dur, px);
+            let pps = px as f64 / dur;
+            assert!(maj >= 1.0 && maj * pps >= 8.0, "{dur} s / {px} px: major {maj}");
+            assert!(min == 0.0 || (min * pps >= 4.0 && min < maj), "{dur} s / {px} px: minor {min}");
+        }
+        assert_eq!(tick_steps(0.0, 100.0), (0.0, 0.0));
     }
 
     #[test]

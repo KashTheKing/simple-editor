@@ -656,6 +656,7 @@ impl App {
         let src = PathBuf::from(&a.path);
         let out = converted_path(&src, ext);
         let opts = crate::engine::convert::ConvertOptions {
+            audio_streams: None,
             src,
             out: out.clone(),
             encoder: self.settings.encoder.clone(),
@@ -758,6 +759,7 @@ impl App {
             p
         };
         let opts = crate::engine::convert::ConvertOptions {
+            audio_streams: None,
             src: c.src.clone(),
             out: out.clone(),
             encoder: self.settings.encoder.clone(),

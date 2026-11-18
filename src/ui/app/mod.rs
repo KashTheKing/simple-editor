@@ -775,7 +775,7 @@ impl Compress {
 
 /// Where "Convert To…" writes: `<stem>_converted.<ext>` next to the source, uniquified so a convert can
 /// never overwrite the source itself or a file already on disk (possibly one the timeline is using).
-fn converted_path(src: &Path, ext: &str) -> PathBuf {
+pub(crate) fn converted_path(src: &Path, ext: &str) -> PathBuf {
     let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "output".into());
     let mut out = src.with_file_name(format!("{stem}_converted.{ext}"));
     let mut n = 2;
