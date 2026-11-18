@@ -113,6 +113,14 @@
   the timeline or Source monitor plays; the result is encoded on the graphics card (NVENC / QSV / AMF, x264 fallback).
   A short upscale with every core busy went from over 30 minutes to about 2.5 minutes.
 
+### Fixes: playback
+- **No more black Preview frame at a cut**: with two clips touching at a cut that is off the frame grid (after a
+  ripple, trim or transcript cut), a paused playhead just after the cut, or playback through it, showed black on
+  the GPU preview. The preview drew each frame at the clock's time while its layers were decoded for the frame's
+  own grid time, so the clip it looked for was not there. Every frame is now drawn at the instant it was decoded
+  for: the outgoing clip up to the cut's frame, the incoming one from its first frame on, the same picture export
+  makes. Clip edges are not snapped to the grid.
+
 ### Fixes: HTML layers
 - **"Edge failed to start" on a busy PC**: 1.3.0 started Edge at below-normal priority, so while a build, an
   export or proxies kept every core busy it wrote no DevTools port within 20 s and the HTML layer failed (3 of 3

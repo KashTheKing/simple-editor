@@ -1918,7 +1918,8 @@ fn layers_with(
     comp: &mut Compositor,
     nest: &mut Nest,
 ) -> LayerSet {
-    let mut set = LayerSet::default();
+    // drawn at this very instant (`LayerSet::t`), whatever time the preview's clock says
+    let mut set = LayerSet { t: Some(t), ..Default::default() };
     // a clip's layer is a bitmap, or a nested sequence's own set
     let has = |set: &LayerSet, id| set.get(id).is_some() || set.nested.iter().any(|n| n.id == id);
     let mut later = Deferred { jobs: Vec::new(), hole: Arc::new(Frame::default()) };
@@ -1934,9 +1935,9 @@ fn layers_with(
     // (`can_show`), and every track under the topmost layer that repaints the whole canvas
     // (`covers`) - once that layer's frame is really here, since a file that fails to decode
     // covers nothing. An adjustment layer above it still gets the canvas it needs: the cover.
-    // Each must hold two frames either side of `t` as well: the preview draws a set at the clock's
-    // time, not the set's own, and a cover that has just ended (or begun to fade) there would
-    // leave a hole where the layers below it were skipped.
+    // (Each is checked two frames either side of `t` as well - from when the preview drew a set at
+    // its clock's time instead of the set's own (`LayerSet::t`). Kept as a margin: a cover that is
+    // about to end costs one frame's culling, no more.)
     // ponytail: a node graph on screen turns all of this off for the frame - its Clip and Asset
     // nodes may sample layers that are hidden themselves. Follow the references if graph-heavy
     // timelines need the culling.
@@ -3561,6 +3562,81 @@ mod tests {
             sleep(Duration::from_millis(10));
         }
         assert!(back, "layers again once Audio Only is off");
+    }
+
+    /// Two clips that touch at a cut off the frame grid (red footage, then lime): wherever the clock
+    /// stands around the cut - paused, or playing through it - the player publishes the grid frame's
+    /// layers stamped with that frame's instant (`LayerSet::t`, which the GPU draws them at), holding
+    /// the clip on screen there; and the CPU path's frame is that clip's picture. The GPU half of the
+    /// black-seam bug (drawing such a set at the clock's time) is `engine::gpu::seam_tests`.
+    #[test]
+    fn an_off_grid_cut_publishes_the_clip_on_screen_at_the_frame() {
+        let path = media::ffpipe::tests::test_mp4(); // red 0-2 s, lime 2-4 s, 320x240
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let mut project = Project::from_media(asset);
+        let fps = project.fps;
+        let cut = 1.0 + 0.3 / fps; // a third of a frame past frame `fps`
+        let a = project.tracks[0].clips[0].id;
+        let mut incoming = project.tracks[0].clips[0].clone();
+        project.clip_mut(a).unwrap().duration = cut;
+        let b = project.new_id();
+        (incoming.id, incoming.start, incoming.duration, incoming.src_in) = (b, cut, 1.0, 2.5);
+        incoming.link = 0; // not linked to the outgoing clip's audio
+        project.tracks[0].clips.push(incoming);
+        project.show_subtitles = false;
+        let on_screen = |tg: f64| if project.clip(b).unwrap().contains(tg) { b } else { a };
+
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(320, 240, 1280);
+        // CPU, paused: between the cut and the next grid frame the frame is still the outgoing clip's
+        for (clock, red) in [(cut - 1.0 / fps, true), (cut, true), (cut + 0.1 / fps, true), (1.0 + 1.0 / fps, false)] {
+            let tg = (clock * fps + 1e-6).floor() / fps;
+            p.seek(clock);
+            let c = centre(&wait_frame(&mut p, tg, (320, 240)));
+            let ok = if red { c[0] > 200 && c[1] < 70 } else { c[1] > 200 && c[0] < 70 };
+            assert!(ok, "CPU at clock {clock:.5} (frame at {tg:.5}): {c:?}, want {}", if red { "red" } else { "lime" });
+        }
+        // GPU layers, paused
+        p.set_gpu(true);
+        for clock in [cut - 1.0 / fps, cut - 1e-9, cut, cut + 0.1 / fps, (1.0 + 1.0 / fps) - 1e-7, 1.0 + 1.0 / fps] {
+            let tg = (clock * fps + 1e-6).floor() / fps;
+            p.seek(clock);
+            let mut got = None;
+            for _ in 0..300 {
+                if let Some(s) = p.take_layers().filter(|s| s.t.is_some_and(|t| (t - tg).abs() < 1e-9)) {
+                    if !p.is_partial() {
+                        got = Some(s);
+                        break;
+                    }
+                }
+                sleep(Duration::from_millis(10));
+            }
+            let set = got.unwrap_or_else(|| panic!("no layers stamped {tg} for clock {clock} within 3 s"));
+            assert!(set.get(on_screen(tg)).is_some(), "clock {clock:.6}: frame at {tg:.6} lacks the clip on screen");
+        }
+        // GPU layers, playing through the cut
+        p.seek(cut - 6.0 / fps);
+        p.play();
+        let started = Instant::now();
+        let mut seen = 0;
+        while started.elapsed() < Duration::from_millis(900) && p.time() < cut + 6.0 / fps {
+            if let Some(s) = p.take_layers() {
+                let tg = s.t.expect("a player set says its instant");
+                assert!(((tg * fps).round() - tg * fps).abs() < 1e-6, "{tg} is on the grid");
+                if !p.is_partial() {
+                    assert!(set_has(&s, on_screen(tg)), "playing: frame at {tg:.6} lacks the clip on screen");
+                    seen += 1;
+                }
+            }
+            sleep(Duration::from_millis(1));
+        }
+        p.pause();
+        assert!(seen > 0, "no whole layer set published while playing through the cut");
+        fn set_has(s: &LayerSet, id: crate::model::Id) -> bool {
+            s.get(id).is_some()
+        }
     }
 
     /// `decode_layers` owes the GPU renderer a bitmap for every visual clip, not just decoded media:
