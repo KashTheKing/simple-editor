@@ -531,7 +531,7 @@ impl App {
             crate::engine::browsers::open_url(DOCS_URL);
         }
         // the issue form on GitHub, with the version filled in (`version` is that form's field id)
-        let report = format!("{ISSUES_URL}?template=bug_report.yml&version={}", env!("CARGO_PKG_VERSION"));
+        let report = format!("{ISSUES_URL}?template=bug_report.yml&labels=bug+report&version={}", env!("CARGO_PKG_VERSION"));
         if menu::row(ui, None, "Report a Bug…", "").on_hover_text("Opens the GitHub issue form").clicked() {
             crate::engine::browsers::open_url(&report);
         }

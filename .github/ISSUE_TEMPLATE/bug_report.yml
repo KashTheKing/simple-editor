@@ -1,7 +1,7 @@
 name: Report a bug
 description: Something broke, looks wrong, or doesn't do what you expected.
 title: "[Bug] "
-labels: ["bug"]
+labels: ["bug report"]
 body:
   - type: markdown
     attributes:

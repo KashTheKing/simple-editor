@@ -131,7 +131,7 @@ fn screenshot_to_file(app: &mut App, p: &Prefs) {
     let file = dir.join(format!("{} - {} {} {}.png", app.project.name, p.platform, p.device, if p.land { "landscape" } else { "portrait" }));
     let r = std::fs::create_dir_all(&dir).map_err(|e| e.to_string()).and_then(|_| std::fs::write(&file, crate::mcp::png_encode(&out)).map_err(|e| e.to_string()));
     match r {
-        Ok(()) => app.toast(format!("Saved {}", file.display())),
+        Ok(()) => app.toast_with_folder(format!("Saved {}", file.display()), file),
         Err(e) => app.toast(format!("Screenshot not saved: {e}")),
     }
 }

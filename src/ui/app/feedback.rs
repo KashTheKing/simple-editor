@@ -123,6 +123,7 @@ pub(super) fn draw(app: &mut App, ctx: &egui::Context) {
     let palette = app.palette.clone();
     let mut clicked_undo: Option<Action> = None;
     let mut copied = false;
+    let mut add: Option<PathBuf> = None;
     let area = egui::Area::new(egui::Id::new("toasts"))
         .anchor(egui::Align2::RIGHT_BOTTOM, [-12.0, -12.0])
         .order(egui::Order::Foreground)
@@ -155,6 +156,15 @@ pub(super) fn draw(app: &mut App, ctx: &egui::Context) {
                                 }
                                 let _ = cmd.spawn();
                             }
+                            // a saved video, sound or picture: open it in its default program, or import it
+                            if is_media_file(p) {
+                                if ui.small_button("Open").clicked() {
+                                    let _ = std::process::Command::new("explorer").arg(p).spawn();
+                                }
+                                if ui.small_button("Add to Project").clicked() {
+                                    add = Some(p.clone());
+                                }
+                            }
                         }
                         if let Some((label, action)) = &t.action {
                             if ui.small_button(label).clicked() {
@@ -178,7 +188,18 @@ pub(super) fn draw(app: &mut App, ctx: &egui::Context) {
     if copied {
         app.push_toast(Toast::new("Copied").kind(ToastKind::Success));
     }
+    if let Some(p) = add {
+        if !app.import_files(std::slice::from_ref(&p)).is_empty() {
+            app.toast("Added to the project");
+        }
+    }
     ctx.request_repaint_after(std::time::Duration::from_millis(500));
+}
+
+/// A file the Library imports: video, audio or an image (not a project, preset or text file).
+fn is_media_file(p: &std::path::Path) -> bool {
+    let e = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    p.is_file() && crate::engine::folder_import::MEDIA_EXTS.contains(&e.as_str())
 }
 
 /// How long a toast stays (seconds): errors and toasts with a button get longer to read/act on.
@@ -215,6 +236,20 @@ mod tests {
     fn errors_stay_up_longer() {
         assert!(lifetime(&Toast::new("x").kind(ToastKind::Error)) > lifetime(&Toast::new("x").undo(Action::Undo)));
         assert!(lifetime(&Toast::new("x").kind(ToastKind::Warn)) > lifetime(&Toast::new("x")));
+    }
+
+    /// Open / Add to Project are offered for saved media only.
+    #[test]
+    fn media_files_get_open_and_add() {
+        let dir = std::env::temp_dir().join(format!("se-toast-media-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (png, json) = (dir.join("shot.png"), dir.join("layout.json"));
+        std::fs::write(&png, b"x").unwrap();
+        std::fs::write(&json, b"{}").unwrap();
+        assert!(is_media_file(&png));
+        assert!(!is_media_file(&json), "a layout is not media");
+        assert!(!is_media_file(&dir), "a folder is not media");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
