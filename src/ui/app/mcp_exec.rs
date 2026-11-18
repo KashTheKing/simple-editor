@@ -341,6 +341,7 @@ impl App {
             // never write over the source (converting to its own container used to do exactly that)
             let out = converted_path(&src, &ext);
             let opts = crate::engine::convert::ConvertOptions {
+                audio_streams: None,
                 src,
                 out: out.clone(),
                 encoder: self.settings.encoder.clone(),

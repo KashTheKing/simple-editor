@@ -145,6 +145,12 @@ struct Shared {
     wake: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Hardware zero-copy decode allowed (off in tests that want CPU frames).
     gpu: bool,
+    /// The audio thread is running (no audio tracks ticked: it is not, and the wall clock runs).
+    audio_running: AtomicBool,
+    /// Audio Only: no video is decoded.
+    audio_only: AtomicBool,
+    /// Frames the video decoder delivered (tests: Audio Only decodes none).
+    decoded: AtomicU64,
 }
 
 impl Shared {
@@ -180,6 +186,9 @@ impl Engine {
             dropped: AtomicU64::new(0),
             wake: Mutex::new(None),
             gpu,
+            audio_running: AtomicBool::new(false),
+            audio_only: AtomicBool::new(false),
+            decoded: AtomicU64::new(0),
         });
         if gpu {
             // the D3D11 device takes ~0.25 s: build it while the file is probed and the window opens
@@ -363,11 +372,40 @@ impl Engine {
     }
 
     /// Mix these audio streams (0-based among the file's audio streams) from the current time on;
-    /// None = all of them.
+    /// None = all of them. None ticked (`Some(vec![])`): no audio is decoded, mixed or output at all -
+    /// the audio thread ends, the device closes and the clock runs off the system timer.
     pub fn set_audio_streams(&self, streams: Option<Vec<usize>>) {
         let t = self.time();
         lock(&self.s.audio).streams = streams;
         self.seek(t);
+        spawn_audio(&self.s);
+    }
+
+    /// The audio thread is running (decoding / playing sound).
+    pub fn audio_running(&self) -> bool {
+        self.s.audio_running.load(Ordering::Relaxed)
+    }
+
+    /// Audio Only: the video decoder stops (nothing decoded); off: it starts again from here.
+    pub fn set_audio_only(&self, on: bool) {
+        if self.s.audio_only.swap(on, Ordering::Relaxed) == on {
+            return;
+        }
+        if on {
+            lock(&self.s.video).queue.clear();
+            self.s.video_cv.notify_all();
+        } else {
+            self.seek(self.time());
+        }
+    }
+
+    pub fn audio_only(&self) -> bool {
+        self.s.audio_only.load(Ordering::Relaxed)
+    }
+
+    /// Frames the video decoder has delivered so far.
+    pub fn frames_decoded(&self) -> u64 {
+        self.s.decoded.load(Ordering::Relaxed)
     }
 
     /// The streams being mixed; None = all.
@@ -428,7 +466,7 @@ impl Engine {
         let v = lock(&self.s.video);
         let video_done = v.eof && v.queue.is_empty();
         drop(v);
-        let has_video = matches!(&*lock(&self.s.info), Some(Ok(i)) if i.has_video);
+        let has_video = matches!(&*lock(&self.s.info), Some(Ok(i)) if i.has_video) && !self.audio_only();
         if has_video {
             video_done
         } else if self.is_reverse() {
@@ -579,13 +617,9 @@ fn video_thread(s: Arc<Shared>) {
             return;
         }
     };
-    let audio = !info.audio_streams.is_empty();
     let fps = info.fps;
     *lock(&s.info) = Some(Ok(info.clone()));
-    if audio {
-        let a = s.clone();
-        let _ = std::thread::Builder::new().name("player-audio".into()).spawn(move || audio_thread(a));
-    }
+    spawn_audio(&s);
     s.wake();
     let Some(mut src) = src else {
         lock(&s.video).eof = true;
@@ -618,7 +652,8 @@ fn video_thread(s: Arc<Shared>) {
                     retried = false;
                     rev_hi = t + dur * 0.5; // the frame showing at t is in the first chunk
                 }
-                if !v.eof && v.queue.len() < QUEUE {
+                // Audio Only: nothing is decoded until it is switched off (a seek wakes this)
+                if !v.eof && v.queue.len() < QUEUE && !s.audio_only.load(Ordering::Relaxed) {
                     break;
                 }
                 v = s.video_cv.wait(v).unwrap_or_else(|e| e.into_inner());
@@ -669,6 +704,7 @@ fn video_thread(s: Arc<Shared>) {
                 }
                 v.queue.push_back(f);
                 drop(v);
+                s.decoded.fetch_add(1, Ordering::Relaxed);
                 s.video_cv.notify_all();
                 if first {
                     s.wake();
@@ -721,8 +757,37 @@ fn reverse_chunk(s: &Shared, src: &mut dyn VideoSource, gen: u64, want: (u32, u3
     first.unwrap_or(0.0)
 }
 
+/// Start the audio thread unless it runs, the file has no audio, or no track is ticked.
+fn spawn_audio(s: &Arc<Shared>) {
+    let has_audio = matches!(&*lock(&s.info), Some(Ok(i)) if !i.audio_streams.is_empty());
+    let none = lock(&s.audio).streams.as_ref().is_some_and(|v| v.is_empty());
+    if !has_audio || none || s.quit.load(Ordering::Relaxed) {
+        return;
+    }
+    if s.audio_running.compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed).is_err() {
+        return;
+    }
+    let a = s.clone();
+    let _ = std::thread::Builder::new().name("player-audio".into()).spawn(move || audio_thread(a));
+}
+
+/// The audio thread ended: the wall clock takes over from where the sound was.
+struct AudioGone(Arc<Shared>);
+impl Drop for AudioGone {
+    fn drop(&mut self) {
+        self.0.audio_clock.store(false, Ordering::Relaxed);
+        let mut c = lock(&self.0.clock);
+        let t = c.now(Instant::now());
+        c.set(t);
+        drop(c);
+        self.0.audio_running.store(false, Ordering::Release);
+        spawn_audio(&self.0); // a track was ticked again while this one was ending
+    }
+}
+
 fn audio_thread(s: Arc<Shared>) {
     use cpal::traits::StreamTrait;
+    let _gone = AudioGone(s.clone());
     crate::media::mf::init_thread();
     let p = s.path.to_string_lossy().into_owned();
     let stream = open_output(s.clone());
@@ -768,6 +833,9 @@ fn audio_thread(s: Arc<Shared>) {
             }
             a.streams.clone().unwrap_or_else(|| (0..n_streams).collect())
         };
+        if want.is_empty() {
+            return; // no track ticked: no decode, no device (`AudioGone` hands the clock back)
+        }
         if opened.as_ref() != Some(&want) {
             srcs = want.iter().filter_map(|&n| media::open_audio(&p, n, Backend::Auto).ok().map(|a| (n, a))).collect();
             opened = Some(want);
@@ -921,9 +989,57 @@ mod tests {
             assert_eq!(m440 > 0.03, a440, "{sel:?}: 440 Hz at {m440}");
             assert_eq!(m880 > 0.03, a880, "{sel:?}: 880 Hz at {m880}");
         }
-        // nothing ticked: silence (and time still runs)
-        let x = ring(Some(vec![]));
-        assert!(x.len() == 16384 && x.iter().all(|v| v.abs() < 1e-4), "silence when no track is ticked");
+    }
+
+    /// No track ticked: no audio thread, no decode, no device - and the clock still runs (system timer).
+    /// Ticking one again brings the sound back.
+    #[test]
+    fn no_audio_tracks_decode_and_output_nothing() {
+        let Some(f) = crate::player::tracks::tests::two_audio_one_sub() else { return };
+        let e = Engine::start(&f, 1.0, false, false);
+        e.set_audio_streams(Some(vec![]));
+        let end = Instant::now() + Duration::from_secs(8);
+        while e.info().is_none() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!e.audio_running(), "no audio thread with no track ticked");
+        assert!(lock(&e.s.audio).ring.is_empty(), "nothing decoded");
+        assert!(!e.s.audio_clock.load(Ordering::Relaxed), "the device does not drive the clock");
+        e.set_playing(true);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(e.time() > 1.2, "the clock runs on the system timer: {}", e.time());
+        e.set_audio_streams(Some(vec![1]));
+        let end = Instant::now() + Duration::from_secs(8);
+        while lock(&e.s.audio).ring.is_empty() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(e.audio_running() && !lock(&e.s.audio).ring.is_empty(), "ticking a track starts the sound again");
+    }
+
+    /// Audio Only: the video decoder delivers nothing (and the sound still decodes); off again, the
+    /// picture comes back.
+    #[test]
+    fn audio_only_decodes_no_video() {
+        let Some(f) = crate::player::tracks::tests::two_audio_one_sub() else { return };
+        let e = Engine::start(&f, 0.0, false, false);
+        e.set_audio_only(true);
+        e.set_playing(true);
+        let end = Instant::now() + Duration::from_secs(8);
+        while lock(&e.s.audio).ring.is_empty() && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(400));
+        // a frame may have been in flight when it was switched on: none after that
+        assert!(e.frames_decoded() <= 1, "{} frames decoded in Audio Only", e.frames_decoded());
+        assert!(!lock(&e.s.audio).ring.is_empty(), "the sound plays");
+        let before = e.frames_decoded();
+        e.set_audio_only(false);
+        let end = Instant::now() + Duration::from_secs(8);
+        while e.frames_decoded() == before && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(e.frames_decoded() > before, "the picture decodes again");
     }
 
     #[test]

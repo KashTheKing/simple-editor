@@ -16,8 +16,10 @@
 //! current time.
 
 pub mod chrome;
+pub mod convert;
 pub mod engine;
 pub mod folder;
+pub mod strip;
 pub mod tracks;
 pub mod video;
 
@@ -72,6 +74,7 @@ impl Zoom {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flyout {
     Speed,
+    Volume,
     Tracks,
     More,
 }
@@ -83,6 +86,8 @@ struct Look {
     theme: String,
     palette: crate::theme::PaletteOverride,
     ui_look: String,
+    /// Audio Only's visualizer style, shared with the editor's (`Settings::visualizer_style`).
+    visualizer_style: String,
 }
 
 /// Remembered between launches in `%APPDATA%\SimpleEditor\player.json` (a few bytes).
@@ -164,6 +169,22 @@ pub struct PlayerApp {
     /// Single-click play/pause waits out a possible double-click (full screen).
     pending_click: Option<f64>,
     ended: bool,
+    /// The seek bar's hover thumbnails (`strip`), started once the file's info is in.
+    pub(crate) strip: Option<strip::Strip>,
+    /// The name being edited (bottom left; Enter renames the file, Esc cancels).
+    pub(crate) renaming: Option<String>,
+    /// The Convert… panel's choices while it is open, and the conversion running.
+    pub(crate) convert: Option<convert::Spec>,
+    pub(crate) convert_job: Option<convert::Job>,
+    /// A message at the bottom: text, until (app clock), and a file it is about (Open / Open Folder /
+    /// Add to Project).
+    pub(crate) toast: Option<(String, f64, Option<PathBuf>)>,
+    /// Audio Only's visualizer and its style (name, shader source).
+    pub(crate) orb: crate::ui::spiky_ball::Orb,
+    pub(crate) viz: (String, String),
+    /// `SE_PLAYER_SHOT_SETUP=hover=0.8`: the seek bar acts hovered at that fraction (a posted mouse
+    /// move cannot hover the window).
+    pub(crate) shot_hover: Option<f32>,
 }
 
 impl PlayerApp {
@@ -228,6 +249,14 @@ impl PlayerApp {
             look: look.palette,
             pending_click: None,
             ended: false,
+            strip: None,
+            renaming: None,
+            convert: None,
+            convert_job: None,
+            toast: None,
+            orb: Default::default(),
+            viz: (look.visualizer_style.clone(), String::new()),
+            shot_hover: None,
         }
     }
 
@@ -248,6 +277,12 @@ impl PlayerApp {
         let t = self.engine.time();
         self.engine.set_playing(false);
         self.handoff = Some((self.path().to_path_buf(), t));
+    }
+
+    /// Add to Project: the editor takes over with `path` on the timeline.
+    pub fn handoff_file(&mut self, path: PathBuf) {
+        self.engine.set_playing(false);
+        self.handoff = Some((path, 0.0));
     }
 
     pub fn take_handoff(&mut self) -> Option<(PathBuf, f64)> {
@@ -289,6 +324,12 @@ impl PlayerApp {
             v.push(n);
             v.sort_unstable();
         }
+        self.set_audio_selection(v, count);
+    }
+
+    /// Mix exactly these audio tracks (of `count`); none = no audio at all (nothing decoded or played,
+    /// the clock runs off the system timer). Remembered per file.
+    pub fn set_audio_selection(&mut self, v: Vec<usize>, count: usize) {
         let key = file_key(self.path());
         let all = v == (0..count).collect::<Vec<_>>();
         if all {
@@ -312,8 +353,15 @@ impl PlayerApp {
 
     /// Open another file in place (previous / next / repeat), playing.
     pub fn open(&mut self, ctx: &egui::Context, path: &Path) {
+        self.open_at(ctx, path, 0.0, true);
+    }
+
+    /// Open `path` at `t`, playing or paused (a rename reopens the file where it was).
+    pub fn open_at(&mut self, ctx: &egui::Context, path: &Path, t: f64, play: bool) {
         let (vol, muted, rate) = (self.engine.volume(), self.engine.muted(), self.engine.rate());
-        self.engine = Engine::start(path, 0.0, true, true);
+        let audio_only = self.engine.audio_only();
+        self.engine = Engine::start(path, t, play, true);
+        self.engine.set_audio_only(audio_only);
         self.engine.set_volume(vol);
         self.engine.set_muted(muted);
         self.engine.set_rate(rate);
@@ -333,7 +381,84 @@ impl PlayerApp {
         self.cover_rx = None;
         self.bars.clear();
         self.ended = false;
+        self.strip = None;
+        self.renaming = None;
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+    }
+
+    pub(crate) fn say(&mut self, text: impl Into<String>, about: Option<PathBuf>) {
+        let secs = if about.is_some() { 12.0 } else { 4.0 };
+        self.toast = Some((text.into(), self.now() + secs, about));
+    }
+
+    /// Rename the file on disk to `stem` (its extension kept): the player lets go of it first (decoders,
+    /// thumbnail jobs), then opens it again at the same moment.
+    pub fn rename(&mut self, ctx: &egui::Context, stem: &str) {
+        let from = self.path().to_path_buf();
+        let to = match convert::rename_target(&from, stem) {
+            Ok(to) if to == from => return,
+            Ok(to) => to,
+            Err(e) => return self.say(e, None),
+        };
+        let (t, play) = (self.engine.time(), self.engine.is_playing());
+        self.strip = None;
+        // a stand-in that opens nothing, so the old engine (and its file handles) goes now
+        self.engine = Engine::start(Path::new(""), 0.0, false, false);
+        let done = convert::rename_retrying(&from, &to);
+        let back = if done.is_ok() { to.clone() } else { from.clone() };
+        if let Some(v) = self.prefs.audio.remove(&file_key(&from)) {
+            self.prefs.audio.insert(file_key(&back), v);
+        }
+        self.open_at(ctx, &back, t, play);
+        self.playlist.scan(&back);
+        match done {
+            Ok(()) => self.say(format!("Renamed to {}", to.file_name().unwrap_or_default().to_string_lossy()), None),
+            Err(e) => self.say(format!("Couldn't rename: {e}"), None),
+        }
+    }
+
+    /// Audio Only: no video decoded, the picture area shows the visualizer.
+    pub fn set_audio_only(&mut self, on: bool) {
+        self.engine.set_audio_only(on);
+        if on {
+            self.video.clear();
+        }
+    }
+
+    /// Audio Only's visualizer style; saved as the editor's `visualizer_style` (one pick for both).
+    pub fn set_visualizer(&mut self, name: &str) {
+        self.viz = (name.to_string(), String::new());
+        save_setting(&crate::settings::Settings::path(), "visualizer_style", serde_json::Value::String(name.into()));
+    }
+
+    /// Start converting with the panel's choices.
+    pub fn start_convert(&mut self, spec: &convert::Spec) {
+        if crate::media::ffpipe::ffmpeg_exe().is_none() {
+            return self.say("Converting needs ffmpeg.exe", None);
+        }
+        let size = self.info.as_ref().map_or((0, 0), |i| i.size);
+        let opts = convert::options(self.path(), spec, size, self.engine.audio_streams());
+        self.convert_job = Some(convert::start(opts));
+        self.convert = None;
+    }
+
+    /// The conversion finished (or failed): say so.
+    fn poll_convert(&mut self) {
+        let Some(j) = &self.convert_job else { return };
+        if !j.progress.is_done() {
+            return;
+        }
+        let (err, out) = (j.progress.error(), j.out.clone());
+        self.convert_job = None;
+        match err {
+            None => {
+                let shown = if crate::engine::convert::is_sequence(&out) { out.parent().map(Path::to_path_buf) } else { Some(out.clone()) };
+                let name = shown.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.say(format!("Converted: {name}"), Some(out));
+            }
+            Some(e) if e == crate::engine::export::CANCELLED => self.say("Convert cancelled", None),
+            Some(e) => self.say(format!("Convert failed: {e}"), None),
+        }
     }
 
     pub fn next(&mut self, ctx: &egui::Context) {
@@ -462,11 +587,23 @@ impl PlayerApp {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
+        self.poll_convert();
+        if self.convert_job.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+        if self.toast.as_ref().is_some_and(|t| t.1 < self.now()) {
+            self.toast = None;
+        }
+        if let Some(s) = &self.strip {
+            s.set_playing(self.engine.is_playing());
+        }
         if self.info.is_none() && self.error.is_none() {
             match self.engine.info() {
                 Some(Ok(i)) => {
                     if !i.has_video {
                         self.start_cover(ctx);
+                    } else if i.duration > 0.0 {
+                        self.strip = Some(strip::Strip::start(&i.path, i.duration));
                     }
                     self.info = Some(i);
                 }
@@ -673,6 +810,12 @@ impl PlayerApp {
                     self.tracks();
                 }
                 Some(("flyout", "more")) => self.flyout = Some(Flyout::More),
+                Some(("flyout", "volume")) => self.flyout = Some(Flyout::Volume),
+                Some(("hover", k)) => self.shot_hover = k.parse().ok(),
+                _ if item == "audio_only" => self.set_audio_only(true),
+                _ if item == "pause" => self.engine.set_playing(false),
+                _ if item == "convert" => self.convert = Some(Default::default()),
+                _ if item == "rename" => self.renaming = Some(self.title()),
                 _ if item == "reverse" => self.toggle_reverse(),
                 _ if item == "loop" => self.playlist.repeat = Repeat::One,
                 _ => {}
@@ -820,3 +963,17 @@ impl eframe::App for Root {
 
 #[cfg(test)]
 mod tests;
+
+/// Set one key of the editor's `settings.json`, leaving every other key as it is.
+fn save_setting(p: &Path, key: &str, v: serde_json::Value) {
+    let mut j: serde_json::Value = std::fs::read(&p).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_else(|| serde_json::json!({}));
+    if let Some(o) = j.as_object_mut() {
+        o.insert(key.into(), v);
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        if let Ok(b) = serde_json::to_vec_pretty(&j) {
+            let _ = std::fs::write(p, b);
+        }
+    }
+}

@@ -317,3 +317,44 @@ fn bench_player_launch() {
     println!("player: launch -> first frame on screen, median {:.0} ms of {player:.0?}", median(player.clone()));
     println!("editor: launch -> first painted frame, median {:.0} ms of {editor:.0?}", median(editor.clone()));
 }
+
+/// The visualizer pick goes into the editor's settings.json under `visualizer_style`, every other key
+/// kept as it was (and read back by the editor's `Settings`).
+#[test]
+fn the_visualizer_style_pick_is_saved_in_the_editors_settings() {
+    let p = std::env::temp_dir().join(format!("se-player-settings-{}.json", std::process::id()));
+    std::fs::write(&p, r#"{"theme":"Light","crf":18}"#).unwrap();
+    save_setting(&p, "visualizer_style", serde_json::Value::String("Spectrum Bars".into()));
+    let j: serde_json::Value = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    assert_eq!(j["visualizer_style"], "Spectrum Bars");
+    assert_eq!((j["theme"].as_str(), j["crf"].as_u64()), (Some("Light"), Some(18)), "the rest kept");
+    let s: crate::settings::Settings = serde_json::from_value(j).unwrap();
+    assert_eq!(s.visualizer_style, "Spectrum Bars");
+    let look: Look = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
+    assert_eq!(look.visualizer_style, "Spectrum Bars", "the player reads it back");
+    let _ = std::fs::remove_file(&p);
+}
+
+/// `SE_STRIP_FILE=<video> cargo test thumbnails_while_playing -- --ignored --nocapture` (a scratch
+/// LOCALAPPDATA, so the strip is not in the cache yet): play 20 s with the strip filling in the
+/// background, then 20 s with no strip, and compare dropped frames.
+#[test]
+#[ignore]
+fn thumbnails_while_playing_cost_no_frames() {
+    let f = std::path::PathBuf::from(std::env::var("SE_STRIP_FILE").expect("SE_STRIP_FILE"));
+    let ctx = egui::Context::default();
+    let mut drops = Vec::new();
+    for with_strip in [true, false] {
+        let mut app = PlayerApp::new(&ctx, Engine::start(&f, 5.0, false, true));
+        until_picture(&ctx, &mut app);
+        if !with_strip {
+            app.strip = None;
+        }
+        app.engine.set_playing(true);
+        run_for(&ctx, &mut app, 20_000, |_| {});
+        let thumbs = app.strip.as_ref().map_or(0, |s| s.len());
+        println!("strip {with_strip}: {} frames dropped in 20 s, {thumbs} thumbnails made meanwhile", app.engine.dropped());
+        drops.push(app.engine.dropped());
+    }
+    assert!(drops[0] <= drops[1] + 3, "the strip cost frames: {drops:?}");
+}

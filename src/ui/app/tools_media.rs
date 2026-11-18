@@ -326,6 +326,7 @@ pub const TOOLS: &[ToolDef] = &[
                 let src = PathBuf::from(&app.project.asset(id).ok_or_else(|| format!("no asset {id}"))?.path);
                 let out = converted_path(&src, &ext);
                 let opts = crate::engine::convert::ConvertOptions {
+                    audio_streams: None,
                     src,
                     out: out.clone(),
                     encoder: app.settings.encoder.clone(),

@@ -66,6 +66,13 @@ impl Orb {
         self.time = t as f32;
     }
 
+    /// Show these levels (`[level, band1..]`, 0..1) at `t`, no beat: a live player's output.
+    pub fn show_frame(&mut self, level: visualizer::Frame, t: f64) {
+        self.level = level;
+        self.beat = (0.0, 0.0, None);
+        self.time = t as f32;
+    }
+
     pub fn level(&self) -> f32 {
         self.level[0]
     }
