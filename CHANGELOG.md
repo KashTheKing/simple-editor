@@ -10,6 +10,8 @@
   saves only the folder. Right-click the bin for Refresh, Relink…, Convert to regular bin (the old import every
   file) and Unlink; a folder that is missing shows as offline. `media.import_folder` links by default
   (`linked: false` imports every file), and `media.linked_bin` lists, refreshes, relinks, converts and unlinks.
+- **Library filters are easier to see and undo**: every active filter shows as a chip under the search box (its ✕ drops just that one) with **Clear filter** beside them, and the Filter button lights up while any filter is on. Smart Bins are their own section, with **Save filter…** in its header.
+- **Shift+click a bin’s arrow** to open or close it together with every bin inside it; on a linked bin it keeps opening the sub-folders as they are listed.
 
 ## 1.3.1
 

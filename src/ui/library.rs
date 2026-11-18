@@ -136,7 +136,16 @@ pub struct LibraryState {
     pub new_bin: Option<String>,
     /// Linked bins' folder listings, on-demand durations and the folder watch (see `engine::linked_bins`).
     pub linked: crate::engine::linked_bins::Cache,
+    /// Shift+click opened this tree node (its key) with everything below it: each bin under it opens as it
+    /// is drawn - a linked bin's deeper levels too, as they are listed. A plain toggle anywhere ends it.
+    pub expand_under: Option<String>,
 }
+
+/// Names of `kind_filter` values (index = value), as the Filter menu and the chips say them.
+const KIND_NAMES: [&str; 7] = ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"];
+
+/// Folders on disk a Shift+click opens below the clicked one (each level is a read; a whole drive is not).
+const EXPAND_DISK_DEPTH: usize = 3;
 
 #[derive(Default)]
 pub struct LibraryResponse {
@@ -517,6 +526,14 @@ fn external_select(state: &mut LibraryState) {
 }
 
 impl LibraryState {
+    /// "Clear filter": search, kind, label and "Unused only" - the whole tree comes back.
+    pub fn clear_filters(&mut self) {
+        self.search.clear();
+        self.kind_filter = 0;
+        self.label_filter = 0;
+        self.unused_only = false;
+    }
+
     /// Empty the set, keeping the anchor.
     fn clear_set(&mut self) {
         self.sel_ids.clear();
@@ -1626,13 +1643,61 @@ fn header(
                 menu::button(ui, "View ▾", |ui| view_menu(ui, state, settings, columns_changed));
                 // every filter in one menu; the button says how many are on
                 let n_on = (state.kind_filter != 0) as u8 + (state.label_filter != 0) as u8 + state.unused_only as u8;
-                let title = if n_on > 0 { format!("Filter ({n_on}) ▾") } else { "Filter ▾".to_string() };
+                let title = if n_on > 0 {
+                    RichText::new(format!("Filter ({n_on}) ▾")).color(palette.accent).strong()
+                } else {
+                    RichText::new("Filter ▾")
+                };
                 menu::button(ui, title, |ui| filter_menu(ui, state, labels, palette));
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| search_box(ui, state, palette));
             });
         });
     });
+    filter_chips(ui, state, labels, palette);
     ui.separator();
+}
+
+/// What is narrowing the list, one chip each (its ✕ drops that one), and "Clear filter" for all of it.
+/// Drawn only while something is on, so a filtered Library never looks like the whole project.
+fn filter_chips(ui: &mut egui::Ui, state: &mut LibraryState, labels: &Labels, palette: &Palette) {
+    if !filter_active(state) {
+        return;
+    }
+    let chip = |ui: &mut egui::Ui, label: &str, tip: &str| -> bool {
+        let text = RichText::new(format!("{label}  ✕")).small().color(palette.text);
+        let b = egui::Button::new(text)
+            .fill(palette.panel)
+            .stroke(egui::Stroke::new(1.0, palette.accent))
+            .corner_radius(8u8);
+        ui.add(b).on_hover_text(tip).clicked()
+    };
+    #[cfg(test)]
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("lib_filter_chips"), true));
+    let margin = egui::Margin { left: 4, right: 4, top: 0, bottom: 3 };
+    egui::Frame::new().fill(palette.panel).inner_margin(margin).show(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
+            if state.kind_filter != 0 {
+                let name = KIND_NAMES[state.kind_filter as usize % KIND_NAMES.len()];
+                if chip(ui, name, "Kind filter") {
+                    state.kind_filter = 0;
+                }
+            }
+            if state.label_filter != 0 && chip(ui, lbl_name(labels, state.label_filter), "Label filter") {
+                state.label_filter = 0;
+            }
+            if state.unused_only && chip(ui, "Unused only", "Only items no timeline uses") {
+                state.unused_only = false;
+            }
+            let q = state.search.trim();
+            if !q.is_empty() && chip(ui, &format!("\"{q}\""), "Search") {
+                state.search.clear();
+            }
+            if ui.small_button("Clear filter").on_hover_text("Show everything").clicked() {
+                state.clear_filters();
+            }
+        });
+    });
 }
 
 /// The search field, as wide as the row allows: the magnifier and the clear ✕ sit inside its frame
@@ -1660,7 +1725,7 @@ fn search_box(ui: &mut egui::Ui, state: &mut LibraryState, palette: &Palette) {
 /// Filter ▾: kind, label colour and "Unused only".
 fn filter_menu(ui: &mut egui::Ui, state: &mut LibraryState, labels: &Labels, palette: &Palette) {
     ui.weak("Kind");
-    for (i, n) in ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"].iter().enumerate() {
+    for (i, n) in KIND_NAMES.iter().enumerate() {
         ui.radio_value(&mut state.kind_filter, i as u8, *n);
     }
     ui.separator();
@@ -1675,10 +1740,8 @@ fn filter_menu(ui: &mut egui::Ui, state: &mut LibraryState, labels: &Labels, pal
     }
     ui.separator();
     ui.checkbox(&mut state.unused_only, "Unused only");
-    if filter_active(state) && ui.button("Clear filters").clicked() {
-        state.kind_filter = 0;
-        state.label_filter = 0;
-        state.unused_only = false;
+    if filter_active(state) && ui.button("Clear filter").clicked() {
+        state.clear_filters();
     }
 }
 
@@ -2122,6 +2185,53 @@ impl Tree<'_, '_> {
         self.state.flipped.iter().any(|k| k == key) != dflt
     }
 
+    /// Open / close a tree node from a click. With Shift it takes everything below along: opening marks
+    /// the node so each bin under it opens as it is drawn (`cascade`); closing closes every one now.
+    fn toggle(&mut self, key: &str, dflt: bool, shift: bool) {
+        let open = !self.is_open(key, dflt);
+        self.flip(key);
+        if !shift {
+            self.state.expand_under = None;
+        } else if open {
+            self.state.expand_under = Some(key.to_string());
+        } else {
+            self.collapse_under(key);
+        }
+    }
+
+    /// Below a Shift+click-opened node: open this one too (disk folders only `EXPAND_DISK_DEPTH` deep).
+    fn cascade(&mut self, key: &str, dflt: bool) {
+        let Some(root) = self.state.expand_under.as_deref() else { return };
+        let Some(rest) = key.strip_prefix(root).filter(|r| r.starts_with(['/', '\\'])) else { return };
+        if key.starts_with("d:") && rest.matches(['/', '\\']).count() > EXPAND_DISK_DEPTH {
+            return;
+        }
+        if !self.is_open(key, dflt) {
+            self.flip(key);
+        }
+    }
+
+    /// Shift+click closed `key`: close everything under it, so opening it again shows it tidy.
+    fn collapse_under(&mut self, key: &str) {
+        if self.state.expand_under.as_deref().is_some_and(|r| r.starts_with(key)) {
+            self.state.expand_under = None;
+        }
+        let project = self.project;
+        let linked = |k: &str| k.strip_prefix("f:").is_some_and(|n| project.linked_bin_of(n).is_some());
+        let under = |k: &str| k.len() > key.len() && k.starts_with(key) && matches!(k.as_bytes()[key.len()], b'/' | b'\\');
+        // closed by default (disk folders, linked bins): forget that they were opened
+        self.state.flipped.retain(|k| !(under(k) && (k.starts_with("d:") || linked(k))));
+        // open by default (the project's own bins): mark each one closed
+        if let Some(name) = key.strip_prefix("f:") {
+            for n in folder_tree_names(project) {
+                let k = format!("f:{n}");
+                if n.starts_with(&format!("{name}/")) && !linked(&k) && !self.state.flipped.contains(&k) {
+                    self.state.flipped.push(k);
+                }
+            }
+        }
+    }
+
     fn flip(&mut self, key: &str) {
         match self.state.flipped.iter().position(|k| k == key) {
             Some(i) => {
@@ -2214,13 +2324,18 @@ impl Tree<'_, '_> {
         ui.horizontal(|ui| {
             ui.add_space(indent(0));
             self.folder_icon(ui, Glyph::Star);
-            ui.weak(RichText::new("Smart Bins").small());
-            if !saving
-                && filter_active(self.state)
-                && ui.small_button("Save filter…").on_hover_text("Keep the current search + chips as a bin").clicked()
-            {
-                self.state.new_bin = Some(String::new());
-            }
+            ui.label(RichText::new("Smart Bins").small().strong().color(self.palette.text_dim));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !saving
+                    && filter_active(self.state)
+                    && ui
+                        .small_button("Save filter…")
+                        .on_hover_text("Keep the current search and filters as a Smart Bin")
+                        .clicked()
+                {
+                    self.state.new_bin = Some(String::new());
+                }
+            });
         });
         for (i, b) in bins.iter().enumerate() {
             ui.horizontal(|ui| {
@@ -2254,6 +2369,7 @@ impl Tree<'_, '_> {
                 self.state.new_bin = None;
             }
         }
+        ui.separator(); // the section ends where the bins begin
     }
 
     /// The subfolders of `path` (folders first, like an explorer), then the assets that live in it.
@@ -2509,6 +2625,7 @@ impl Tree<'_, '_> {
         kids: bool,
         badge: Option<(Glyph, egui::Color32, &str)>,
     ) -> egui::Response {
+        self.cascade(key, dflt);
         let sel = self.state.has(&pick);
         let (id, palette, zoom) = (egui::Id::new(("folder", key)), self.palette, self.state.zoom);
         let mut arrow = None;
@@ -2537,14 +2654,15 @@ impl Tree<'_, '_> {
             r
         };
         let on_arrow = arrow.is_some_and(|a| r.clicked() && r.interact_pointer_pos().is_some_and(|p| a.contains(p)));
+        let shift = ui.input(|i| i.modifiers.shift);
         if on_arrow {
             self.rows.push((pick, r.rect));
-            self.flip(key);
+            self.toggle(key, dflt, shift);
         } else {
             self.hit(ui, &r, pick, "");
         }
         if r.double_clicked() {
-            self.flip(key);
+            self.toggle(key, dflt, shift);
         }
         if let Some(a) = arrow {
             self.paint_arrow(ui, a, self.is_open(key, dflt));
@@ -5159,5 +5277,151 @@ mod tests {
             pane.step(&mut state, &mut project, &mut settings, vec![]);
         }
         assert!(!pane.ctx.has_requested_repaint(), "an idle Info window requested a repaint");
+    }
+
+    // ---- fix/library-filter ----
+    /// Draw the Library (twice, so the second frame sees the first's layout) with `input` on the last
+    /// frame; the shapes of that frame.
+    fn lib_frames(
+        ctx: &egui::Context,
+        state: &mut LibraryState,
+        project: &mut Project,
+        input: egui::RawInput,
+    ) -> Vec<egui::epaint::ClippedShape> {
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        let mut shapes = Vec::new();
+        for raw in [tall(1200.0), input, tall(1200.0)] {
+            let out = ctx.run(raw, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| {};
+                    show(ui, state, project, &mut settings, None, &palette, false, &mut undo);
+                });
+            });
+            shapes = out.shapes;
+        }
+        shapes
+    }
+
+    fn filter_project() -> Project {
+        let mut p = Project::new();
+        for (name, kind, folder) in [
+            ("whoosh.mp3", ClipKind::Audio, "Sounds/Whoosh"),
+            ("day1.mp4", ClipKind::Video, "Footage/Day"),
+            ("boom.mp3", ClipKind::Audio, ""),
+        ] {
+            let mut a = asset(0, kind, 3.0);
+            a.path = format!(r"C:\media\{name}");
+            a.folder = folder.into();
+            p.add_asset(a);
+        }
+        p
+    }
+
+    /// The chip row is there exactly while a filter is on.
+    #[test]
+    fn chip_shows_when_a_filter_is_active() {
+        let chips = |mut state: LibraryState| {
+            let mut project = filter_project();
+            let ctx = headless_ctx();
+            lib_frames(&ctx, &mut state, &mut project, tall(1200.0));
+            ctx.data(|d| d.get_temp::<bool>(egui::Id::new("lib_filter_chips"))).unwrap_or(false)
+        };
+        assert!(!chips(LibraryState::default()), "no filter, no chips");
+        assert!(chips(LibraryState { kind_filter: 2, ..Default::default() }));
+        assert!(chips(LibraryState { unused_only: true, ..Default::default() }));
+        assert!(chips(LibraryState { search: "boom".into(), ..Default::default() }));
+    }
+
+    /// A chip's ✕ drops that one filter and leaves the others; "Clear filter" drops them all.
+    #[test]
+    fn a_chip_clears_its_filter_and_clear_filter_clears_all() {
+        let mut project = filter_project();
+        let ctx = headless_ctx();
+        let mut state = LibraryState { kind_filter: 2, unused_only: true, search: "oo".into(), ..Default::default() };
+        let shapes = lib_frames(&ctx, &mut state, &mut project, tall(1200.0));
+        let at = text_rect(&shapes, "Audio  ✕").expect("the kind chip").center();
+        let mut input = tall(1200.0);
+        click_at(&mut input, at);
+        let shapes = lib_frames(&ctx, &mut state, &mut project, input);
+        assert_eq!(state.kind_filter, 0, "the Audio chip cleared the kind");
+        assert!(state.unused_only && state.search == "oo", "the other filters stay");
+        let at = text_rect(&shapes, "Clear filter").expect("the Clear filter button").center();
+        let mut input = tall(1200.0);
+        click_at(&mut input, at);
+        lib_frames(&ctx, &mut state, &mut project, input);
+        assert!(!filter_active(&state), "everything cleared");
+    }
+
+    /// The disclosure arrow of the row whose name is `name`, from the row's layout (indent, arrow, art).
+    fn arrow_of(ctx: &egui::Context, shapes: &[egui::epaint::ClippedShape], name: &str) -> egui::Pos2 {
+        let t = text_rect(shapes, name).unwrap_or_else(|| panic!("{name} not drawn"));
+        let sp = ctx.style().spacing.item_spacing.x;
+        egui::pos2(t.left() - sp - ROW_H * 16.0 / 9.0 - sp - ARROW / 2.0, t.center().y)
+    }
+
+    /// `time`: a click soon after another one is a double-click (which toggles once more) - space them out.
+    fn shift_click(at: egui::Pos2, time: Option<f64>) -> egui::RawInput {
+        let mut input = tall(1200.0);
+        input.time = time;
+        input.modifiers = egui::Modifiers::SHIFT; // modifiers ride on RawInput, not on the events
+        input.events.push(egui::Event::PointerMoved(at));
+        for pressed in [true, false] {
+            input.events.push(egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::SHIFT,
+            });
+        }
+        input
+    }
+
+    /// Shift+click on a bin's arrow closes it and every bin below it; again opens them all.
+    #[test]
+    fn shift_click_collapses_and_expands_everything_below() {
+        let mut project = Project::new();
+        for f in ["Alpha", "Alpha/Beta", "Alpha/Beta/Gamma", "Other"] {
+            project.add_folder(f);
+        }
+        let ctx = headless_ctx();
+        let mut state = LibraryState::default();
+        let shapes = lib_frames(&ctx, &mut state, &mut project, tall(1200.0));
+        assert!(text_rect(&shapes, "Gamma").is_some(), "project bins start open");
+        let at = arrow_of(&ctx, &shapes, "Alpha");
+        let shapes = lib_frames(&ctx, &mut state, &mut project, shift_click(at, None));
+        assert!(text_rect(&shapes, "Beta").is_none(), "Alpha closed");
+        for k in ["f:Alpha", "f:Alpha/Beta", "f:Alpha/Beta/Gamma"] {
+            assert!(state.flipped.iter().any(|f| f == k), "{k} closed too: {:?}", state.flipped);
+        }
+        assert!(!state.flipped.iter().any(|f| f == "f:Other"), "a sibling is left alone");
+        let shapes = lib_frames(&ctx, &mut state, &mut project, shift_click(at, Some(100.0)));
+        assert!(text_rect(&shapes, "Gamma").is_some(), "Shift+click opened every level again");
+        assert!(state.flipped.is_empty(), "back to the defaults: {:?}", state.flipped);
+    }
+
+    /// On a linked bin, Shift+click keeps opening sub-bins as their folders are listed, level by level.
+    #[test]
+    fn shift_click_expands_a_linked_bin_as_it_is_listed() {
+        let t = LinkTmp::new("shift");
+        t.file("Sub/Deeper/clip.mp4");
+        let mut project = Project::new();
+        project.link_bin(&t.0.to_string_lossy(), Some("Linked"));
+        let ctx = headless_ctx();
+        let mut settings = Settings::default();
+        let mut state = LibraryState::default();
+        let shapes = linked_frames(&ctx, &mut state, &mut project, &mut settings);
+        let at = arrow_of(&ctx, &shapes, "Linked");
+        lib_frames(&ctx, &mut state, &mut project, shift_click(at, None));
+        let mut shapes = Vec::new();
+        for _ in 0..50 {
+            shapes = linked_frames(&ctx, &mut state, &mut project, &mut settings);
+            if text_rect(&shapes, "clip.mp4").is_some() {
+                break;
+            }
+        }
+        assert!(text_rect(&shapes, "Deeper").is_some(), "the nested bin opened");
+        assert!(text_rect(&shapes, "clip.mp4").is_some(), "down to the files, read as they opened");
+        assert_eq!(state.expand_under.as_deref(), Some("f:Linked"));
     }
 }
