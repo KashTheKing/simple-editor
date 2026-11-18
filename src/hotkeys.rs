@@ -258,7 +258,7 @@ actions! {
     // ws:pages: Workspace1..6 are the first six pages of `Settings.pages` (default: `layout::PAGES`). A rebind stored
     // under an id now names the page in that slot (workspace_1 was Edit before Media and Cut came).
     Workspace1 => "workspace_1", "Media page", sc(ALT, Key::Num1);
-    Workspace2 => "workspace_2", "Cut page", sc(ALT, Key::Num2);
+    Workspace2 => "workspace_2", "Plan page", sc(ALT, Key::Num2);
     Workspace3 => "workspace_3", "Edit page", sc(ALT, Key::Num3);
     // ws:animator: Animate came after Edit, so Export (Ctrl+E) is the seventh page, without an Alt+N
     Workspace4 => "workspace_4", "Animate page", sc(ALT, Key::Num4);

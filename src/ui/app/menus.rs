@@ -150,7 +150,7 @@ impl App {
     fn file_menu(&mut self, ui: &mut egui::Ui) {
         use Action::*;
         let has_clips = !self.timeline_is_empty();
-        acts(ui, &[Some(NewProject), Some(OpenFile)]);
+        acts(ui, &[Some(NewProject), Some(OpenProject), Some(OpenFile)]);
         self.recent_menu(ui);
         acts(ui, &[Some(Save), Some(SaveProjectAs), None]);
         menu::sub(ui, Some(tools::Glyph::ImportArrow), "Import", |ui| {
