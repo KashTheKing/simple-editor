@@ -57,6 +57,8 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("replace_container_media", "container.replace"),
     ("replace_container_pair", "container.replace"),
     ("make_container", "container.make"),
+    ("replace_slot_media", "container.replace"),
+    ("unlink_slot_media", "container.unlink"),
     ("unmake_container", "container.unmake"),
     ("add_cue", "subtitles.set"),
     ("place_clips", "templates.apply"),

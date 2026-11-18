@@ -18,6 +18,104 @@ pub struct State {
     pub build: BuilderState,
     /// A beat edit waiting for its song's analysis.
     pub pending: Option<Pending>,
+    /// A template dropped on the timeline waiting for its sample footage to download.
+    pub fetching: Option<Fetching>,
+}
+
+/// A template waiting for its footage: where it goes, the download's result, and `fills` when it comes from
+/// Use Template (None = a timeline drop: one sequence clip).
+pub struct Fetching {
+    name: String,
+    at: f64,
+    track: Option<usize>,
+    fills: Option<Vec<Value>>,
+    done: std::sync::mpsc::Receiver<Result<(), String>>,
+}
+
+/// The library files of `d`'s sample footage (catalogue paths), each once.
+fn sample_files(d: &TemplateData) -> Vec<String> {
+    // (a local-only file is never fetched: without it, its clip is left out)
+    let mut v: Vec<String> = d.samples.iter().filter(|s| !s.local).map(|s| format!("{}/{}", d.media, s.file)).collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// A Gallery template dropped on the timeline: ONE sequence clip at `at` whose slots already hold the
+/// template's own footage (downloaded first, in the background, when it is not on this PC yet).
+pub(super) fn drop_nested(app: &mut App, name: &str, at: f64, track: Option<usize>) {
+    fetch_then(app, name, at, track, None);
+}
+
+/// Place template `name` once its sample footage is on this PC (downloaded first when it is not).
+fn fetch_then(app: &mut App, name: &str, at: f64, track: Option<usize>, fills: Option<Vec<Value>>) {
+    let Some(d) = find(app, name) else {
+        return app.toast(format!("Template '{name}' not found"));
+    };
+    let src = crate::engine::library::Source::of(&app.settings);
+    let missing: Vec<String> = sample_files(&d).into_iter().filter(|r| sample_path(&src, r).is_none()).collect();
+    if missing.is_empty() {
+        return match fills {
+            None => place_nested(app, name, at, track),
+            Some(f) => place_now(app, name, at, track, f),
+        };
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let r = missing.iter().try_for_each(|r| crate::engine::library::fetch_file(&src, r).map(|_| ()));
+        let _ = tx.send(r);
+    });
+    app.templates.fetching = Some(Fetching { name: name.to_string(), at, track, fills, done: rx });
+    app.toast("Downloading the template's footage…");
+}
+
+fn place_nested(app: &mut App, name: &str, at: f64, track: Option<usize>) {
+    let args = json!({"name": name, "at": at, "track": track, "nested": true});
+    match app.run_tool_undoable("templates.use", &args) {
+        Ok(_) => gallery_ctl::count_use(app, "Templates", name),
+        Err(e) => app.toast(e),
+    }
+}
+
+/// Your own copy of a template's sample file, used instead of the library's: `<gallery>/templates/media/
+/// <slug>/<file>` (a song you may not share stays on this PC; the shipped templates carry their own).
+pub(super) fn own_sample(rel: &str) -> std::path::PathBuf {
+    let rel = rel.strip_prefix("templates/").unwrap_or(rel);
+    rel.split('/').fold(gallery_mine::root().join(GKind::Template.dir()).join("media"), |p, s| p.join(s))
+}
+
+/// Where sample file `rel` (a catalogue path) is on this PC: your own copy, else the library's. None = not yet.
+fn sample_path(src: &crate::engine::library::Source, rel: &str) -> Option<std::path::PathBuf> {
+    [own_sample(rel), src.local(rel)].into_iter().find(|p| p.is_file())
+}
+
+/// The project assets of `d`'s sample footage (file name -> asset), imported once: a second drop reuses them.
+fn sample_assets(app: &mut App, d: &TemplateData) -> Result<Vec<(String, Id)>, String> {
+    let src = crate::engine::library::Source::of(&app.settings);
+    let mut out: Vec<(String, Id)> = Vec::new();
+    for s in &d.samples {
+        if out.iter().any(|o| o.0 == s.file) {
+            continue;
+        }
+        let rel = format!("{}/{}", d.media, s.file);
+        let path = sample_path(&src, &rel).unwrap_or_else(|| src.local(&rel));
+        let path = path.to_string_lossy().into_owned();
+        let id = match app.project.asset_by_path(&path) {
+            Some(a) => a.id,
+            None => {
+                if s.local && !std::path::Path::new(&path).is_file() {
+                    continue;
+                }
+                if !std::path::Path::new(&path).is_file() {
+                    return Err(format!("{path}: the template's footage is not downloaded"));
+                }
+                let a = crate::media::probe(&path, app.backend()).map_err(|e| format!("{path}: {e}"))?;
+                app.project.add_asset(a)
+            }
+        };
+        out.push((s.file.clone(), id));
+    }
+    Ok(out)
 }
 
 fn done(v: Value) -> Result<ToolOutcome, String> {
@@ -103,7 +201,7 @@ pub(super) fn card_clicked(app: &mut App, name: &str) {
                 secs: c.map_or(0.0, |c| c.duration),
                 fit: s.fit,
                 fill: None,
-                sample: c.is_some_and(|c| c.asset != 0),
+                sample: c.is_some_and(|c| c.asset != 0) || d.samples.iter().any(|x| x.clip == s.clip),
                 hint: s.hint.clone(),
             }
         })
@@ -116,6 +214,10 @@ pub(super) fn card_clicked(app: &mut App, name: &str) {
 /// Place template `name` at `at` (pulled to video track `track` when given) with `fills` (per slot: null,
 /// an asset id or a file path), as one undo step.
 pub(super) fn place(app: &mut App, name: &str, at: f64, track: Option<usize>, fills: Vec<Value>) {
+    fetch_then(app, name, at, track, Some(fills));
+}
+
+fn place_now(app: &mut App, name: &str, at: f64, track: Option<usize>, fills: Vec<Value>) {
     // a beat edit reads its song first (in the background, the first time): placed when that is done
     if let Some(path) = song_path(app, name, &fills) {
         if !crate::engine::visualizer::analysis_ready(&path, 0) {
@@ -278,7 +380,7 @@ fn scope_rows(app: &mut App) {
             label: c.name.clone(),
             kind: c.kind,
             secs: c.duration,
-            slot: c.container && c.kind != ClipKind::Audio,
+            slot: c.container && c.kind == ClipKind::Video,
             slot_name: c.container_label.clone(),
             want: SlotWant::Any,
             fit: SlotFit::Trim,
@@ -358,6 +460,20 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 }
 
 pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
+    if let Some(r) = app.templates.fetching.as_ref().and_then(|f| f.done.try_recv().ok()) {
+        if let Some(f) = app.templates.fetching.take() {
+            match r {
+                Ok(()) => match f.fills {
+                    None => place_nested(app, &f.name, f.at, f.track),
+                    Some(fills) => place_now(app, &f.name, f.at, f.track, fills),
+                },
+                Err(e) => app.toast(format!("Could not download the template's footage: {e}")),
+            }
+        }
+    }
+    if app.templates.fetching.is_some() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(150)); // (polled only while it downloads)
+    }
     if let Some(path) = app.templates.pending.as_ref().map(|p| p.path.clone()) {
         let c = ctx.clone();
         if crate::engine::visualizer::analysis_async(&path, 0, app.backend(), move || c.request_repaint()).is_some() {
@@ -459,12 +575,21 @@ pub const TOOLS: &[ToolDef] = &[
             "track:integer:false:video track index to put its lowest layer on",
             "drop:number:false:a beat edit: the song's drop, song seconds (default: detected)",
             "auto_sounds:boolean:false:fill empty sound-effect slots from your sounds (default true)",
+            "nested:boolean:false:place it as ONE sequence clip whose slots (containers) hold the template's own sample footage, as a Gallery drag does (fills and drop are not used)",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
             let name = req(arg_str(args, "name"), "name")?.to_string();
             let at = arg_f64(args, "at").unwrap_or(app.playhead).max(0.0);
             let d = find(app, &name).ok_or_else(|| format!("no template '{name}'"))?;
+            if arg_bool(args, "nested").unwrap_or(false) {
+                let media = sample_assets(app, &d)?;
+                let track = arg_u64(args, "track").map(|t| t as usize);
+                let id = templates::place_nested(&mut app.project, &name, d, at, track, &media).ok_or("could not place the template here")?;
+                let seq = app.project.clip(id).map_or(0, |c| c.sequence);
+                app.selection = app.project.expand_links(&[id]);
+                return done(json!({"ok": true, "clip_id": id, "sequence": seq, "media": media.len()}));
+            }
             let slots = d.slot_list();
             let sound = |i: usize| slots.get(i).is_some_and(|s| s.want == SlotWant::Audio);
             let mut fills: Vec<(usize, Id)> = Vec::new();
@@ -494,6 +619,18 @@ pub const TOOLS: &[ToolDef] = &[
                     }
                 }
             }
+            // the template's own media: its fixed parts, and every slot nothing was given for
+            let mut d = d;
+            if !d.samples.is_empty() {
+                let media = sample_assets(app, &d)?;
+                templates::fill_fixed(&mut d, &app.project, &media);
+                for (i, s) in slots.iter().enumerate() {
+                    let sample = d.samples.iter().find(|x| x.clip == s.clip).and_then(|x| media.iter().find(|m| m.0 == x.file));
+                    if let (false, Some(m)) = (fills.iter().any(|f| f.0 == i), sample) {
+                        fills.push((i, m.1));
+                    }
+                }
+            }
             let song_slot = d.sync.as_ref().and_then(|sy| slots.iter().position(|s| s.clip == sy.song));
             let song = match fills.iter().find(|f| Some(f.0) == song_slot) {
                 Some(&(_, asset)) => Some(song_beat(app, asset, arg_f64(args, "drop"), d.sync.as_ref().map_or(0.0, |s| s.drop))?),
@@ -517,7 +654,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "templates.build",
-        desc: "Save clips of the timeline as a template in your Gallery (what the Template Builder does). slots: [{clip_id, name?, wants?: any|image|video, fit?: trim|stretch}] in fill order; placeholders: clip ids whose footage is left out (each becomes an empty slot; a sound clip is dropped). Everything else rides along as it is. Replaces a template of the same name.",
+        desc: "Save clips of the timeline as a template in your Gallery (what the Template Builder does). Only video clips can be slots. slots: [{clip_id, name?, wants?: any|image|video, fit?: trim|stretch}] in fill order; placeholders: clip ids whose footage is left out (a video clip becomes an empty slot; a sound clip is dropped). Everything else rides along as it is. Replaces a template of the same name.",
         args: &[
             "name:string:true:template name",
             "clip_ids:array:false:default: the selection, or the whole timeline when nothing is selected",
@@ -538,6 +675,9 @@ pub const TOOLS: &[ToolDef] = &[
             let mut parts: Vec<Part> = Vec::new();
             for s in args.get("slots").and_then(Value::as_array).into_iter().flatten() {
                 let clip = req(arg_u64(s, "clip_id"), "slots[].clip_id")?;
+                if !app.project.clip(clip).is_some_and(|c| c.kind == ClipKind::Video) {
+                    return Err(format!("clip {clip}: only a video clip can be a slot (sound, music and pictures stay the template's own)"));
+                }
                 let want = match arg_str(s, "wants") {
                     Some(w) => SlotWant::parse(w).ok_or("wants: any | image | video")?,
                     None => SlotWant::Any,

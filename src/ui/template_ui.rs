@@ -151,7 +151,7 @@ pub fn use_window(ctx: &egui::Context, st: &mut UseState, selected: usize) -> Op
 pub struct BuildRow {
     pub clip: Id,
     pub label: String,
-    /// Video / Image, or Audio (sound can ride along or be left out, never a slot).
+    /// Video (can be a slot), Image (always the template's own), or Audio (rides along or is left out).
     pub kind: ClipKind,
     pub secs: f64,
     pub slot: bool,
@@ -260,6 +260,8 @@ pub fn builder_body(ui: &mut egui::Ui, st: &mut BuilderState) -> Option<BuildAct
     for i in 0..st.rows.len() {
         let r = &st.rows[i];
         let sound = r.kind == ClipKind::Audio;
+        // only a video clip can be a slot: pictures, sound and music stay the template's own
+        let video = r.kind == ClipKind::Video;
         let slot = if r.slot { "Slot" } else if sound { "Sound" } else { "Fixed" };
         let footage = match (r.include, sound) {
             (true, _) => "Included",
@@ -274,7 +276,7 @@ pub fn builder_body(ui: &mut egui::Ui, st: &mut BuilderState) -> Option<BuildAct
             &RowSpec {
                 key: r.clip,
                 label: &label,
-                open: (!sound).then_some(r.open),
+                open: video.then_some(r.open),
                 values: &[slot, footage, &len],
                 ..Default::default()
             },
@@ -284,7 +286,7 @@ pub fn builder_body(ui: &mut egui::Ui, st: &mut BuilderState) -> Option<BuildAct
             r.open = !r.open;
         }
         match resp.ctrl {
-            Some(0) if !sound => {
+            Some(0) if video => {
                 r.slot = !r.slot;
                 r.open = r.slot;
                 // (a placeholder has to be a slot: turning the slot off brings the footage back)
@@ -293,9 +295,9 @@ pub fn builder_body(ui: &mut egui::Ui, st: &mut BuilderState) -> Option<BuildAct
                     r.slot_name = r.label.clone();
                 }
             }
-            Some(1) => {
+            Some(1) if video || sound => {
                 r.include = !r.include;
-                if !r.include && !sound {
+                if !r.include && video {
                     r.slot = true;
                     if r.slot_name.is_empty() {
                         r.slot_name = r.label.clone();

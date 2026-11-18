@@ -21,8 +21,25 @@ Templates live in **Gallery ▸ Templates**: the built-in ones first, then yours
    - **…** on a row picks a file from disk; **✕** empties the slot.
 4. **Place** puts the finished sequence at the playhead as **one undo step**.
 
-You can also drag a template card onto the timeline: it lands where you drop it, with the Media Library's
-selection in its slots.
+### Drag it onto the timeline
+
+The quickest way: drag a template card onto the timeline. It lands where you drop it as **one sequence clip**
+(one undo step, no window). Double-click it to go inside: every slot is a container, and the beat edits
+(Velocity Edit, Hype Montage, Meme Cut, Wasted) come with their own sample footage already in them. Their
+song and sound effects are fixed parts of the template: nothing asks you for them. Only the video shots are
+slots.
+
+**Wasted** turns your shot into the game's WASTED moment: grey, a slight slow-mo and a slow zoom under a
+dark band with the word. The word uses the **Pricedown** font when it is installed (it is free to use in
+your videos, but its licence does not let the app include it), otherwise Impact. For the sting, put your
+own sound at `%APPDATA%\SimpleEditor\gallery\templates\media\wasted\wasted.m4a`, with the sting 0.6 s in. That footage is trimmed to what the template uses, is fetched
+from the online library the first time you drop it, and goes into a Library bin of its own,
+**Templates/&lt;name&gt;**. Dropping the template again reuses that bin.
+
+To swap a slot's footage, drop a Library clip on it (on the timeline, or on the **Media** row in the
+Inspector). The slot keeps its in point, speed, effects and timing. A shot the template uses more than once
+is **linked**: replacing it once replaces it everywhere. The Inspector shows how many slots share it;
+**Unlink** gives one slot its own footage.
 
 A slot you leave empty stays on the timeline as a placeholder with a coloured card under it. Fill it later
 with right-click ▸ **Replace Container Media…**.
@@ -64,7 +81,8 @@ builder on the selected clips, or on the whole timeline when nothing is selected
 - **From**: the selection or the timeline.
 - **Picture at**: the frame shown on the template's Gallery card. Moving it moves the playhead so you see it.
 - **Footage**: one row per footage clip.
-  - **▣ Slot** makes the clip a slot. Open the row to give the slot a name, say what it wants and choose
+  - **▣ Slot** makes the clip a slot. Only video clips can be slots: pictures, sound and music stay part of
+    the template. Open the row to give the slot a name, say what it wants and choose
     **Trim footage** or **Stretch template**. The order of the rows is the order slots are filled in:
     drag a row's handle, or use **▲ ▼** (Alt+Up / Alt+Down).
   - **🎞 Footage** chooses whether the clip's footage is **Included** in the template or replaced by a
@@ -77,8 +95,10 @@ builder on the selected clips, or on the whole timeline when nothing is selected
 
 Right-click one of your template cards:
 
-- **Export with footage…** writes one `.setemplate` file holding the template and the footage it includes.
-- **Export without footage…** writes the template only. Every footage clip becomes an empty slot.
+- **Export with footage…** writes one `.setemplate` file holding the template and the footage it includes,
+  each file trimmed to the part the template uses.
+- **Export without footage…** leaves the video footage out: every video clip becomes an empty slot. Its
+  sound, music and pictures still ride along, trimmed to what the template uses.
 
 The file never contains a folder path of your PC, only file names.
 

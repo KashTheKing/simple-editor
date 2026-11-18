@@ -340,6 +340,12 @@ pub fn fetch_thumb(src: &Source, rel: &str) -> Result<PathBuf, String> {
     fetch(src, rel, true).map(|_| src.local(rel))
 }
 
+/// Catalogue file `rel` on this PC (downloaded into the cache once, then reused): a template's sample
+/// footage. Blocking: background threads only when it is not local yet.
+pub fn fetch_file(src: &Source, rel: &str) -> Result<PathBuf, String> {
+    fetch(src, rel, true).map(|_| src.local(rel))
+}
+
 /// Every installed item, as full ids.
 pub fn installed_ids() -> std::collections::HashSet<String> {
     installed_ids_in(&root())

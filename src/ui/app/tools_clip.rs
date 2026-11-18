@@ -252,16 +252,24 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 let clip_id = req(arg_u64(args, "clip_id"), "clip_id")?;
                 let asset_id = req(arg_u64(args, "asset_id"), "asset_id")?;
                 let pair = arg_bool(args, "pair").unwrap_or(false);
-                let ok = if pair {
-                    app.project.replace_container_pair(clip_id, asset_id)
+                let linked = arg_bool(args, "linked").unwrap_or(true) && app.project.clip(clip_id).is_some_and(|c| c.media_link != 0);
+                let n = if pair || linked {
+                    app.project.replace_slot_media(clip_id, asset_id, linked)
                 } else {
-                    app.project.replace_container_media(clip_id, asset_id)
+                    app.project.replace_container_media(clip_id, asset_id) as usize
                 };
-                if ok {
-                    Ok(json!({"ok": true}))
+                if n > 0 {
+                    Ok(json!({"ok": true, "slots": n}))
                 } else {
                     Err("failed to replace (clip not a container or asset not found)".into())
                 }
+            }
+            "container.unlink" => {
+                let clip_id = req(arg_u64(args, "clip_id"), "clip_id")?;
+                if !app.project.unlink_slot_media(clip_id) {
+                    return Err("that slot is not linked to other slots".into());
+                }
+                Ok(json!({"ok": true}))
             }
             "container.make" => {
                 let ids = req(arg_ids(args, "clip_ids"), "clip_ids")?;
@@ -290,6 +298,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                             "start": c.start,
                             "duration": c.duration,
                             "link": c.link,
+                            "media_link": c.media_link,
                         })
                     })
                     .collect();
@@ -333,7 +342,8 @@ pub const TOOLS: &[ToolDef] = &[
     row!("audio.route", ToolKind::Mutate, "Send a clip, a track or a bus into a bus (bus 0 = Main / inherit).", &["bus:integer:true:destination bus", "clip_id:integer:false:", "track:integer:false:track index", "from_bus:integer:false:"]),
     row!("shapes.add", ToolKind::Mutate, "Add a vector shape clip.", &["kind:string:false:Rect|Ellipse|Triangle|Polygon|Star|Line|Arrow|Draw", "at:number:true:", "duration:number:false:default 5", "fill:array:false:[r,g,b,a]", "stroke:array:false:[r,g,b,a]", "stroke_width:number:false:", "sides:integer:false:", "width:number:false:project px", "height:number:false:project px"]),
     row!("container.add", ToolKind::Mutate, "Add a container clip pair (video slot + audio slot) at a time.", &["at:number:true:timeline seconds", "duration:number:false:default 5", "label:string:false:slot label"]),
-    row!("container.replace", ToolKind::Mutate, "Replace media in a container clip (effects, transforms, keyframes preserved).", &["clip_id:integer:true:", "asset_id:integer:true:", "pair:boolean:false:also replace linked audio container"]),
+    row!("container.replace", ToolKind::Mutate, "Replace media in a container clip (in point, speed, effects, transforms, keyframes preserved); slots that share its media link change with it.", &["clip_id:integer:true:", "asset_id:integer:true:", "pair:boolean:false:also replace linked audio container", "linked:boolean:false:also every slot sharing its media link (default true)"]),
+    row!("container.unlink", ToolKind::Mutate, "Give a slot its own media: replacing it no longer changes the slots it shared footage with.", &["clip_id:integer:true:"]),
     row!("container.make", ToolKind::Mutate, "Convert clips to containers (slots).", &["clip_ids:array:true:"]),
     row!("container.unmake", ToolKind::Mutate, "Remove container flag from clips.", &["clip_ids:array:true:"]),
     row!("container.list", ToolKind::Read, "List all container clips on the timeline.", &[]),

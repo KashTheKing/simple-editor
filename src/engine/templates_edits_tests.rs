@@ -2,7 +2,8 @@
 
 use super::*;
 
-const EDITS: [&str; 4] = ["Phonk Synced Edit", "Velocity Edit", "Hype Montage", "Meme Cut"];
+/// The shipped beat edits (the phonk edit is yours only: `phonk_edit`).
+const EDITS: [&str; 3] = ["Velocity Edit", "Hype Montage", "Meme Cut"];
 
 fn asset(path: &str, kind: ClipKind, dur: f64, streams: usize) -> Asset {
     Asset {
@@ -30,6 +31,21 @@ fn asset(path: &str, kind: ClipKind, dur: f64, streams: usize) -> Asset {
     }
 }
 
+/// The edit with its song and sound made slots again (the engine still fits a template to a song given in
+/// a sound slot; the built-ins bring their own).
+fn with_sound_slots(mut d: TemplateData) -> TemplateData {
+    let song = d.sync.as_ref().unwrap().song;
+    d.set_slot(song, "Song", SlotWant::Audio, SlotFit::Trim);
+    let s = d.slots.pop().unwrap();
+    d.slots.insert(0, s);
+    if let Some(w) = d.clips.iter().find(|c| c.name == "Wasted sound").map(|c| c.id) {
+        d.set_slot(w, "Wasted sound", SlotWant::Audio, SlotFit::Trim);
+        let s = d.slots.last_mut().unwrap();
+        (s.hint, s.hit) = ("wasted".into(), 0.6);
+    }
+    d
+}
+
 /// Seconds `t` is on the grid of `period` from `offset`.
 fn on_grid(t: f64, offset: f64, period: f64) -> bool {
     let k = (t - offset) / period;
@@ -45,8 +61,10 @@ fn edit_templates_cut_on_the_beat_and_never_stand_still() {
         let sy = d.sync.clone().unwrap_or_else(|| panic!("{name}: a beat edit"));
         assert_eq!(sy.bpm, BPM);
         let slots = d.slot_list();
-        assert_eq!((slots[0].name.as_str(), slots[0].want, slots[0].clip), ("Song", SlotWant::Audio, sy.song), "{name}: the song first");
+        // only the video shots are slots: the song (and phonk's sound and WASTED shot) are the template's own
+        assert!(slots.iter().all(|s| s.want == SlotWant::Video && d.clip(s.clip).unwrap().kind == ClipKind::Video), "{name}: a slot that is not a video shot");
         let song = d.clip(sy.song).unwrap();
+        assert!(!song.container && song.kind == ClipKind::Audio, "{name}: the song is fixed");
         assert!((song.duration - d.duration()).abs() < 1e-9, "{name}: the song runs under all of it");
         assert!(on_grid(sy.drop, 0.0, BEAT), "{name}: the drop is on a beat");
         let shots: Vec<&Clip> = slots.iter().filter(|s| s.want != SlotWant::Audio).map(|s| d.clip(s.clip).unwrap()).collect();
@@ -75,7 +93,7 @@ fn edit_templates_cut_on_the_beat_and_never_stand_still() {
 
 #[test]
 fn the_phonk_edit_muffles_until_the_drop_then_wastes_the_shot() {
-    let d = builtin("Phonk Synced Edit", 1920, 1080).unwrap();
+    let d = phonk_edit(1920, 1080);
     let sy = d.sync.clone().unwrap();
     let song = d.clip(sy.song).unwrap();
     let bus = d.buses.iter().find(|b| b.id == song.bus).expect("the song plays through its own bus");
@@ -83,18 +101,20 @@ fn the_phonk_edit_muffles_until_the_drop_then_wastes_the_shot() {
     assert!(lp.at(0, 1.0) < 600.0 && lp.at(0, sy.drop - 0.6) < 600.0, "muffled before the drop");
     assert!(lp.at(0, sy.drop + 0.01) >= 15000.0 && lp.at(0, d.duration() - 0.1) >= 15000.0, "open from the drop on");
     // the wasted shot: grey and slow from the hit, its card on top, the real sound's hit on the drop
-    let w = d.clips.iter().find(|c| c.container_label == "Wasted shot").unwrap();
+    let w = d.clips.iter().find(|c| c.name == "Wasted shot").unwrap();
+    assert!(!w.container && !d.slot_list().iter().any(|s| s.clip == w.id), "the WASTED shot is the template's own");
     let hit = sy.drop - w.start;
     assert!(w.start < sy.drop && w.end() > sy.drop + 1.0);
-    assert!(w.speed_curve.at(hit + 0.3) < 0.3 && w.speed_curve.at(hit - 0.2) > 0.9, "slow-mo from the drop");
+    assert!(w.speed_curve.at(hit + 0.3) < 0.7 && w.speed_curve.at(hit - 0.2) > 0.9, "a slight slow-mo from the drop");
     let grey = w.effects.iter().find(|e| e.kind == EffectKind::Color).unwrap();
-    assert!((grey.start - hit).abs() < 1e-9 && grey.params[2].value < 0.2, "desaturated from the drop");
+    assert!((grey.start - hit).abs() < 1e-9 && grey.params[2].at(hit + 0.3) < 0.01 && grey.params[2].at(hit) > 0.99, "drained to grey on the drop");
     let word = d.clips.iter().find(|c| c.text.as_ref().is_some_and(|t| t.text == "wasted")).expect("the WASTED card is a text clip");
     assert!((word.start - sy.drop).abs() < 1e-9);
-    let sfx = d.slot_list().into_iter().find(|s| s.name == "Wasted sound").unwrap();
-    assert_eq!((sfx.want, sfx.hint.as_str()), (SlotWant::Audio, "wasted"));
-    let c = d.clip(sfx.clip).unwrap();
-    assert!((c.start + sfx.hit - sy.drop).abs() < 1e-9, "the sound's hit lands on the drop");
+    assert!(!d.slot_list().iter().any(|s| d.clip(s.clip).is_some_and(|c| c.kind == ClipKind::Audio)), "no sound slot");
+    let c = d.clips.iter().find(|c| c.name == "Wasted sound").unwrap();
+    assert!(!c.container && c.kind == ClipKind::Audio, "the wasted sound is the template's own");
+    // (its file is cut so the sting is 0.6 s in)
+    assert!((c.start + 0.6 - sy.drop).abs() < 1e-9, "the sound's hit lands on the drop");
     // after the card: a flash into the next shot
     let next = d
         .clips
@@ -109,7 +129,7 @@ fn the_phonk_edit_muffles_until_the_drop_then_wastes_the_shot() {
 #[test]
 fn a_song_retimes_the_edit_onto_its_grid_and_drop() {
     for (bpm, offset, drop) in [(140.0, 0.31, 30.0), (70.0, 0.31, 30.0), (95.0, 0.1, 48.2), (128.0, 0.0, 2.0)] {
-        let mut d = builtin("Phonk Synced Edit", 1920, 1080).unwrap();
+        let mut d = phonk_edit(1920, 1080);
         let src_in = d.fit_to_song(&SongBeat { bpm, offset, drop, len: 180.0 }).unwrap();
         let sy = d.sync.clone().unwrap();
         // the tempo the edit cuts at is the song's, or its double / half
@@ -125,7 +145,7 @@ fn a_song_retimes_the_edit_onto_its_grid_and_drop() {
         }
     }
     // the low-pass opens on the retimed drop
-    let mut d = builtin("Phonk Synced Edit", 1920, 1080).unwrap();
+    let mut d = phonk_edit(1920, 1080);
     d.fit_to_song(&SongBeat { bpm: 150.0, offset: 0.0, drop: 40.0, len: 120.0 });
     let drop = d.sync.as_ref().unwrap().drop;
     let lp = &d.buses[0].filters[0];
@@ -138,7 +158,7 @@ fn placing_a_beat_edit_fills_the_song_the_sound_and_every_shot() {
     let song = p.add_asset(asset("C:/phonk.mp3", ClipKind::Audio, 120.0, 1));
     let sfx = p.add_asset(asset("C:/wasted-green-screen.mp4", ClipKind::Video, 11.0, 1));
     let clips: Vec<Id> = (0..3).map(|i| p.add_asset(asset(&format!("C:/game{i}.mp4"), ClipKind::Video, 60.0, 1))).collect();
-    let d = builtin("Phonk Synced Edit", p.width, p.height).unwrap();
+    let d = with_sound_slots(phonk_edit(p.width, p.height));
     let slots = d.slot_list();
     let wants: Vec<SlotWant> = slots.iter().map(|s| s.want).collect();
     let mut media: Vec<(Id, bool)> = clips.iter().map(|&c| (c, false)).collect();
@@ -311,4 +331,191 @@ fn retiming_keeps_every_key_inside_its_clip() {
             assert!(c.effects.iter().all(|e| e.start <= c.duration + 1e-9));
         }
     }
+}
+
+// ---- a template dropped on the timeline: one sequence clip of containers holding its own footage ----
+
+/// The sample footage of `d` as project assets (sounds for .m4a, silent video otherwise), file -> asset.
+fn sample_media(p: &mut Project, d: &TemplateData) -> Vec<(String, Id)> {
+    let mut out: Vec<(String, Id)> = Vec::new();
+    for s in &d.samples {
+        if out.iter().any(|o| o.0 == s.file) {
+            continue;
+        }
+        let path = format!("C:/lib/{}/{}", d.media, s.file);
+        let a = if s.file.ends_with(".m4a") { asset(&path, ClipKind::Audio, 30.0, 1) } else { asset(&path, ClipKind::Video, 6.0, 0) };
+        out.push((s.file.clone(), p.add_asset(a)));
+    }
+    out
+}
+
+#[test]
+fn every_edit_template_brings_footage_for_every_slot() {
+    for name in EDITS.into_iter().chain(["Wasted"]) {
+        let d = builtin(name, 1920, 1080).unwrap();
+        assert!(d.media.starts_with("templates/"), "{name}: {}", d.media);
+        for s in d.slot_list() {
+            assert!(d.samples.iter().any(|x| x.clip == s.clip), "{name}/{}: no sample footage", s.name);
+        }
+        // the fixed parts bring their media too: nothing to ask for
+        for c in d.clips.iter().filter(|c| !c.container && matches!(c.kind, ClipKind::Video | ClipKind::Audio)) {
+            assert!(d.samples.iter().any(|x| x.clip == c.id), "{name}/{}: a fixed part without its media", c.name);
+        }
+        // the shipped files are in the content library (not in the exe)
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("library").join(&d.media);
+        for x in d.samples.iter().filter(|x| !x.local) {
+            assert!(dir.join(&x.file).is_file(), "{name}: {} is missing from {}", x.file, dir.display());
+        }
+    }
+    // the phonk edit is not shipped: nothing of it is in the library
+    assert!(!BUILTIN_NAMES.iter().any(|n| n.contains("Phonk")));
+    let phonk = phonk_edit(1920, 1080);
+    assert!(!std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("library").join(&phonk.media).exists());
+    {
+    }
+}
+
+#[test]
+fn a_dropped_template_is_one_sequence_clip_of_filled_containers() {
+    let mut p = Project::new();
+    let d = phonk_edit(1920, 1080);
+    let media = sample_media(&mut p, &d);
+    let id = place_nested(&mut p, "Phonk Synced Edit", d.clone(), 3.0, None, &media).unwrap();
+    // on the timeline: the sequence clip (its sound half linked to it) and nothing else
+    let main: Vec<&Clip> = p.all_clips().map(|(_, c)| c).collect();
+    assert!(main.iter().all(|c| c.kind == ClipKind::Sequence), "only the sequence clip lands on the timeline");
+    assert_eq!(main.iter().filter(|c| p.track_of(c.id).is_some_and(|t| p.tracks[t].kind == TrackKind::Video)).count(), 1);
+    let c = p.clip(id).unwrap();
+    assert_eq!((c.start, c.kind), (3.0, ClipKind::Sequence));
+    assert!((c.duration - d.duration()).abs() < 1e-6, "as long as the template");
+    // inside: one container per slot, each with its footage; no placeholder cards are left
+    let seq = c.sequence;
+    assert!(p.open_sequence(seq));
+    let slots = d.slot_list();
+    let inside: Vec<&Clip> = p.all_clips().map(|(_, c)| c).filter(|c| c.container).collect();
+    assert_eq!(inside.iter().filter(|c| c.kind != ClipKind::Audio).count(), slots.len());
+    assert!(inside.iter().all(|c| c.asset != 0 && c.kind == ClipKind::Video), "every slot is a video shot holding footage");
+    // the fixed parts are filled and locked: the WASTED shot, its sound, the song
+    let fixed = |n: &str| p.all_clips().map(|(_, c)| c).find(|c| c.name == n).unwrap_or_else(|| panic!("{n}"));
+    let path = |c: &Clip| p.asset(c.asset).map(|a| a.path.clone()).unwrap_or_default();
+    let (wasted, sound, song) = (fixed("Wasted shot"), fixed("Wasted sound"), fixed("Song"));
+    assert_eq!(path(wasted), format!("C:/lib/{}/hit-by-truck.mp4", d.media));
+    assert_eq!(path(sound), format!("C:/lib/{}/wasted.m4a", d.media));
+    assert_eq!(path(song), format!("C:/lib/{}/song.m4a", d.media));
+    assert!([wasted, sound, song].iter().all(|c| !c.container && c.src_in == 0.0), "fixed, from the start of their trimmed file");
+    assert!(!p.all_clips().any(|(_, c)| c.kind == ClipKind::Shape && c.name.ends_with(" card")), "no empty-slot cards");
+    assert!(p.tracks.iter().all(|t| !t.clips.is_empty()), "no empty track where the cards were");
+    // the media is a bin of its own
+    assert!(media.iter().all(|m| p.asset(m.1).unwrap().folder == "Templates/Phonk Synced Edit"));
+}
+
+#[test]
+fn reused_footage_is_linked_and_replaces_together() {
+    let mut p = Project::new();
+    let d = builtin("Meme Cut", 1920, 1080).unwrap();
+    let media = sample_media(&mut p, &d);
+    let id = place_nested(&mut p, "Meme Cut", d, 0.0, None, &media).unwrap();
+    let seq = p.clip(id).unwrap().sequence;
+    p.open_sequence(seq);
+    let shots = |p: &Project| -> Vec<Clip> {
+        let mut v: Vec<Clip> = p.all_clips().map(|(_, c)| c.clone()).filter(|c| c.container && c.kind != ClipKind::Audio).collect();
+        v.sort_by(|a, b| a.start.total_cmp(&b.start));
+        v
+    };
+    let before = shots(&p);
+    // six shots from three files: two slots per file, sharing one media link, each a different stretch
+    let first = before[0].clone();
+    let twins: Vec<&Clip> = before.iter().filter(|c| c.asset == first.asset).collect();
+    assert_eq!(twins.len(), 2);
+    assert!(first.media_link != 0 && twins.iter().all(|c| c.media_link == first.media_link));
+    assert!(before.iter().all(|c| c.asset == first.asset || c.media_link != first.media_link), "other footage is not in the link");
+    assert!((twins[0].src_in - twins[1].src_in).abs() > 1e-6, "a reused shot plays a different stretch in each slot");
+    // replacing it once changes both; each keeps its in point, speed, effects and timing
+    let mine = p.add_asset(asset("C:/mine/long.mp4", ClipKind::Video, 60.0, 0));
+    assert_eq!(p.replace_slot_media(first.id, mine, true), 2);
+    let after = shots(&p);
+    for (b, a) in before.iter().zip(&after) {
+        if b.media_link == first.media_link {
+            assert_eq!(a.asset, mine);
+            assert_eq!((a.src_in, a.speed, a.start, a.duration, a.effects.len(), a.blocks.len()), (b.src_in, b.speed, b.start, b.duration, b.effects.len(), b.blocks.len()));
+        } else {
+            assert_eq!(a.asset, b.asset, "{}: not linked, untouched", b.name);
+        }
+    }
+    // unlinked, a slot changes alone
+    assert!(p.unlink_slot_media(first.id));
+    let other = p.add_asset(asset("C:/mine/other.mp4", ClipKind::Video, 60.0, 0));
+    assert_eq!(p.replace_slot_media(first.id, other, true), 1);
+    let twin = twins.iter().find(|c| c.id != first.id).unwrap().id;
+    assert_eq!(p.clip(twin).unwrap().asset, mine);
+}
+
+#[test]
+fn a_second_drop_reuses_the_template_bin() {
+    let mut p = Project::new();
+    let d = builtin("Velocity Edit", 1920, 1080).unwrap();
+    let media = sample_media(&mut p, &d);
+    let a = place_nested(&mut p, "Velocity Edit", d.clone(), 0.0, None, &media).unwrap();
+    let n = p.assets.len();
+    // the app finds each file by its path the second time: the same assets
+    let again = sample_media(&mut p, &d);
+    assert_eq!(again, media);
+    let b = place_nested(&mut p, "Velocity Edit", d, 20.0, None, &again).unwrap();
+    assert_eq!(p.assets.len(), n, "no duplicate media");
+    let (sa, sb) = (p.clip(a).unwrap().sequence, p.clip(b).unwrap().sequence);
+    assert_ne!(sa, sb, "each drop is its own sequence");
+    assert_eq!(p.sequence(sb).unwrap().name, "Velocity Edit 2");
+    let bins: std::collections::HashSet<&str> = p.assets.iter().map(|a| a.folder.as_str()).collect();
+    assert_eq!(bins.into_iter().collect::<Vec<_>>(), vec!["Templates/Velocity Edit"]);
+}
+
+#[test]
+fn the_wasted_moment_looks_like_the_game() {
+    let d = builtin("Wasted", 1920, 1080).unwrap();
+    assert!(d.sync.is_none() && !d.clips.iter().any(|c| c.audio_role == AudioRole::Music), "no music: it ships");
+    let slots = d.slot_list();
+    assert_eq!(slots.len(), 1, "one slot: your shot");
+    let shot = d.clip(slots[0].clip).unwrap();
+    let hit = 1.5;
+    // under the card: grey in a quarter second, a slight slow-mo, a slow zoom in
+    let grey = shot.effects.iter().find(|e| e.kind == EffectKind::Color).unwrap();
+    assert!(grey.params[2].at(hit - 0.1) > 0.99 && grey.params[2].at(hit + 0.25) < 0.01);
+    let speed = shot.speed_curve.at(hit + 1.0);
+    assert!(speed > 0.4 && speed < 0.7, "a slight slow-mo, not a freeze: {speed}");
+    assert!(shot.scale.at(shot.duration - 0.05) > shot.scale.at(hit + 0.1) * 1.1, "it keeps zooming in");
+    // the card: a dark band about a fifth of the frame, tilted a degree, the lowercase word in the game's
+    // font (Pricedown when installed, else Impact), red with a dark outline, white later
+    let band = d.clips.iter().find(|c| c.name == "Wasted band").unwrap();
+    let sh = band.shape.as_ref().unwrap();
+    assert!((sh.h.value * 2.0 / 1080.0 - 0.21).abs() < 0.01 && sh.w.value * 2.0 >= 1920.0 && sh.fill[3] > 180);
+    assert!((band.start - hit).abs() < 1e-9 && (band.rotation.value + 1.0).abs() < 1e-9);
+    let words: Vec<&Clip> = d.clips.iter().filter(|c| c.text.as_ref().is_some_and(|t| t.text == "wasted")).collect();
+    assert_eq!(words.len(), 2);
+    let (red, white) = (words[0].text.as_ref().unwrap(), words[1].text.as_ref().unwrap());
+    assert!(red.font.starts_with("Pricedown") && red.font.contains("Impact"));
+    assert_eq!((red.color, white.color), ([245, 0, 4, 255], [255, 255, 255, 255]));
+    assert!(red.outline_color[..3] == [0, 0, 0] && red.outline_width.value > 0.0);
+    assert!(words[1].start > words[0].start + 1.0, "it turns white later");
+    // the sting is the user's own sound: never shipped, and left out without it
+    let sting = d.samples.iter().find(|s| d.clip(s.clip).is_some_and(|c| c.name == "Wasted sound")).unwrap();
+    assert!(sting.local);
+    let mut p = Project::new();
+    let a = p.add_asset(asset("C:/lib/templates/wasted/hit-by-truck.mp4", ClipKind::Video, 6.0, 0));
+    let mut d2 = d.clone();
+    fill_fixed(&mut d2, &p, &[("hit-by-truck.mp4".into(), a)]);
+    assert!(!d2.clips.iter().any(|c| c.name == "Wasted sound"), "no sound file: no empty clip");
+    assert_eq!(d2.layers.len(), d2.clips.len());
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("library").join(&d.media);
+    assert!(!dir.join("wasted.m4a").exists(), "the game's sound is not in the library");
+}
+
+/// Save the phonk edit to a Gallery as one of your own templates (its media in your own folder, never
+/// shipped): `SE_GALLERY=<gallery folder> cargo test save_local_phonk -- --ignored`.
+#[test]
+#[ignore]
+fn save_local_phonk() {
+    let Ok(root) = std::env::var("SE_GALLERY") else { return };
+    let d = phonk_edit(1920, 1080);
+    let item = gallery::save(std::path::Path::new(&root), gallery::Kind::Template, "Phonk Synced Edit", &["phonk".into(), "beat edit".into()], serde_json::to_value(&d).unwrap(), gallery::Collide::Replace).unwrap();
+    println!("saved {}", item.path.display());
 }

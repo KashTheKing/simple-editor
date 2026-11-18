@@ -146,9 +146,8 @@ pub(super) fn execute(app: &mut App, payload: DragPayload, aim: Option<Aim>) {
             library_ctl::click(app, &id, target); // installs first when it must, then does what a click does
         }
         (DragPayload::Template(name), Aim::Place { track, t }) => {
-            // ws:animator-templates: with its layers, transitions and the library's selection in its slots
-            let fills = template_ctl::library_fills(app, &name);
-            template_ctl::place(app, &name, t, track, fills);
+            // ws:animator-templates: one sequence clip, its slots already holding the template's own footage
+            template_ctl::drop_nested(app, &name, t, track);
         }
         // Titles: the click's own post-step too (its Customize rows)
         (DragPayload::GalleryCard(GalleryTab::Titles, name), Aim::Place { track, t }) => {

@@ -836,6 +836,16 @@ impl App {
         // Color section's Auto Colour / Match: both need a live GPU-rendered frame, which only App can
         // produce (color_ui.rs itself only has `&mut Clip`) - reuse color-engine's own tools rather than
         // recomputing FrameStats here.
+        // a slot's Media row: a Library clip dropped on it, or Unlink
+        if let Some((id, asset)) = inspector::take_pending_slot() {
+            let r = match asset {
+                Some(a) => self.run_tool_undoable("container.replace", &json!({"clip_id": id, "asset_id": a, "pair": true})),
+                None => self.run_tool_undoable("container.unlink", &json!({"clip_id": id})),
+            };
+            if let Err(e) = r {
+                self.toast(e);
+            }
+        }
         if let Some(id) = inspector::take_pending_color_auto() {
             if let Err(e) = self.run_tool_undoable("color.auto", &json!({"clip_id": id})) {
                 self.toast(e);

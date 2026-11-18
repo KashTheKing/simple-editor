@@ -2013,10 +2013,21 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     lp.rect_filled(ghost, 0, pal.selection.gamma_multiply(0.3));
                     lp.rect_stroke(ghost, 0, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
                 }
+                let slot = match &*payload {
+                    DragPayload::Asset(aid) if arm(mods, Zone::Drop, TrackFlags::default(), c.tool).unwrap_or(GestureKind::DropDefault) == GestureKind::DropDefault => {
+                        slot_under(c.project, ti, t, *aid)
+                    }
+                    _ => None,
+                };
                 // ws:preview-audio-only: a song can come with its visualizer - say how
-                if has_song(&payload, c.project) {
-                    let hint =
-                        if vis_drop(mods) { "Adds an audio visualizer" } else { "Ctrl+Shift: add with audio visualizer" };
+                if slot.is_some() || has_song(&payload, c.project) {
+                    let hint = if slot.is_some() {
+                        "Replaces the slot's footage"
+                    } else if vis_drop(mods) {
+                        "Adds an audio visualizer"
+                    } else {
+                        "Ctrl+Shift: add with audio visualizer"
+                    };
                     let font = egui::TextStyle::Small.resolve(ui.style());
                     let g = lp.layout_no_wrap(hint.into(), font, pal.text);
                     let at = pos + egui::vec2(14.0, 18.0);
@@ -2270,6 +2281,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                             (None, Some(p.add_track(TrackKind::Audio)))
                         };
                         p.insert_asset_clips_ranged(aid, t, vt, at, None);
+                    }
+                    // footage dropped on a slot (a container) fills it; slots linked to it change with it
+                    _ if slot_under(p, ti, t, aid).is_some() => {
+                        p.replace_slot_media(slot_under(p, ti, t, aid).unwrap_or(0), aid, true);
                     }
                     _ => {
                         p.insert_asset_clips_ranged(aid, t, vt, at, None);
@@ -2558,6 +2573,14 @@ fn is_media(p: &DragPayload) -> bool {
 }
 
 /// The drag holds a song (an audio asset, or an audio file by its extension).
+/// The slot (a picture container) at `t` on track `ti` that picture asset `aid` would fill when dropped there.
+fn slot_under(p: &Project, ti: Option<usize>, t: f64, aid: Id) -> Option<Id> {
+    if !p.asset(aid).is_some_and(|a| matches!(a.kind, ClipKind::Video | ClipKind::Image)) {
+        return None;
+    }
+    p.tracks.get(ti?)?.clips.iter().find(|c| c.container && c.kind != ClipKind::Audio && c.contains(t)).map(|c| c.id)
+}
+
 fn has_song(p: &DragPayload, project: &Project) -> bool {
     let asset = |id: &Id| project.asset(*id).is_some_and(|a| a.kind == ClipKind::Audio);
     let file = |f: &String| {
