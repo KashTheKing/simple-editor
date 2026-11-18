@@ -114,6 +114,7 @@ pub const TOOLS: &[ToolDef] = &[
             "scaler:string:false:",
             "audio:string:false:mix | streams | stems",
             "stem_by:string:false:track | bus | role",
+            "overflow:boolean:false:include what runs past the Max length (default: stop at it)",
         ],
         kind: ToolKind::Job,
         run: |app, args| app.start_tool_job("export.video", args).map(|(p, o)| ToolOutcome::Job(p, o)),

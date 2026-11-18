@@ -568,6 +568,11 @@ pub(crate) fn project_section(
         }
         ui.data_mut(|d| d.insert_temp(fps_custom_id, want_fps && fps_pick.is_none()));
 
+        // ---- ws:max-duration ----
+        ui.label("Max length");
+        edited |= max_length_row(ui, project, undo);
+        ui.end_row();
+
         // same setting as the preview's right-click Background submenu, editable from project settings
         // per the original ask ("this should save in project settings, and I should also be able to
         // edit it in the project settings tab")
@@ -664,6 +669,67 @@ pub(crate) fn project_section(
     }
 
     edited
+}
+
+// ---- ws:max-duration ----
+/// Quick picks for the Max length row: (seconds, where the limit comes from).
+pub(crate) const MAX_LENGTHS: &[(f64, &str)] =
+    &[(15.0, ""), (30.0, ""), (60.0, "Shorts, Reels"), (90.0, ""), (180.0, "TikTok, Shorts"), (600.0, "")];
+
+/// "1:30" / "90" / "90 s" -> seconds.
+pub(crate) fn parse_length(s: &str) -> Option<f64> {
+    let s = s.trim().trim_end_matches('s').trim();
+    let v = match s.split_once(':') {
+        Some((m, sec)) => m.trim().parse::<f64>().ok()? * 60.0 + sec.trim().parse::<f64>().ok()?,
+        None => s.parse().ok()?,
+    };
+    (v > 0.0).then_some(v)
+}
+
+/// The project form's Max length row: [on/off] [m:ss field] [quick picks]. The timeline being edited's
+/// `max_duration` (the open sequence's while one is open). Each change is one undo step.
+fn max_length_row(ui: &mut egui::Ui, project: &mut Project, undo: &mut dyn FnMut(&Project)) -> bool {
+    let was = project.max_duration;
+    let mut set: Option<Option<f64>> = None;
+    ui.horizontal(|ui| {
+        let mut on = was.is_some();
+        let r = ui.checkbox(&mut on, "").on_hover_text("Limit how long this timeline may be. Nothing is cut: the part past it is shaded and exports stop there.");
+        mark(ui, "project_max_on", &r);
+        if r.changed() {
+            set = Some(on.then_some(60.0));
+        }
+        let mut v = project.max_duration.unwrap_or(60.0);
+        let r = ui.add_enabled(
+            on,
+            DragValue::new(&mut v)
+                .range(1.0..=86_400.0)
+                .speed(1.0)
+                .custom_formatter(|v, _| crate::ui::mmss(v))
+                .custom_parser(parse_length),
+        );
+        mark(ui, "project_max", &r);
+        if edit_start(&r) {
+            undo(project);
+        }
+        if r.changed() {
+            project.max_duration = Some(v.max(1.0));
+            return;
+        }
+        let r = egui::ComboBox::from_id_salt("project_max_pick").selected_text("").width(24.0).show_ui(ui, |ui| {
+            ui.visuals_mut().button_frame = false;
+            for &(t, hint) in MAX_LENGTHS {
+                if menu::check(ui, project.max_duration == Some(t), &crate::ui::mmss(t), hint).clicked() {
+                    set = Some(Some(t));
+                }
+            }
+        });
+        mark(ui, "project_max_pick", &r.response);
+    });
+    if let Some(m) = set.filter(|m| *m != project.max_duration) {
+        undo(project);
+        project.max_duration = m;
+    }
+    project.max_duration != was
 }
 
 fn rescale_prompt_id() -> egui::Id {
@@ -1853,6 +1919,30 @@ mod tests {
         h.frame(vec![]);
         assert!(h.maybe_rect("project_width").is_some(), "Custom… reveals W × H");
         assert_eq!(h.undos, 2, "revealing the fields is not an edit");
+    }
+
+    /// ws:max-duration: the Max length row turns on at 60 s and takes a quick pick, one undo each.
+    #[test]
+    fn max_length_row_toggles_and_picks_with_one_undo_each() {
+        let mut h = H::project();
+        h.frame(vec![]);
+        h.time += 1.0;
+        let r = h.rect("project_max_on");
+        assert!(h.click(r.center()));
+        assert_eq!(h.project.max_duration, Some(60.0));
+        assert_eq!(h.undos, 1);
+        h.time += 1.0;
+        let r = h.rect("project_max_pick");
+        h.click(r.center());
+        h.frame(vec![]);
+        let item = h.text_at("3:00").expect("the picks list 3:00");
+        h.time += 1.0;
+        assert!(h.click(item));
+        assert_eq!(h.project.max_duration, Some(180.0));
+        assert_eq!(h.undos, 2);
+        assert_eq!(parse_length("1:30"), Some(90.0));
+        assert_eq!(parse_length(" 45 s"), Some(45.0));
+        assert_eq!(parse_length("0"), None);
     }
 
     /// Presets can share a size (YouTube and General Long Form are both 1920×1080 at 60): the Format

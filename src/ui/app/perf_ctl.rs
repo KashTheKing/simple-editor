@@ -524,7 +524,7 @@ mod tests {
         for (i, &id) in ids.iter().enumerate() {
             let mut t = track.clone();
             t.clips = (0..30).map(|_| Clip { sequence: ids[(i + 1) % ids.len()], ..clip.clone() }).collect();
-            p.sequences.push(crate::model::Sequence { id, name: format!("S{i}"), width: 1920, height: 1080, fps: 30.0, tracks: vec![t] });
+            p.sequences.push(crate::model::Sequence { id, name: format!("S{i}"), width: 1920, height: 1080, fps: 30.0, tracks: vec![t], max_duration: None });
         }
         let t0 = Instant::now();
         let (depth, tracks) = nest(&p, ids[0], &mut Default::default(), &mut Vec::new());

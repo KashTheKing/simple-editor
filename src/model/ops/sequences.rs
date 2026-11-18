@@ -11,7 +11,7 @@ impl Project {
     /// New empty sequence (V1 + A1) with the given format; returns its id.
     pub fn new_sequence(&mut self, name: impl Into<String>, width: u32, height: u32, fps: f64) -> Id {
         let id = self.new_id();
-        let mut seq = Sequence { id, name: name.into(), width, height, fps, tracks: Vec::new() };
+        let mut seq = Sequence { id, name: name.into(), width, height, fps, tracks: Vec::new(), max_duration: None };
         let mut v = Track::new(self.new_id(), TrackKind::Video, "V1");
         let mut a = Track::new(self.new_id(), TrackKind::Audio, "A1");
         // both are the first (only) track of their kind in a fresh sequence
@@ -66,11 +66,13 @@ impl Project {
             fps: self.fps,
             in_point: self.in_point.take(),
             out_point: self.out_point.take(),
+            max_duration: self.max_duration.take(),
         };
         let seq = self.sequence_mut(id).unwrap();
         let tracks = std::mem::take(&mut seq.tracks);
-        let (w, h, fps) = (seq.width, seq.height, seq.fps);
+        let (w, h, fps, max) = (seq.width, seq.height, seq.fps, seq.max_duration);
         self.main_stash = Some(stash);
+        self.max_duration = max;
         self.tracks = tracks;
         self.width = w;
         self.height = h;
@@ -82,12 +84,13 @@ impl Project {
     pub fn close_sequence(&mut self) {
         let Some(id) = self.editing.take() else { return };
         let tracks = std::mem::take(&mut self.tracks);
-        let (w, h, fps) = (self.width, self.height, self.fps);
+        let (w, h, fps, max) = (self.width, self.height, self.fps, self.max_duration.take());
         if let Some(seq) = self.sequence_mut(id) {
             seq.tracks = tracks;
             seq.width = w;
             seq.height = h;
             seq.fps = fps;
+            seq.max_duration = max;
         }
         if let Some(st) = self.main_stash.take() {
             self.tracks = st.tracks;
@@ -96,6 +99,7 @@ impl Project {
             self.fps = st.fps;
             self.in_point = st.in_point;
             self.out_point = st.out_point;
+            self.max_duration = st.max_duration;
         }
     }
     /// Place a sequence as a clip at `at` (track `track` preferred). Like a media file, a sequence with

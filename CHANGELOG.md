@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Timeline
+- **Max length.** Project settings (and an open sequence's) get a Max length row: on/off, an m:ss field and quick
+  picks (0:15, 0:30, 1:00 Shorts/Reels, 1:30, 3:00 TikTok/Shorts, 10:00). The timeline draws a red end line, shades
+  and hatches everything past it (clips included) and shows "over by 0:04"; Zoom to Fit and the scrollbar span it.
+  Nothing is cut: exports stop at the limit, with a one-line note in the Export panel to include the rest.
+  `project.set {max_duration, sequence_id}`, `sequence.list` and `export.video {overflow}` expose it.
+
 ### Library
 - **Linked bins: Import folder as bin is instant now.** A folder comes in as a bin that points at it: nothing is
   copied, scanned or probed up front, its sub-folders show as nested bins, and each bin lists its files when you

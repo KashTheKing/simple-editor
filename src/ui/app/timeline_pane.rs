@@ -16,7 +16,13 @@ fn tip(name: &str, a: Action) -> String {
 /// The Timeline toolbar's right part: Snap, Auto Close Gaps, Assistant follows the selection, and zoom
 /// on the right (`tools::panel`'s tool groups lead the row). Returns the Actions its buttons ask for;
 /// the zoom slider edits `zoom`.
-fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, snap: (bool, bool, bool), zoom: &mut f32) -> Vec<Action> {
+fn toolbar(
+    ui: &mut egui::Ui,
+    pal: &crate::theme::Palette,
+    snap: (bool, bool, bool),
+    zoom: &mut f32,
+    over: Option<f64>,
+) -> Vec<Action> {
     let (snap, gaps, follow) = snap;
     let mut out = Vec::new();
     ui.horizontal(|ui| {
@@ -59,6 +65,14 @@ fn toolbar(ui: &mut egui::Ui, pal: &crate::theme::Palette, snap: (bool, bool, bo
             if icon_button(ui, pal, ui.id().with("tl_zout"), Glyph::Letter('−'), &zout, false).clicked() {
                 out.push(Action::ZoomOut);
             }
+            // ---- ws:max-duration: the content runs past the Max length ----
+            if let Some(o) = over {
+                ui.add_space(6.0);
+                let text = egui::RichText::new(format!("over by {}", crate::ui::mmss(o)))
+                    .small()
+                    .color(crate::ui::timeline::LIMIT);
+                ui.label(text).on_hover_text("Past the Max length: shaded on the timeline, left out of exports");
+            }
         });
     });
     out
@@ -77,7 +91,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         }
         ui.add_space(6.0);
         let s = &app.settings;
-        acts = toolbar(ui, &app.palette, (s.snap, s.auto_close_gaps, s.assistant_follow), &mut zoom);
+        let over = app.project.over_by();
+        acts = toolbar(ui, &app.palette, (s.snap, s.auto_close_gaps, s.assistant_follow), &mut zoom, over);
     });
     app.pending_actions.extend(acts);
     if zoom != app.timeline.zoom {
@@ -310,7 +325,7 @@ mod tests {
                 ..Default::default()
             };
             let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| out = toolbar(ui, &pal, (true, false, true), &mut zoom));
+                egui::CentralPanel::default().show(ctx, |ui| out = toolbar(ui, &pal, (true, false, true), &mut zoom, None));
             });
             out
         };

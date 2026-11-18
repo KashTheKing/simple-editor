@@ -457,6 +457,9 @@ pub struct Sequence {
     pub height: u32,
     pub fps: f64,
     pub tracks: Vec<Track>,
+    /// Max length in seconds (None = no limit); swapped into `Project.max_duration` while open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration: Option<f64>,
 }
 
 impl Sequence {
@@ -474,6 +477,8 @@ pub struct Stash {
     pub fps: f64,
     pub in_point: Option<f64>,
     pub out_point: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_duration: Option<f64>,
 }
 
 /// One entry in `Project.notes`: a markdown note with an optional title and colour label. Rendered

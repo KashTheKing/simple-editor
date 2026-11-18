@@ -5,6 +5,29 @@ impl Project {
     pub fn duration(&self) -> f64 {
         self.tracks.iter().map(|t| t.end()).fold(0.0, f64::max)
     }
+    // ---- ws:max-duration ----
+    /// The max length of the timeline being edited (None = no limit).
+    pub fn limit(&self) -> Option<f64> {
+        self.max_duration.filter(|m| *m > 0.0)
+    }
+    /// How far the content runs past the limit (None when it fits or there is no limit).
+    pub fn over_by(&self) -> Option<f64> {
+        let d = self.duration() - self.limit()?;
+        (d > 1e-6).then_some(d)
+    }
+    /// Length the timeline view spans: the content, or the limit when that is further.
+    pub fn view_len(&self) -> f64 {
+        self.duration().max(self.limit().unwrap_or(0.0))
+    }
+    /// An export range (None = everything) stopped at the limit.
+    pub fn limit_range(&self, range: Option<(f64, f64)>) -> Option<(f64, f64)> {
+        let Some(m) = self.limit() else { return range };
+        match range {
+            None if self.duration() <= m => None,
+            None => Some((0.0, m)),
+            Some((a, b)) => Some((a.min(m), b.min(m))),
+        }
+    }
     pub fn is_empty(&self) -> bool {
         self.tracks.iter().all(|t| t.clips.is_empty())
     }

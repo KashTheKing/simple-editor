@@ -326,6 +326,10 @@ impl App {
                 project.preview_bg = crate::model::BackgroundMode::Black;
             }
             let mut opts = opts;
+            // ws:max-duration: stop at the timeline's Max length unless asked for the rest
+            if !arg_bool(args, "overflow").unwrap_or(false) {
+                opts.range = project.limit_range(opts.range);
+            }
             self.deliver(&mut project, &mut opts, arg_bool(args, "captions"), arg_bool(args, "guide"));
             let prog = export::start_export(project, opts, self.text.clone());
             // same slot the UI uses: exclusion, the progress/Cancel window and the close guard all key off it

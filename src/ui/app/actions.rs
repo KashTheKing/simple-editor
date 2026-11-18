@@ -217,7 +217,7 @@ impl App {
             }
             ZoomIn => self.timeline.zoom_by(1.25, None),
             ZoomOut => self.timeline.zoom_by(0.8, None),
-            ZoomFit => self.timeline.zoom_to_fit(self.project.duration(), self.timeline.lanes_rect.width()),
+            ZoomFit => self.timeline.zoom_to_fit(self.project.view_len(), self.timeline.lanes_rect.width()),
             LinkToggle => {
                 if !self.selection.is_empty() {
                     self.push_undo();

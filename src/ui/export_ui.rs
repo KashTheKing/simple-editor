@@ -26,7 +26,7 @@ use crate::model::Project;
 use crate::settings::{ExportPresetRef, Settings};
 use crate::ui::brand_icons;
 use crate::ui::tools::{draw_glyph, Glyph};
-use crate::ui::{combo, duration_text, encoder_options, menu, ENCODER_PRESETS};
+use crate::ui::{combo, duration_text, encoder_options, menu, mmss, ENCODER_PRESETS};
 use eframe::egui::{self, Color32, CornerRadius, Stroke, StrokeKind};
 use std::path::{Path, PathBuf};
 
@@ -66,6 +66,9 @@ pub struct ExportUi {
     pub out_dir: Option<PathBuf>,
     /// The Frame rate row: output fps, 0 = the project's (set by a preset that names one).
     pub fps: f64,
+    // ---- ws:max-duration ----
+    /// Include what runs past the timeline's Max length (off: the export stops at it).
+    pub overflow: bool,
 }
 
 /// The inline preset form: a new preset from the current settings (`editing` None) or an edit of the
@@ -282,10 +285,22 @@ pub fn export_range(project: &Project, on: bool) -> Option<(f64, f64)> {
     (b > a).then_some((a, b))
 }
 
+/// What the export renders: `export_range`, stopped at the Max length unless the panel includes the rest.
+pub fn export_span(project: &Project, state: &ExportUi) -> Option<(f64, f64)> {
+    let r = export_range(project, state.range);
+    if state.overflow {
+        r
+    } else {
+        project.limit_range(r)
+    }
+}
+
 /// The lossless `-c copy` path cuts whole clips of one source; a range or a frame rate change needs a
 /// re-encode.
 pub fn lossless_allowed(state: &ExportUi, project: &Project) -> bool {
-    !state.range && out_fps(state.fps, project).is_none() && export::lossless_segments(project).is_some()
+    !state.range
+        && export_span(project, state).is_none()
+        && out_fps(state.fps, project).is_none() && export::lossless_segments(project).is_some()
 }
 
 /// Everything `pick_and_build` does after the save dialog - pure, so the range/preset wiring is
@@ -318,7 +333,7 @@ pub fn build_choice(
             // placeholder: `App::start_export_choice` swaps in `App::export_frames()` (GPU when on)
             frames: crate::engine::export::FrameSource::Cpu,
             metadata: if state.metadata_on { state.metadata.clone() } else { Vec::new() },
-            range: export_range(project, state.range),
+            range: export_span(project, state),
             loudnorm: settings.loudnorm,
             letterbox: state.letterbox && state.tile.is_some(),
             // ---- ws:pro-schema ----
@@ -1217,7 +1232,7 @@ fn output_bar(
     let mut out = None;
     let size = preset_size(project.width, project.height, &state.preset, state.custom);
     let (w, h) = size.unwrap_or((project.width, project.height));
-    let range = export_range(project, state.range);
+    let range = export_span(project, state);
     let export_dur = range.map(|(a, b)| b - a).unwrap_or_else(|| project.duration());
     let ext = default_ext(state).to_string();
     // summary: preset · size · fps · duration · estimated size
@@ -1249,6 +1264,22 @@ fn output_bar(
         ui.label(egui::RichText::new(parts.join(" · ")).strong())
             .on_hover_text("The size is an estimate - the real one depends on the footage.");
     });
+    // ---- ws:max-duration: one line when the timeline runs past its Max length ----
+    if let (Some(over), Some(max)) = (project.over_by(), project.limit()) {
+        let (text, button, tip) = if state.overflow {
+            (format!("Includes {} past Max length {}", mmss(over), mmss(max)), "Stop at it", "Export up to the Max length only")
+        } else {
+            (format!("Stops at Max length {} · {} left out", mmss(max), mmss(over)), "Include it", "Export what runs past the Max length too")
+        };
+        ui.horizontal(|ui| {
+            ui.weak(text);
+            let r = ui.small_button(button).on_hover_text(tip);
+            mark(ui, "export_overflow", r.rect);
+            if r.clicked() {
+                state.overflow = !state.overflow;
+            }
+        });
+    }
     ui.add_space(4.0);
     egui::Grid::new("export_bar_grid").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
         // ---- ws:export-encoders: the speed/size trade-off (picking one hands the preset back to it) ----
@@ -1616,6 +1647,35 @@ mod tests {
         assert!(c.opts.letterbox, "a tile fits-and-pads instead of stretching");
         assert_eq!(c.last, ExportPresetRef::Preset(shorts.name));
         assert_eq!(slug("Shorts / Reels / TikTok"), "shorts-reels-tiktok");
+    }
+
+    // ---- ws:max-duration ----
+    /// By default the export stops at the Max length (the summary shows the clamped length and a note);
+    /// "Include it" exports the rest; a lossless cut can't stop mid-clip, so it is off while clamped.
+    #[test]
+    fn export_stops_at_the_max_length_unless_included() {
+        let mut p = ranged_project(); // an 8 s clip
+        p.in_point = None;
+        p.out_point = None;
+        p.max_duration = Some(5.0);
+        let settings = Settings::default();
+        let mut st = ExportUi::default();
+        assert_eq!(build_choice(&st, &p, &settings, "x.mp4".into()).opts.range, Some((0.0, 5.0)));
+        st.range = true;
+        p.in_point = Some(2.0);
+        assert_eq!(export_span(&p, &st), Some((2.0, 5.0)), "an In/Out range is clamped too");
+        st.range = false;
+        st.lossless = true;
+        assert!(!lossless_allowed(&st, &p));
+        st.overflow = true;
+        assert_eq!(build_choice(&st, &p, &settings, "x.mp4".into()).opts.range, None);
+        // the pane lays out with the note
+        let ctx = egui::Context::default();
+        let mut settings = settings;
+        st.overflow = false;
+        st.lossless = false;
+        frame(&ctx, &mut st, &p, &mut settings);
+        assert!(frame(&ctx, &mut st, &p, &mut settings).is_none());
     }
 
     // ---- ws:export-audio-tracks ----

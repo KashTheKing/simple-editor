@@ -611,3 +611,25 @@ pub(super) fn paint_automation(pp: &egui::Painter, track: &crate::model::Track, 
         pp.hline(row.x_range(), y, stroke);
     }
 }
+
+// ---- ws:max-duration ----
+/// The Max length line's colour (also the header's "over by").
+pub(crate) const LIMIT: Color32 = Color32::from_rgb(240, 84, 72);
+
+/// Past the timeline's Max length: darkened and hatched over everything (clips included, so the part of a
+/// clip past it reads as "won't export"), with a solid end line through the ruler and lanes.
+pub(super) fn paint_limit(p: &egui::Painter, state: &TimelineState, limit: Option<f64>, ruler: Rect, lanes: Rect) {
+    let Some(m) = limit else { return };
+    let x = state.x_at(m);
+    if x > lanes.right() {
+        return;
+    }
+    let pp = p.with_clip_rect(Rect::from_min_max(ruler.min, lanes.max));
+    let past = Rect::from_min_max(pos2(x.max(lanes.left()), ruler.top()), lanes.max);
+    pp.rect_filled(past, 0, Color32::from_black_alpha(110));
+    let body = past.intersect(lanes);
+    hatch(&pp.with_clip_rect(body), body, LIMIT.gamma_multiply(0.22));
+    if x >= lanes.left() {
+        pp.vline(x, Rangef::new(ruler.top(), lanes.bottom()), Stroke::new(2.0, LIMIT));
+    }
+}
