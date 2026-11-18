@@ -9,6 +9,7 @@
 //!
 //! Connect from Claude Code:  `claude mcp add --transport http simple-editor http://127.0.0.1:7337/mcp`
 
+pub mod perms;
 pub mod tools;
 
 use eframe::egui;
@@ -25,6 +26,9 @@ pub struct ToolCall {
     pub name: String,
     pub args: Value,
     pub reply: Sender<Result<ToolReply, String>>,
+    /// ws:mcp-permissions: the request URL's `chat=` value ("" for none) - the Assistant gives its agent a
+    /// fresh one per request, so the app knows which calls are that chat's (its permission mode applies).
+    pub client: String,
 }
 
 // ---- ws:mcp-context ----
@@ -92,7 +96,7 @@ Skills: saved procedures the user runs as /name; skills.list and skills.get{name
 procedure to follow step by step.
 \nContent library (not the media library): library.list{kind, query} finds ready-made transitions, effects, LUTs, HTML templates and icons; library.apply{id} installs and uses one.";
 
-/// How long a call the Assistant guard holds (`tools::leaves_project`) waits for the user's Allow;
+/// How long a call the Assistant guard holds (Ask in Settings ▸ Permissions) waits for the user's Allow;
 /// the approval window refuses to run one held longer than this (its client has given up).
 pub const HELD_WAIT: Duration = Duration::from_secs(10 * 60);
 
@@ -212,8 +216,9 @@ fn handle_connection(
         }
         let mut parts = line.split_whitespace();
         let method = parts.next().unwrap_or("").to_ascii_uppercase();
-        let path = parts.next().unwrap_or("");
-        let path = path.split('?').next().unwrap_or(path);
+        let target = parts.next().unwrap_or("");
+        let (path, query) = target.split_once('?').unwrap_or((target, ""));
+        let client = query.split('&').find_map(|kv| kv.strip_prefix("chat=")).unwrap_or("").to_string();
         // Headers (case-insensitive names).
         let mut content_length = 0usize;
         let mut origin: Option<String> = None;
@@ -253,7 +258,7 @@ fn handle_connection(
         reader.read_exact(&mut body)?;
         match (method.as_str(), path == "/mcp") {
             ("POST", true) => {
-                let reply = handle_post(&body, tx, ctx);
+                let reply = handle_post(&body, tx, ctx, &client);
                 match reply {
                     None => write_response(&mut stream, 202, "", b"", close)?,
                     Some(v) => {
@@ -332,7 +337,7 @@ fn write_response(
 // JSON-RPC
 
 /// Handle a POST body (single request or batch). None = nothing to send back (notifications only) → 202.
-fn handle_post(body: &[u8], tx: &Sender<ToolCall>, ctx: &egui::Context) -> Option<Value> {
+fn handle_post(body: &[u8], tx: &Sender<ToolCall>, ctx: &egui::Context, client: &str) -> Option<Value> {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => {
@@ -341,19 +346,19 @@ fn handle_post(body: &[u8], tx: &Sender<ToolCall>, ctx: &egui::Context) -> Optio
     };
     match parsed {
         Value::Array(items) => {
-            let replies: Vec<Value> = items.iter().filter_map(|r| dispatch(r, tx, ctx)).collect();
+            let replies: Vec<Value> = items.iter().filter_map(|r| dispatch(r, tx, ctx, client)).collect();
             if replies.is_empty() {
                 None
             } else {
                 Some(Value::Array(replies))
             }
         }
-        single => dispatch(&single, tx, ctx),
+        single => dispatch(&single, tx, ctx, client),
     }
 }
 
 /// One JSON-RPC request → response (None for notifications).
-fn dispatch(req: &Value, tx: &Sender<ToolCall>, ctx: &egui::Context) -> Option<Value> {
+fn dispatch(req: &Value, tx: &Sender<ToolCall>, ctx: &egui::Context, client: &str) -> Option<Value> {
     let id = req.get("id").cloned();
     let method = req.get("method").and_then(Value::as_str).unwrap_or("");
     if method.is_empty() {
@@ -380,7 +385,7 @@ fn dispatch(req: &Value, tx: &Sender<ToolCall>, ctx: &egui::Context) -> Option<V
             None | Some("") => Err((-32602, "missing tool name".into())),
             Some(name) => {
                 let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-                Ok(match call_tool(name, args, tx, ctx) {
+                Ok(match call_tool(name, args, tx, ctx, client) {
                     Ok(r) => json!({"content": r.content(), "isError": false}),
                     Err(msg) => json!({"content": [{"type": "text", "text": msg}], "isError": true}),
                 })
@@ -402,7 +407,7 @@ fn dispatch(req: &Value, tx: &Sender<ToolCall>, ctx: &egui::Context) -> Option<V
             if tool.is_empty() {
                 Err((-32602, format!("unknown resource: {uri}")))
             } else {
-                match call_tool(tool, json!({}), tx, ctx) {
+                match call_tool(tool, json!({}), tx, ctx, client) {
                     Ok(r) => {
                         let v = r.into_json();
                         let text = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
@@ -425,21 +430,25 @@ fn rpc_err(id: Value, code: i64, message: String) -> Value {
 }
 
 /// Forward one tool call to the UI thread and wait for the reply.
-fn call_tool(name: &str, args: Value, tx: &Sender<ToolCall>, ctx: &egui::Context) -> Result<ToolReply, String> {
+fn call_tool(name: &str, args: Value, tx: &Sender<ToolCall>, ctx: &egui::Context, client: &str) -> Result<ToolReply, String> {
     let (reply, rx) = mpsc::channel();
-    let held = tools::leaves_project(name, &args);
-    tx.send(ToolCall { name: name.to_string(), args, reply }).map_err(|_| "editor is shutting down".to_string())?;
+    tx.send(ToolCall { name: name.to_string(), args, reply, client: client.to_string() })
+        .map_err(|_| "editor is shutting down".to_string())?;
     ctx.request_repaint();
     // ---- ws:registries-schema-hooks ----
     // ToolKind::Job replaces the old name-matched list: any tool the registry marks as a background
     // job (export/convert today) gets the long timeout, whatever module registers it.
-    let timeout = match tools::find(name).map(|t| t.kind) {
+    // ws:mcp-permissions: any other call may wait for the user's answer (Settings ▸ Permissions can set
+    // any tool to Ask), so it gets `HELD_WAIT`. ponytail: a call the UI never answers also takes that long
+    rx.recv_timeout(held_wait(name)).map_err(|_| format!("{name}: timed out"))?
+}
+
+/// How long the client waits for `name`'s reply (the approval window refuses a held call older than this).
+pub fn held_wait(name: &str) -> Duration {
+    match tools::find(name).map(|t| t.kind) {
         Some(tools::ToolKind::Job) => Duration::from_secs(30 * 60),
-        // ws:assistant-pane: may sit in the app's approval window until the user clicks Allow
-        _ if held => HELD_WAIT,
-        _ => Duration::from_secs(60),
-    };
-    rx.recv_timeout(timeout).map_err(|_| format!("{name}: timed out"))?
+        _ => HELD_WAIT,
+    }
 }
 
 // ---------------------------------------------------------------------------

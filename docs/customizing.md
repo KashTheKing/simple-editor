@@ -464,6 +464,13 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `onboarding.reset` | Ui | - | Re-arm the first-run welcome wizard (settings.onboarded=false) and open it now. |
 
+**`permissions.*`** (2 tools)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `permissions.list` | Read | query, group | Every tool with its permission (allow, ask, block) as set in Settings ▸ Permissions, its default, the running chat's permission mode, the mode for other MCP clients and whether full access is on. |
+| `permissions.request` | Job | tool, reason | Ask the user for access to a tool set to ask: the question shows in the chat with Allow once / Always allow / Deny and the call waits for the answer. Returns {tool, granted, state: allow, block, once, always or denied}. Only the user's click changes a permission. |
+
 **`plan.*`** (4 tools)
 
 | Tool | Kind | Args | Description |

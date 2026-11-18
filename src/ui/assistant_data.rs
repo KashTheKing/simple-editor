@@ -172,6 +172,8 @@ pub struct Conversation {
     pub tasks: Vec<Task>,
     /// Kept at the top of the chat list.
     pub pinned: bool,
+    /// ws:mcp-permissions: what this chat's tool calls may do without asking (the composer's mode).
+    pub mode: crate::mcp::perms::Mode,
 }
 
 impl Conversation {
@@ -734,6 +736,7 @@ mod tests {
             lines: vec![Line::User(text.into()), Line::Done { undo: None }],
             tasks: Vec::new(),
             pinned: false,
+            mode: Default::default(),
         }
     }
 

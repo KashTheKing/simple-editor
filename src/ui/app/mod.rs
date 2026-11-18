@@ -1798,6 +1798,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_interchange::TOOLS,
     // ---- ws:assistant-pane ----
     assistant_ctl::TOOLS,
+    // ---- ws:mcp-permissions ----
+    assistant_ctl::PERM_TOOLS,
     // ---- ws:mcp-context ----
     tools_context::TOOLS,
     // ---- ws:transcribe-islands ----

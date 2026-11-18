@@ -826,3 +826,9 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - New `Device` fields: `sc` (pixels per dp), `px` (real panel pixels when not w x h x sc: Plus models 1080x1920, minis 1080x2340, Macs' "looks like" sizes), `face` [side, forehead, chin] dp for home-button models (from body mm x the screen's pt per mm). `group()` drives the picker; `frame::insets` gives the body per side (turned: forehead on the left).
 - Phone platform UIs were inset by `st - 24` (they overlapped the status bar by 24 pt everywhere); the mobile-web references start under the bar, so the inset is now the whole `st`.
 - Slow all-states device tests run on `sample_devices` (smallest + largest of each picker group), not all 101.
+- MCP permissions (2026-11-18, feat/mcp-permissions): `mcp/perms.rs` (Allow/Ask/Block per tool, defaults from ToolKind;
+  modes Ask / Accept edits / Bypass; `--mcp-full-access` / `SE_MCP_FULL_ACCESS`, on by default for debug and worktree
+  builds, `=0` off). Settings ▸ Permissions tab; per-chat mode in the composer; the agent's MCP URL carries `?chat=<token>`
+  so only that chat's calls get its mode; `permissions.list` / `permissions.request` (answered only by the user's click,
+  inline in the chat). Note: `media.import` and others are registered as `ToolKind::Read`, so they default to Allow.
+  Not live-checked: a real claude/codex agent calling permissions.request (tested with a curl "custom" agent).
