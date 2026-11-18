@@ -356,7 +356,8 @@ fn velocity_edit(b: &mut Build) {
     }
     b.song(at * BEAT, drop, 0);
     b.d.thumb_t = drop + 0.3;
-    b.samples("velocity-edit", &["city-cinematic.mp4", "car-iced.mp4", "frozen-npcs.mp4", "glass-break.mp4"], &[("Song", "song.m4a")]);
+    b.samples("velocity-edit", &["city-cinematic.mp4", "car-iced.mp4", "frozen-npcs.mp4", "glass-break.mp4"], &[]);
+    b.local_sample("Song", "song.m4a"); // (no music is shipped: your own song, when you have one)
 }
 
 /// Whip pans between shots, a zoom punch on every beat, a shake on every bar, a big title on the drop.
@@ -398,7 +399,8 @@ fn hype(b: &mut Build) {
     b.named(go, "Pop Out", 4.0 * BEAT - 0.25, 0.25);
     b.song(at * BEAT, drop, 0);
     b.d.thumb_t = drop + 0.4;
-    b.samples("hype-montage", &["zoom-out.mp4", "city-bridge.mp4", "podium.mp4", "throw-pc.mp4", "glass-break.mp4"], &[("Song", "song.m4a")]);
+    b.samples("hype-montage", &["zoom-out.mp4", "city-bridge.mp4", "podium.mp4", "throw-pc.mp4", "glass-break.mp4"], &[]);
+    b.local_sample("Song", "song.m4a");
 }
 
 /// Each shot plays, then freezes on a flash with a zoom, a shake and a caption that pops.
@@ -434,7 +436,8 @@ fn meme(b: &mut Build) {
     }
     b.song(6.0 * 4.0 * BEAT, drop, 0);
     b.d.thumb_t = 1.5 * BEAT + 0.4;
-    b.samples("meme-cut", &["rage-quit.mp4", "pc-on-fire.mp4", "xbox-in-bed.mp4"], &[("Song", "song.m4a")]);
+    b.samples("meme-cut", &["rage-quit.mp4", "pc-on-fire.mp4", "xbox-in-bed.mp4"], &[]);
+    b.local_sample("Song", "song.m4a");
 }
 
 #[cfg(test)]

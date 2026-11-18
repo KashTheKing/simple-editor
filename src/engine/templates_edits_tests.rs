@@ -519,3 +519,27 @@ fn save_local_phonk() {
     let item = gallery::save(std::path::Path::new(&root), gallery::Kind::Template, "Phonk Synced Edit", &["phonk".into(), "beat edit".into()], serde_json::to_value(&d).unwrap(), gallery::Collide::Replace).unwrap();
     println!("saved {}", item.path.display());
 }
+
+#[test]
+fn no_music_and_only_credited_media_ship() {
+    let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("library").join("templates");
+    let credits = std::fs::read_to_string(lib.join("CREDITS.md")).expect("library/templates/CREDITS.md");
+    for name in EDITS.into_iter().chain(["Wasted"]) {
+        let d = builtin(name, 1920, 1080).unwrap();
+        for x in &d.samples {
+            let sound = d.clip(x.clip).is_some_and(|c| c.kind == ClipKind::Audio);
+            assert!(!sound || x.local, "{name}/{}: a sound is never shipped, only used from your own folder", x.file);
+            let shipped = lib.join(d.media.trim_start_matches("templates/")).join(&x.file);
+            assert_eq!(shipped.is_file(), !x.local, "{name}/{}", x.file);
+            let rel = format!("{}/{}", d.media.trim_start_matches("templates/"), x.file);
+            assert!(x.local || credits.contains(&rel), "{rel} is not in CREDITS.md");
+        }
+    }
+    // nothing else is in the folder: every file is one a template uses, and credited
+    for e in std::fs::read_dir(&lib).unwrap().flatten().filter(|e| e.path().is_dir()) {
+        for f in std::fs::read_dir(e.path()).unwrap().flatten() {
+            let ext = f.path().extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+            assert!(ext == "mp4", "{}: only generated footage ships here", f.path().display());
+        }
+    }
+}
