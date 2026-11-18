@@ -526,29 +526,28 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Audio page: every sound pane visible at once, none hidden behind a tab -
-    /// [music: Library | Gallery] · [a small Preview] · [Mixer] · [Inspector]
-    /// [Voiceover] · [Transcript] · [Subtitles]
-    /// [Beat Aligner] over the [Timeline].
+    /// The Audio page, kept simple: the Preview gets the whole top-left, the Mixer sits beside the
+    /// Inspector on the right; below, one group with Voiceover | Transcript | Subtitles (plus the music
+    /// Library | Gallery) beside one group with Timeline | Beat Aligner (Timeline in front).
     /// `layout_ctl::switch_page` turns the Library to audio and the Gallery to its Audio side on the way in.
     /// A saved Audio layout is kept: Window ▸ Layout ▸ Reset Page Layout gets this.
     pub fn audio_layout() -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
-        let music = Self::tabs(t, &[Pane::Library, Pane::Presets], 0);
         let preview = Self::tabs(t, &[Pane::Preview], 0);
         let mixer = t.insert_pane(Pane::Mixer);
         let inspector = t.insert_pane(Pane::Inspector);
-        let top = Self::linear(t, Horizontal, &[(music, 0.26), (preview, 0.22), (mixer, 0.30), (inspector, 0.22)]);
-        let voiceover = t.insert_pane(Pane::Voiceover);
-        let transcript = t.insert_pane(Pane::Transcript);
-        let subtitles = t.insert_pane(Pane::Subtitles);
-        let middle = Self::linear(t, Horizontal, &[(voiceover, 0.30), (transcript, 0.40), (subtitles, 0.30)]);
-        let beats = t.insert_pane(Pane::BeatAligner);
-        let timeline = t.insert_pane(Pane::Timeline);
-        let root = Self::linear(t, Vertical, &[(top, 0.34), (middle, 0.22), (beats, 0.16), (timeline, 0.28)]);
-        Self::stack_unplaced(t, music);
+        let top = Self::linear(t, Horizontal, &[(preview, 0.56), (mixer, 0.18), (inspector, 0.26)]);
+        let sound = Self::tabs(
+            t,
+            &[Pane::Voiceover, Pane::Transcript, Pane::Subtitles, Pane::Library, Pane::Presets],
+            0,
+        );
+        let timeline = Self::tabs(t, &[Pane::Timeline, Pane::BeatAligner], 0);
+        let bottom = Self::linear(t, Horizontal, &[(sound, 0.30), (timeline, 0.70)]);
+        let root = Self::linear(t, Vertical, &[(top, 0.52), (bottom, 0.48)]);
+        Self::stack_unplaced(t, sound);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
@@ -2020,22 +2019,21 @@ mod tests {
     fn the_audio_page_has_every_sound_pane() {
         use Pane::*;
         let l = Layout::audio_layout();
-        // every sound pane is visible at once: each one is in front of its own group
-        for p in [Library, Preview, Mixer, Voiceover, Transcript, Subtitles, BeatAligner, Timeline, Inspector] {
-            assert!(in_front(&l, p), "{p:?} is visible on the Audio page");
-        }
         let group = |p: Pane| l.tree.tiles.parent_of(l.tree.tiles.find_pane(&p).unwrap()).unwrap();
-        assert_eq!(group(Library), group(Presets), "the music area is Library | Gallery");
-        // none of the sound panes shares a tab group with another pane
-        for p in [Mixer, Voiceover, Transcript, Subtitles, BeatAligner, Timeline] {
-            if let Some(egui_tiles::Container::Tabs(tabs)) = l.tree.tiles.get_container(group(p)) {
-                assert_eq!(tabs.children.len(), 1, "{p:?} is not stacked behind another tab");
-            }
+        for p in [Preview, Mixer, Inspector, Voiceover, Timeline] {
+            assert!(in_front(&l, p), "{p:?} is in front on the Audio page");
         }
-        // a small preview: narrower than the music area
+        for p in [Transcript, Subtitles, Library, Presets] {
+            assert_eq!(group(p), group(Voiceover), "{p:?} is a tab beside Voiceover");
+        }
+        assert_eq!(group(BeatAligner), group(Timeline), "Timeline | Beat Aligner share one panel");
+        let egui_tiles::Container::Tabs(tl) = l.tree.tiles.get_container(group(Timeline)).unwrap() else { panic!() };
+        assert_eq!(tl.active, l.tree.tiles.find_pane(&Timeline), "the Timeline is the front tab");
+        // the Preview gets the most room on the top row, the Mixer sits next to the Inspector
         let row = l.tree.tiles.parent_of(group(Preview)).unwrap();
         let egui_tiles::Container::Linear(lin) = l.tree.tiles.get_container(row).unwrap() else { panic!() };
-        assert!(lin.shares[group(Preview)] < lin.shares[group(Library)]);
+        assert!(lin.shares[group(Preview)] > 0.5, "the Preview has the top-left with lots of room");
+        assert_eq!(l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Mixer).unwrap()), Some(row));
     }
 
     /// The Inspector is the top-right tile of every page's default: walk the tree from the root taking

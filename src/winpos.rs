@@ -185,6 +185,7 @@ mod tests {
         assert!(quiet());
         std::env::set_var("SE_QUIET", "0");
         assert!(!quiet());
+        std::env::remove_var("SE_QUIET");
         std::env::set_var("SE_BACKGROUND", "1");
         assert!(quiet(), "every automation launch is quiet");
         std::env::remove_var("SE_BACKGROUND");
