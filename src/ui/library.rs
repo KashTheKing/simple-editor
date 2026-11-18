@@ -133,7 +133,16 @@ pub struct LibraryState {
     all: Vec<Pick>,
     /// "Save filter…" name field open (the buffer) - a Smart Bin is born when it commits.
     pub new_bin: Option<String>,
+    /// A page's own view of the Library (2 = audio on the Audio page), never stored in `kind_filter`:
+    /// set on entering that page, dropped on leaving it, shown as a chip with a ✕. The user's own
+    /// kind (`kind_filter`) wins over it. See `LibraryState::enter_page`.
+    pub page_kind: u8,
+    /// View ▾ "Flat results": a search / filter lists its hits as one list instead of inside their bins.
+    pub flat_results: bool,
 }
+
+/// Names of `kind_filter` values (index = value), as the Filter menu and the chips say them.
+const KIND_NAMES: [&str; 7] = ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"];
 
 #[derive(Default)]
 pub struct LibraryResponse {
@@ -356,8 +365,8 @@ fn select_all(state: &mut LibraryState) {
 /// search text goes last and verbatim, so it can hold anything (even "kind:" or "unused").
 pub fn bin_query(state: &LibraryState) -> String {
     let mut q = String::new();
-    if state.kind_filter != 0 {
-        q.push_str(&format!("kind:{} ", state.kind_filter));
+    if state.kind() != 0 {
+        q.push_str(&format!("kind:{} ", state.kind()));
     }
     if state.label_filter != 0 {
         q.push_str(&format!("label:{} ", state.label_filter));
@@ -375,6 +384,7 @@ pub fn bin_query(state: &LibraryState) -> String {
 /// Apply a Smart Bin query to the filter fields (the inverse of `bin_query`; unknown tokens are ignored).
 pub fn apply_bin(state: &mut LibraryState, query: &str) {
     state.kind_filter = 0;
+    state.page_kind = 0; // a bin is the user's own choice: it replaces the page's view too
     state.label_filter = 0;
     state.unused_only = false;
     state.search.clear();
@@ -396,7 +406,7 @@ pub fn apply_bin(state: &mut LibraryState, query: &str) {
 
 /// Is any filter narrowing the list? (what a Smart Bin would save)
 fn filter_active(state: &LibraryState) -> bool {
-    !state.search.trim().is_empty() || state.kind_filter != 0 || state.label_filter != 0 || state.unused_only
+    !state.search.trim().is_empty() || state.kind() != 0 || state.label_filter != 0 || state.unused_only
 }
 
 /// "1.2 MB" style file size.
@@ -508,6 +518,30 @@ fn external_select(state: &mut LibraryState) {
 }
 
 impl LibraryState {
+    /// The kind the list is narrowed to: the user's own pick, else the page's view (`page_kind`).
+    pub fn kind(&self) -> u8 {
+        if self.kind_filter != 0 {
+            self.kind_filter
+        } else {
+            self.page_kind
+        }
+    }
+
+    /// The page on screen changed: the Audio page views the Library as its sounds, every other page
+    /// as everything. Only `page_kind` changes - the user's own filter rides along untouched.
+    pub fn enter_page(&mut self, page: &str) {
+        self.page_kind = if page == "Audio" { 2 } else { 0 };
+    }
+
+    /// "Clear filter": search, kind, label, unused and the page's view - the whole tree comes back.
+    pub fn clear_filters(&mut self) {
+        self.search.clear();
+        self.kind_filter = 0;
+        self.page_kind = 0;
+        self.label_filter = 0;
+        self.unused_only = false;
+    }
+
     /// Empty the set, keeping the anchor.
     fn clear_set(&mut self) {
         self.sel_ids.clear();
@@ -1225,9 +1259,15 @@ fn browser(
     let used = project.used_assets();
     let planned = project.plan_assets();
     // a search or a filter chip flattens "Project" into its hits, the way an explorer shows search results
-    let flat = !state.search.is_empty() || state.kind_filter != 0 || state.label_filter != 0 || state.unused_only;
-    // "Project" flattens above instead of showing its tree, but "Browse" doesn't - open its Recent/
-    // linked-folder branches down to whatever the search box currently matches.
+    // a search or a filter keeps the bins: only the ones holding a hit show, opened, with a count -
+    // unless View ▾ Flat results asks for one list of hits
+    let filtering = filter_active(state);
+    let flat = filtering && state.flat_results;
+    if !filtering {
+        // the open/closed state of bins while filtering is its own, and starts fresh each filter
+        state.flipped.retain(|k| !k.starts_with("ff:"));
+    }
+    // the Media Browser's Recent / linked-folder branches open down to whatever the search box matches
     sync_search_expand(state, project, settings);
 
     let mut rows: Vec<(Pick, egui::Rect)> = Vec::new();
@@ -1247,10 +1287,11 @@ fn browser(
         let mut order: Vec<usize> = (0..project.assets.len())
             .filter(|&i| {
                 let a = &project.assets[i];
-                // the folder chosen in the tree only narrows a search - the tree itself shows every folder
+                // the folder chosen in the tree narrows flat results only; the kept tree shows each hit in its
+                // own bin, so clicking a bin there must not make every other bin vanish
                 (!flat || folder_ok(state.folder.as_deref(), &a.folder))
                     && matches_search(a, &state.search)
-                    && matches_kind(a.kind, a.duration, state.kind_filter)
+                    && matches_kind(a.kind, a.duration, state.kind())
                     && (state.label_filter == 0 || a.label == state.label_filter)
                     // same predicate as "Remove unused": moodboard assets are not unused
                     && (!state.unused_only || !(used.contains(&a.id) || planned.contains(&a.id)))
@@ -1285,9 +1326,10 @@ fn browser(
                 rec: &mut rec,
                 subs: Default::default(),
                 files: Default::default(),
+                hits: None,
             };
             if imported {
-                tree.imported(ui, &order, flat);
+                tree.imported(ui, &order, filtering, flat);
             } else {
                 tree.global(ui);
             }
@@ -1304,7 +1346,7 @@ fn browser(
         }
         if imported {
             // the project's own reusable items, listed as more files rather than a section below
-            reuse_ui(ui, state.view, state.kind_filter, state.zoom, project, settings, palette, resp);
+            reuse_ui(ui, state.view, state.kind(), state.zoom, project, settings, palette, resp);
         }
         band_select(ui, state, &rows, palette);
     });
@@ -1596,15 +1638,84 @@ fn header(
                     resp.import_folder = true;
                 }
                 menu::button(ui, "View ▾", |ui| view_menu(ui, state, settings, columns_changed));
-                // every filter in one menu; the button says how many are on
-                let n_on = (state.kind_filter != 0) as u8 + (state.label_filter != 0) as u8 + state.unused_only as u8;
-                let title = if n_on > 0 { format!("Filter ({n_on}) ▾") } else { "Filter ▾".to_string() };
+                // every filter in one menu; the button says how many are on, in the accent colour
+                let n_on = (state.kind() != 0) as u8 + (state.label_filter != 0) as u8 + state.unused_only as u8;
+                let title = if n_on > 0 {
+                    RichText::new(format!("Filter ({n_on}) ▾")).color(palette.accent).strong()
+                } else {
+                    RichText::new("Filter ▾")
+                };
                 menu::button(ui, title, |ui| filter_menu(ui, state, labels, palette));
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| search_box(ui, state, palette));
             });
         });
     });
+    filter_chips(ui, state, labels, palette);
     ui.separator();
+}
+
+/// What is narrowing the list, one chip each (click = drop that one), and "Clear filter" for all of it.
+/// Drawn only while something is on, so a filtered Library never looks like the whole project.
+fn filter_chips(ui: &mut egui::Ui, state: &mut LibraryState, labels: &Labels, palette: &Palette) {
+    if !filter_active(state) {
+        return;
+    }
+    let chip = |ui: &mut egui::Ui, label: &str, tip: &str| -> bool {
+        let text = RichText::new(format!("{label}  ×")).small().color(palette.text);
+        let b = egui::Button::new(text)
+            .fill(palette.panel)
+            .stroke(egui::Stroke::new(1.0, palette.accent))
+            .corner_radius(8u8);
+        ui.add(b).on_hover_text(tip).clicked()
+    };
+    #[cfg(test)]
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("lib_filter_chips"), true));
+    egui::Frame::new().fill(palette.panel).inner_margin(egui::Margin { left: 4, right: 4, top: 0, bottom: 3 }).show(
+        ui,
+        |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(4.0, 3.0);
+                if state.kind_filter == 0 && state.page_kind != 0 {
+                    let name = format!("{} only", KIND_NAMES[state.page_kind as usize % KIND_NAMES.len()]);
+                    if chip(ui, &name, "This page shows only these; click to show everything here") {
+                        state.page_kind = 0;
+                    }
+                }
+                if state.kind_filter != 0 {
+                    let name = KIND_NAMES[state.kind_filter as usize % KIND_NAMES.len()];
+                    if chip(ui, name, "Kind filter") {
+                        state.kind_filter = 0;
+                    }
+                }
+                if state.label_filter != 0 {
+                    if chip(ui, lbl_name(labels, state.label_filter), "Label filter") {
+                        state.label_filter = 0;
+                    }
+                }
+                if state.unused_only && chip(ui, "Unused only", "Only items no timeline uses") {
+                    state.unused_only = false;
+                }
+                let q = state.search.trim();
+                if !q.is_empty() && chip(ui, &format!("\"{q}\""), "Search") {
+                    state.search.clear();
+                }
+                if let Some(f) = state.folder.clone().filter(|_| state.tab == 0 && state.flat_results) {
+                    let name = if f.is_empty() {
+                        "Top level".to_string()
+                    } else {
+                        format!("In {}", f.rsplit('/').next().unwrap_or(&f))
+                    };
+                    if chip(ui, &name, "Only this bin and its sub-bins") {
+                        state.folder = None;
+                    }
+                }
+                if ui.small_button("Clear filter").on_hover_text("Show everything").clicked() {
+                    state.clear_filters();
+                    state.folder = None;
+                }
+            });
+        },
+    );
 }
 
 /// The search field, as wide as the row allows: the magnifier and the clear ✕ sit inside its frame
@@ -1632,8 +1743,13 @@ fn search_box(ui: &mut egui::Ui, state: &mut LibraryState, palette: &Palette) {
 /// Filter ▾: kind, label colour and "Unused only".
 fn filter_menu(ui: &mut egui::Ui, state: &mut LibraryState, labels: &Labels, palette: &Palette) {
     ui.weak("Kind");
-    for (i, n) in ["All", "Video", "Audio", "Image", "Seq", "Short SFX", "Music"].iter().enumerate() {
-        ui.radio_value(&mut state.kind_filter, i as u8, *n);
+    // the radio shows what the list shows (the page's view included); picking one makes it the user's own
+    let mut kind = state.kind();
+    for (i, n) in KIND_NAMES.iter().enumerate() {
+        if ui.radio_value(&mut kind, i as u8, *n).clicked() {
+            state.kind_filter = kind;
+            state.page_kind = 0;
+        }
     }
     ui.separator();
     ui.weak("Label");
@@ -1647,10 +1763,8 @@ fn filter_menu(ui: &mut egui::Ui, state: &mut LibraryState, labels: &Labels, pal
     }
     ui.separator();
     ui.checkbox(&mut state.unused_only, "Unused only");
-    if filter_active(state) && ui.button("Clear filters").clicked() {
-        state.kind_filter = 0;
-        state.label_filter = 0;
-        state.unused_only = false;
+    if filter_active(state) && ui.button("Clear filter").clicked() {
+        state.clear_filters();
     }
 }
 
@@ -1667,6 +1781,8 @@ fn view_menu(ui: &mut egui::Ui, state: &mut LibraryState, settings: &mut Setting
             state.zoom = (state.zoom * 1.25).clamp(ZOOM_MIN, ZOOM_MAX);
         }
     });
+    ui.checkbox(&mut state.flat_results, "Flat results")
+        .on_hover_text("A search or filter lists its matches as one list instead of inside their bins");
     ui.separator();
     ui.weak("Sort by");
     sort_items(ui, state);
@@ -1979,6 +2095,20 @@ fn folder_tree_names(project: &Project) -> Vec<String> {
 }
 
 /// Tree key of a folder on disk (one place, so the tests build the same key).
+/// Hits per bin while filtering: every matching asset counts toward its own bin and every bin above it,
+/// so a bin shows (and says how many) when anything inside it, however deep, matches.
+fn bin_hits<'a>(folders: impl Iterator<Item = &'a str>) -> std::collections::HashMap<String, usize> {
+    let mut hits = std::collections::HashMap::new();
+    for f in folders {
+        let mut f = f;
+        while !f.is_empty() {
+            *hits.entry(f.to_string()).or_insert(0) += 1;
+            f = parent_of(f);
+        }
+    }
+    hits
+}
+
 fn dir_key(path: &str) -> String {
     format!("d:{path}")
 }
@@ -2018,7 +2148,7 @@ fn sync_search_expand(state: &mut LibraryState, project: &Project, settings: &Se
     if state.search_flipped.is_none() {
         state.search_flipped = Some(state.flipped.clone());
     }
-    let (q, kind, label) = (state.search.as_str(), state.kind_filter, state.label_filter);
+    let (q, kind, label) = (state.search.as_str(), state.kind(), state.label_filter);
     let mut open: Vec<String> = Vec::new();
     if settings.recent_assets.iter().any(|r| recent_matches(r, q, kind, label)) {
         open.push("recent".to_string());
@@ -2080,6 +2210,9 @@ struct Tree<'a, 'b> {
     /// used to rescan every folder and asset for each folder it drew).
     subs: std::collections::HashMap<String, Vec<String>>,
     files: std::collections::HashMap<String, Vec<usize>>,
+    /// A search / filter is on and the tree is kept: each bin's number of hits, its sub-bins included.
+    /// Only bins with a hit are drawn. `None` = not filtering, every bin shows.
+    hits: Option<std::collections::HashMap<String, usize>>,
 }
 
 impl Tree<'_, '_> {
@@ -2150,7 +2283,9 @@ impl Tree<'_, '_> {
     }
 
     /// Root 1 - "Project": the folders, sequences and files this project contains.
-    fn imported(&mut self, ui: &mut egui::Ui, order: &[usize], flat: bool) {
+    /// `filtering` = a search / filter is on: the bins stay, only those holding a hit, each opened
+    /// and counted. `flat` (View ▾ Flat results) lists the hits on their own instead.
+    fn imported(&mut self, ui: &mut egui::Ui, order: &[usize], filtering: bool, flat: bool) {
         self.smart_bins(ui);
         if flat {
             self.sequences(ui, 0, true);
@@ -2164,6 +2299,9 @@ impl Tree<'_, '_> {
         for &i in order {
             self.files.entry(self.project.assets[i].folder.clone()).or_default().push(i);
         }
+        if filtering {
+            self.hits = Some(bin_hits(order.iter().map(|&i| self.project.assets[i].folder.as_str())));
+        }
         self.folder(ui, "", 0, &names, order);
     }
 
@@ -2176,16 +2314,22 @@ impl Tree<'_, '_> {
         if bins.is_empty() && !filter_active(self.state) && !saving {
             return;
         }
+        // a section header like the column header: the title on the left, its one action at the right edge
         ui.horizontal(|ui| {
             ui.add_space(indent(0));
             self.folder_icon(ui, Glyph::Star);
-            ui.weak(RichText::new("Smart Bins").small());
-            if !saving
-                && filter_active(self.state)
-                && ui.small_button("Save filter…").on_hover_text("Keep the current search + chips as a bin").clicked()
-            {
-                self.state.new_bin = Some(String::new());
-            }
+            ui.label(RichText::new("Smart Bins").small().strong().color(self.palette.text_dim));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !saving
+                    && filter_active(self.state)
+                    && ui
+                        .small_button("Save filter…")
+                        .on_hover_text("Keep the current search and filters as a Smart Bin")
+                        .clicked()
+                {
+                    self.state.new_bin = Some(String::new());
+                }
+            });
         });
         for (i, b) in bins.iter().enumerate() {
             ui.horizontal(|ui| {
@@ -2219,12 +2363,16 @@ impl Tree<'_, '_> {
                 self.state.new_bin = None;
             }
         }
+        ui.separator(); // the section ends where the bins begin
     }
 
     /// The subfolders of `path` (folders first, like an explorer), then the assets that live in it.
     /// In the gallery the subfolders are cards; an open one's contents follow the grid under its name.
     fn folder(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, names: &[String], order: &[usize]) {
-        let subs: Vec<String> = self.subs.get(path).cloned().unwrap_or_default();
+        let mut subs: Vec<String> = self.subs.get(path).cloned().unwrap_or_default();
+        if let Some(hits) = &self.hits {
+            subs.retain(|b| hits.contains_key(b)); // filtering: a bin with nothing matching inside is left out
+        }
         if self.state.view == 1 {
             let w = TILE * self.state.zoom;
             let mut open = Vec::new();
@@ -2263,7 +2411,8 @@ impl Tree<'_, '_> {
             }
         }
         if path.is_empty() {
-            self.sequences(ui, depth, false); // sequences live at the root, after the folders
+            // sequences live at the root, after the folders (name-matched while filtering)
+            self.sequences(ui, depth, self.hits.is_some());
         }
         let here: Vec<usize> = self.files.get(path).cloned().unwrap_or_default();
         self.assets(ui, depth, &here);
@@ -2278,7 +2427,10 @@ impl Tree<'_, '_> {
         names: &[String],
         order: &[usize],
     ) -> bool {
-        let key = format!("f:{child}");
+        // while filtering, a bin's open state is its own ("ff:"), starting open, so collapsing one to look
+        // past it neither sticks after the filter nor reopens a bin the user had closed
+        let hits = self.hits.as_ref().map(|h| h.get(child.as_str()).copied().unwrap_or(0));
+        let key = if hits.is_some() { format!("ff:{child}") } else { format!("f:{child}") };
         let last = child.rsplit('/').next().unwrap_or(child).to_string();
         let kids = self.subs.contains_key(child.as_str()) || self.files.contains_key(child.as_str());
         if self.state.rename_folder.as_ref().is_some_and(|(o, _)| o == child) {
@@ -2300,7 +2452,7 @@ impl Tree<'_, '_> {
             }
             return kids && self.is_open(&key, true);
         }
-        let r = self.folder_item(ui, Pick::Folder(child.clone()), &key, &last, depth, true, kids);
+        let r = self.folder_item(ui, Pick::Folder(child.clone()), &key, &last, depth, true, kids, hits);
         if r.clicked() {
             self.state.folder = Some(child.clone()); // the subtree a search is limited to
         }
@@ -2332,13 +2484,18 @@ impl Tree<'_, '_> {
         depth: usize,
         dflt: bool,
         kids: bool,
+        hits: Option<usize>,
     ) -> egui::Response {
         let sel = self.state.has(&pick);
-        let (id, palette, zoom) = (egui::Id::new(("folder", key)), self.palette, self.state.zoom);
+        // the same widget id filtered or not: only the open-state key differs ("ff:" vs "f:")
+        let id_key = key.strip_prefix("ff:").map(|k| format!("f:{k}"));
+        let id = egui::Id::new(("folder", id_key.as_deref().unwrap_or(key)));
+        let (palette, zoom) = (self.palette, self.state.zoom);
         let mut arrow = None;
         let r = if self.state.view == 1 {
             let art = Art::Icon(Glyph::Folder);
-            tile(ui, id, (), sel, "Folder", name, palette.text, palette, art, TILE * zoom, None).0
+            let tag = hits.map(|n| format!("{n}")).unwrap_or_else(|| "Folder".to_string());
+            tile(ui, id, (), sel, &tag, name, palette.text, palette, art, TILE * zoom, None).0
         } else {
             // ONE widget for the whole row - indent, arrow, icon and name - so a double-click anywhere on
             // it opens / closes the folder; a click on the arrow's slot toggles instead of selecting
@@ -2350,6 +2507,9 @@ impl Tree<'_, '_> {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
                 paint_art(ui, rect, Art::Icon(Glyph::Folder), palette);
                 ui.label(if sel { RichText::new(name).strong() } else { RichText::new(name) });
+                if let Some(n) = hits {
+                    ui.weak(n.to_string()).on_hover_text(format!("{n} matching item{}", if n == 1 { "" } else { "s" }));
+                }
             })
             .0;
             arrow = kids.then_some(slot);
@@ -2387,7 +2547,7 @@ impl Tree<'_, '_> {
     fn sequences(&mut self, ui: &mut egui::Ui, depth: usize, flat: bool) {
         let st = &*self.state;
         // ponytail: a sequence has no label and no "used" flag, so those two filters just hide them
-        if flat && (!matches!(st.kind_filter, 0 | 4) || st.label_filter != 0 || st.unused_only) {
+        if flat && (!matches!(st.kind(), 0 | 4) || st.label_filter != 0 || st.unused_only) {
             return;
         }
         let q = st.search.to_lowercase();
@@ -2876,7 +3036,7 @@ impl Tree<'_, '_> {
         if !self.is_open("recent", false) {
             return;
         }
-        let (q, kind, label) = (self.state.search.clone(), self.state.kind_filter, self.state.label_filter);
+        let (q, kind, label) = (self.state.search.clone(), self.state.kind(), self.state.label_filter);
         let paths: Vec<String> = self
             .settings
             .recent_assets
@@ -2924,7 +3084,7 @@ impl Tree<'_, '_> {
     fn dir_head(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, root: bool, label: Option<&str>) -> bool {
         let key = dir_key(path);
         let name = label.unwrap_or(dir_name(path)).to_string();
-        let r = self.folder_item(ui, Pick::Path(path.to_string()), &key, &name, depth, false, true);
+        let r = self.folder_item(ui, Pick::Path(path.to_string()), &key, &name, depth, false, true, None);
         menu::context(&r, |ui| {
             if menu::row(ui, None, "Refresh", "").clicked() {
                 self.state.dirs.retain(|(p, _)| !p.starts_with(path));
@@ -3004,7 +3164,7 @@ impl Tree<'_, '_> {
 
     /// One media file on disk: thumbnail, name, kind. Single click previews it, double click imports it.
     fn file(&mut self, ui: &mut egui::Ui, path: &str, depth: usize, recent: bool) {
-        if !path_matches(path, &self.state.search, self.state.kind_filter) {
+        if !path_matches(path, &self.state.search, self.state.kind()) {
             return;
         }
         let selected = self.state.sel_paths.iter().any(|p| p == path);
@@ -3035,7 +3195,7 @@ impl Tree<'_, '_> {
     }
 
     fn file_tile(&mut self, ui: &mut egui::Ui, path: &str, recent: bool) {
-        if !path_matches(path, &self.state.search, self.state.kind_filter) {
+        if !path_matches(path, &self.state.search, self.state.kind()) {
             return;
         }
         let selected = self.state.sel_paths.iter().any(|p| p == path);
@@ -4807,5 +4967,133 @@ mod tests {
             pane.step(&mut state, &mut project, &mut settings, vec![]);
         }
         assert!(!pane.ctx.has_requested_repaint(), "an idle Info window requested a repaint");
+    }
+
+    // ---- fix/library-filter ----
+    /// One project with nested bins: SFX/Whoosh holds two sounds, Footage/Day 1 a video, and the root a
+    /// third sound - the shape of a real organised project.
+    fn binned_project() -> (Project, [Id; 4]) {
+        let mut p = Project::new();
+        let mut add = |name: &str, kind: ClipKind, folder: &str| {
+            let mut a = asset(0, kind, 3.0);
+            a.path = format!(r"C:\media\{name}");
+            a.folder = folder.into();
+            p.add_asset(a)
+        };
+        let ids = [
+            add("whoosh.mp3", ClipKind::Audio, "SFX/Whoosh"),
+            add("swoosh.mp3", ClipKind::Audio, "SFX/Whoosh"),
+            add("day1.mp4", ClipKind::Video, "Footage/Day 1"),
+            add("boom.mp3", ClipKind::Audio, ""),
+        ];
+        (p, ids)
+    }
+
+    /// Draw the Library twice (the second frame sees the first's layout); the folders it drew.
+    fn drawn(ctx: &egui::Context, state: &mut LibraryState, project: &mut Project) -> Vec<String> {
+        let mut settings = Settings::default();
+        let palette = Palette::new(true, egui::Color32::WHITE);
+        for _ in 0..2 {
+            let _ = ctx.run(tall(1200.0), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let mut undo = |_: &Project| {};
+                    show(ui, state, project, &mut settings, None, &palette, false, &mut undo);
+                });
+            });
+        }
+        state.all.iter().filter_map(|p| if let Pick::Folder(f) = p { Some(f.clone()) } else { None }).collect()
+    }
+
+    /// Entering the Audio page views the Library as its sounds; going on to Edit shows everything again
+    /// - the page's view never lands in the user's own filter.
+    #[test]
+    fn page_switch_audio_to_edit_restores_the_library_filter() {
+        let mut state = LibraryState::default();
+        state.enter_page("Audio");
+        assert_eq!(state.kind(), 2, "the Audio page shows sounds");
+        assert_eq!(state.kind_filter, 0, "...without touching the user's own filter");
+        state.enter_page("Edit");
+        assert_eq!(state.kind(), 0, "leaving the Audio page shows everything");
+        assert!(!filter_active(&state));
+    }
+
+    /// A filter the user picked rides through page switches untouched, and wins over the page's view.
+    #[test]
+    fn users_own_filter_survives_a_page_switch() {
+        let mut state = LibraryState { kind_filter: 3, label_filter: 2, ..Default::default() };
+        state.enter_page("Audio");
+        assert_eq!(state.kind(), 3, "the user's Image filter wins on the Audio page");
+        state.enter_page("Edit");
+        assert_eq!((state.kind_filter, state.label_filter, state.kind()), (3, 2, 3));
+        // dropping the page's audio chip (×) only drops the page's view
+        state.enter_page("Audio");
+        state.kind_filter = 0;
+        assert_eq!(state.kind(), 2);
+        state.page_kind = 0;
+        assert_eq!(state.kind(), 0);
+    }
+
+    /// A filter keeps the bins: only the ones holding a match, nested as they are, with only the
+    /// matching items inside, and each bin counts its matches (sub-bins included).
+    #[test]
+    fn filtered_view_keeps_nested_bins_with_only_matching_items() {
+        let (mut project, [w1, w2, day1, boom]) = binned_project();
+        let ctx = headless_ctx();
+        let mut state = LibraryState::default();
+        state.enter_page("Audio");
+        let folders = drawn(&ctx, &mut state, &mut project);
+        assert_eq!(folders, vec!["SFX".to_string(), "SFX/Whoosh".to_string()], "only bins with a sound show");
+        assert_eq!(state.visible, vec![w2, w1, boom], "the sounds sit inside their bins, open; no video");
+        assert!(!state.visible.contains(&day1));
+        let hits = bin_hits(["SFX/Whoosh", "SFX/Whoosh", ""].into_iter());
+        assert_eq!((hits["SFX"], hits["SFX/Whoosh"], hits.len()), (2, 2, 2));
+        // a search keeps the tree the same way
+        state.enter_page("Edit");
+        state.search = "day".into();
+        let folders = drawn(&ctx, &mut state, &mut project);
+        assert_eq!(folders, vec!["Footage".to_string(), "Footage/Day 1".to_string()]);
+        assert_eq!(state.visible, vec![day1]);
+        // View ▾ Flat results lists the hits alone
+        state.flat_results = true;
+        assert!(drawn(&ctx, &mut state, &mut project).is_empty());
+        assert_eq!(state.visible, vec![day1]);
+    }
+
+    /// "Clear filter" brings the whole tree back, every bin and every item.
+    #[test]
+    fn clear_filter_restores_the_full_tree() {
+        let (mut project, ids) = binned_project();
+        let ctx = headless_ctx();
+        let mut state = LibraryState { label_filter: 1, search: "w".into(), ..Default::default() };
+        state.enter_page("Audio");
+        state.folder = Some("SFX".into());
+        state.clear_filters();
+        state.folder = None;
+        let folders = drawn(&ctx, &mut state, &mut project);
+        for f in ["Footage", "Footage/Day 1", "SFX", "SFX/Whoosh"] {
+            assert!(folders.iter().any(|x| x == f), "{f} is back: {folders:?}");
+        }
+        let mut seen = state.visible.clone();
+        seen.sort();
+        let mut all = ids.to_vec();
+        all.sort();
+        assert_eq!(seen, all);
+    }
+
+    /// The chip row is there exactly while a filter is on (the page's own audio view included).
+    #[test]
+    fn chip_shows_when_a_filter_is_active() {
+        let chips = |state: &mut LibraryState| {
+            let (mut project, _) = binned_project();
+            let ctx = headless_ctx();
+            drawn(&ctx, state, &mut project);
+            ctx.data(|d| d.get_temp::<bool>(egui::Id::new("lib_filter_chips"))).unwrap_or(false)
+        };
+        assert!(!chips(&mut LibraryState::default()), "no filter, no chips");
+        let mut audio_page = LibraryState::default();
+        audio_page.enter_page("Audio");
+        assert!(chips(&mut audio_page), "the Audio page's view shows as a chip");
+        assert!(chips(&mut LibraryState { unused_only: true, ..Default::default() }));
+        assert!(chips(&mut LibraryState { search: "boom".into(), ..Default::default() }));
     }
 }

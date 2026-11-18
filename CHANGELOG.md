@@ -80,6 +80,14 @@
   the timeline or Source monitor plays; the result is encoded on the graphics card (NVENC / QSV / AMF, x264 fallback).
   A short upscale with every core busy went from over 30 minutes to about 2.5 minutes.
 
+### Fixes: Media Library filters
+- **A filtered Library keeps your bins**: a search or filter now shows the bins that hold a match (opened, with a
+  count) and only the matching items inside them, instead of one flat list; View ▾ **Flat results** brings the flat
+  list back. The Audio page's sounds-only view belongs to that page: it shows as an **Audio only ×** chip, never
+  changes your own filter, and goes away when you leave the page (it used to stay on everywhere). Every active
+  filter shows as a chip under the search box, with **Clear filter**, and the Filter button lights up. Smart Bins
+  are a section with **Save filter…** in its header.
+
 ### Fixes: HTML layers
 - **"Edge failed to start" on a busy PC**: 1.3.0 started Edge at below-normal priority, so while a build, an
   export or proxies kept every core busy it wrote no DevTools port within 20 s and the HTML layer failed (3 of 3

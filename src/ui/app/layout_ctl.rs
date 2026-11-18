@@ -376,12 +376,12 @@ pub(super) fn switch_page(app: &mut App, name: &str) -> bool {
         if page == "Animate" {
             app.gallery.tab = crate::ui::gallery::GalleryTab::Animate; // the page's Gallery opens on the blocks
         }
-        // ws:panels-multiscreen: the Audio page's music area - the Library's sounds, the Gallery's Audio side
+        // ws:panels-multiscreen: the Audio page's music area - the Library's sounds, the Gallery's Audio side.
+        // The Library's audio view belongs to the page (a chip with a ×), never to the user's own filter,
+        // so leaving the Audio page shows everything again.
+        app.library.enter_page(&page);
         if page == "Audio" {
             use crate::ui::gallery::GalleryTab::*;
-            if app.library.kind_filter == 0 {
-                app.library.kind_filter = 2;
-            }
             if !matches!(app.gallery.tab, Sounds | AudioAnimate | AudioTransitions | AudioEffects) {
                 app.gallery.tab = Sounds;
             }
