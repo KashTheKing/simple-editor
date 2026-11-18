@@ -14,6 +14,9 @@ pub struct Project {
     pub folders: Vec<String>,
     /// Folders on disk browsed directly from the library (files are imported on drop).
     pub linked_folders: Vec<String>,
+    /// Linked bins: library bins that ARE a folder on disk (see `engine::linked_bins`). Only the folder and
+    /// the bin are saved - files are listed when the bin is opened and become assets when they are used.
+    pub linked_bins: Vec<LinkedBin>,
     /// Order: all video tracks (V1, V2, ...) then all audio tracks (A1, A2, ...). While `editing` is
     /// Some(seq), these are that sequence's tracks (the main timeline is in `main_stash`).
     pub tracks: Vec<Track>,
@@ -135,4 +138,13 @@ pub enum SubtitleAnim {
 pub struct SmartBin {
     pub name: String,
     pub query: String,
+}
+
+/// A library bin that points at a folder on disk. `bin` is a top-level entry in `Project::folders`; its
+/// sub-folders on disk show as nested bins ("Video Assets/SFX") without being stored anywhere.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LinkedBin {
+    pub bin: String,
+    pub path: String,
 }
