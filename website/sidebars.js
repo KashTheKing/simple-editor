@@ -4,6 +4,7 @@ module.exports = {
   tutorial: [
     'getting-started',
     'interface',
+    'screens',
     {
       type: 'category',
       label: 'Editing',

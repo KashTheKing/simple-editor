@@ -117,6 +117,15 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         s.layout_mode = if follow { "dynamic" } else { "granular" }.into();
         changed = true;
     }
+    // ---- ws:panels-multiscreen ----
+    ui.horizontal(|ui| {
+        ui.label("Layout");
+        let n = s.screen_mode.max(1);
+        ui.weak(if n == 1 { "one screen".to_string() } else { format!("{n} screens") });
+        if ui.button("Screens…").on_hover_text("One window, or the pages spread over 2 or 3 monitors").clicked() {
+            state.open_screens = true;
+        }
+    });
     // ---- ws:layout-modes-onboarding ----
     changed |= ui
         .checkbox(&mut s.home_screen, "Show the Open / Import / Templates cards over an empty project (home screen)")

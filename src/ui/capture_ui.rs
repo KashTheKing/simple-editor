@@ -1,4 +1,5 @@
-//! Screen recording + voiceover windows (both non-modal, both keep the editor usable).
+//! The Screen Recording window (non-modal) and the voiceover state shared with the Voiceover pane
+//! (`ui::voiceover_ui`, which replaced the Voiceover window).
 //!
 //! Screen recorder: output folder, fps, bitrate (or CRF), area (Whole desktop / a Region typed in
 //! desktop pixels), microphone combo (`engine::capture::audio_devices`), desktop audio toggle, cursor
@@ -22,7 +23,6 @@ use std::path::PathBuf;
 #[derive(Default)]
 pub struct CaptureUi {
     pub screen_open: bool,
-    pub voice_open: bool,
     pub elapsed: f64,
     /// Region in desktop pixels (x, y, w, h) - typed in the window, used in "region" mode.
     pub region: Option<(i32, i32, u32, u32)>,
@@ -42,15 +42,10 @@ pub struct CaptureUi {
 pub struct CaptureResponse {
     pub start_screen: bool,
     pub stop_screen: bool,
-    pub start_voice: bool,
-    pub stop_voice: bool,
-    /// Filled together with `start_screen` / `start_voice` - the options the window built.
+    /// Filled together with `start_screen` - the options the window built.
     pub screen: Option<ScreenCaptureOptions>,
-    pub voice: Option<VoiceoverOptions>,
     /// Current "Record when the editor loses focus" state (the app watches focus and drives capture).
     pub auto_on_blur: bool,
-    /// Throw the last voiceover take away and record again.
-    pub retake: bool,
 }
 
 const AREAS: [(&str, &str); 2] = [("desktop", "Whole desktop"), ("region", "Region")];
@@ -76,8 +71,7 @@ pub fn show(
     state: &mut CaptureUi,
     settings: &mut Settings,
     recording_screen: bool,
-    recording_voice: bool,
-    palette: &Palette,
+    _palette: &Palette,
 ) -> CaptureResponse {
     // the app owns the output path of a running recording and imports it itself when it stops
     let mut r = CaptureResponse { auto_on_blur: settings.capture_on_blur, ..Default::default() };
@@ -86,9 +80,6 @@ pub fn show(
     }
     if state.screen_open {
         screen_window(ctx, state, settings, recording_screen, &mut r);
-    }
-    if state.voice_open {
-        voice_window(ctx, state, settings, recording_voice, palette, &mut r);
     }
     r
 }
@@ -220,69 +211,8 @@ pub(crate) fn voice_options(settings: &Settings) -> VoiceoverOptions {
     }
 }
 
-fn voice_window(
-    ctx: &egui::Context,
-    state: &mut CaptureUi,
-    settings: &mut Settings,
-    recording: bool,
-    palette: &Palette,
-    r: &mut CaptureResponse,
-) {
-    let devices = audio_devices();
-    let mut open = state.voice_open;
-    egui::Window::new("Voiceover").open(&mut open).resizable(false).default_width(280.0).show(ctx, |ui| {
-        ui.add_enabled_ui(!recording, |ui| {
-            egui::Grid::new("vo_opts").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                ui.label("Input");
-                let opts: Vec<(&str, &str)> = devices.iter().map(|(n, _)| (n.as_str(), n.as_str())).collect();
-                combo(ui, "vo_dev", &mut settings.voice_device, &opts, Some(170.0));
-                ui.end_row();
-                ui.label("Channels");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut settings.voice_channels, 1, "Mono");
-                    ui.selectable_value(&mut settings.voice_channels, 2, "Stereo");
-                });
-                ui.end_row();
-            });
-            ui.checkbox(&mut state.from_playhead, "Record from the playhead");
-        });
-        meter(ui, state.level, palette);
-        ui.horizontal(|ui| {
-            if recording {
-                crate::ui::tools::glyph_label(ui, Glyph::Record, ui.visuals().error_fg_color);
-                ui.colored_label(ui.visuals().error_fg_color, "REC");
-                ui.label(clock(state.elapsed));
-                if ui.button("Stop").clicked() {
-                    r.stop_voice = true;
-                }
-            } else {
-                let can = !settings.voice_device.is_empty();
-                if ui
-                    .add_enabled_ui(can, |ui| glyph_text_button(ui, Glyph::Mic, "Record"))
-                    .inner
-                    .on_disabled_hover_text("Pick an input.")
-                    .clicked()
-                {
-                    r.voice = Some(voice_options(settings));
-                    r.start_voice = true;
-                    settings.save();
-                }
-                if state.last_take.is_some() && ui.add_enabled(can, egui::Button::new("Retake")).clicked() {
-                    r.retake = true;
-                    r.start_voice = true;
-                    r.voice = Some(voice_options(settings));
-                }
-            }
-        });
-        if state.from_playhead {
-            ui.weak("Playback rolls while recording; the take lands at the playhead.");
-        }
-    });
-    state.voice_open = open;
-}
-
 /// Flat input-level bar (green → the accent colour as it approaches clipping).
-fn meter(ui: &mut egui::Ui, level: f32, palette: &Palette) {
+pub(crate) fn meter(ui: &mut egui::Ui, level: f32, palette: &Palette) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().min(240.0), 8.0), egui::Sense::hover());
     let p = ui.painter();
     p.rect_filled(rect, 0, palette.panel);
@@ -296,7 +226,7 @@ fn meter(ui: &mut egui::Ui, level: f32, palette: &Palette) {
 }
 
 /// "M:SS" - recordings are minutes long, not hours.
-fn clock(secs: f64) -> String {
+pub(crate) fn clock(secs: f64) -> String {
     let s = secs.max(0.0);
     format!("{}:{:04.1}", (s / 60.0).floor() as u64, s % 60.0)
 }
@@ -306,7 +236,7 @@ mod tests {
     use super::*;
 
     fn state() -> CaptureUi {
-        CaptureUi { screen_open: true, voice_open: true, area: "desktop".into(), ..Default::default() }
+        CaptureUi { screen_open: true, area: "desktop".into(), ..Default::default() }
     }
 
     #[test]
@@ -337,17 +267,17 @@ mod tests {
             for rec in [false, true] {
                 let mut st = CaptureUi { area: area.into(), elapsed: 3.5, ..state() };
                 let mut r = CaptureResponse::default();
-                let _ = ctx.run(egui::RawInput::default(), |ctx| r = show(ctx, &mut st, &mut s, rec, rec, &palette));
-                assert!(!r.start_screen && !r.stop_screen && !r.start_voice && !r.stop_voice);
-                assert!(r.screen.is_none() && r.voice.is_none() && !r.retake);
+                let _ = ctx.run(egui::RawInput::default(), |ctx| r = show(ctx, &mut st, &mut s, rec, &palette));
+                assert!(!r.start_screen && !r.stop_screen);
+                assert!(r.screen.is_none());
                 assert_eq!(r.auto_on_blur, s.capture_on_blur);
-                assert!(st.screen_open && st.voice_open);
+                assert!(st.screen_open);
             }
         }
         // region mode seeds an editable region instead of silently recording the whole desktop
         let mut st = CaptureUi { area: "region".into(), ..state() };
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            show(ctx, &mut st, &mut s, false, false, &palette);
+            show(ctx, &mut st, &mut s, false, &palette);
         });
         assert!(st.region.is_some(), "region mode always has a concrete region");
     }

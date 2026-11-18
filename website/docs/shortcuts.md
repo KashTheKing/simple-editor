@@ -27,7 +27,7 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Import Folder as Bin… | - |
 | Settings… | <kbd>Ctrl+Comma</kbd> |
 | Export Frame… | <kbd>Ctrl+Shift+F</kbd> |
-| Record Voiceover… | <kbd>Ctrl+Alt+R</kbd> |
+| Record Voiceover | <kbd>Ctrl+Alt+R</kbd> |
 | Quick Export | <kbd>Ctrl+M</kbd> |
 | Screen Recording… | - |
 | Import Timeline (Premiere / Resolve XML, EDL)… | - |
@@ -210,7 +210,7 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 |---|---|
 | Get Captions (download whisper) | - |
 | Remove Filler Words | - |
-| Show / Hide Transcript section | - |
+| Show / Hide Transcript | - |
 | Transcribe Selected Clip | - |
 | View Transcript | - |
 | Export Transcript… | - |

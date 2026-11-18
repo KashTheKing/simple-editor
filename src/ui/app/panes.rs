@@ -140,6 +140,10 @@ impl App {
                 if resp.import {
                     timeline_pane::import_subtitles(self);
                 }
+                // ws:panels-multiscreen
+                if resp.open_transcript {
+                    transcript_pane::open(self, None, false);
+                }
             }
             Pane::Planner => {
                 let resp = {

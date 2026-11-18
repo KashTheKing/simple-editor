@@ -65,8 +65,10 @@ fn lossy(format: &str) -> bool {
     format != "png"
 }
 
+/// The Export Frame form, drawn in the Rendering pane (ws:panels-multiscreen: was a window). Closes
+/// itself (`state.open = false`) once a file was picked.
 pub fn show(
-    ctx: &egui::Context,
+    ui: &mut egui::Ui,
     state: &mut FrameUi,
     project: &crate::model::Project,
     settings: &mut crate::settings::Settings,
@@ -79,7 +81,15 @@ pub fn show(
     }
     let mut out = None;
     let mut open = state.open;
-    egui::Window::new("Export Frame").open(&mut open).resizable(false).default_width(300.0).show(ctx, |ui| {
+    ui.horizontal(|ui| {
+        ui.strong("Export Frame");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("×").on_hover_text("Close").clicked() {
+                open = false;
+            }
+        });
+    });
+    {
         let size = egui::Grid::new("frame_opts")
             .num_columns(2)
             .spacing([12.0, 6.0])
@@ -158,7 +168,7 @@ pub fn show(
                 });
             }
         }
-    });
+    }
     state.open = open && out.is_none();
     out
 }
@@ -264,7 +274,9 @@ mod tests {
                 let mut st = FrameUi { open: true, ..Default::default() };
                 st.preset = preset.into();
                 st.custom = (640, 480);
-                let _ = ctx.run(egui::RawInput::default(), |ctx| assert!(show(ctx, &mut st, &p, &mut s).is_none()));
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| assert!(show(ui, &mut st, &p, &mut s).is_none()));
+                });
                 assert!(st.open);
             }
         }

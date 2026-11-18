@@ -30,7 +30,7 @@ fn acts_if(ui: &mut egui::Ui, on: bool, items: &[Option<Action>]) {
 }
 
 /// Window menu: the everyday panels first, then the niche ones under More ▸ (hidden, not deleted).
-const MAIN_PANES: [Pane; 14] = [
+const MAIN_PANES: [Pane; 17] = [
     Pane::Library,
     Pane::MediaBrowser,
     Pane::Presets,
@@ -46,6 +46,10 @@ const MAIN_PANES: [Pane; 14] = [
     Pane::Jobs,
     // ---- ws:pro-schema ----
     Pane::Assistant,
+    // ---- ws:panels-multiscreen ----
+    Pane::Voiceover,
+    Pane::Transcript,
+    Pane::Rendering,
 ];
 const MORE_PANES: [Pane; 9] = [
     Pane::Grade,
@@ -77,6 +81,9 @@ pub(super) fn toggle_action(p: Pane) -> Option<Action> {
         Pane::Scopes => ToggleScopes,
         // ---- ws:pro-schema ----
         Pane::Assistant => ToggleAssistant,
+        // ---- ws:panels-multiscreen ----
+        Pane::Voiceover => Voiceover,
+        Pane::Transcript => ToggleTranscript,
         _ => return None,
     })
 }
@@ -368,6 +375,11 @@ impl App {
             }
         });
         menu::sub(ui, None, "Layout", |ui| self.layout_menu(ui));
+        // ---- ws:panels-multiscreen ----
+        acts(ui, &[Some(Action::ScreenSetup)]);
+        if self.screens.monitors.len() >= 2 || !self.layout.screens.is_empty() {
+            menu::sub(ui, None, "Move to window", |ui| self.move_to_menu(ui));
+        }
         acts(ui, &[Some(Action::MaximizePane)]);
         // ws:perf-window
         acts(ui, &[None, Some(Action::PerfWindow)]);
@@ -385,6 +397,23 @@ impl App {
                 ui.separator();
                 if menu::row(ui, Some(tools::Glyph::Folder), "Open Scripts Folder", "").clicked() {
                     let _ = std::process::Command::new("explorer").arg(crate::scripting::scripts_dir()).spawn();
+                }
+            });
+        }
+    }
+
+    /// ---- ws:panels-multiscreen ---- Window ▸ Move to window ▸ <pane> ▸ Main window / Screen N.
+    fn move_to_menu(&mut self, ui: &mut egui::Ui) {
+        let screens = (self.screens.monitors.len().clamp(1, 3) as u8).max(self.layout.screens.iter().map(|s| s.screen).max().unwrap_or(1));
+        for p in MAIN_PANES.iter().chain(MORE_PANES.iter()).copied() {
+            let at = self.layout.screen_of(p).map_or(1, |i| self.layout.screens[i].screen);
+            menu::sub(ui, None, p.title(), |ui| {
+                for n in 1..=screens {
+                    let name = if n == 1 { "Main window".to_string() } else { format!("Screen {n}") };
+                    if menu::check(ui, n == at && self.layout.is_visible(p), &name, "").clicked() {
+                        self.layout.move_to_screen(p, n);
+                        self.layout_dirty = true;
+                    }
                 }
             });
         }

@@ -6,6 +6,8 @@ pub mod animator; // ws:animator
 pub mod app;
 pub mod autocut_ui;
 pub mod capture_ui;
+pub mod voiceover_ui; // ws:panels-multiscreen
+pub mod screens; // ws:panels-multiscreen
 pub mod cheatsheet;
 // ---- ws:inspector-gallery ----
 pub mod color_ui;

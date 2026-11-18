@@ -71,6 +71,9 @@ pub struct SettingsUi {
     pub cache_error: Option<String>,
     /// The Windows default browser and every installed one (registry reads: once per Settings open).
     pub(super) browsers: Option<(Option<crate::engine::browsers::Browser>, Vec<crate::engine::browsers::Browser>)>,
+    // ---- ws:panels-multiscreen ----
+    /// Layout ▸ Screens… was clicked: the app (windows.rs) opens the screens setup.
+    pub open_screens: bool,
 }
 
 pub(super) struct Status {

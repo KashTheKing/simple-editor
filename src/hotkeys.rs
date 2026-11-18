@@ -130,7 +130,7 @@ actions! {
     AddMask => "add_mask", "Add Mask to Selection", sc(CTRL_SHIFT, Key::M);
     ExportFrame => "export_frame", "Export Frame…", sc(CTRL_SHIFT, Key::F);
     ScreenCapture => "screen_capture", "Screen Recording…", None;
-    Voiceover => "voiceover", "Record Voiceover…", sc(CTRL_ALT, Key::R);
+    Voiceover => "voiceover", "Record Voiceover", sc(CTRL_ALT, Key::R);
     ImportTimeline => "import_timeline", "Import Timeline (Premiere / Resolve XML, EDL)…", None;
     MovieMode => "movie_mode", "Movie Mode (pre-render)", None;
     // ---- clip clipboard (Copy/Paste *Attributes* above is a different feature) ----
@@ -296,7 +296,7 @@ actions! {
     // ui::app::transcript_ctl::act (ACT_HANDLERS).
     GetCaptions => "get_captions", "Get Captions (download whisper)", None;
     RemoveFillers => "remove_fillers", "Remove Filler Words", None;
-    ToggleTranscript => "toggle_transcript", "Show / Hide Transcript section", None;
+    ToggleTranscript => "toggle_transcript", "Show / Hide Transcript", None;
     TranscribeClip => "transcribe_clip", "Transcribe Selected Clip", None;
     ViewTranscript => "view_transcript", "View Transcript", None;
     ExportTranscript => "export_transcript", "Export Transcript…", None;
@@ -403,6 +403,11 @@ actions! {
     // The top bar's Quick Export button: Save As dialog with a type dropdown, then export. Unbound by design
     // (Ctrl+M is QuickExport, which re-runs the last export without a dialog).
     QuickExportAs => "quick_export_as", "Quick Export…", None;
+    // ---- ws:panels-multiscreen ----
+    // Window ▸ Layout ▸ Reset Page Layout (also the Audio page's "new layout" toast) and Window ▸ Screens…
+    // (the 1 / 2 / 3-screen setup). Unbound by design.
+    ResetPageLayout => "reset_page_layout", "Reset Page Layout", None;
+    ScreenSetup => "screen_setup", "Screens…", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -750,6 +755,8 @@ pub fn group(a: Action) -> &'static str {
         PerfWindow => "Playback",
         // ---- ws:quick-export ----
         QuickExportAs => "File",
+        // ---- ws:panels-multiscreen ----
+        ResetPageLayout | ScreenSetup => "Panels & Pages",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]
