@@ -57,7 +57,8 @@ impl App {
                             category: HistoryCategory::Editing,
                             at: redo_at,
                         });
-                        if let Ok(p) = Project::from_json(&entry.json) {
+                        if let Ok(mut p) = Project::from_json(&entry.json) {
+                            p.audio_only_preview = self.project.audio_only_preview; // a view setting, not an edit
                             self.project = p;
                             self.after_edit();
                         }
@@ -78,7 +79,8 @@ impl App {
                             category: HistoryCategory::Editing,
                             at: undo_at,
                         });
-                        if let Ok(p) = Project::from_json(&entry.json) {
+                        if let Ok(mut p) = Project::from_json(&entry.json) {
+                            p.audio_only_preview = self.project.audio_only_preview; // a view setting, not an edit
                             self.project = p;
                             self.after_edit();
                         }

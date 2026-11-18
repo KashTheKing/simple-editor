@@ -22,8 +22,9 @@ use crate::model::{AnimLink, Animated, Id, Project, TextSpan, TextStyle};
 use crate::settings::TextPreset;
 use crate::theme::Palette;
 use crate::ui::inspector::luau_highlight;
-use crate::ui::{key_buttons, key_menu, menu, Gesture};
-use eframe::egui::{self, DragValue, Grid, Slider};
+use crate::ui::Gesture;
+use crate::ui::{fill, prop_field, prop_field_val, prop_label, prop_value, PROP_VAL_W};
+use eframe::egui::{self, DragValue, Grid};
 
 /// Test-only: remember a widget rect so headless tests can click the real button (mirrors
 /// inspector.rs's own `mark`, duplicated here to avoid cross-file plumbing for a test-only shim).
@@ -111,13 +112,12 @@ pub(super) fn text_preset_fields(ui: &mut egui::Ui, p: &mut TextPreset, fonts: &
 }
 
 /// The editable expression box shown right under a row when its `Animated` field is linked to
-/// `AnimLink::Expr` - same widget/pattern as `inspector_audio::section`'s per-property loop (search
-/// `link_err`/`AnimLink::Expr` there). Must be called from inside the same `Grid` as the row's own
-/// `ui.end_row()` so the columns line up.
+/// `AnimLink::Expr` - same widget/pattern as `inspector_audio::prop_line` (search `link_err`/`AnimLink::Expr`
+/// there), indented to the value column.
 fn expr_edit_row(ui: &mut egui::Ui, a: &mut Animated, g: &mut Gesture) {
     if let Animated { link: AnimLink::Expr(src), link_err, .. } = a {
-        ui.label("");
         ui.horizontal(|ui| {
+            ui.add_space(crate::ui::PROP_LABEL_W + ui.spacing().item_spacing.x);
             let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap_width: f32| {
                 let mut job = luau_highlight(ui, buf.as_str());
                 job.wrap.max_width = wrap_width;
@@ -135,13 +135,52 @@ fn expr_edit_row(ui: &mut egui::Ui, a: &mut Animated, g: &mut Gesture) {
                 ui.colored_label(ui.visuals().warn_fg_color, "!").on_hover_text(e.clone());
             }
         });
-        ui.end_row();
     }
 }
 
-/// The Text/typography block: multiline body, font/size/colour/outline/shadow/align/spacing/box grid,
-/// and per-selection style overrides. Returns true if anything changed. No-op (returns false) unless
-/// the representative clip (`ids.first()`) is a Text clip.
+/// A keyframable text row's value box (`ui::prop_value`): a DragValue over `a` in its stored unit, "Mixed"
+/// while the selected clips differ (until it is changed).
+#[allow(clippy::too_many_arguments)]
+fn anim_value(
+    ui: &mut egui::Ui,
+    a: &mut Animated,
+    lt: f64,
+    palette: &Palette,
+    g: &mut Gesture,
+    label: &str,
+    mixed: bool,
+    dv: impl FnOnce(&mut f64) -> DragValue<'_>,
+) -> egui::Response {
+    prop_value(ui, a, lt, palette, g, label, &[], |ui, a| {
+        let mut v = a.at(lt);
+        let mut d = dv(&mut v).clamp_existing_to_range(false);
+        if mixed {
+            d = d.custom_formatter(|_, _| MIXED.to_string());
+        }
+        let r = fill(ui, d);
+        if r.changed() {
+            a.set_at(lt, v);
+        }
+        r
+    })
+    .0
+}
+
+/// A plain DragValue, "Mixed" while the selected clips differ.
+fn mixed_dv<'a>(dv: DragValue<'a>, mixed: bool) -> DragValue<'a> {
+    if mixed {
+        dv.custom_formatter(|_, _| MIXED.to_string())
+    } else {
+        dv
+    }
+}
+
+const MIXED: &str = "Mixed";
+
+/// The Text/typography block: multiline body, font/size/colour/outline/shadow/align/spacing/box rows,
+/// and per-selection style overrides. Every field edits every Text clip in `ids` at once (one undo step);
+/// a field the clips disagree on reads "Mixed" until it is changed. Returns true if anything changed.
+/// No-op (returns false) unless the representative clip (`ids.first()`) is a Text clip.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn section(
     ui: &mut egui::Ui,
@@ -162,28 +201,48 @@ pub(super) fn section(
         return false;
     }
     // ws:text-titles: size/letter_spacing/outline_width/reveal/wave are Animated now, keyed at the
-    // clip-local playhead exactly like the transform grid's Position X row (inspector_audio::section).
+    // clip-local playhead exactly like the Transform rows (inspector_audio::section).
     let lt = orig.local(playhead);
     let mut clip = orig.clone();
     let mut g = Gesture::default();
     let style = clip.text.get_or_insert_with(Default::default);
+    let base = style.clone();
+    // the other selected text clips' styles: a field any of them disagrees on reads "Mixed"
+    let others: Vec<TextStyle> =
+        ids[1..].iter().filter_map(|&i| project.clip(i).and_then(|c| c.text.clone())).collect();
+    macro_rules! mixed {
+        ($($f:ident),+) => { others.iter().any(|o| $(o.$f != base.$f)||+) };
+    }
 
     // snapshot the wording so per-word spans can follow the characters they style across this
     // frame's edit (typing before a styled word used to shift the styling onto the wrong chars)
     let text_before = (!style.spans.is_empty()).then(|| style.text.clone());
-    let text_out = egui::TextEdit::multiline(&mut style.text).id_salt("inspector_text_body").show(ui);
-    g.note_text(&text_out.response);
-    if text_out.response.changed() {
-        if let Some(before) = text_before {
+    let live_sel: Option<(usize, usize)> = if mixed!(text) {
+        // different wording on the selected clips: an empty box, and what is typed becomes every clip's text
+        let mut buf = String::new();
+        let r = ui.add(egui::TextEdit::multiline(&mut buf).id_salt("inspector_text_body").hint_text(MIXED));
+        g.note_text(&r);
+        if r.changed() {
+            let before = style.text.clone();
+            style.text = buf;
             style.remap_spans(&before);
         }
-    }
-    // char range of the current selection (empty/collapsed = no selection) - used by "Style
-    // Selection…" below to know what a new/edited TextSpan should cover.
-    let live_sel: Option<(usize, usize)> = text_out.cursor_range.and_then(|r| {
-        let (a, b) = (r.primary.index, r.secondary.index);
-        (a != b).then(|| (a.min(b), a.max(b)))
-    });
+        None
+    } else {
+        let text_out = egui::TextEdit::multiline(&mut style.text).id_salt("inspector_text_body").show(ui);
+        g.note_text(&text_out.response);
+        if text_out.response.changed() {
+            if let Some(before) = text_before {
+                style.remap_spans(&before);
+            }
+        }
+        // char range of the current selection (empty/collapsed = no selection) - used by "Style
+        // Selection…" below to know what a new/edited TextSpan should cover.
+        text_out.cursor_range.and_then(|r| {
+            let (a, b) = (r.primary.index, r.secondary.index);
+            (a != b).then(|| (a.min(b), a.max(b)))
+        })
+    };
     // the text field loses focus (cursor_range -> None) the moment a button elsewhere is clicked,
     // so "Style Selection…"/"Apply to Selection" need the LAST non-empty selection, not this
     // frame's live one, to still know what to target once actually clicked.
@@ -194,126 +253,109 @@ pub(super) fn section(
     }
     let text_sel: Option<(usize, usize)> =
         ui.ctx().data(|d| d.get_temp::<Option<(usize, usize)>>(text_sel_id)).flatten();
-    Grid::new("inspector_text").num_columns(2).show(ui, |ui| {
-        ui.label("Font");
-        ui.horizontal(|ui| {
-            egui::ComboBox::from_id_salt("font").selected_text(style.font.clone()).show_ui(ui, |ui| {
-                if !fonts.iter().any(|f| *f == style.font) {
-                    let _ = ui.selectable_label(true, style.font.as_str());
-                }
-                for f in fonts {
-                    g.note(&ui.selectable_value(&mut style.font, f.clone(), f));
-                }
-            });
-            if ui.small_button("Import font…").clicked() {
-                if let Some(p) = rfd::FileDialog::new().add_filter("Fonts", &["ttf", "otf"]).pick_file() {
-                    crate::ui::inspector::set_pending_font_import(p.to_string_lossy().into_owned());
-                }
+    let mixed_note = |ui: &mut egui::Ui, m: bool| {
+        if m {
+            ui.weak(MIXED);
+        }
+    };
+    prop_field(ui, "Font", |ui| {
+        let shown = if mixed!(font) { MIXED.to_string() } else { style.font.clone() };
+        egui::ComboBox::from_id_salt("font").selected_text(shown).width(PROP_VAL_W + 64.0).show_ui(ui, |ui| {
+            if !fonts.iter().any(|f| *f == style.font) {
+                let _ = ui.selectable_label(true, style.font.as_str());
+            }
+            for f in fonts {
+                g.note(&ui.selectable_value(&mut style.font, f.clone(), f));
             }
         });
-        ui.end_row();
-        ui.label("Size");
-        ui.horizontal(|ui| {
-            let mut v = style.size.at(lt);
-            let r = ui.add(DragValue::new(&mut v).range(1.0..=1000.0));
-            if r.changed() {
-                style.size.set_at(lt, v);
+        if ui.small_button("Import font…").clicked() {
+            if let Some(p) = rfd::FileDialog::new().add_filter("Fonts", &["ttf", "otf"]).pick_file() {
+                crate::ui::inspector::set_pending_font_import(p.to_string_lossy().into_owned());
             }
-            g.note(&r);
-            menu::context(&r, |ui| key_menu(ui, &mut style.size, lt, &mut g, "Text Size", &[]));
-            key_buttons(ui, &mut style.size, lt, palette, &mut g, "Text Size", &[]);
-            g.note(&ui.checkbox(&mut style.bold, "Bold"));
-            g.note(&ui.checkbox(&mut style.italic, "Italic"));
-        });
-        ui.end_row();
-        expr_edit_row(ui, &mut style.size, &mut g);
-        ui.label("Fill");
-        g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.color));
-        ui.end_row();
-        ui.label("Outline");
-        ui.horizontal(|ui| {
-            g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.outline_color));
-            let mut v = style.outline_width.at(lt);
-            let r = ui.add(DragValue::new(&mut v).range(0.0..=50.0).speed(0.1));
-            if r.changed() {
-                style.outline_width.set_at(lt, v);
-            }
-            g.note(&r);
-            menu::context(&r, |ui| key_menu(ui, &mut style.outline_width, lt, &mut g, "Outline Width", &[]));
-            key_buttons(ui, &mut style.outline_width, lt, palette, &mut g, "Outline Width", &[]);
-        });
-        ui.end_row();
-        expr_edit_row(ui, &mut style.outline_width, &mut g);
-        ui.label("Drop shadow");
-        ui.horizontal(|ui| {
-            g.note(&ui.checkbox(&mut style.shadow, ""));
-            g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.shadow_color));
-        });
-        ui.end_row();
-        ui.label("Shadow x/y/blur");
-        ui.horizontal(|ui| {
-            g.note(&ui.add(DragValue::new(&mut style.shadow_x).range(-200.0..=200.0)));
-            g.note(&ui.add(DragValue::new(&mut style.shadow_y).range(-200.0..=200.0)));
-            g.note(&ui.add(DragValue::new(&mut style.shadow_blur).range(0.0..=50.0).speed(0.1)));
-        });
-        ui.end_row();
-        ui.label("Align");
-        ui.horizontal(|ui| {
-            for (i, name) in ["Left", "Center", "Right"].iter().enumerate() {
-                g.note(&ui.selectable_value(&mut style.align, i as u8, *name));
-            }
-        });
-        ui.end_row();
-        ui.label("Line spacing");
-        g.note(&ui.add(DragValue::new(&mut style.line_spacing).range(0.5..=3.0).speed(0.01)));
-        ui.end_row();
-        ui.label("Letter spacing");
-        ui.horizontal(|ui| {
-            let mut v = style.letter_spacing.at(lt);
-            let r = ui.add(DragValue::new(&mut v).range(-10.0..=50.0).speed(0.1));
-            if r.changed() {
-                style.letter_spacing.set_at(lt, v);
-            }
-            g.note(&r);
-            menu::context(&r, |ui| key_menu(ui, &mut style.letter_spacing, lt, &mut g, "Letter Spacing", &[]));
-            key_buttons(ui, &mut style.letter_spacing, lt, palette, &mut g, "Letter Spacing", &[]);
-        });
-        ui.end_row();
-        expr_edit_row(ui, &mut style.letter_spacing, &mut g);
-        ui.label("Box");
-        ui.horizontal(|ui| {
-            g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.box_color));
-            g.note(&ui.add(DragValue::new(&mut style.box_padding).range(0.0..=100.0).speed(0.5)));
-        });
-        ui.end_row();
-        // ---- ws:text-titles: reveal (typewriter) + wave (per-glyph bob) ----
-        ui.label("Reveal").on_hover_text("Typewriter progress: 0% hides all glyphs, 100% shows them all");
-        ui.horizontal(|ui| {
-            let mut pct = style.reveal.at(lt) * 100.0;
-            let r = ui.add(Slider::new(&mut pct, 0.0..=100.0).suffix(" %").fixed_decimals(0));
-            if r.changed() {
-                style.reveal.set_at(lt, (pct / 100.0).clamp(0.0, 1.0));
-            }
-            g.note(&r);
-            menu::context(&r, |ui| key_menu(ui, &mut style.reveal, lt, &mut g, "Reveal", &[]));
-            key_buttons(ui, &mut style.reveal, lt, palette, &mut g, "Reveal", &[]);
-        });
-        ui.end_row();
-        expr_edit_row(ui, &mut style.reveal, &mut g);
-        ui.label("Wave").on_hover_text("Per-glyph vertical bob amount (project px); 0 = none");
-        ui.horizontal(|ui| {
-            let mut v = style.wave.at(lt);
-            let r = ui.add(DragValue::new(&mut v).range(0.0..=200.0).speed(0.5));
-            if r.changed() {
-                style.wave.set_at(lt, v.max(0.0));
-            }
-            g.note(&r);
-            menu::context(&r, |ui| key_menu(ui, &mut style.wave, lt, &mut g, "Wave", &[]));
-            key_buttons(ui, &mut style.wave, lt, palette, &mut g, "Wave", &[]);
-        });
-        ui.end_row();
-        expr_edit_row(ui, &mut style.wave, &mut g);
+        }
     });
+    prop_field(ui, "Size", |ui| {
+        let r = anim_value(ui, &mut style.size, lt, palette, &mut g, "Text Size", mixed!(size), |v| {
+            DragValue::new(v).range(1.0..=1000.0)
+        });
+        mark(ui, "text_size", &r);
+        g.note(&ui.add(egui::Checkbox::new(&mut style.bold, "Bold").indeterminate(mixed!(bold))));
+        g.note(&ui.add(egui::Checkbox::new(&mut style.italic, "Italic").indeterminate(mixed!(italic))));
+    });
+    expr_edit_row(ui, &mut style.size, &mut g);
+    prop_field(ui, "Fill", |ui| {
+        g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.color));
+        mixed_note(ui, mixed!(color));
+    });
+    prop_field(ui, "Outline", |ui| {
+        anim_value(ui, &mut style.outline_width, lt, palette, &mut g, "Outline Width", mixed!(outline_width), |v| {
+            DragValue::new(v).range(0.0..=50.0).speed(0.1)
+        });
+        g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.outline_color));
+        mixed_note(ui, mixed!(outline_color));
+    });
+    expr_edit_row(ui, &mut style.outline_width, &mut g);
+    prop_field(ui, "Drop shadow", |ui| {
+        g.note(&ui.add(egui::Checkbox::new(&mut style.shadow, "").indeterminate(mixed!(shadow))));
+        g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.shadow_color));
+        mixed_note(ui, mixed!(shadow_color));
+    });
+    prop_field(ui, "Shadow x/y/blur", |ui| {
+        g.note(&ui.add(mixed_dv(DragValue::new(&mut style.shadow_x).range(-200.0..=200.0), mixed!(shadow_x))));
+        g.note(&ui.add(mixed_dv(DragValue::new(&mut style.shadow_y).range(-200.0..=200.0), mixed!(shadow_y))));
+        let blur = DragValue::new(&mut style.shadow_blur).range(0.0..=50.0).speed(0.1);
+        g.note(&ui.add(mixed_dv(blur, mixed!(shadow_blur))));
+    });
+    let mut align_set = false;
+    prop_field(ui, "Align", |ui| {
+        let m = mixed!(align);
+        for (i, name) in ["Left", "Center", "Right"].iter().enumerate() {
+            let r = ui.selectable_label(!m && style.align == i as u8, *name);
+            if r.clicked() && (m || style.align != i as u8) {
+                style.align = i as u8;
+                align_set = true;
+                g.click();
+            }
+        }
+    });
+    let r = prop_field_val(
+        ui,
+        "Line spacing",
+        mixed_dv(DragValue::new(&mut style.line_spacing).range(0.5..=3.0).speed(0.01), mixed!(line_spacing)),
+    );
+    g.note(&r);
+    prop_field(ui, "Letter spacing", |ui| {
+        anim_value(ui, &mut style.letter_spacing, lt, palette, &mut g, "Letter Spacing", mixed!(letter_spacing), |v| {
+            DragValue::new(v).range(-10.0..=50.0).speed(0.1)
+        });
+    });
+    expr_edit_row(ui, &mut style.letter_spacing, &mut g);
+    prop_field(ui, "Box", |ui| {
+        let pad = DragValue::new(&mut style.box_padding).range(0.0..=100.0).speed(0.5);
+        let r = ui.add_sized([PROP_VAL_W, ui.spacing().interact_size.y], mixed_dv(pad, mixed!(box_padding)));
+        g.note(&r);
+        g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.box_color));
+        mixed_note(ui, mixed!(box_color));
+    });
+    // ---- ws:text-titles: reveal (typewriter) + wave (per-glyph bob) ----
+    ui.horizontal(|ui| {
+        prop_label(ui, "Reveal").on_hover_text("Typewriter progress: 0% hides all glyphs, 100% shows them all");
+        anim_value(ui, &mut style.reveal, lt, palette, &mut g, "Reveal", mixed!(reveal), |v| {
+            DragValue::new(v)
+                .range(0.0..=1.0)
+                .speed(0.005)
+                .custom_formatter(|v, _| format!("{:.0} %", v * 100.0))
+                .custom_parser(|s| s.trim().trim_end_matches('%').trim().parse::<f64>().ok().map(|p| p / 100.0))
+        });
+    });
+    expr_edit_row(ui, &mut style.reveal, &mut g);
+    ui.horizontal(|ui| {
+        prop_label(ui, "Wave").on_hover_text("Per-glyph vertical bob amount (project px); 0 = none");
+        anim_value(ui, &mut style.wave, lt, palette, &mut g, "Wave", mixed!(wave), |v| {
+            DragValue::new(v).range(0.0..=200.0).speed(0.5)
+        });
+    });
+    expr_edit_row(ui, &mut style.wave, &mut g);
 
     // ---- ws:text-titles: Animation row - apply a builtin/saved motion preset to the WHOLE clip's
     // transform (Position/Scale/Rotation/Opacity), mirrors curves.rs:744's inline apply_motion() call
@@ -323,25 +365,26 @@ pub(super) fn section(
     if !motions.is_empty() {
         let motion_sel_id = egui::Id::new(("inspector_text_motion_sel", id));
         let mut sel: usize = ui.ctx().data(|d| d.get_temp(motion_sel_id).unwrap_or(0)).min(motions.len() - 1);
-        ui.horizontal(|ui| {
-            ui.label("Animation");
-            egui::ComboBox::from_id_salt("text_motion_preset").selected_text(motions[sel].name.clone()).show_ui(
-                ui,
-                |ui| {
+        prop_field(ui, "Animation", |ui| {
+            egui::ComboBox::from_id_salt("text_motion_preset")
+                .selected_text(motions[sel].name.clone())
+                .width(PROP_VAL_W + 32.0)
+                .show_ui(ui, |ui| {
                     for (i, m) in motions.iter().enumerate() {
                         ui.selectable_value(&mut sel, i, &m.name);
                     }
-                },
-            );
-            if ui.small_button("Apply").on_hover_text("Stretch the preset to this clip's length").clicked() {
-                // Applies to the LIVE clip directly (not the local `clip` clone this fn writes back only
+                });
+            if ui.small_button("Apply").on_hover_text("Stretch the preset to each clip's length").clicked() {
+                // Applies to the LIVE clips directly (not the local `clip` clone this fn writes back only
                 // `.text` from) - a motion preset keys Position/Scale/Rotation/Opacity, none of which
                 // `section`'s write-back at the bottom touches. `g.changed = true` below is what makes
                 // this fn (and clip_section/inspector::show above it) return true so the caller still
                 // runs its usual after-edit refresh, even though this specific write bypassed `clip`.
                 undo(project);
-                if let Some(c) = project.clip_mut(id) {
-                    crate::engine::presets::apply_motion(&motions[sel], c, true);
+                for &i in ids {
+                    if let Some(c) = project.clip_mut(i) {
+                        crate::engine::presets::apply_motion(&motions[sel], c, true);
+                    }
                 }
                 g.changed = true;
             }
@@ -417,8 +460,37 @@ pub(super) fn section(
         undo(project);
     }
     if g.changed {
+        let new = clip.text.clone().unwrap_or_default();
         if let Some(c) = project.clip_mut(id) {
             c.text = clip.text.clone();
+        }
+        // the other selected text clips: every field changed here, the rest stay their own
+        for &sid in &ids[1..] {
+            let Some(st) = project.clip_mut(sid).and_then(|c| c.text.as_mut()) else { continue };
+            macro_rules! sync {
+                ($($f:ident),+) => { $( if new.$f != base.$f { st.$f = new.$f.clone(); } )+ };
+            }
+            sync!(
+                font,
+                size,
+                bold,
+                italic,
+                color,
+                outline_width,
+                outline_color,
+                shadow,
+                shadow_color,
+                shadow_x,
+                shadow_y
+            );
+            sync!(shadow_blur, line_spacing, letter_spacing, box_color, box_padding, reveal, wave);
+            if new.align != base.align || align_set {
+                st.align = new.align;
+            }
+            if new.text != base.text {
+                let before = std::mem::replace(&mut st.text, new.text.clone());
+                st.remap_spans(&before);
+            }
         }
     }
     g.changed

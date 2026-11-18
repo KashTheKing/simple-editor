@@ -1504,8 +1504,10 @@ impl GpuRenderer {
         dst
     }
 
-    /// The whole timeline at `t` into a fresh canvas target.
+    /// The whole timeline at `t` into a fresh canvas target - at the instant `layers` was decoded
+    /// for, when it says (`LayerSet::t`), whatever `t` the caller passes.
     fn render_canvas(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet) -> Option<Target> {
+        let t = layers.t.unwrap_or(t);
         let mut canvas = self.acquire(w, h)?;
         match clear_color(project.preview_bg) {
             Some(c) => self.clear(&canvas, c),
@@ -2280,6 +2282,12 @@ pub struct LayerSet {
     pub base: usize,
     /// ws:nested-gpu: nested sequence clips, each a layer tree drawn into a canvas of its own.
     pub nested: Vec<NestedSet>,
+    /// The instant the set was decoded for (`playback::layers_with`), which the renderer draws it at.
+    /// The player decodes frame-grid instants (`idx / fps`) and the preview hands in its clock's time:
+    /// drawn at the clock, a cut off the grid fell between the two, the set held the outgoing clip's
+    /// layer and the drawer looked for the incoming one's - a black frame. None = a hand-made set,
+    /// drawn at the caller's time.
+    pub t: Option<f64>,
 }
 
 /// ws:nested-gpu: one nested sequence clip's layers (`playback::layer_for`), drawn by the same
@@ -2878,6 +2886,8 @@ mod library_tests; // ws:shader-library: every library shader on the real driver
 mod nested_tests; // ws:nested-gpu: nested sequences as layer trees vs the CPU compositor
 #[cfg(test)]
 mod export_tests; // a see-through HTML render never blacks out an export
+#[cfg(test)]
+mod seam_tests; // an off-grid cut between two clips never draws black
 
 #[cfg(test)]
 mod driver_tests {

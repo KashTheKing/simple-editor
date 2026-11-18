@@ -45,7 +45,7 @@ pub const TOOLS: &[ToolDef] = &[
     // ---- ws:pages ----
     ToolDef {
         name: "layout.page",
-        desc: "Switch to a page (Media, Cut, Edit, Color, Audio, Export - see layout.list's 'pages'), the same as \
+        desc: "Switch to a page (Media, Plan, Edit, Color, Audio, Export - see layout.list's 'pages'), the same as \
                Alt+1..6 / the menu-bar switcher. Each page keeps its own arrangement.",
         args: &["name:string:true:a page name from layout.list's pages"],
         kind: ToolKind::Ui,
@@ -206,7 +206,7 @@ mod tests {
         assert_eq!(schema("layout.page")["required"], json!(["name"]));
         // old workspace names still land on a page
         for (old, page) in
-            [("simple", "Edit"), ("Text", "Edit"), ("deliver", "Export"), ("color", "Color"), ("cut", "Cut")]
+            [("simple", "Edit"), ("Text", "Edit"), ("deliver", "Export"), ("color", "Color"), ("plan", "Plan"), ("cut", "Plan")]
         {
             assert_eq!(crate::ui::layout::page_name(old), Some(page), "{old}");
         }

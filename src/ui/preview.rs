@@ -1210,6 +1210,12 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
             if menu::row(ui, Some(Glyph::Guides), "Emulator", "").on_hover_text("See the video on real devices with each platform's app round it").clicked() {
                 r.open_emulator = true;
             }
+            // ws:preview-audio-only
+            let audio_only = c.project.audio_only_preview;
+            let a = menu::check(ui, audio_only, "Audio Only", &menu::shortcut(Action::AudioOnlyPreview));
+            if a.on_hover_text("Play the sound with a visualizer of the mix, no picture").clicked() {
+                r.actions.push(Action::AudioOnlyPreview);
+            }
             menu::sub(ui, Some(Glyph::Guides), "Social Guides", |ui| {
                 r.set_guide = crate::ui::social::menu_rows(ui, c.settings);
             });

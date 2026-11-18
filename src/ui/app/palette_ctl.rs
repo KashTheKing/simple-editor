@@ -210,6 +210,7 @@ fn dispatch(app: &mut App, cmd: Command, alt: bool, arg_form: Option<(&'static s
             run_user_tool(app, name, &args);
         }
         Command::Script(path) => app.run_script_path = Some(path),
+        Command::QuickExport => tools_export::quick_export_pane(app),
         Command::Setting(key, on) => run_user_tool(app, "settings.set", &json!({"key": key, "value": on.to_string()})),
         Command::GoTo(t) => go(app, &t, alt),
         // `/ask hi` sends "hi"; `/captions bold` sends itself, and the assistant runs that skill

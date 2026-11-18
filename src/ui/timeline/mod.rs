@@ -350,6 +350,8 @@ pub struct TimelineCtx<'a> {
     pub views: &'a [TimelineView],
     /// `Settings.timeline_waveform == "detailed"` (a track's `wave_detailed` overrides it).
     pub wave_detailed: bool,
+    /// The Animator pane is on screen (the clip menu's Show / Hide Animations).
+    pub animator_shown: bool,
 }
 
 #[derive(Default)]
@@ -367,6 +369,9 @@ pub struct TimelineResponse {
     /// the cut or the track it resolved to. None for any other payload, or when the pointer was not on a
     /// valid target (the app then says so instead of swallowing the gesture).
     pub dropped_aims: Vec<Option<gallery_drop::Aim>>,
+    /// ws:preview-audio-only: media dropped with Ctrl+Shift - each song placed at the time with a linked
+    /// audio visualizer (anything that is not audio is placed as usual).
+    pub dropped_with_visualizer: Vec<(DragPayload, f64)>,
     /// Actions requested from the timeline's context menus (Retime, AddTransition, FreezeFrame, AutoCut, …).
     pub actions: Vec<crate::hotkeys::Action>,
     /// Container media replacement request - (clip id, pair mode).
@@ -1223,6 +1228,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 // ---- ws:ai-enhancer ----
                 zoom: clip.scale.keys.iter().map(|k| k.v).fold(clip.scale.value, f64::max)
                     * clip.scale_x.value.max(clip.scale_y.value),
+                animator_shown: c.animator_shown,
             };
             let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();
@@ -2003,6 +2009,16 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     lp.rect_filled(ghost, 0, pal.selection.gamma_multiply(0.3));
                     lp.rect_stroke(ghost, 0, Stroke::new(1.0, pal.selection), StrokeKind::Inside);
                 }
+                // ws:preview-audio-only: a song can come with its visualizer - say how
+                if has_song(&payload, c.project) {
+                    let hint =
+                        if vis_drop(mods) { "Adds an audio visualizer" } else { "Ctrl+Shift: add with audio visualizer" };
+                    let font = egui::TextStyle::Small.resolve(ui.style());
+                    let g = lp.layout_no_wrap(hint.into(), font, pal.text);
+                    let at = pos + egui::vec2(14.0, 18.0);
+                    lp.rect_filled(Rect::from_min_size(at, g.size() + egui::vec2(10.0, 4.0)), 3, pal.panel);
+                    lp.galley(at + egui::vec2(5.0, 2.0), g, pal.text);
+                }
                 // Ctrl held = splice: show the gap it will open on the ripple tracks (ws:timeline-trim-gestures)
                 if arm(mods, Zone::Drop, TrackFlags::default(), c.tool) == Some(GestureKind::DropSplice) {
                     let ripple = c.project.ripple_tracks();
@@ -2016,6 +2032,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             let t = drop_t(state, c.project);
             let ti = state.track_at(pos.y, c.project);
             match &*payload {
+                p if vis_drop(mods) && has_song(p, c.project) => out.dropped_with_visualizer.push((p.clone(), t)),
                 DragPayload::Asset(aid) => {
                     let kind = arm(mods, Zone::Drop, TrackFlags::default(), c.tool).unwrap_or(GestureKind::DropDefault);
                     act = Some(Act::DropAsset(*aid, t, ti, kind));
@@ -2522,5 +2539,32 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
 pub(crate) fn remove_tracks(p: &mut crate::model::Project, ids: &[Id]) {
     while let Some(i) = p.tracks.iter().position(|t| ids.contains(&t.id)) {
         p.remove_track(i);
+    }
+}
+
+// ---- ws:preview-audio-only ----
+/// Ctrl+Shift on a media drop: songs come with a linked audio visualizer.
+fn vis_drop(mods: egui::Modifiers) -> bool {
+    mods.command && mods.shift && !mods.alt
+}
+
+/// A library / Media Browser drag (assets or files), as opposed to a Gallery card or a sequence.
+fn is_media(p: &DragPayload) -> bool {
+    matches!(p, DragPayload::Asset(_) | DragPayload::Assets(_) | DragPayload::Path(_) | DragPayload::Paths(_))
+}
+
+/// The drag holds a song (an audio asset, or an audio file by its extension).
+fn has_song(p: &DragPayload, project: &Project) -> bool {
+    let asset = |id: &Id| project.asset(*id).is_some_and(|a| a.kind == ClipKind::Audio);
+    let file = |f: &String| {
+        let ext = std::path::Path::new(f).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        crate::engine::export::AUDIO_EXTS.contains(&ext.as_str())
+    };
+    match p {
+        DragPayload::Asset(id) => asset(id),
+        DragPayload::Assets(ids) => ids.iter().any(asset),
+        DragPayload::Path(f) => file(f),
+        DragPayload::Paths(fs) => fs.iter().any(file),
+        _ => false,
     }
 }

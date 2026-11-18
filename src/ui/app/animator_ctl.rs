@@ -273,7 +273,9 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
     }
     match a {
         Action::StackOverlays => stack(app),
-        // the timeline's "Show Animations": the Animator, on the clips that are selected
+        // the timeline's "Show Animations": the Animator, on the clips that are selected; "Hide Animations"
+        // (the same Action while it is on screen) hides it
+        Action::ShowAnimations if app.pane_drawn(Pane::Animator) => app.toggle_pane(Pane::Animator),
         Action::ShowAnimations => app.surface(Pane::Animator),
         _ => return false,
     }
@@ -672,7 +674,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "keyblocks.from_keys",
-        desc: "Turn keys made by hand (keys no block owns) into a block with controls (strength, ease, side), keeping the motion. With from/to (clip-local seconds): the keys in that span; without: every cluster of hand keys. Returns how many blocks it made.",
+        desc: "Turn one clip's keys made by hand (keys no block owns) into a block with controls (strength, ease, side), keeping the motion. With from/to (clip-local seconds): the keys in that span; without: every cluster of hand keys. Returns how many blocks it made. For many clips or the whole timeline use keyblocks.convert_all (one call, named blocks where they fit, dry_run).",
         args: &["clip_id:integer:true:", "from:number:false:clip-local s", "to:number:false:clip-local s", "name:string:false:default Custom"],
         kind: ToolKind::Mutate,
         run: |app, args| {

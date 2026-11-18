@@ -59,10 +59,13 @@ fn set_value(clip: &mut Clip, kind: EffectKind, i: usize, v: f64, lt: f64) {
 fn param_grid(ui: &mut egui::Ui, clip: &mut Clip, kind: EffectKind, lt: f64, palette: &Palette, g: &mut Gesture) {
     Grid::new(("color_params", kind)).num_columns(3).show(ui, |ui| {
         for (i, spec) in kind.params().iter().enumerate() {
-            ui.label(spec.name);
+            crate::ui::prop_label(ui, spec.name);
             let mut v = find_value(clip, kind, i, spec.default, lt);
             let speed = ((spec.max - spec.min) / 200.0).max(0.001);
-            let r = ui.add(DragValue::new(&mut v).range(spec.min..=spec.max).speed(speed));
+            let r = ui.add_sized(
+                [crate::ui::PROP_VAL_W, ui.spacing().interact_size.y],
+                DragValue::new(&mut v).range(spec.min..=spec.max).speed(speed),
+            );
             g.note(&r); // one undo per gesture, same rule the rest of the inspector uses
             if r.changed() {
                 set_value(clip, kind, i, v, lt);

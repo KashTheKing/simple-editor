@@ -241,7 +241,7 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Show / Hide Node Editor | <kbd>Ctrl+9</kbd> |
 | Show / Hide Mixer | <kbd>Ctrl+0</kbd> |
 | Media page | <kbd>Alt+1</kbd> |
-| Cut page | <kbd>Alt+2</kbd> |
+| Plan page | <kbd>Alt+2</kbd> |
 | Edit page | <kbd>Alt+3</kbd> |
 | Color page | <kbd>Alt+4</kbd> |
 | Audio page | <kbd>Alt+5</kbd> |

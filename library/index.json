@@ -3370,6 +3370,25 @@
       "thumb": ""
     },
     {
+      "id": "skills/blocks-from-keys",
+      "kind": "skill",
+      "name": "blocks-from-keys",
+      "desc": "Convert the timeline's hand-made keyframes into animation blocks and its per-cut transitions into transition spans, the motion unchanged.",
+      "tags": [
+        "animator",
+        "keyframes",
+        "blocks",
+        "transitions",
+        "spans",
+        "simplify",
+        "convert"
+      ],
+      "file": "skills/blocks-from-keys.md",
+      "size": 2431,
+      "credit": "",
+      "thumb": ""
+    },
+    {
       "id": "skills/captions",
       "kind": "skill",
       "name": "captions",
@@ -3608,6 +3627,17 @@
       "tags": [],
       "file": "skills/lower-third.md",
       "size": 2648,
+      "credit": "",
+      "thumb": ""
+    },
+    {
+      "id": "skills/organize-library",
+      "kind": "skill",
+      "name": "organize-library",
+      "desc": "Sort the media library into bins - Footage, SFX, Music, Voiceover, Images, Graphics, Unused - and tag every asset. Nothing is deleted; one Undo puts it back.",
+      "tags": [],
+      "file": "skills/organize-library.md",
+      "size": 6841,
       "credit": "",
       "thumb": ""
     },
