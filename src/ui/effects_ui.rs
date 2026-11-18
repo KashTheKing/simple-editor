@@ -19,8 +19,8 @@
 
 use crate::model::{Effect, EffectKind, Id, Mask, Project};
 use crate::theme::Palette;
-use crate::ui::{key_buttons, key_menu, mask_grid, menu, Gesture};
-use eframe::egui::{self, DragValue, Grid};
+use crate::ui::{mask_grid, menu, Gesture};
+use eframe::egui::{self, DragValue};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -316,64 +316,69 @@ pub fn stack(
             }
             let kind = fx.kind;
             let specs = fx.specs();
-            Grid::new(("fx_params", i)).num_columns(2).show(ui, |ui| {
+            ui.push_id(("fx_params", i), |ui| {
                 for (j, spec) in specs.iter().enumerate() {
                     let Some(a) = fx.params.get_mut(j) else { continue };
-                    ui.label(spec.name);
                     ui.horizontal(|ui| {
-                        let mut v = a.at(lt);
-                        let r = if kind == EffectKind::Wobble && spec.name == "Motion" {
-                            // a named waveform reads better than 0..4 (Sine / Layered / Cubic / …)
-                            let names = crate::model::WOBBLE_MOTIONS;
-                            let cur = (v.round().clamp(0.0, (names.len() - 1) as f64)) as usize;
-                            let mut sel = cur;
-                            let inner = egui::ComboBox::from_id_salt(("wobble_motion", i))
-                                .selected_text(names[cur])
-                                .width(96.0)
-                                .show_ui(ui, |ui| {
-                                    for (k, n) in names.iter().enumerate() {
-                                        ui.selectable_value(&mut sel, k, *n);
-                                    }
-                                });
-                            let mut r = inner.response;
-                            if sel != cur {
-                                v = sel as f64;
-                                r.mark_changed();
-                            }
-                            r
-                        } else if kind.is_bool_param(j) {
-                            // stored as 0/1 - a checkbox is the honest widget (Flip H/V, "Show mask", …)
-                            let mut on = v >= 0.5;
-                            let r = ui.checkbox(&mut on, "");
+                        crate::ui::prop_label(ui, spec.name);
+                        let mut edit = None;
+                        let (r, _kf) = crate::ui::prop_value(ui, a, lt, palette, &mut g, spec.name, &[], |ui, a| {
+                            let mut v = a.at(lt);
+                            let r = if kind == EffectKind::Wobble && spec.name == "Motion" {
+                                // a named waveform reads better than 0..4 (Sine / Layered / Cubic / …)
+                                let names = crate::model::WOBBLE_MOTIONS;
+                                let cur = (v.round().clamp(0.0, (names.len() - 1) as f64)) as usize;
+                                let mut sel = cur;
+                                let inner = egui::ComboBox::from_id_salt(("wobble_motion", i))
+                                    .selected_text(names[cur])
+                                    .width(ui.available_width())
+                                    .show_ui(ui, |ui| {
+                                        for (k, n) in names.iter().enumerate() {
+                                            ui.selectable_value(&mut sel, k, *n);
+                                        }
+                                    });
+                                let mut r = inner.response;
+                                if sel != cur {
+                                    v = sel as f64;
+                                    r.mark_changed();
+                                }
+                                r
+                            } else if kind.is_bool_param(j) {
+                                // stored as 0/1 - a checkbox is the honest widget (Flip H/V, "Show mask", …)
+                                let mut on = v >= 0.5;
+                                let r = ui.checkbox(&mut on, "");
+                                if r.changed() {
+                                    v = if on { 1.0 } else { 0.0 };
+                                }
+                                r
+                            } else {
+                                // clamp_existing_to_range(false): clamping an out-of-range stored value
+                                // reports `changed()`, which would fake an edit just by drawing the panel.
+                                let mut dv = DragValue::new(&mut v)
+                                    .range(spec.min..=spec.max)
+                                    .clamp_existing_to_range(false)
+                                    .speed((spec.max - spec.min) / 200.0);
+                                if kind == EffectKind::Wobble {
+                                    dv = dv.suffix(wobble_suffix(spec.name));
+                                }
+                                crate::ui::fill(ui, dv)
+                            };
                             if r.changed() {
-                                v = if on { 1.0 } else { 0.0 };
+                                a.set_at(lt, v);
+                                edit = Some(v);
                             }
                             r
-                        } else {
-                            // clamp_existing_to_range(false): clamping an out-of-range stored value
-                            // reports `changed()`, which would fake an edit just by drawing the panel.
-                            let mut dv = DragValue::new(&mut v)
-                                .range(spec.min..=spec.max)
-                                .clamp_existing_to_range(false)
-                                .speed((spec.max - spec.min) / 200.0);
-                            if kind == EffectKind::Wobble {
-                                dv = dv.suffix(wobble_suffix(spec.name));
-                            }
-                            ui.add(dv)
-                        };
+                        });
                         #[cfg(test)]
-                        test_rects::push(format!("param{i}_{j}"), r.rect);
-                        if r.changed() {
-                            a.set_at(lt, v);
+                        {
+                            test_rects::push(format!("param{i}_{j}"), r.rect);
+                            test_rects::push(format!("kf{i}_{j}"), _kf.rect);
+                        }
+                        let _ = r;
+                        if let Some(v) = edit {
                             param_edits.push((i, spec.name.to_string(), v));
                         }
-                        g.note(&r);
-                        menu::context(&r, |ui| key_menu(ui, a, lt, &mut g, spec.name, &[]));
-                        let _kf = key_buttons(ui, a, lt, palette, &mut g, spec.name, &[]);
-                        #[cfg(test)]
-                        test_rects::push(format!("kf{i}_{j}"), _kf.rect);
                     });
-                    ui.end_row();
                 }
             });
         });

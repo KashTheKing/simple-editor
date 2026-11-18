@@ -16,6 +16,8 @@ use crate::ui::template_ui::{self, BuildAct, BuildRow, BuilderState, UseAct, Use
 pub struct State {
     pub using: UseState,
     pub build: BuilderState,
+    /// A beat edit waiting for its song's analysis.
+    pub pending: Option<Pending>,
 }
 
 fn done(v: Value) -> Result<ToolOutcome, String> {
@@ -31,15 +33,35 @@ fn is_picture(app: &App, id: Id) -> bool {
     app.project.asset(id).is_some_and(|a| matches!(a.kind, ClipKind::Video | ClipKind::Image))
 }
 
-/// The pictures selected in the Media Library, in selection order.
-fn library_pictures(app: &App) -> Vec<Id> {
-    let ids = if app.library.sel_ids.is_empty() { app.library.selected.into_iter().collect() } else { app.library.sel_ids.clone() };
-    ids.into_iter().filter(|&id| is_picture(app, id)).collect()
+fn is_sound(app: &App, id: Id) -> bool {
+    app.project.asset(id).is_some_and(|a| a.kind == ClipKind::Audio)
 }
 
-/// Give `ids` to the slots from `from` on, one each.
-fn fill_from(app: &mut App, from: usize, ids: &[Id]) {
-    for (k, &id) in ids.iter().enumerate() {
+/// The media to fill slots from, in order: what is selected in the Media Library, else the footage and
+/// sound of the clips selected on the timeline (in time order, each file once).
+fn library_pictures(app: &App) -> Vec<Id> {
+    let ids: Vec<Id> = if app.library.sel_ids.is_empty() { app.library.selected.into_iter().collect() } else { app.library.sel_ids.clone() };
+    let mut ids: Vec<Id> = ids.into_iter().filter(|&id| is_picture(app, id) || is_sound(app, id)).collect();
+    if ids.is_empty() {
+        let mut clips: Vec<&Clip> = app.selection.iter().filter_map(|&id| app.project.clip(id)).filter(|c| c.uses_asset() && c.asset != 0).collect();
+        clips.sort_by(|a, b| a.start.total_cmp(&b.start));
+        for c in clips {
+            // (the sound half of a video clip is the same file)
+            if !ids.contains(&c.asset) && (is_picture(app, c.asset) || is_sound(app, c.asset)) {
+                ids.push(c.asset);
+            }
+        }
+    }
+    ids
+}
+
+/// Give `ids` to the slots from `from` on (`templates::assign`: sounds to sound slots, pictures to the
+/// others, a beat edit's pictures again in turn when it has more shots than clips).
+fn fill_from(app: &mut App, from: usize, ids: &[Id], cycle: bool) {
+    let media: Vec<(Id, bool)> = ids.iter().map(|&id| (id, is_sound(app, id))).collect();
+    let wants: Vec<SlotWant> = app.templates.using.slots.iter().skip(from).map(|s| s.want).collect();
+    for (k, got) in templates::assign(&wants, &media, cycle).into_iter().enumerate() {
+        let Some(id) = got else { continue };
         let name = app.project.asset(id).map(|a| a.name()).unwrap_or_default();
         if let Some(s) = app.templates.using.slots.get_mut(from + k) {
             s.fill = Some((id, name));
@@ -47,11 +69,18 @@ fn fill_from(app: &mut App, from: usize, ids: &[Id]) {
     }
 }
 
-/// The media selected in the library as `templates.use` fills, in slot order (a template dropped on the
-/// timeline takes them without asking).
+/// The media selected in the library (or on the timeline) as `templates.use` fills, in slot order (a
+/// template dropped on the timeline takes them without asking).
 pub(super) fn library_fills(app: &App, name: &str) -> Vec<Value> {
-    let slots = find(app, name).map_or(0, |d| d.slot_list().len());
-    library_pictures(app).into_iter().take(slots).map(|id| json!(id)).collect()
+    let Some(d) = find(app, name) else { return Vec::new() };
+    let media: Vec<(Id, bool)> = library_pictures(app).into_iter().map(|id| (id, is_sound(app, id))).collect();
+    let wants: Vec<SlotWant> = d.slot_list().iter().map(|s| s.want).collect();
+    let mut fills: Vec<Value> =
+        templates::assign(&wants, &media, d.sync.is_some()).into_iter().map(|g| g.map_or(Value::Null, |id| json!(id))).collect();
+    while fills.last().is_some_and(Value::is_null) {
+        fills.pop();
+    }
+    fills
 }
 
 /// A Templates card was clicked: a template without slots is placed at the playhead; one with slots opens
@@ -75,17 +104,25 @@ pub(super) fn card_clicked(app: &mut App, name: &str) {
                 fit: s.fit,
                 fill: None,
                 sample: c.is_some_and(|c| c.asset != 0),
+                hint: s.hint.clone(),
             }
         })
         .collect();
     app.templates.using = UseState { open: true, name: name.to_string(), slots };
     let lib = library_pictures(app);
-    fill_from(app, 0, &lib);
+    fill_from(app, 0, &lib, d.sync.is_some());
 }
 
 /// Place template `name` at `at` (pulled to video track `track` when given) with `fills` (per slot: null,
 /// an asset id or a file path), as one undo step.
 pub(super) fn place(app: &mut App, name: &str, at: f64, track: Option<usize>, fills: Vec<Value>) {
+    // a beat edit reads its song first (in the background, the first time): placed when that is done
+    if let Some(path) = song_path(app, name, &fills) {
+        if !crate::engine::visualizer::analysis_ready(&path, 0) {
+            app.templates.pending = Some(Pending { name: name.to_string(), at, track, fills, path });
+            return app.toast("Finding the song's beat and drop…");
+        }
+    }
     let args = json!({"name": name, "at": at, "fills": fills, "track": track});
     match app.run_tool_undoable("templates.use", &args) {
         Ok(_) => gallery_ctl::count_use(app, "Templates", name),
@@ -93,23 +130,101 @@ pub(super) fn place(app: &mut App, name: &str, at: f64, track: Option<usize>, fi
     }
 }
 
+/// A template waiting for its song's analysis.
+pub struct Pending {
+    name: String,
+    at: f64,
+    track: Option<usize>,
+    fills: Vec<Value>,
+    path: String,
+}
+
+/// The file in a beat edit's song slot among `fills` (in slot order), if it has one.
+fn song_path(app: &App, name: &str, fills: &[Value]) -> Option<String> {
+    let d = find(app, name)?;
+    let song = d.sync.as_ref()?.song;
+    let i = d.slot_list().iter().position(|s| s.clip == song)?;
+    match fills.get(i)? {
+        Value::String(p) => Some(p.clone()),
+        v => app.project.asset(v.as_u64()?).map(|a| a.path.clone()),
+    }
+}
+
 /// The asset a fill names: an asset id, or a file (probed now, so the slot's timing can follow its length).
-fn fill_asset(app: &mut App, v: &Value) -> Result<Option<Id>, String> {
+/// `sound`: the slot takes a sound (anything with an audio track), else a picture.
+fn fill_asset(app: &mut App, v: &Value, sound: bool) -> Result<Option<Id>, String> {
     if v.is_null() {
         return Ok(None);
     }
+    let ok = |a: &crate::model::Asset| if sound { a.kind == ClipKind::Audio || !a.audio_streams.is_empty() } else { matches!(a.kind, ClipKind::Video | ClipKind::Image) };
+    let what = if sound { "a sound (or a video with sound)" } else { "a video or an image" };
     if let Some(id) = v.as_u64() {
-        return if is_picture(app, id) { Ok(Some(id)) } else { Err(format!("asset {id} is not a video or an image in this project")) };
+        return match app.project.asset(id) {
+            Some(a) if ok(a) => Ok(Some(id)),
+            _ => Err(format!("asset {id} is not {what} in this project")),
+        };
     }
     let path = v.as_str().ok_or("a fill is an asset id or a file path")?;
     if let Some(a) = app.project.asset_by_path(path) {
-        return Ok(Some(a.id));
+        return if ok(a) { Ok(Some(a.id)) } else { Err(format!("{path}: not {what}")) };
     }
     let a = crate::media::probe(path, app.backend()).map_err(|e| format!("{path}: {e}"))?;
-    if !matches!(a.kind, ClipKind::Video | ClipKind::Image) {
-        return Err(format!("{path}: not a video or an image"));
+    if !ok(&a) {
+        return Err(format!("{path}: not {what}"));
     }
     Ok(Some(app.project.add_asset(a)))
+}
+
+/// A song's tempo grid and drop, source seconds: the Beat Aligner's when its sheet is this song's,
+/// else detected (the analysis is computed on this thread when not cached yet). `drop` overrides.
+fn song_beat(app: &App, asset: Id, drop: Option<f64>, lead: f64) -> Result<templates::SongBeat, String> {
+    let a = app.project.asset(asset).ok_or("the song is not in the project")?;
+    let an = crate::engine::visualizer::analysis(&a.path, 0, app.backend())?;
+    let sheet = &app.project.beats;
+    let mine = sheet.asset == asset && sheet.bpm > 0.0;
+    let (bpm, offset) = if mine {
+        (sheet.bpm, sheet.offset)
+    } else {
+        let mut s = crate::model::BeatSheet::default();
+        beats_ctl::apply_analysis(&mut s, &an, a.duration)?;
+        (s.bpm, s.offset)
+    };
+    let marked = mine.then(|| sheet.sections.iter().find(|s| s.name.eq_ignore_ascii_case("Drop")).map(|s| s.a)).flatten();
+    let low: Vec<f32> = an.raw.iter().map(|f| f[1] + f[2] + 0.5 * f[0]).collect();
+    let found = templates::find_drop(&low, crate::engine::visualizer::ANALYSIS_HZ, bpm, offset, lead * 0.72); // (the build before the drop, at its shortest tempo fit)
+    let drop = drop.or(marked).or(found).unwrap_or(offset);
+    // on the beat
+    let p = 60.0 / bpm;
+    let drop = (offset + ((drop - offset) / p).round() * p).max(0.0);
+    Ok(templates::SongBeat { bpm, offset, drop, len: a.duration })
+}
+
+/// Where a sound's hit is (its loudest onset, source seconds).
+fn sound_onset(app: &App, asset: Id) -> f64 {
+    let Some(a) = app.project.asset(asset) else { return 0.0 };
+    match crate::engine::visualizer::analysis(&a.path, 0, app.backend()) {
+        Ok(an) => templates::loudest_onset(&an.raw.iter().map(|f| f[0]).collect::<Vec<f32>>(), crate::engine::visualizer::ANALYSIS_HZ),
+        Err(_) => 0.0,
+    }
+}
+
+/// An empty sound slot with a hint: a sound of the project whose name has the hint's words, else one from
+/// your SFX / music folders (imported).
+fn default_sound(app: &mut App, hint: &str) -> Option<Id> {
+    let words: Vec<String> = hint.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return None;
+    }
+    let have = app.project.assets.iter().find(|a| {
+        let n = a.name().to_lowercase();
+        (a.kind == ClipKind::Audio || !a.audio_streams.is_empty()) && words.iter().all(|w| n.contains(w.as_str()))
+    });
+    if let Some(a) = have {
+        return Some(a.id);
+    }
+    let path = templates::find_sound(hint, &templates::sound_roots())?;
+    let a = crate::media::probe(&path.to_string_lossy(), app.backend()).ok()?;
+    Some(app.project.add_asset(a))
 }
 
 fn slots_json(d: &TemplateData) -> Vec<Value> {
@@ -120,7 +235,7 @@ fn slots_json(d: &TemplateData) -> Vec<Value> {
             let c = d.clip(s.clip);
             json!({"index": i + 1, "name": s.name, "wants": s.want.name(), "fit": s.fit.name(),
                    "seconds": c.map_or(0.0, |c| c.duration), "start": c.map_or(0.0, |c| c.start),
-                   "has_footage": c.is_some_and(|c| c.asset != 0)})
+                   "has_footage": c.is_some_and(|c| c.asset != 0), "hint": s.hint})
         })
         .collect()
 }
@@ -243,6 +358,14 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 }
 
 pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
+    if let Some(path) = app.templates.pending.as_ref().map(|p| p.path.clone()) {
+        let c = ctx.clone();
+        if crate::engine::visualizer::analysis_async(&path, 0, app.backend(), move || c.request_repaint()).is_some() {
+            if let Some(p) = app.templates.pending.take() {
+                place(app, &p.name, p.at, p.track, p.fills);
+            }
+        }
+    }
     if app.templates.using.open {
         let selected = library_pictures(app).len();
         match template_ui::use_window(ctx, &mut app.templates.using, selected) {
@@ -261,12 +384,13 @@ pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
             }
             Some(UseAct::FromLibrary) => {
                 let lib = library_pictures(app);
-                fill_from(app, 0, &lib);
+                let cycle = find(app, &app.templates.using.name.clone()).is_some_and(|d| d.sync.is_some());
+                fill_from(app, 0, &lib, cycle);
             }
             Some(UseAct::OpenLibrary) => app.surface(Pane::Library),
             Some(UseAct::Drop(i, ids)) => {
-                let ids: Vec<Id> = ids.into_iter().filter(|&id| is_picture(app, id)).collect();
-                fill_from(app, i, &ids);
+                let ids: Vec<Id> = ids.into_iter().filter(|&id| is_picture(app, id) || is_sound(app, id)).collect();
+                fill_from(app, i, &ids, false);
             }
             Some(UseAct::Place) => {
                 let st = std::mem::take(&mut app.templates.using);
@@ -327,12 +451,14 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "templates.use",
-        desc: "Place a template (yours or built-in) at a time with its animation blocks, keyframes, transitions and layers, and fill its slots with footage. fills: an array in slot order, or an object keyed by slot name or 1-based index; each value is a media asset id or a file path (imported), null / missing leaves that slot as a placeholder (or with the template's own footage). One undo step.",
+        desc: "Place a template (yours or built-in) at a time with its animation blocks, keyframes, transitions and layers, and fill its slots with footage. fills: an array in slot order, or an object keyed by slot name or 1-based index; each value is a media asset id or a file path (imported), null / missing leaves that slot as a placeholder (or with the template's own footage). Sound slots (wants audio) take a sound: a beat edit's Song slot retimes the template to the song's tempo and cuts the song so the template's drop lands on the song's drop (detected, or the Beat Aligner's Drop section, or `drop`); a sound-effect slot lines the sound's hit up with its moment and, left empty, finds a sound named like its hint in the media library or your SFX / Music folders. One undo step.",
         args: &[
             "name:string:true:template name",
             "at:number:false:timeline seconds (default: the playhead)",
             "fills:object:false:slot -> asset id or file path (or an array in slot order)",
             "track:integer:false:video track index to put its lowest layer on",
+            "drop:number:false:a beat edit: the song's drop, song seconds (default: detected)",
+            "auto_sounds:boolean:false:fill empty sound-effect slots from your sounds (default true)",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
@@ -340,11 +466,12 @@ pub const TOOLS: &[ToolDef] = &[
             let at = arg_f64(args, "at").unwrap_or(app.playhead).max(0.0);
             let d = find(app, &name).ok_or_else(|| format!("no template '{name}'"))?;
             let slots = d.slot_list();
+            let sound = |i: usize| slots.get(i).is_some_and(|s| s.want == SlotWant::Audio);
             let mut fills: Vec<(usize, Id)> = Vec::new();
             match args.get("fills") {
                 Some(Value::Array(a)) => {
                     for (i, v) in a.iter().enumerate().take(slots.len()) {
-                        fills.extend(fill_asset(app, v)?.map(|id| (i, id)));
+                        fills.extend(fill_asset(app, v, sound(i))?.map(|id| (i, id)));
                     }
                 }
                 Some(Value::Object(o)) => {
@@ -354,17 +481,38 @@ pub const TOOLS: &[ToolDef] = &[
                             .position(|s| s.name.eq_ignore_ascii_case(k.trim()))
                             .or_else(|| k.trim().parse::<usize>().ok().filter(|n| (1..=slots.len()).contains(n)).map(|n| n - 1))
                             .ok_or_else(|| format!("'{name}' has no slot '{k}'"))?;
-                        fills.extend(fill_asset(app, v)?.map(|id| (i, id)));
+                        fills.extend(fill_asset(app, v, sound(i))?.map(|id| (i, id)));
                     }
                 }
                 _ => {}
             }
-            let ids = templates::apply(&mut app.project, d, at, &fills);
+            // an empty sound slot with a hint finds its sound in your library or sound folders
+            if arg_bool(args, "auto_sounds").unwrap_or(true) {
+                for (i, s) in slots.iter().enumerate() {
+                    if s.want == SlotWant::Audio && !s.hint.is_empty() && !fills.iter().any(|f| f.0 == i) {
+                        fills.extend(default_sound(app, &s.hint).map(|id| (i, id)));
+                    }
+                }
+            }
+            let song_slot = d.sync.as_ref().and_then(|sy| slots.iter().position(|s| s.clip == sy.song));
+            let song = match fills.iter().find(|f| Some(f.0) == song_slot) {
+                Some(&(_, asset)) => Some(song_beat(app, asset, arg_f64(args, "drop"), d.sync.as_ref().map_or(0.0, |s| s.drop))?),
+                None => None,
+            };
+            let fills: Vec<templates::Fill> = fills
+                .iter()
+                .map(|&(slot, asset)| {
+                    let onset = if sound(slot) && Some(slot) != song_slot { sound_onset(app, asset) } else { 0.0 };
+                    templates::Fill { slot, asset, onset }
+                })
+                .collect();
+            let ids = templates::apply_synced(&mut app.project, d, at, &fills, song);
             if let Some(track) = arg_u64(args, "track") {
                 crate::ui::timeline::gallery_drop::pull_to_track(&mut app.project, &ids, Some(track as usize));
             }
             app.selection = ids.clone();
-            done(json!({"ok": true, "clip_ids": ids, "filled": fills.len(), "slots": slots.len()}))
+            let beat = song.map(|s| json!({"bpm": s.bpm, "drop": s.drop}));
+            done(json!({"ok": true, "clip_ids": ids, "filled": fills.len(), "slots": slots.len(), "song": beat}))
         },
     },
     ToolDef {

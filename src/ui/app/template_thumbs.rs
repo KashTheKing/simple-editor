@@ -17,7 +17,7 @@ use std::sync::mpsc;
 pub(crate) const TW: u32 = 192;
 pub(crate) const TH: u32 = 108;
 /// Bump when the picture changes for the same template (the key includes it).
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 #[derive(Default)]
 struct State {
@@ -152,20 +152,30 @@ pub(crate) fn render(tpl: &crate::settings::Template) -> Option<Frame> {
     }
     // ws:animator-templates: with its track order and transitions (text stays over footage)
     let mut p = crate::model::Project::new();
+    let mut thumb_t = 0.0;
     match crate::engine::templates::TemplateData::decode(&tpl.json) {
-        Some(d) => drop(crate::engine::templates::apply(&mut p, d, 0.0, &[])),
+        Some(d) => {
+            thumb_t = d.thumb_t;
+            drop(crate::engine::templates::apply(&mut p, d, 0.0, &[]))
+        }
         None => drop(p.place_clips(clips, assets, 0.0)),
     }
     let end = p.duration();
     if end <= 0.0 {
         return None;
     }
-    // the first meaningful frame: the earliest of nine moments showing most of what the busiest one does
-    // (a title that types or fades in is caught once it is (nearly) all there, not on its first letter),
-    // drawn at 4x the card so a small title can be framed and still be sharp
     let (rw, rh) = (TW * 4, TH * 4);
     let (mut comp, mut text) = (crate::engine::compose::Compositor::new(), crate::engine::text::TextRasterizer::new());
     let mut pool = crate::media::DecoderPool::new(crate::media::Backend::Auto);
+    // ws:edit-templates: a template that names its picture moment is drawn there, whole frame
+    if thumb_t > 0.0 && thumb_t < end {
+        let mut f = Frame::default();
+        comp.render(&p, thumb_t, rw, rh, &mut pool, &mut text, &mut f);
+        return (coverage(&f) > 0).then(|| fit(&f, (0, 0, f.width, f.height)));
+    }
+    // the first meaningful frame: the earliest of nine moments showing most of what the busiest one does
+    // (a title that types or fades in is caught once it is (nearly) all there, not on its first letter),
+    // drawn at 4x the card so a small title can be framed and still be sharp
     let shots: Vec<(u64, Frame)> = (0..9)
         .map(|i| {
             let mut f = Frame::default();

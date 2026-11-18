@@ -828,6 +828,21 @@ fn guarded(pool: &mut DecoderPool, f: impl FnOnce(&mut DecoderPool)) -> bool {
     false
 }
 
+/// What playback draws of `p`: `p` itself, or in Audio Only (`Project::audio_only_preview`) `p` with every
+/// picture track emptied - nothing to decode or composite, the sound plays from the audio thread's own copy.
+pub(crate) fn played_view(p: &Arc<Project>) -> Arc<Project> {
+    if !p.audio_only_preview {
+        return p.clone();
+    }
+    let mut v = (**p).clone();
+    for t in v.tracks.iter_mut().filter(|t| t.kind != TrackKind::Audio) {
+        t.clips.clear();
+        t.transitions.clear();
+    }
+    v.show_subtitles = false;
+    Arc::new(v)
+}
+
 fn render_thread(
     shared: Arc<Shared>,
     rx: Receiver<Cmd>,
@@ -838,7 +853,10 @@ fn render_thread(
     crate::media::bg::raise_thread();
     let mut comp = Compositor::new();
     let mut shapes = ShapeRasterizer::new();
-    let mut project = lock(&shared.project).clone();
+    // ws:preview-audio-only: `full` is the project as edited (one-shot renders: render.frame, Export
+    // Frame, scopes); `project` is what playback draws - its picture tracks emptied in Audio Only
+    let mut full = lock(&shared.project).clone();
+    let mut project = played_view(&full);
     // ws:nested-gpu: nested sequences as projects of their own, made once per project
     let mut nest = Nest::default();
     let mut dirty = false;
@@ -960,10 +978,12 @@ fn render_thread(
             pre_done = false;
             match c {
                 Cmd::SetProject => {
-                    let new = lock(&shared.project).clone();
+                    full = lock(&shared.project).clone();
+                    let new = played_view(&full);
                     (dirty, preload) = (true, true);
                     // evict only the frames the edit can have changed; None = anything could differ
-                    match video_dirty_spans(&project, &new) {
+                    let flipped = new.audio_only_preview != project.audio_only_preview;
+                    match video_dirty_spans(&project, &new).filter(|_| !flipped) {
                         Some(spans) => {
                             evict_spans!(spans, new.fps.max(1.0));
                         }
@@ -1041,7 +1061,7 @@ fn render_thread(
                     let _ = ack.send(());
                 }
                 Cmd::LayersOnce(t, max_w, reply) => {
-                    let (pw, ph) = (project.width.max(1), project.height.max(1));
+                    let (pw, ph) = (full.width.max(1), full.height.max(1));
                     let w = pw.min(max_w.max(16));
                     let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
                     let mut set = LayerSet::default();
@@ -1052,7 +1072,7 @@ fn render_thread(
                     pool.set_exact(exact);
                     guarded(&mut pool, |pool| {
                         set = layers_with(
-                            &project,
+                            &full,
                             t,
                             w,
                             h,
@@ -1068,11 +1088,11 @@ fn render_thread(
                     let _ = reply.send(Arc::new(set));
                 }
                 Cmd::RenderOnce(t, max_w, reply) => {
-                    let (pw, ph) = (project.width.max(1), project.height.max(1));
+                    let (pw, ph) = (full.width.max(1), full.height.max(1));
                     let w = pw.min(max_w.max(16));
                     let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
                     let mut f = Frame::default();
-                    guarded(&mut pool, |pool| comp.render(&project, t, w, h, pool, &mut lock(&text), &mut f));
+                    guarded(&mut pool, |pool| comp.render(&full, t, w, h, pool, &mut lock(&text), &mut f));
                     let _ = reply.send(Arc::new(f));
                 }
                 // ---- ws:player-rate-loop ----
@@ -1082,14 +1102,14 @@ fn render_thread(
                 Cmd::LayersAsync => {
                     // non-blocking mirror of LayersOnce: decode the latest request and publish the reply
                     if let Some((id, t, max_w)) = *lock(&shared.req) {
-                        let (pw, ph) = (project.width.max(1), project.height.max(1));
+                        let (pw, ph) = (full.width.max(1), full.height.max(1));
                         let w = pw.min(max_w.max(16));
                         let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
                         let mut set = LayerSet::default();
                         let text = &mut TextRef::Shared(&text);
                         guarded(&mut pool, |pool| {
                             set = layers_with(
-                                &project,
+                                &full,
                                 t,
                                 w,
                                 h,
@@ -1898,7 +1918,8 @@ fn layers_with(
     comp: &mut Compositor,
     nest: &mut Nest,
 ) -> LayerSet {
-    let mut set = LayerSet::default();
+    // drawn at this very instant (`LayerSet::t`), whatever time the preview's clock says
+    let mut set = LayerSet { t: Some(t), ..Default::default() };
     // a clip's layer is a bitmap, or a nested sequence's own set
     let has = |set: &LayerSet, id| set.get(id).is_some() || set.nested.iter().any(|n| n.id == id);
     let mut later = Deferred { jobs: Vec::new(), hole: Arc::new(Frame::default()) };
@@ -1914,9 +1935,9 @@ fn layers_with(
     // (`can_show`), and every track under the topmost layer that repaints the whole canvas
     // (`covers`) - once that layer's frame is really here, since a file that fails to decode
     // covers nothing. An adjustment layer above it still gets the canvas it needs: the cover.
-    // Each must hold two frames either side of `t` as well: the preview draws a set at the clock's
-    // time, not the set's own, and a cover that has just ended (or begun to fade) there would
-    // leave a hole where the layers below it were skipped.
+    // (Each is checked two frames either side of `t` as well - from when the preview drew a set at
+    // its clock's time instead of the set's own (`LayerSet::t`). Kept as a margin: a cover that is
+    // about to end costs one frame's culling, no more.)
     // ponytail: a node graph on screen turns all of this off for the frame - its Clip and Asset
     // nodes may sample layers that are hidden themselves. Follow the references if graph-heavy
     // timelines need the culling.
@@ -3480,6 +3501,142 @@ mod tests {
         let c = centre(&f);
         assert!(c[1] > 200 && c[0] < 70, "expected green from the CPU path, got {c:?}");
         assert!(p.take_layers().is_none(), "layers must stop when the GPU path is off");
+    }
+
+    // ---- ws:preview-audio-only ----
+    /// Audio Only: playback's view has no picture (no clips on video tracks, no subtitles) and keeps every
+    /// audio clip; off, it is the project itself (no copy).
+    #[test]
+    fn audio_only_view_drops_the_picture_and_keeps_the_sound() {
+        let path = media::ffpipe::tests::test_mp4();
+        let mut p = Project::from_media(media::probe(&path, Backend::Auto).unwrap());
+        p.show_subtitles = true;
+        let full = Arc::new(p.clone());
+        assert!(Arc::ptr_eq(&played_view(&full), &full), "off: the same project");
+        p.audio_only_preview = true;
+        let v = played_view(&Arc::new(p.clone()));
+        let count = |q: &Project, k: TrackKind| {
+            q.tracks.iter().filter(|t| t.kind == k).map(|t| t.clips.len()).sum::<usize>()
+        };
+        assert_eq!(count(&v, TrackKind::Video), 0);
+        assert!(!v.show_subtitles);
+        assert_eq!(count(&v, TrackKind::Audio), count(&p, TrackKind::Audio));
+        assert!(count(&p, TrackKind::Audio) > 0, "the test clip has sound");
+        assert_eq!(v.duration(), p.duration(), "the timeline is as long as before");
+    }
+
+    /// Audio Only: the render thread publishes no video layers while playing, the one-shot renders (render.frame,
+    /// Export Frame, scopes) still draw the picture, and the clock (the audio) runs.
+    #[test]
+    fn audio_only_publishes_no_video_layers() {
+        let path = media::ffpipe::tests::test_mp4();
+        let mut project = Project::from_media(media::probe(&path, Backend::Auto).unwrap());
+        project.audio_only_preview = true;
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(320, 240, 1280);
+        p.set_gpu(true);
+        p.seek(0.5);
+        p.play();
+        for _ in 0..60 {
+            if let Some(s) = p.take_layers() {
+                assert!(s.layers.is_empty(), "no picture layer in Audio Only");
+            }
+            sleep(Duration::from_millis(10));
+        }
+        assert!(p.time() > 0.5, "the clock (audio) plays on");
+        p.pause();
+        let one = p.layers_once(0.5, 320).expect("a one-shot render");
+        assert_eq!(one.layers.len(), 1, "a one-shot still draws the picture");
+        // off again: the picture comes back
+        project.audio_only_preview = false;
+        p.set_project(&project);
+        p.seek(0.5);
+        let mut back = false;
+        for _ in 0..300 {
+            if p.take_layers().is_some_and(|s| !s.layers.is_empty()) {
+                back = true;
+                break;
+            }
+            sleep(Duration::from_millis(10));
+        }
+        assert!(back, "layers again once Audio Only is off");
+    }
+
+    /// Two clips that touch at a cut off the frame grid (red footage, then lime): wherever the clock
+    /// stands around the cut - paused, or playing through it - the player publishes the grid frame's
+    /// layers stamped with that frame's instant (`LayerSet::t`, which the GPU draws them at), holding
+    /// the clip on screen there; and the CPU path's frame is that clip's picture. The GPU half of the
+    /// black-seam bug (drawing such a set at the clock's time) is `engine::gpu::seam_tests`.
+    #[test]
+    fn an_off_grid_cut_publishes_the_clip_on_screen_at_the_frame() {
+        let path = media::ffpipe::tests::test_mp4(); // red 0-2 s, lime 2-4 s, 320x240
+        let asset = media::probe(&path, Backend::Auto).unwrap();
+        let mut project = Project::from_media(asset);
+        let fps = project.fps;
+        let cut = 1.0 + 0.3 / fps; // a third of a frame past frame `fps`
+        let a = project.tracks[0].clips[0].id;
+        let mut incoming = project.tracks[0].clips[0].clone();
+        project.clip_mut(a).unwrap().duration = cut;
+        let b = project.new_id();
+        (incoming.id, incoming.start, incoming.duration, incoming.src_in) = (b, cut, 1.0, 2.5);
+        incoming.link = 0; // not linked to the outgoing clip's audio
+        project.tracks[0].clips.push(incoming);
+        project.show_subtitles = false;
+        let on_screen = |tg: f64| if project.clip(b).unwrap().contains(tg) { b } else { a };
+
+        let mut p =
+            Player::new(eframe::egui::Context::default(), Backend::Auto, Arc::new(Mutex::new(TextRasterizer::new())));
+        p.set_project(&project);
+        p.set_canvas(320, 240, 1280);
+        // CPU, paused: between the cut and the next grid frame the frame is still the outgoing clip's
+        for (clock, red) in [(cut - 1.0 / fps, true), (cut, true), (cut + 0.1 / fps, true), (1.0 + 1.0 / fps, false)] {
+            let tg = (clock * fps + 1e-6).floor() / fps;
+            p.seek(clock);
+            let c = centre(&wait_frame(&mut p, tg, (320, 240)));
+            let ok = if red { c[0] > 200 && c[1] < 70 } else { c[1] > 200 && c[0] < 70 };
+            assert!(ok, "CPU at clock {clock:.5} (frame at {tg:.5}): {c:?}, want {}", if red { "red" } else { "lime" });
+        }
+        // GPU layers, paused
+        p.set_gpu(true);
+        for clock in [cut - 1.0 / fps, cut - 1e-9, cut, cut + 0.1 / fps, (1.0 + 1.0 / fps) - 1e-7, 1.0 + 1.0 / fps] {
+            let tg = (clock * fps + 1e-6).floor() / fps;
+            p.seek(clock);
+            let mut got = None;
+            for _ in 0..300 {
+                if let Some(s) = p.take_layers().filter(|s| s.t.is_some_and(|t| (t - tg).abs() < 1e-9)) {
+                    if !p.is_partial() {
+                        got = Some(s);
+                        break;
+                    }
+                }
+                sleep(Duration::from_millis(10));
+            }
+            let set = got.unwrap_or_else(|| panic!("no layers stamped {tg} for clock {clock} within 3 s"));
+            assert!(set.get(on_screen(tg)).is_some(), "clock {clock:.6}: frame at {tg:.6} lacks the clip on screen");
+        }
+        // GPU layers, playing through the cut
+        p.seek(cut - 6.0 / fps);
+        p.play();
+        let started = Instant::now();
+        let mut seen = 0;
+        while started.elapsed() < Duration::from_millis(900) && p.time() < cut + 6.0 / fps {
+            if let Some(s) = p.take_layers() {
+                let tg = s.t.expect("a player set says its instant");
+                assert!(((tg * fps).round() - tg * fps).abs() < 1e-6, "{tg} is on the grid");
+                if !p.is_partial() {
+                    assert!(set_has(&s, on_screen(tg)), "playing: frame at {tg:.6} lacks the clip on screen");
+                    seen += 1;
+                }
+            }
+            sleep(Duration::from_millis(1));
+        }
+        p.pause();
+        assert!(seen > 0, "no whole layer set published while playing through the cut");
+        fn set_has(s: &LayerSet, id: crate::model::Id) -> bool {
+            s.get(id).is_some()
+        }
     }
 
     /// `decode_layers` owes the GPU renderer a bitmap for every visual clip, not just decoded media:

@@ -889,23 +889,23 @@ mod tests {
     /// parses falls back to the built-in one instead of an empty page.
     #[test]
     fn a_saved_page_default_is_where_the_page_starts() {
-        let mut s = Settings { page: "Cut".into(), ..Default::default() };
+        let mut s = Settings { page: "Plan".into(), ..Default::default() };
         let mut l = Layout::cut_layout();
         l.toggle(Pane::Inspector);
         let mine = tree_value(&l);
         l.maximize(Pane::Timeline);
         save_page_default(&mut s, &l);
-        assert_eq!(tree_value(&page_start(&s, "Cut")), mine, "the arrangement under the maximised panel");
-        assert!(page_start(&s, "Cut").maximized.is_none());
+        assert_eq!(tree_value(&page_start(&s, "Plan")), mine, "the arrangement under the maximised panel");
+        assert!(page_start(&s, "Plan").maximized.is_none());
         assert_eq!(tree_value(&page_start(&s, "Media")), tree_value(&Layout::media_layout()), "no default saved");
-        // a first visit (nothing stored for Cut) starts from the saved default
+        // a first visit (nothing stored for Plan) starts from the saved default
         let (mut undo, mut redo) = (Vec::new(), Vec::new());
         let mut l = Layout::default_layout();
         s.page = "Edit".into();
-        swap_page(&mut l, &mut s, &mut undo, &mut redo, "Cut");
+        swap_page(&mut l, &mut s, &mut undo, &mut redo, "Plan");
         assert_eq!(tree_value(&l), mine);
-        s.page_defaults.insert("Cut".into(), "not json".into());
-        assert_eq!(tree_value(&page_start(&s, "Cut")), tree_value(&Layout::cut_layout()));
+        s.page_defaults.insert("Plan".into(), "not json".into());
+        assert_eq!(tree_value(&page_start(&s, "Plan")), tree_value(&Layout::cut_layout()));
     }
 
     /// A timeline click shows the Preview only over a Source tab stacked in the Preview's own group.
@@ -1017,7 +1017,7 @@ mod tests {
         assert_eq!(find_page(&s, "sound").as_deref(), Some("Sound"));
         // reorder
         move_page(&mut s, 8, 0);
-        assert_eq!(s.pages, ["Grade", "Media", "Cut", "Edit", "Animate", "Color", "Sound", "Export", "Ours"]);
+        assert_eq!(s.pages, ["Grade", "Media", "Plan", "Edit", "Animate", "Color", "Sound", "Export", "Ours"]);
         // round-trip through the settings file
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.pages, s.pages);
@@ -1030,7 +1030,7 @@ mod tests {
         assert!(delete_page(&mut s, "Grade").is_err(), "at least one page stays");
         assert_eq!(s.pages, ["Grade"]);
         restore_default_pages(&mut s);
-        assert_eq!(s.pages, ["Media", "Cut", "Edit", "Animate", "Color", "Audio", "Export", "Grade"]);
+        assert_eq!(s.pages, ["Media", "Plan", "Edit", "Animate", "Color", "Audio", "Export", "Grade"]);
     }
 
     /// Old settings: no `pages` = the six built-ins; an emptied list is refilled; a page the list lost
@@ -1059,5 +1059,18 @@ mod tests {
         assert!(swap_page(&mut layout, &mut s, &mut undo, &mut redo, "Mine"));
         assert_eq!(vis(&layout), vis(&Layout::blank_layout()));
         assert!(s.page_layouts.contains_key("Color"));
+        // an old settings file from before the Cut page was renamed Plan keeps its page and arrangements
+        let mut s: Settings = serde_json::from_str(
+            r#"{"page": "Cut", "pages": ["Media", "Cut", "Edit"], "page_layouts": {"Cut": "tree"}, "page_defaults": {"Cut": "mine"}}"#,
+        )
+        .unwrap();
+        s.rename_cut_page();
+        migrate_to_pages(&mut s);
+        assert_eq!((s.page.as_str(), s.pages[1].as_str()), ("Plan", "Plan"));
+        assert!(!s.pages.iter().any(|p| p == "Cut"), "{:?}", s.pages);
+        assert_eq!(s.page_layouts.get("Plan").map(String::as_str), Some("tree"));
+        assert_eq!(s.page_defaults.get("Plan").map(String::as_str), Some("mine"));
+        assert!(!s.page_layouts.contains_key("Cut") && !s.page_defaults.contains_key("Cut"));
+        assert_eq!(tree_value(&page_layout("Cut").unwrap()()), tree_value(&Layout::cut_layout()));
     }
 }

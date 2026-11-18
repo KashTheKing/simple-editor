@@ -1,10 +1,10 @@
 //! Dockable editor layout (egui_tiles), one tree per page (`PAGES`: Media / Cut / Edit / Color / Audio /
-//! Export, the Resolve-style switcher in the menu bar); every page's default puts the Inspector top
-//! right. Panes can be split, tabbed, hidden/shown, popped out into their own OS windows (egui immediate
-//! viewports, which reopen where they were) and saved/loaded as profiles (JSON - also written to / read
-//! from `.sedit-layout` files so profiles can be shared). Every builder ends with `stack_unplaced`,
-//! so every pane exists in every page, hidden behind one group until the Window menu or a tab bar's `+`
-//! brings it in. Hidden panes stay in the tree (egui_tiles visibility), so they come back where they were.
+//! Export, the Resolve-style switcher in the menu bar); every page's default but Media and Export
+//! puts the Inspector top right. Panes can be split, tabbed, hidden/shown, popped out into their own
+//! OS windows (egui immediate viewports, which reopen where they were) and saved/loaded as profiles
+//! (JSON - also written to / read from `.sedit-layout` files so profiles can be shared). Every builder
+//! ends with `stack_unplaced`, so every pane exists in every page, hidden behind one group until the
+//! Window menu or a tab bar's `+` brings it in. Hidden panes stay in the tree (egui_tiles visibility), so they come back where they were.
 //!
 //! Panels are unlocked by default: a tab drags to re-dock (`Chrome::locked`, Window ▸ Layout ▸ Lock
 //! panels, makes a tab click-only); split dividers resize either way and Undock always works from a
@@ -27,13 +27,13 @@ use std::time::Instant;
 /// The pages in Resolve's order, left to right in the menu-bar switcher and Alt+1..6
 /// (`Action::Workspace1..6`). Each page keeps its own tree (`Settings.layout` = the current one,
 /// `Settings.page_layouts` the others); `page_layout` maps a name to its built-in builder.
-pub const PAGES: &[&str] = &["Media", "Cut", "Edit", "Animate", "Color", "Audio", "Export"];
+pub const PAGES: &[&str] = &["Media", "Plan", "Edit", "Animate", "Color", "Audio", "Export"];
 
 /// The built-in builder behind a `PAGES` name (`None` for a name that isn't one).
 pub fn page_layout(name: &str) -> Option<fn() -> Layout> {
     Some(match name {
         "Media" => Layout::media_layout,
-        "Cut" => Layout::cut_layout,
+        "Plan" | "Cut" => Layout::cut_layout,
         "Edit" => Layout::default_layout,
         "Animate" => Layout::animate_layout,
         "Color" => Layout::color_layout,
@@ -43,21 +43,18 @@ pub fn page_layout(name: &str) -> Option<fn() -> Layout> {
     })
 }
 
-/// The tool a page opens with: the Cut page cuts, every other page selects.
+/// The tool a page opens with: the select tool on every page (the Plan page was the Cut page, which cut).
 pub fn page_tool(page: &str) -> crate::ui::tools::Tool {
     use crate::ui::tools::Tool;
-    if page == "Cut" {
-        Tool::Cut
-    } else {
-        Tool::Select
-    }
+    let _ = page;
+    Tool::Select
 }
 
 /// A page by name, case-insensitively, including the six pre-pages workspace names (Simple / Text ->
-/// Edit, Deliver -> Export) so old scripts, `layout.workspace` calls and settings files keep working.
+/// Edit, Deliver -> Export) and the Plan page's old name (Cut) so old scripts, `layout.workspace` calls and settings files keep working.
 pub fn page_name(name: &str) -> Option<&'static str> {
     let name = name.trim();
-    let old = [("Simple", "Edit"), ("Text", "Edit"), ("Deliver", "Export")];
+    let old = [("Simple", "Edit"), ("Text", "Edit"), ("Deliver", "Export"), ("Cut", "Plan")];
     PAGES
         .iter()
         .copied()
@@ -473,11 +470,32 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Cut page (fast assembly and planning): [Library over Planner | Moodboard | Markers | Subtitles]
-    /// · [Source | Preview] · [Inspector] over the Timeline.
+    /// The Plan page (was Cut): [Planner | Moodboard | Markers | Subtitles | Voiceover | Transcript | Clips]
+    /// · [Source | Preview] · [Inspector] on top; a small [Library | Media Browser] beside
+    /// [Timeline | Beat Aligner] below.
     pub fn cut_layout() -> Self {
-        let plan = [Pane::Planner, Pane::Moodboard, Pane::Markers, Pane::Subtitles, Pane::BeatAligner];
-        Self::viewer_over_timeline(&[Pane::Library], &plan, [0.25, 0.5, 0.25])
+        use egui_tiles::LinearDir::{Horizontal, Vertical};
+        let mut tiles = egui_tiles::Tiles::default();
+        let t = &mut tiles;
+        let plan = [
+            Pane::Planner,
+            Pane::Moodboard,
+            Pane::Markers,
+            Pane::Subtitles,
+            Pane::Voiceover,
+            Pane::Transcript,
+            Pane::Clips,
+        ];
+        let plan = Self::tabs(t, &plan, 0);
+        let viewer = Self::tabs(t, &[Pane::Source, Pane::Preview], 1);
+        let inspector = t.insert_pane(Pane::Inspector);
+        let top = Self::linear(t, Horizontal, &[(plan, 0.25), (viewer, 0.5), (inspector, 0.25)]);
+        let library = Self::tabs(t, &[Pane::Library, Pane::MediaBrowser], 0);
+        let timeline = Self::tabs(t, &[Pane::Timeline, Pane::BeatAligner], 0);
+        let bottom = Self::linear(t, Horizontal, &[(library, 0.2), (timeline, 0.8)]);
+        let root = Self::linear(t, Vertical, &[(top, 0.6), (bottom, 0.4)]);
+        Self::stack_unplaced(t, plan);
+        Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
     /// The Edit page: [Library | Gallery] · [Source | Preview] · [Inspector] over
@@ -503,7 +521,8 @@ impl Layout {
             }
         };
         let viewer = Self::tabs(t, &[Pane::Source, Pane::Preview], 1);
-        let inspector = t.insert_pane(Pane::Inspector);
+        // the Clips strip rides as a tab beside the Inspector
+        let inspector = Self::tabs(t, &[Pane::Inspector, Pane::Clips], 0);
         let top = Self::linear(t, Horizontal, &[(left, shares[0]), (viewer, shares[1]), (inspector, shares[2])]);
         let timeline = t.insert_pane(Pane::Timeline);
         let root = Self::linear(t, Vertical, &[(top, 0.6), (timeline, 0.4)]);
@@ -511,50 +530,43 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Color page, laid out like Resolve's: [Gallery] · [Preview] · [Nodes] · [Inspector] on top, the
-    /// Clips strip and a thin Timeline, then [Color Wheels] · [Curves] · [Scopes] along the bottom.
+    /// The Color page: a big [Preview] beside [Inspector | Nodes | Gallery] on top, [Clips | Timeline] in one
+    /// panel across the middle, [Color Wheels] · [Curves] · [Scopes] along the bottom.
     pub fn color_layout() -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
-        let gallery = Self::tabs(t, &[Pane::Presets], 0);
-        let preview = t.insert_pane(Pane::Preview);
-        let nodes = t.insert_pane(Pane::Nodes);
-        let inspector = t.insert_pane(Pane::Inspector);
-        let top = Self::linear(t, Horizontal, &[(gallery, 0.17), (preview, 0.43), (nodes, 0.2), (inspector, 0.2)]);
-        let clips = t.insert_pane(Pane::Clips);
-        let timeline = t.insert_pane(Pane::Timeline);
+        let preview = Self::tabs(t, &[Pane::Preview], 0);
+        let side = Self::tabs(t, &[Pane::Inspector, Pane::Nodes, Pane::Presets], 0);
+        let top = Self::linear(t, Horizontal, &[(preview, 0.68), (side, 0.32)]);
+        let edit = Self::tabs(t, &[Pane::Clips, Pane::Timeline], 0);
         let grade = t.insert_pane(Pane::Grade);
         let curves = t.insert_pane(Pane::Curves);
         let scopes = t.insert_pane(Pane::Scopes);
         let bottom = Self::linear(t, Horizontal, &[(grade, 0.5), (curves, 0.25), (scopes, 0.25)]);
-        let root = Self::linear(t, Vertical, &[(top, 0.47), (clips, 0.09), (timeline, 0.18), (bottom, 0.26)]);
-        Self::stack_unplaced(t, gallery);
+        let root = Self::linear(t, Vertical, &[(top, 0.50), (edit, 0.19), (bottom, 0.31)]);
+        Self::stack_unplaced(t, side);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Audio page, kept simple: the Preview gets the whole top-left, the Mixer sits beside the
-    /// Inspector on the right; below, one group with Voiceover | Transcript | Subtitles (plus the music
-    /// Library | Gallery) beside one group with Timeline | Beat Aligner (Timeline in front).
+    /// The Audio page: [Library | Media Browser | Gallery (Audio side)] · [Preview] · [Voiceover |
+    /// Transcript | Subtitles] · [Inspector] on top; [Timeline | Beat Aligner] · [Mixer] below (Timeline in front).
     /// `layout_ctl::switch_page` turns the Library to audio and the Gallery to its Audio side on the way in.
     /// A saved Audio layout is kept: Window ▸ Layout ▸ Reset Page Layout gets this.
     pub fn audio_layout() -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
+        let music = Self::tabs(t, &[Pane::Library, Pane::MediaBrowser, Pane::Presets], 2);
         let preview = Self::tabs(t, &[Pane::Preview], 0);
-        let mixer = t.insert_pane(Pane::Mixer);
+        let sound = Self::tabs(t, &[Pane::Voiceover, Pane::Transcript, Pane::Subtitles], 0);
         let inspector = t.insert_pane(Pane::Inspector);
-        let top = Self::linear(t, Horizontal, &[(preview, 0.56), (mixer, 0.18), (inspector, 0.26)]);
-        let sound = Self::tabs(
-            t,
-            &[Pane::Voiceover, Pane::Transcript, Pane::Subtitles, Pane::Library, Pane::Presets],
-            0,
-        );
+        let top = Self::linear(t, Horizontal, &[(music, 0.26), (preview, 0.41), (sound, 0.16), (inspector, 0.17)]);
         let timeline = Self::tabs(t, &[Pane::Timeline, Pane::BeatAligner], 0);
-        let bottom = Self::linear(t, Horizontal, &[(sound, 0.30), (timeline, 0.70)]);
-        let root = Self::linear(t, Vertical, &[(top, 0.52), (bottom, 0.48)]);
-        Self::stack_unplaced(t, sound);
+        let mixer = t.insert_pane(Pane::Mixer);
+        let bottom = Self::linear(t, Horizontal, &[(timeline, 0.67), (mixer, 0.33)]);
+        let root = Self::linear(t, Vertical, &[(top, 0.57), (bottom, 0.43)]);
+        Self::stack_unplaced(t, music);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
@@ -586,18 +598,17 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Export page: [Export settings] · [Preview] · [Inspector over Jobs | Performance] over the
-    /// Timeline.
+    /// The Export page: [Export settings] · [Preview] · [Jobs | Performance, the render queue and the
+    /// meters] over the Timeline. No Inspector: the Export pane shows the project settings itself (the `+` /
+    /// Window menu brings the Inspector back, hidden behind the Export tab).
     pub fn export_layout() -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
         let export = Self::tabs(t, &[Pane::Export], 0);
         let preview = t.insert_pane(Pane::Preview);
-        let inspector = t.insert_pane(Pane::Inspector);
         let jobs = Self::tabs(t, &[Pane::Jobs, Pane::Performance], 0);
-        let side = Self::linear(t, Vertical, &[(inspector, 0.55), (jobs, 0.45)]);
-        let top = Self::linear(t, Horizontal, &[(export, 0.3), (preview, 0.45), (side, 0.25)]);
+        let top = Self::linear(t, Horizontal, &[(export, 0.32), (preview, 0.48), (jobs, 0.2)]);
         let timeline = t.insert_pane(Pane::Timeline);
         let root = Self::linear(t, Vertical, &[(top, 0.6), (timeline, 0.4)]);
         Self::stack_unplaced(t, export);
@@ -809,6 +820,19 @@ impl Layout {
             return true;
         }
         self.tree.tiles.find_pane(&pane).map(|id| self.tree.tiles.is_visible(id)).unwrap_or(false)
+    }
+    /// `a` and `b` are tabs of one docked tab group: the one of them in front (None when they are not
+    /// stacked together, or a third tab is in front).
+    pub fn stacked_front(&self, a: Pane, b: Pane) -> Option<Pane> {
+        let tiles = &self.tree.tiles;
+        let (ia, ib) = (tiles.find_pane(&a)?, tiles.find_pane(&b)?);
+        let group = tiles.parent_of(ia).filter(|&g| tiles.parent_of(ib) == Some(g))?;
+        let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(t))) = tiles.get(group) else { return None };
+        match t.active {
+            Some(x) if x == ia => Some(a),
+            Some(x) if x == ib => Some(b),
+            _ => None,
+        }
     }
     /// Show (back where it was in the tree, or into the root when it is gone) or hide (invisible in the
     /// tree / close the popout).
@@ -1952,11 +1976,11 @@ mod tests {
     use super::*;
 
     // ---- ws:ui-kit ----
-    /// Each page opens with its tool: Cut cuts, the rest select.
+    /// Each page opens with the Select tool (the Plan page too, which as the Cut page used to cut).
     #[test]
     fn pages_open_with_their_default_tool() {
         use crate::ui::tools::Tool;
-        let want = [Tool::Select, Tool::Cut, Tool::Select, Tool::Select, Tool::Select, Tool::Select, Tool::Select];
+        let want = [Tool::Select; 7];
         assert_eq!(PAGES.iter().map(|p| page_tool(p)).collect::<Vec<_>>(), want);
     }
 
@@ -1980,12 +2004,12 @@ mod tests {
         use Pane::*;
         let shown: [(&str, &[Pane]); 7] = [
             ("Media", &[Library, MediaBrowser, Source]),
-            ("Cut", &[Library, Planner, Moodboard, Markers, Subtitles, BeatAligner, Source, Preview, Inspector, Timeline]),
-            ("Edit", &[Library, Presets, Source, Preview, Inspector, Timeline]),
+            ("Plan", &[Planner, Moodboard, Markers, Subtitles, Voiceover, Transcript, Clips, Source, Preview, Inspector, Library, MediaBrowser, Timeline, BeatAligner]),
+            ("Edit", &[Library, Presets, Source, Preview, Inspector, Clips, Timeline]),
             ("Animate", &[Presets, Preview, Inspector, Timeline, Animator]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
-            ("Audio", &[Library, Presets, Preview, Mixer, Voiceover, Transcript, Subtitles, Inspector, Timeline, BeatAligner]),
-            ("Export", &[Export, Preview, Inspector, Jobs, Performance, Timeline]),
+            ("Audio", &[Library, MediaBrowser, Presets, Preview, Mixer, Voiceover, Transcript, Subtitles, Inspector, Timeline, BeatAligner]),
+            ("Export", &[Export, Preview, Jobs, Performance, Timeline]),
         ];
         assert_eq!(PAGES, shown.map(|(p, _)| p), "the pages in order (Alt+1..6 are the first six)");
         for (name, visible) in shown {
@@ -2013,9 +2037,21 @@ mod tests {
             let id = l.tree.tiles.find_pane(&p).unwrap();
             assert_eq!(l.tree.tiles.parent_of(id), Some(lib), "{p:?} is not tabbed behind Library on Edit");
         }
-        assert!(in_front(&Layout::color_layout(), Nodes) && in_front(&Layout::audio_layout(), Mixer));
+        assert!(in_front(&Layout::color_layout(), Inspector) && in_front(&Layout::color_layout(), Clips));
+        assert!(in_front(&Layout::audio_layout(), Mixer));
         assert!(in_front(&Layout::cut_layout(), Preview) && !in_front(&Layout::cut_layout(), Source));
-        assert!(in_front(&Layout::cut_layout(), Planner), "Cut: Planner fronts the planning group");
+        assert!(in_front(&Layout::cut_layout(), Planner), "Plan: Planner fronts the planning group");
+        assert!(in_front(&Layout::default_layout(), Inspector), "Edit: the Inspector fronts its group (Clips beside it)");
+    }
+
+    /// The Export page's default has no Inspector: the Export pane carries the project settings.
+    #[test]
+    fn export_page_has_no_inspector() {
+        let l = Layout::export_layout();
+        assert!(!l.is_visible(Pane::Inspector), "the Export page hides the Inspector");
+        for p in [Pane::Export, Pane::Preview, Pane::Jobs, Pane::Timeline] {
+            assert!(l.is_visible(p), "{p:?} is shown on the Export page");
+        }
     }
 
     // ---- ws:panels-multiscreen ----
@@ -2027,20 +2063,22 @@ mod tests {
         use Pane::*;
         let l = Layout::audio_layout();
         let group = |p: Pane| l.tree.tiles.parent_of(l.tree.tiles.find_pane(&p).unwrap()).unwrap();
-        for p in [Preview, Mixer, Inspector, Voiceover, Timeline] {
+        for p in [Presets, Preview, Voiceover, Inspector, Timeline, Mixer] {
             assert!(in_front(&l, p), "{p:?} is in front on the Audio page");
         }
-        for p in [Transcript, Subtitles, Library, Presets] {
-            assert_eq!(group(p), group(Voiceover), "{p:?} is a tab beside Voiceover");
-        }
+        assert_eq!(group(Library), group(Presets), "Library | Media Browser | Gallery");
+        assert_eq!(group(MediaBrowser), group(Presets));
+        assert_eq!(group(Transcript), group(Voiceover), "Voiceover | Transcript | Subtitles");
+        assert_eq!(group(Subtitles), group(Voiceover));
         assert_eq!(group(BeatAligner), group(Timeline), "Timeline | Beat Aligner share one panel");
         let egui_tiles::Container::Tabs(tl) = l.tree.tiles.get_container(group(Timeline)).unwrap() else { panic!() };
         assert_eq!(tl.active, l.tree.tiles.find_pane(&Timeline), "the Timeline is the front tab");
-        // the Preview gets the most room on the top row, the Mixer sits next to the Inspector
+        // the Preview is the widest tile of the top row; the Mixer sits beside the timeline below
         let row = l.tree.tiles.parent_of(group(Preview)).unwrap();
         let egui_tiles::Container::Linear(lin) = l.tree.tiles.get_container(row).unwrap() else { panic!() };
-        assert!(lin.shares[group(Preview)] > 0.5, "the Preview has the top-left with lots of room");
-        assert_eq!(l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Mixer).unwrap()), Some(row));
+        assert!(lin.shares[group(Preview)] > lin.shares[group(Presets)]);
+        let bottom = l.tree.tiles.parent_of(group(Timeline)).unwrap();
+        assert_eq!(l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Mixer).unwrap()), Some(bottom));
     }
 
     /// The Inspector is the top-right tile of every page's default: walk the tree from the root taking
@@ -2068,8 +2106,8 @@ mod tests {
                 };
             }
         }
-        // Media hides its Inspector by default (the `+` / Window menu brings it back, top-right)
-        for &name in PAGES.iter().filter(|&&p| p != "Media") {
+        // Media and Export hide their Inspector by default (the Export pane has the project settings)
+        for &name in PAGES.iter().filter(|&&p| p != "Media" && p != "Export") {
             let mut l = page_layout(name).unwrap()();
             assert_eq!(top_right(&l), Some(Pane::Inspector), "{name} as built");
             l.tree
@@ -2215,6 +2253,19 @@ mod tests {
     }
 
     /// The Edit page: a top row of three columns over a full-width Timeline, none opening unusably small.
+    /// Source and Preview stacked as tabs: the front one is known; apart (or behind a third tab) it is None.
+    #[test]
+    fn stacked_front_names_the_tab_in_front() {
+        let mut l = Layout::default_layout();
+        assert_eq!(l.stacked_front(Pane::Source, Pane::Preview), Some(Pane::Preview));
+        let s = l.tree.tiles.find_pane(&Pane::Source).unwrap();
+        l.tree.make_active(|id, _| id == s);
+        assert_eq!(l.stacked_front(Pane::Source, Pane::Preview), Some(Pane::Source));
+        assert_eq!(l.stacked_front(Pane::Preview, Pane::Source), Some(Pane::Source));
+        let audio = page_layout("Audio").unwrap()();
+        assert_eq!(audio.stacked_front(Pane::Source, Pane::Preview), None, "not in one group");
+    }
+
     #[test]
     fn default_layout_arrangement() {
         let l = Layout::default_layout();
@@ -2243,7 +2294,7 @@ mod tests {
         let want = [
             (vec![Pane::Library, Pane::Presets], 0.22),
             (vec![Pane::Source, Pane::Preview], 0.5),
-            (vec![Pane::Inspector], 0.28),
+            (vec![Pane::Inspector, Pane::Clips], 0.28),
         ];
         for ((g, share), (w, want_share)) in got.iter().zip(want) {
             assert_eq!(*g, w);
@@ -2348,7 +2399,7 @@ mod tests {
             let mut l = page_layout(name).unwrap()();
             assert_eq!(group_of(&l, Pane::Assistant), group_of(&l, Pane::Inspector), "{name}");
             assert!(!l.is_visible(Pane::Assistant), "{name}: hidden until toggled");
-            if name != "Media" {
+            if name != "Media" && name != "Export" {
                 assert!(in_front(&l, Pane::Inspector), "{name}: the Inspector stays in front");
             }
             l.toggle(Pane::Assistant);
@@ -2484,7 +2535,9 @@ mod tests {
     #[test]
     fn reveal_auto_respects_pinned_sibling() {
         let mut l = Layout::audio_layout();
-        // Library | Gallery (Presets) share a group on the Audio page, Library in front
+        // Library | Media Browser | Gallery (Presets) share a group on the Audio page, Gallery in front
+        assert!(in_front(&l, Pane::Presets));
+        assert_eq!(l.reveal_auto(Pane::Library), Surfaced::Shown);
         assert!(in_front(&l, Pane::Library));
         assert_eq!(l.reveal_auto(Pane::Presets), Surfaced::Shown);
         assert!(in_front(&l, Pane::Presets) && !in_front(&l, Pane::Library));
@@ -2630,11 +2683,12 @@ mod tests {
         l.toggle(Pane::Inspector); // the tab's Close
         frame(&ctx, &mut l, &chrome, vec![], 0.2);
         assert!(width(&l, Pane::Source).unwrap() > with + 50.0, "Source grows into the closed Inspector's space");
-        // the Edit page too: its lone Inspector closes and the viewer group grows
+        // the Edit page too: its Inspector | Clips group closes and the viewer group grows
         let mut l = Layout::default_layout();
         frame(&ctx, &mut l, &chrome, vec![], 0.3);
         let before = width(&l, Pane::Preview).unwrap();
         l.toggle(Pane::Inspector);
+        l.toggle(Pane::Clips);
         frame(&ctx, &mut l, &chrome, vec![], 0.4);
         assert!(width(&l, Pane::Preview).unwrap() > before + 50.0);
     }

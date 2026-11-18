@@ -16,23 +16,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 let ids = app.import_files(&paths);
                 Ok(json!({"ok": true, "asset_ids": ids}))
             }
-            "media.list" => {
-                let used = app.project.used_assets();
-                let list: Vec<Value> = app
-                    .project
-                    .assets
-                    .iter()
-                    .map(|a| {
-                        json!({
-                            "id": a.id, "path": a.path, "kind": format!("{:?}", a.kind),
-                            "duration": a.duration, "width": a.width, "height": a.height,
-                            "tags": a.tags, "label": a.label, "folder": a.folder,
-                            "description": a.description, "used": used.contains(&a.id),
-                        })
-                    })
-                    .collect();
-                Ok(json!(list))
-            }
+            "media.list" => super::media_api::list(&app.project, args), // ws:assistant-luau
             "media.set" => {
                 let id = req(arg_u64(args, "id"), "id")?;
                 let a = app.project.asset_mut(id).ok_or("no such asset")?;
@@ -86,8 +70,8 @@ pub const TOOLS: &[ToolDef] = &[
     row!("media.import", ToolKind::Read, "Import media files into the library; returns asset ids. A folder among the paths imports as a bin (its sub-folders nested bins) in the background and adds no ids - use media.import_folder to choose options or wait for it.", &["paths:array:true:absolute paths (files or folders)"]),
     ToolDef {
         name: "media.import_folder",
-        desc: "Import a folder as a library bin named after it (bin_name overrides): every supported media file in it, sorted naturally, sub-folders as nested bins up to 8 deep. Hidden/system entries and unsupported files are skipped and counted; a file already in the library is reused. One undo step. Replies once the files are in the library (durations and sizes fill in a moment later, like media.import); the reply's status line reads like \"Imported 84 files into 'SFX' (3 skipped)\". media.list shows each asset's bin in `folder`.",
-        args: &["path:string:true:absolute folder path", "recursive:boolean:false:sub-folders as nested bins, default true", "bin_name:string:false:name of the top bin, default the folder's name", "extensions:array:false:only these, e.g. [\"wav\", \"mp3\"]; default every supported type"],
+        desc: "Import a folder as a library bin named after it (bin_name overrides). linked=true (the default) links it instantly: nothing is scanned or probed, sub-folders show as nested bins, files are listed when a bin is opened (media.linked_bin action=list) and become assets only when used (dropped on the timeline, media.import of the file); the project saves just the folder + bin. linked=false imports every supported media file now, sorted naturally, sub-folders as nested bins up to 8 deep, skipping hidden/system and unsupported files (counted) and reusing files already in the library; it replies once the files are in (\"Imported 84 files into 'SFX' (3 skipped)\"). One undo step either way. media.list shows each asset's bin in `folder`.",
+        args: &["path:string:true:absolute folder path", "bin_name:string:false:name of the top bin, default the folder's name", "linked:boolean:false:link the folder instead of importing every file (default true)", "recursive:boolean:false:linked=false only: sub-folders as nested bins, default true", "extensions:array:false:linked=false only: just these, e.g. [\"wav\", \"mp3\"]; default every supported type"],
         kind: ToolKind::Job,
         run: |app, args| {
             let dir = PathBuf::from(req(arg_str(args, "path"), "path")?);
@@ -98,7 +82,14 @@ pub const TOOLS: &[ToolDef] = &[
             Ok(ToolOutcome::Job(done, dir))
         },
     },
-    row!("media.list", ToolKind::Read, "Library assets (id, path, kind, duration, size, tags, label, folder, description, used).", &[]),
+    ToolDef {
+        name: "media.linked_bin",
+        desc: "Linked bins (folders linked by media.import_folder). action=list (default): every linked bin with its folder and online state; with bin (\"Video Assets\" or a sub-bin \"Video Assets/SFX\") also that folder's sub-bins and files, each file with its asset id once it has been used. action=unlink drops the link (files already used stay as assets in a plain bin), relink points bin at path (a moved folder), refresh re-reads it, convert imports every file under it as assets and turns it into a regular bin (in the background; media.list shows them once in). One undo step per change.",
+        args: &["action:string:false:list | unlink | relink | refresh | convert", "bin:string:false:the bin's name (required except for a plain list)", "path:string:false:relink: the folder's new location"],
+        kind: ToolKind::Read,
+        run: |app, args| linked_bin_tool(app, args),
+    },
+    row!("media.list", ToolKind::Read, "Library assets. With no arguments on a library of up to 100 assets: the array of every asset (id, name, path, kind, duration, width, height, tags, label, folder, description, used). Otherwise a page {total, offset, count, next_offset, assets} of the assets matching the filters, each with just `fields` (default id, name, kind, folder, duration, used, tags, label; \"all\" for every field: also path, ext, width, height, fps, codec, size, audio_streams, description, uses, parent, range, proxy). Read media.summary first on a big library.", &["kind:string:false:video | audio | image | html (a list or comma string for several)", "folder:string:false:a bin path; \"\" = the root", "nested:boolean:false:with folder: include sub-bins (default true)", "used:boolean:false:true = on a timeline, false = unused", "query:string:false:words that must all appear in the name, path, tags or description", "tags:array:false:must have all of these", "label:integer:false:0..8", "ext:string:false:file extensions, e.g. \"wav,mp3\"", "untagged:boolean:false:only assets without tags", "ids:array:false:only these", "fields:array:false:field names, or \"all\"", "sort:string:false:id | name | duration | kind | folder | ext | uses | label | size; '-name' = descending", "limit:integer:false:default 100, at most 5000", "offset:integer:false:skip this many"]),
     row!("media.set", ToolKind::Mutate, "Edit asset metadata.", &["id:integer:true:", "description:string:false:", "tags:array:false:strings", "label:integer:false:0..8", "folder:string:false:", "proxy:string:false:auto | on | off (per-source proxy; auto builds one only when decoding is too slow for real time)"]),
     // Job-kind: never routed through `dispatch` (they don't mutate the project directly, they write a
     // file) - `App::handle_tool` starts the job via `start_tool_job` and replies when it finishes.
@@ -354,6 +345,72 @@ pub const TOOLS: &[ToolDef] = &[
     },
 ];
 
+/// `media.linked_bin`. Read-kind: it pushes its own undo step (like `media.import`), and `convert`'s import
+/// runs in the background like a folder dropped on the window.
+fn linked_bin_tool(app: &mut App, args: &Value) -> Result<ToolOutcome, String> {
+    let action = arg_str(args, "action").unwrap_or("list");
+    let bin = arg_str(args, "bin").map(str::to_string);
+    let need_bin = || bin.clone().ok_or_else(|| format!("{action} needs bin"));
+    let reply = |v: Value| Ok(ToolOutcome::Done(v));
+    let linked = app.project.linked_bin_of(bin.as_deref().unwrap_or("")).cloned();
+    if action != "list" && linked.is_none() {
+        return Err(format!("'{}' is not a linked bin", bin.unwrap_or_default()));
+    }
+    match action {
+        "list" => {
+            let cache = app.library.linked.clone();
+            cache.set_roots(app.project.linked_bins.iter().map(|b| b.path.as_str()));
+            let bins: Vec<Value> = app
+                .project
+                .linked_bins
+                .iter()
+                .map(|b| json!({"bin": b.bin, "path": b.path, "online": std::path::Path::new(&b.path).is_dir()}))
+                .collect();
+            let Some(bin) = bin else { return reply(json!({"linked_bins": bins})) };
+            let dir = app.project.linked_bin_dir(&bin).ok_or_else(|| format!("'{bin}' is not a linked bin"))?;
+            let l = match cache.listing_now(&dir) {
+                crate::engine::linked_bins::State::Ready(l) => l,
+                _ => return Err(format!("{} is offline (relink it)", dir.display())),
+            };
+            let files: Vec<Value> = l
+                .files
+                .iter()
+                .map(|f| json!({"path": f, "asset": app.project.asset_by_path(f).map(|a| a.id)}))
+                .collect();
+            let subs: Vec<String> = l.dirs.iter().map(|d| format!("{bin}/{d}")).collect();
+            reply(json!({"bin": bin, "dir": dir, "bins": subs, "files": files, "linked_bins": bins}))
+        }
+        "refresh" => {
+            let dir = app.project.linked_bin_dir(&need_bin()?).unwrap_or_default();
+            app.library.linked.forget(&dir);
+            reply(json!({"ok": true}))
+        }
+        "unlink" | "relink" => {
+            let top = linked.map(|l| l.bin).unwrap_or_default();
+            let before = app.project.to_json();
+            if action == "unlink" {
+                app.project.unlink_bin(&top);
+            } else {
+                let path = req(arg_str(args, "path"), "path")?;
+                if !std::path::Path::new(path).is_dir() {
+                    return Err(format!("{path} is not a folder"));
+                }
+                app.project.relink_bin(&top, path);
+                app.offline_scan_at = None;
+            }
+            app.push_undo_labeled(before, if action == "unlink" { "Unlink bin" } else { "Relink bin" });
+            app.after_edit();
+            reply(json!({"ok": true, "bin": top}))
+        }
+        "convert" => {
+            let top = linked.map(|l| l.bin).unwrap_or_default();
+            app.convert_linked_bin(&top).ok_or("not a linked bin")?;
+            reply(json!({"ok": true, "bin": top, "status": "importing in the background; media.list shows the assets once they are in"}))
+        }
+        _ => Err("action: list | unlink | relink | refresh | convert".into()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::mcp::tools::{find, input_schema, ToolKind};
@@ -367,7 +424,7 @@ mod tests {
         let t = find("media.import_folder").expect("registered");
         assert!(matches!(t.kind, ToolKind::Job));
         let schema = input_schema(t.args);
-        for a in ["path", "recursive", "bin_name", "extensions"] {
+        for a in ["path", "recursive", "bin_name", "extensions", "linked"] {
             assert!(schema["properties"].get(a).is_some(), "{a} missing from {schema}");
         }
         assert_eq!(schema["required"], serde_json::json!(["path"]));

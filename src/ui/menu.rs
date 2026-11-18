@@ -191,11 +191,16 @@ pub fn shortcut(a: Action) -> String {
 /// no or `enabled` is false; right-click picks its icon. True when clicked (the menu closes). Does NOT
 /// queue the action - the caller runs it (`action_item` is the queueing wrapper).
 pub fn item(ui: &mut egui::Ui, a: Action, enabled: bool) -> bool {
+    item_as(ui, a, a.label(), enabled)
+}
+
+/// `item` under another `label` (a toggle Action that reads "Hide …" while its thing is shown).
+pub fn item_as(ui: &mut egui::Ui, a: Action, label: &str, enabled: bool) -> bool {
     let (glyph, shortcut, reason) = SNAPSHOT.with(|s| {
         let s = s.borrow();
         (glyph_for(&s.icons, a), s.shortcuts.get(&a).map(Hotkeys::format), s.disabled.get(&a).copied())
     });
-    let r = row_ui(ui, glyph, a.label(), &shortcut.unwrap_or_default(), enabled && reason.is_none());
+    let r = row_ui(ui, glyph, label, &shortcut.unwrap_or_default(), enabled && reason.is_none());
     let r = match reason {
         Some(why) => r.on_disabled_hover_text(why),
         None => r,
@@ -215,7 +220,12 @@ pub fn item(ui: &mut egui::Ui, a: Action, enabled: bool) -> bool {
 
 /// `item` for any right-click menu: a click queues `a` for `App::update` to run (next frame).
 pub fn action_item(ui: &mut egui::Ui, a: Action) -> bool {
-    let clicked = item(ui, a, true);
+    action_item_as(ui, a, a.label())
+}
+
+/// `action_item` under another `label`.
+pub fn action_item_as(ui: &mut egui::Ui, a: Action, label: &str) -> bool {
+    let clicked = item_as(ui, a, label, true);
     if clicked {
         QUEUE.with(|q| q.borrow_mut().push(a));
         ui.ctx().request_repaint(); // the queue drains at the top of the next frame

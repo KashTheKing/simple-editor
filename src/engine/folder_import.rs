@@ -13,6 +13,12 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+/// Every extension the library imports (lower-case, no dot).
+pub const MEDIA_EXTS: &[&str] = &[
+    "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "ts", "m2ts", "mts", "flv", "3gp", "mpg", "mpeg", "gif", "mp3",
+    "wav", "m4a", "aac", "flac", "ogg", "opus", "wma", "png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff",
+];
+
 /// Folders nested deeper than this below the picked one are skipped (and counted).
 pub const MAX_DEPTH: usize = 8;
 /// More files than this and the UI asks before importing.
@@ -26,11 +32,17 @@ pub struct Options {
     pub bin_name: Option<String>,
     /// Lower-case extensions without the dot; empty = every supported one.
     pub extensions: Vec<String>,
+    /// Link the folder as a bin (`engine::linked_bins`) instead of importing every file: instant, the
+    /// default. `recursive` / `extensions` only apply to a full import.
+    pub linked: bool,
+    /// A full import that replaces this linked bin ("Convert to regular bin"): its bins keep that name,
+    /// unabridged, and the link is dropped in the same undo step.
+    pub into_bin: Option<String>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Self { recursive: true, bin_name: None, extensions: Vec::new() }
+        Self { recursive: true, bin_name: None, extensions: Vec::new(), linked: true, into_bin: None }
     }
 }
 
@@ -40,6 +52,9 @@ impl Options {
         let mut o = Self::default();
         if let Some(r) = args.get("recursive").and_then(|v| v.as_bool()) {
             o.recursive = r;
+        }
+        if let Some(l) = args.get("linked").and_then(|v| v.as_bool()) {
+            o.linked = l;
         }
         o.bin_name = args.get("bin_name").and_then(|v| v.as_str()).map(str::to_string).filter(|s| !s.trim().is_empty());
         if let Some(a) = args.get("extensions").and_then(|v| v.as_array()) {
@@ -71,6 +86,8 @@ pub struct Scan {
     /// (`desktop.ini`, `.git`, `$RECYCLE.BIN`) are passed over without counting - they are not "media
     /// the user expected".
     pub skipped: usize,
+    /// The linked bin this import converts (`Options::into_bin`).
+    pub unlink: Option<String>,
 }
 
 impl Scan {
@@ -150,6 +167,11 @@ fn clean(name: &str) -> String {
 
 /// Walk `root`. `exts` = every extension the app can import (lower-case, no dot).
 pub fn scan(root: &Path, o: &Options, exts: &[&str]) -> Scan {
+    if let Some(bin) = &o.into_bin {
+        let mut s = Scan { unlink: Some(bin.clone()), ..Default::default() };
+        walk(root, bin, 0, o, exts, &mut s);
+        return s;
+    }
     let top = o.bin_name.as_deref().map(clean).filter(|n| !n.is_empty()).unwrap_or_else(|| {
         let n = root.file_name().map(|n| clean(&n.to_string_lossy())).unwrap_or_default();
         // "D:\" has no name: the drive stays recognisable

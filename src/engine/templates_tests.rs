@@ -255,6 +255,10 @@ fn the_built_in_templates_are_different_and_lean_on_blocks() {
             for s in &slots {
                 let c = d.clip(s.clip).unwrap();
                 assert!(c.is_empty_container(), "{name}: a slot is a placeholder, not somebody's footage");
+                if s.want == SlotWant::Audio {
+                    assert_eq!((c.kind, s.card), (ClipKind::Audio, 0), "{name}: a sound slot is an audio clip, no card");
+                    continue;
+                }
                 assert_eq!(d.clip(s.card).map(|c| c.kind), Some(ClipKind::Shape), "{name}: a colour card under {}", s.name);
             }
             assert!(d.assets.is_empty(), "{name}: no media of its own");

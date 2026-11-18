@@ -21,6 +21,8 @@ pub struct UseSlot {
     pub fill: Option<(Id, String)>,
     /// The template brings footage of its own for this slot (used when nothing is chosen).
     pub sample: bool,
+    /// A sound slot: what it looks for in your sounds when left empty.
+    pub hint: String,
 }
 
 #[derive(Default)]
@@ -57,8 +59,8 @@ pub fn use_rows(ui: &mut egui::Ui, st: &mut UseState, selected: usize) -> Option
     ui.horizontal(|ui| {
         let r = ui.add_enabled(selected > 0, egui::Button::new("Use selected media"));
         let r = r
-            .on_hover_text("Fill the slots in order with the media selected in the Media Library")
-            .on_disabled_hover_text("Select media in the Media Library first");
+            .on_hover_text("Fill the slots in order with the media selected in the Media Library (or the clips selected on the timeline); a beat edit uses them again when it has more shots")
+            .on_disabled_hover_text("Select media in the Media Library or clips on the timeline first");
         if r.clicked() {
             act = Some(UseAct::FromLibrary);
         }
@@ -82,6 +84,7 @@ pub fn use_rows(ui: &mut egui::Ui, st: &mut UseState, selected: usize) -> Option
         let footage = match (&s.fill, s.sample) {
             (Some((_, n)), _) => n.clone(),
             (None, true) => "Template footage".to_string(),
+            (None, false) if !s.hint.is_empty() => format!("Your \"{}\" sound", s.hint),
             (None, false) => "Empty".to_string(),
         };
         // (a stretch slot takes the length of what goes in)
@@ -439,6 +442,7 @@ mod tests {
                     fit: SlotFit::Trim,
                     fill: (i == 0).then(|| (7, "beach.png".to_string())),
                     sample: false,
+                    hint: String::new(),
                 })
                 .collect(),
         };
