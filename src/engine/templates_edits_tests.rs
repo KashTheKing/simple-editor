@@ -152,12 +152,14 @@ fn placing_a_beat_edit_fills_the_song_the_sound_and_every_shot() {
     let mut fills: Vec<Fill> = got.iter().enumerate().filter_map(|(i, g)| g.map(|asset| Fill { slot: i, asset, onset: 0.0 })).collect();
     fills.push(Fill { slot: sfx_slot, asset: sfx, onset: 2.46 });
     let at = 5.0;
-    let ids = apply_synced(&mut p, d, at, &fills, Some(SongBeat { bpm: 140.0, offset: 0.2, drop: 31.0, len: 120.0 }));
+    // a drop as find_drop reports one: on a bar line of the song's grid (bar 18)
+    let song_drop = 0.2 + 72.0 * 60.0 / 140.0;
+    let ids = apply_synced(&mut p, d, at, &fills, Some(SongBeat { bpm: 140.0, offset: 0.2, drop: song_drop, len: 120.0 }));
     let placed: Vec<&Clip> = ids.iter().filter_map(|&id| p.clip(id)).collect();
     // the song: from where its drop meets the edit's, through the muffle bus
     let s = placed.iter().find(|c| c.asset == song).unwrap();
     let period = 60.0 / 140.0;
-    let drop_tl = at + 31.0 - s.src_in;
+    let drop_tl = at + song_drop - s.src_in;
     assert!(on_grid(s.src_in, 0.2, period), "the song starts on its beat");
     let bus = p.bus(s.bus).expect("a new bus for the muffle");
     assert!(bus.filters[0].at(0, drop_tl - 0.6) < 600.0 && bus.filters[0].at(0, drop_tl + 0.01) > 15000.0, "it opens on the drop");
@@ -166,7 +168,9 @@ fn placing_a_beat_edit_fills_the_song_the_sound_and_every_shot() {
     assert!((w.start + 2.46 - w.src_in - drop_tl).abs() < 1e-6, "hit at {} vs drop {drop_tl}", w.start + 2.46 - w.src_in);
     // every shot filled, no placeholder card left, the same clip plays a different stretch each time
     assert!(placed.iter().all(|c| !c.is_empty_container()), "a slot stayed empty");
-    assert!(placed.iter().all(|c| c.kind != ClipKind::Shape), "a placeholder card stayed");
+    // (the Wasted band is a real shape; a placeholder is the "<slot> card" under an empty slot)
+    let cards: Vec<String> = slots.iter().map(|s| format!("{} card", s.name)).collect();
+    assert!(placed.iter().all(|c| c.kind != ClipKind::Shape || !cards.contains(&c.name)), "a placeholder card stayed");
     for &a in &clips {
         let mut ins: Vec<f64> = placed.iter().filter(|c| c.asset == a && c.kind == ClipKind::Video).map(|c| c.src_in).collect();
         let n = ins.len();
@@ -181,7 +185,7 @@ fn placing_a_beat_edit_fills_the_song_the_sound_and_every_shot() {
     assert_eq!((p.beats.asset, p.beats.bpm), (song, 140.0));
     // footage the shape of the frame is not scaled
     assert!(placed.iter().filter(|c| c.kind == ClipKind::Video).all(|c| c.scale.value < 1.2));
-    assert!(p.beats.sections.iter().any(|x| x.name == "Drop" && (x.a - 31.0).abs() < 1e-9));
+    assert!(p.beats.sections.iter().any(|x| x.name == "Drop" && (x.a - song_drop).abs() < 1e-9));
 }
 
 #[test]

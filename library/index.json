@@ -1446,6 +1446,26 @@
       "thumb": "thumbs/transitions-zoom-blur.jpg"
     },
     {
+      "id": "transitions/zoom-momentum",
+      "kind": "transition",
+      "name": "Zoom Momentum",
+      "desc": "The outgoing picture rushes into the centre and the incoming one lands out of the same rush, both smeared by a radial blur: a punchy cut for beat edits.",
+      "tags": [
+        "zoom",
+        "momentum",
+        "rush",
+        "punch",
+        "radial blur",
+        "beat",
+        "edit",
+        "velocity"
+      ],
+      "file": "transitions/zoom-momentum.glsl",
+      "size": 983,
+      "credit": "",
+      "thumb": "thumbs/transitions-zoom-momentum.jpg"
+    },
+    {
       "id": "luts/bleach-bypass",
       "kind": "lut",
       "name": "Bleach Bypass",
