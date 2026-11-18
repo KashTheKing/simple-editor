@@ -117,11 +117,31 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         s.layout_mode = if follow { "dynamic" } else { "granular" }.into();
         changed = true;
     }
+    // ---- ws:panels-multiscreen ----
+    ui.horizontal(|ui| {
+        ui.label("Layout");
+        let n = s.screen_mode.max(1);
+        ui.weak(if n == 1 { "one screen".to_string() } else { format!("{n} screens") });
+        if ui.button("Screens…").on_hover_text("One window, or the pages spread over 2 or 3 monitors").clicked() {
+            state.open_screens = true;
+        }
+    });
     // ---- ws:layout-modes-onboarding ----
     changed |= ui
         .checkbox(&mut s.home_screen, "Show the Open / Import / Templates cards over an empty project (home screen)")
         .changed();
     changed |= ui.checkbox(&mut s.snap, "Snapping in the timeline").changed();
+    let mut detailed = s.timeline_waveform == "detailed";
+    if ui
+        .checkbox(&mut detailed, "Detailed waveforms in the timeline")
+        .on_hover_text(
+            "Colour each moment of audio by its bass / mids / highs, mark the hits, and show a spectrogram on tall              tracks. Off: a simple loudness waveform. A track's right-click menu can override this.",
+        )
+        .changed()
+    {
+        s.timeline_waveform = if detailed { "detailed" } else { "simple" }.into();
+        changed = true;
+    }
     changed |= ui.checkbox(&mut s.auto_close_gaps, "Auto close gaps (magnetic timeline)").changed();
     changed |= ui.checkbox(&mut s.confirm_overwrite, "Confirm before overwriting files").changed();
     let save = match crate::ui::menu::shortcut(crate::hotkeys::Action::Save) {

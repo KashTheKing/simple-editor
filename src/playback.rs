@@ -4185,8 +4185,16 @@ mod tests {
         assert!(p.video_report(60.0).0 || p.video_report(60.0).1 > 0.5);
         // an edit in flight: not ready until the render thread has drained it and looked again
         let project = lock(&p.shared.project).clone();
+        let sent0 = p.shared.sent.load(Ordering::Acquire);
         p.set_project(&project);
-        assert!(!p.video_report(1.0).0, "a command is in flight");
+        let sent = p.shared.sent.load(Ordering::Acquire);
+        assert!(sent > sent0, "the edit is counted as in flight");
+        // ponytail: the render thread (multimedia priority since the busy-PC fix) may drain the edit
+        // before the next line runs, so "not ready" can't be observed reliably; the rule itself is that
+        // a ready report only ever comes from coverage that has seen every command sent so far.
+        if p.video_report(1.0).0 {
+            assert!(lock(&p.shared.cov).gen >= sent, "ready only after the render thread saw the edit");
+        }
         wait_until("ready again after the edit", || p.video_report(1.0).0);
         // a seek moves the window with it
         p.seek(5.0);

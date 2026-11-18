@@ -24,6 +24,15 @@ use eframe::egui::{self, DragValue, Grid};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+thread_local! {
+    /// "Pick an effect" on an empty stack: only the app can open the Gallery (`take_open_effects`).
+    static OPEN_EFFECTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+/// The empty Effects section asked for the Gallery's Effects tab, since the last call.
+pub(crate) fn take_open_effects() -> bool {
+    OPEN_EFFECTS.with(|o| o.take())
+}
+
 // ---- ws:inspector-gallery ----
 /// Local (non-`DragPayload`) drag identity for one effect-stack row: the dragged row's
 /// `stable_effect_key` at drag-start. Scoped to this file's own stack UI - the shared
@@ -466,7 +475,13 @@ pub fn stack(
         g.click();
     }
     if clip.effects.is_empty() {
-        ui.weak("No effects - pick one in the Gallery's Effects tab.");
+        ui.horizontal(|ui| {
+            ui.weak("No effects");
+            let tip = "Open the Gallery on its Effects tab";
+            if ui.button("Pick an effect").on_hover_text(tip).clicked() {
+                OPEN_EFFECTS.with(|o| o.set(true));
+            }
+        });
     }
 
     if g.start {

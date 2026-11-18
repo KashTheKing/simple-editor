@@ -3,8 +3,43 @@
 ## 1.3.1
 
 ### Beat Aligner
-- **New Beat Aligner panel** (a tab on the Audio and Cut pages, anywhere from a tab bar's +): pick a song, Detect finds the BPM, beat grid and downbeats (from the cached song analysis) under a bar ruler over a big waveform; fix it with BPM, ½ / ×2, Tap tempo, offset and beats per bar. Tap Space, B or M while it plays to drop marks (calibrated latency, optional snap to the beat with a strength), or let Continuous / Fill grid mark the grid. Drag marks (snapping to beats or sub-beats), select stretches into named, coloured sections (Intro, Verse, Chorus, Drop ...). Then turn them into timeline markers, cut the picture at the marks, put a Library sound on each mark, snap clip edges to them or apply a Zoom Punch / Shake / any Animator block on each beat; export and import CSV, Resolve marker EDL and YouTube chapters. Voice mode marks a voiceover's phrases and pauses instead. Tools: `beats.*`.
+- **New Beat Aligner panel** (the tab beside the Timeline on the Audio page, a tab on the Cut page, anywhere from a tab bar's +): pick a song, Detect finds the BPM, beat grid and downbeats (from the cached song analysis) under a bar ruler over a big waveform; fix it with BPM, ½ / ×2, Tap tempo, offset and beats per bar. Tap Space, B or M while it plays to drop marks (calibrated latency, optional snap to the beat with a strength), or let Continuous / Fill grid mark the grid. Drag marks (snapping to beats or sub-beats), select stretches into named, coloured sections (Intro, Verse, Chorus, Drop ...) and drag their chips to move or resize them. Then turn them into timeline markers, cut the picture at the marks, put a Library sound on each mark, snap clip edges to them or apply a Zoom Punch / Shake / any Animator block on each beat; export and import CSV, Resolve marker EDL and YouTube chapters. Voice mode marks a voiceover's phrases and pauses instead. Tools: `beats.*`.
 
+### Timeline waveforms
+- **Clearer audio waveforms on the timeline**: Simple (the default) draws loudness on a dB scale, so quiet speech
+  shows and loud music no longer fills the clip, with the peaks as a lighter outline around it. **Detailed** colours
+  each moment by its bass (orange), mids (green) and highs (blue), marks hits with ticks, and shows a spectrogram
+  heat map on tall tracks. Switch in the timeline ruler's View menu, Settings ▸ General or the palette
+  ("Waveforms: Simple / Detailed"); a track's right-click ▸ Waveform overrides it. Waveforms are re-analysed once.
+### Export panel redesign
+- **A simpler, colour-coded Export panel**: preset cards with icons on top, then Video (blue), Audio (green) and
+  Advanced (amber, closed at first) sections that remember whether they are open, and an output bar pinned to the
+  bottom with the size · frame rate · length · estimated size, Speed, the file name and folder, and **Export…** /
+  **Add to Queue**. Explanations moved into hover tips; nothing was removed. Two built-in cards always come first:
+  **Project settings — Max quality** and **Fast preview** (project size and frame rate, fastest encode). The
+  platform cards show the real YouTube, Shorts, Instagram and TikTok marks (Simple Icons, CC0). **Your own
+  presets**: "Save current settings…" (name, icon, colour), right-click to duplicate, rename, update or delete;
+  Quick Export and the new `export.preset_save` / `preset_apply` / `preset_rename` / `preset_delete` tools use them too.
+### Panels and screens
+- **Voiceover, Transcript and Rendering are panels now** instead of pop-up windows: dock them, tab them, undock
+  them, open them from the Window menu or Ctrl+P. Voiceover has the input, a live level meter, Record / Stop,
+  punch-in at the playhead, Retake and a list of your takes; Transcript holds transcription, the words and
+  captions from the transcript; Rendering shows the running export (and Export Frame) and comes up when an export
+  starts. **A real Audio page**: music (Library and the Gallery's Audio side), a small Preview, Mixer / Voiceover /
+  Transcript, the Inspector and the Timeline; a saved Audio layout is kept (Window ▸ Layout ▸ Reset Page Layout gets
+  the new one). **2- and 3-screen mode**: with more than one monitor the editor asks "Use 2-screen mode?" (also
+  Window ▸ Screens… and Settings ▸ General ▸ Layout): the Timeline gets its own window on the second screen, the
+  Preview the third. Each page keeps an arrangement per screen count; move any panel with its tab's right-click ▸
+  Move to window, or drag a tab out of the window onto another screen. A window whose monitor is gone folds back
+  into the main one.
+
+### Quick Export
+- **A Quick Export button in the top bar** (top right, beside Jobs; also File ▸ Export ▸ Quick Export… and the
+  palette): a Save As dialog with a file type list (MP4, MOV, MKV, WebM, GIF, WAV, MP3), then the export runs as a
+  job with your current export settings, or the project's own size, frame rate and quality, and opens in your media
+  player when done. For a video you opened directly (one clip, maybe with text or captions on top) the dialog lands
+  on that file, and saving asks "Replace <name>?" first; the original stays as `<name>.bak` until the new file is in
+  place. Other quick exports remember their folder and type per project.
 ### Ctrl+P: go to anything
 - **The command palette is now Ctrl+P and goes to things by name**: clips on any timeline (nested sequences too),
   timelines, Library media and bins, markers and comments, pages, panels and Gallery cards, grouped by type with
@@ -25,6 +60,20 @@
   a readable title under it; a skill header can name its own picture with `thumb:`.
 - Library items without a thumbnail (HTML, icons, effects, transitions, LUTs) show their type symbol, a sound shows
   a waveform symbol while its waveform loads, and card names stay on one line with an ellipsis.
+
+### Assistant chat
+- **The Assistant is a chat app now**: a collapsible sidebar of chats (New chat, search over every chat, pin, rename,
+  save, delete), user and reply bubbles with Markdown, code blocks with a Copy button, tool steps folded, and a composer
+  that grows with the text. Opening the pane starts a new chat with the cursor in the composer; the agent, Tasks, Skills
+  and import / export moved into the `⋯` menu, the model and effort pickers sit small beside Send.
+- **Copy gives clean text.** Right-click a message: Copy text (no markup), Copy as Markdown, Copy attachments, Retry,
+  Edit and resend, Delete. Ctrl+C on text selected in a message copies that text - it no longer also copied the
+  selected clips' JSON over it.
+- **Attach anything**: the paperclip, a drop on the pane, or Ctrl+V of a picture or of files copied in Explorer. Click a
+  thumbnail to preview it; right-click it to Copy (the picture itself) or Save as.
+- **Capture the editor into a message**: the camera menu takes the current frame, a screenshot of any panel, an area you
+  drag anywhere in the window, or the timeline range (a picture plus its clips and tracks); every pane tab's right-click
+  menu has Attach to Assistant. New tool: `assistant.capture`.
 
 ### AI enhancer
 - **AI Upscale is no longer starved on a busy PC**: the upscaler runs at normal priority and steps down only while
@@ -150,6 +199,21 @@
 - **Link into one block**: with several blocks of one clip picked, they become a single block with all their properties (the motion stays). The Curves channel list can be resized (drag the line between it and the graph).
 - Fixed: the Sound and Speed group rows of the Curves channel list shared widget ids (red "ID clash" boxes on a sound clip).
 - MCP: `keyblocks.split`, `keyblocks.link`, `flow.together`.
+- **One timeline for Blocks, Curves, Flow and Speed**: all four views are the lanes timeline now, with the same ruler and playhead, Selected clips / Whole timeline, the zoom bar, Ctrl+wheel zoom, Shift+wheel pan and a new scrollbar under the lanes. The view only changes what each clip's row shows: Curves puts the clip's channel list in the label column and its keys in the lane, Flow its speed graph with the hand-off buttons, Speed its speed ramp (the ramps are in the row's "Ramps" menu). Several selected clips are stacked rows under one ruler; drag a row's bottom edge (or Alt+wheel) for taller graphs.
+- **Loop**: a block's Inspector has Loop (how many times, and ping-pong for there and back); right-click a block ▸ Loop does the same. The bar grows to that many times its length and shows a tick per cycle. In Curves, select keys ▸ Loop keys (or right-click ▸ Loop) repeats them after the last one.
+- **Physics**: new Gravity Fall (falls from where it is and bounces on the bottom of the frame, optionally thrown to a side first) and Throw & Bounce (thrown across the screen, bouncing off the frame's edges) blocks; a simulated block's Inspector card has a Physics section with its sliders and a preview of the motion. **Drop with collisions** (with two or more pictures selected, or ⋯ ▸ Drop with collisions ▸ Normal / Bouncy / Heavy / Floaty) lets the selected clips fall, land and push each other apart; each gets a "Collide" block of ordinary keys.
+- **Rigid body**: Gravity Fall, Throw & Bounce and every clip of a collision drop are a simple rigid body with the same controls in the Inspector: Mass, Gravity and the way it pulls, Elasticity, Friction, Air drag, Velocity (speed and direction) and Spin (baked as rotation). Mass matters: a heavier body is slowed less by air drag and pushed less in a collision. Changing a Collide block's body runs that drop again for every clip in it.
+- **A colour per kind of animation**: In teal, Out orange, Physics purple, Collide pink, Emphasis yellow, Camera blue, Text sky, Sound green, Speed red, Custom slate. The block's bar, its Inspector pill, its Gallery card and the timeline's strip all use it, and the "+ Animation" menu shows each kind's dot.
+- Animator: zoomed all the way out, "Selected clips" is exactly the selected clips (first start to last end, no air) and "Whole timeline" exactly the timeline; the range switch sits on the right, next to the zoom.
+- Fixed: dragging a row's handle in the Curves channel list did nothing. It reorders the list now (a property inside its group, a group among the groups; Alt+Up / Down too) and the curves are drawn in that order.
+- Curves: hold **Shift** while dragging keys to lock the drag to one axis (sideways = time only, up and down = value only). Row titles read "Properties - <clip>" (or "<block> - <clip>").
+- Fixed: keys in Curves could not be dragged (or stay selected) unless a block was picked in the Animator.
+- MCP: `keyblocks.loop`, `keyblocks.loop_keys`, `animate.collide`; `keyblocks.set` physics takes `throw`.
+- **Inspector: a clip's properties are one aligned list**, the Curves channel list's rows: Transform, Opacity, Sound and Speed fold, and every row has the same columns - colour bar and name, a number box of one width (drag or type), previous key, the key button, next key, reset, and the chain toggle (Position X / Y keyed together, Scale X / Y). A longer number no longer pushes the controls. Double-click a name for a key at the playhead. Opacity, Volume and Pan are number boxes like the rest (0-100 %, dB, -1..1).
+- **Path tool** (the pencil in the Animator's toolbar; D while the Animator is in use): draw in the Viewer and each selected clip gets a Path block from the playhead that travels your stroke. The block keeps the stroke: in the Inspector, Timing is Shape (one speed along the path over the block, shaped by Ease) or As drawn (your stroke's own timing, scaled to the block), Smoothing goes from the raw points to a rounded curve with the ends fixed, and Turn along path faces the clip the way it travels. Move, stretch, loop or split it like any block. "Draw a motion path…" in the ⋯ menu now picks this tool (it used to save a path the clips were linked to).
+- **Timeline lane: transitions over the clips.** A bar in the new lane at the top of the Animator puts its transition on every cut under it, closes the gaps between the footage clips under it first (the lowest video track; overlays keep their places), and keeps doing so wherever you move or stretch it and whatever changes under it; delete it and its transitions go. Add one from + Animation ▸ Transitions ▸ Timeline (over the range shown) or a right-click in the lane: the built-in kinds and the installed library transitions. Its Inspector card sets the transition, each one's duration, ease and direction. The lane shows without a selection. Overlays are not grouped into stacks yet: each video track gets its own transitions.
+- **Show Animations** on a clip's right-click on the timeline opens the Animator on the selected clips.
+- MCP: `animate.path`, `animate.span_add`, `animate.span_set`, `animate.span_remove`, `animate.spans`.
 
 ## 1.3.0
 

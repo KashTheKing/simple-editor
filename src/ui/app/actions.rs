@@ -413,11 +413,11 @@ impl App {
                 if self.timeline_is_empty() {
                     self.toast("Timeline is empty - nothing to export");
                 } else if !self.ffmpeg_missing() {
-                    self.frame_ui.open = true;
+                    self.frame_ui.open = true; // drawn by the Rendering pane, which reveal_on_start brings up
                 }
             }
             ScreenCapture => self.capture_ui.screen_open = !self.capture_ui.screen_open,
-            Voiceover => self.capture_ui.voice_open = !self.capture_ui.voice_open,
+            Voiceover => self.toggle_pane(Pane::Voiceover), // ws:panels-multiscreen: a pane, not a window
             ImportTimeline => self.act_import_timeline(),
             MovieMode => {
                 self.settings.movie_mode = !self.settings.movie_mode;

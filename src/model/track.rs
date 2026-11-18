@@ -44,6 +44,10 @@ pub struct Track {
     /// has no `Default` impl in this crate (a bare `#[serde(default)]` would not compile).
     #[serde(default = "crate::model::a1")]
     pub volume: Animated,
+    /// Waveform style of this track's clips: Some(true) detailed, Some(false) simple, None = the
+    /// `timeline_waveform` setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wave_detailed: Option<bool>,
 }
 
 impl Track {
@@ -63,6 +67,7 @@ impl Track {
             magnetic: false,
             color: None,
             volume: crate::model::a1(),
+            wave_detailed: None,
         }
     }
     /// The one resolver every Track-construction site calls so `ripple` is never left `None` outside

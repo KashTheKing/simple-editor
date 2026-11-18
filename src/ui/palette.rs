@@ -942,7 +942,8 @@ mod tests {
         assert!(all.iter().any(|r| r.cmd == Command::Pane(Pane::Timeline)), "a pane with no Action keeps Show X");
         // the pages are their Actions, once each
         let pages: Vec<_> = all.iter().filter(|r| r.label.ends_with(" page")).map(|r| r.label.as_str()).collect();
-        assert_eq!(pages.len(), crate::ui::layout::PAGES.len().min(6), "the six Alt+N page Actions: {pages:?}");
+        // one Action per built-in page (Alt+1..6, then the unbound Export page action); "Page 8/9" are spare slots
+        assert_eq!(pages.len(), crate::ui::layout::PAGES.len(), "one page Action per built-in page: {pages:?}");
         // arg-free tools that act are listed under a readable name; a Read tool (its reply would be
         // dropped) and an arg-taking tool only show up in ':' mode
         for t in crate::mcp::tools::all().filter(|t| t.args.is_empty()) {

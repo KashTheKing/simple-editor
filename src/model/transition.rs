@@ -84,6 +84,43 @@ pub struct Transition {
     pub curve: XfadeCurve,
 }
 
+/// ws:animator: a transition span - a bar over the timeline (the Animator's Timeline lane) that puts its
+/// transition on every cut between two clips under it (`Project::refresh_spans`).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct TransitionSpan {
+    pub id: Id,
+    /// Timeline seconds it covers: [t, t + dur].
+    pub t: f64,
+    pub dur: f64,
+    /// The transition it makes on each cut: its kind, length, ease, direction (Push / Wipe) and, for a
+    /// shader transition, the source and control values.
+    pub kind: TransitionKind,
+    pub cut_dur: f64,
+    #[serde(default)]
+    pub ease: Ease,
+    #[serde(default)]
+    pub direction: u8,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shader: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<f64>,
+    /// The transitions it made, so they go when it moves off their cuts or is deleted.
+    #[serde(default)]
+    pub made: Vec<Id>,
+}
+
+impl TransitionSpan {
+    /// What its bar and the Inspector call it: the shader's `// @name`, else the kind's name.
+    pub fn name(&self) -> String {
+        let n = if self.kind == TransitionKind::Shader { crate::engine::shaderlib::parse_meta(&self.shader).name } else { String::new() };
+        if n.is_empty() {
+            self.kind.name().to_string()
+        } else {
+            n
+        }
+    }
+}
+
 /// The gain shape of an audio crossfade. A `FadeToColor` transition on an audio track is a dip to
 /// silence instead (each side fades over its own half).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default, Hash)]

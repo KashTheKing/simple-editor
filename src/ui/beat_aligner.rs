@@ -89,6 +89,8 @@ enum Drag {
     Marks { from: f64, before: Vec<BeatMark> },
     /// Sweeping a range from this song second.
     Range { from: f64 },
+    /// A section chip in the band: moved whole, or by one edge (`edge` -1 start, 1 end, 0 both).
+    Section { id: Id, from: f64, a: f64, b: f64, edge: i8 },
 }
 
 /// What the App supplies for one frame.
@@ -570,17 +572,37 @@ fn canvas(
         // where the button went down: by now the pointer has moved past the drag threshold
         if let Some(pos) = ui.input(|i| i.pointer.press_origin()) {
             let t = t_of(pos.x, v0, v1);
-            match hit_mark(&p.beats.marks, pos.x).filter(|_| pos.y > band.bottom()) {
-                Some(id) => {
-                    if !st.sel.contains(&id) {
-                        st.sel = vec![id];
+            let chip = band.contains(pos).then(|| p.beats.sections.iter().find(|s| t >= s.a && t <= s.b)).flatten();
+            if let Some(s) = chip {
+                // an edge within a few pixels resizes, the rest moves it
+                let (xa, xb) = (x_of(s.a, v0, v1), x_of(s.b, v0, v1));
+                let edge = if (pos.x - xa).abs() <= HIT_PX {
+                    -1
+                } else if (pos.x - xb).abs() <= HIT_PX {
+                    1
+                } else {
+                    0
+                };
+                undo(p);
+                st.sel_section = Some(s.id);
+                st.section_name = s.name.clone();
+                st.drag = Some(Drag::Section { id: s.id, from: t, a: s.a, b: s.b, edge });
+            } else if band.contains(pos) {
+                st.drag = Some(Drag::Range { from: t.clamp(0.0, dur) });
+                st.range = None;
+            } else {
+                match hit_mark(&p.beats.marks, pos.x).filter(|_| pos.y > band.bottom()) {
+                    Some(id) => {
+                        if !st.sel.contains(&id) {
+                            st.sel = vec![id];
+                        }
+                        undo(p);
+                        st.drag = Some(Drag::Marks { from: t, before: p.beats.marks.clone() });
                     }
-                    undo(p);
-                    st.drag = Some(Drag::Marks { from: t, before: p.beats.marks.clone() });
-                }
-                None => {
-                    st.drag = Some(Drag::Range { from: t.clamp(0.0, dur) });
-                    st.range = None;
+                    None => {
+                        st.drag = Some(Drag::Range { from: t.clamp(0.0, dur) });
+                        st.range = None;
+                    }
                 }
             }
         }
@@ -598,6 +620,26 @@ fn canvas(
                 st.range = Some((from.min(t), from.max(t)));
                 let (a, b) = (from.min(t), from.max(t));
                 st.sel = p.beats.marks.iter().filter(|m| m.t >= a && m.t <= b).map(|m| m.id).collect();
+            }
+            &Drag::Section { id, from, a, b, edge } => {
+                let snap = |x: f64| match (st.snap && !alt).then(|| p.beats.nearest(x, st.div)).flatten() {
+                    Some(g) => g,
+                    None => x,
+                };
+                let d = t - from;
+                let (na, nb) = match edge {
+                    -1 => (snap(a + d).min(b - 0.05), b),
+                    1 => (a, snap(b + d).max(a + 0.05)),
+                    _ => {
+                        let na = snap(a + d).clamp(0.0, (dur - (b - a)).max(0.0));
+                        (na, na + (b - a))
+                    }
+                };
+                if let Some(s) = p.beats.section_mut(id) {
+                    (s.a, s.b) = (na.max(0.0), nb.min(dur));
+                }
+                p.beats.sections.sort_by(|x, y| x.a.total_cmp(&y.a));
+                out.edited = true;
             }
         }
     }
@@ -747,7 +789,15 @@ fn sections(ui: &mut egui::Ui, st: &mut AlignState, p: &mut Project, out: &mut R
         let r = rows.row(
             ui,
             i,
-            &crate::ui::list_rows::RowSpec { key: s.id, label, depth: 0, open: None, dim: false, values: &[&range] },
+            &crate::ui::list_rows::RowSpec {
+                key: s.id,
+                label,
+                depth: 0,
+                open: None,
+                dim: false,
+                blank: 0,
+                values: &[&range],
+            },
         );
         let [cr, cg, cb] = p.label_color(s.label).unwrap_or([150, 150, 150]);
         ui.painter().rect_filled(

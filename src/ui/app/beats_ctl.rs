@@ -675,4 +675,72 @@ mod tests {
         assert!((p.beats.marks[0].t - 2.125).abs() < 1e-9, "dragged to {}", p.beats.marks[0].t);
         assert_eq!(undos, 1, "one undo step for the whole drag");
     }
+
+    /// A section chip in the band: dragging its middle moves it, its edge resizes it, each snapped to the
+    /// grid and one undo step.
+    #[test]
+    fn dragging_a_section_chip_moves_and_resizes_it() {
+        let ctx = egui::Context::default();
+        let mut st = ba::AlignState::default();
+        (st.snap, st.div) = (true, 1);
+        let mut p = Project::new();
+        p.beats.asset = 1;
+        p.beats.bpm = 120.0;
+        let id = p.beats.add_section(2.0, 4.0, "Verse");
+        let pal = crate::theme::Palette::new(true, egui::Color32::LIGHT_BLUE);
+        let blocks: Vec<String> = Vec::new();
+        let mut undos = 0;
+        let frame = |events: Vec<egui::Event>, st: &mut ba::AlignState, p: &mut Project, undos: &mut usize| {
+            let view = ba::View {
+                peaks: None,
+                dur: 10.0,
+                songs: &[],
+                sounds: &[],
+                blocks: &blocks,
+                now: None,
+                playing: false,
+                latency_ms: 0.0,
+            };
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 800.0))),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ba::show(ui, st, p, &view, &pal, &mut |_| *undos += 1);
+                });
+            });
+        };
+        frame(vec![], &mut st, &mut p, &mut undos);
+        let r = st.canvas;
+        let x_of = |t: f64| r.left() + (t / 10.0) as f32 * r.width();
+        let y = r.top() + 22.0 + 9.0; // the section band, under the ruler
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let mut drag = |from: f64, to: f64, st: &mut ba::AlignState, p: &mut Project, undos: &mut usize| {
+            let at = egui::pos2(x_of(from), y);
+            frame(vec![egui::Event::PointerMoved(at), press(at, true)], st, p, undos);
+            for k in 1..=4 {
+                let t = from + (to - from) * k as f64 / 4.0;
+                frame(vec![egui::Event::PointerMoved(egui::pos2(x_of(t), y))], st, p, undos);
+            }
+            frame(vec![press(egui::pos2(x_of(to), y), false)], st, p, undos);
+            frame(vec![], st, p, undos);
+        };
+        // move: grab the middle (3.0), drop 1.2 s later -> starts at 3.2, snapped to 3.0 (whole beats)
+        drag(3.0, 4.2, &mut st, &mut p, &mut undos);
+        let s = p.beats.sections.iter().find(|s| s.id == id).unwrap().clone();
+        assert_eq!((s.a, s.b), (3.0, 5.0), "moved whole, onto the grid");
+        assert_eq!(undos, 1);
+        // resize: the end edge (5.0) to 6.3 -> 6.5
+        drag(5.0, 6.3, &mut st, &mut p, &mut undos);
+        let s = p.beats.sections.iter().find(|s| s.id == id).unwrap().clone();
+        assert_eq!((s.a, s.b), (3.0, 6.5), "end edge resized, onto the grid");
+        assert_eq!(undos, 2);
+    }
 }

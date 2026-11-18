@@ -306,6 +306,7 @@ pub(super) fn clip_menu(
                 acts(ui, &[None, Some(AddAudioVisualizer)]); // ws:audio-visualizer
             });
         }
+        acts(ui, &[Some(ShowAnimations)]); // ws:animator: opens the Animator on the selection
         menu::sub(ui, Some(Glyph::Sequence), "Nest", |ui| {
             acts(ui, &[Some(NestSequence), Some(StackOverlays)]);
             if menu::item(ui, UnnestClip, m.sequence) {

@@ -3,8 +3,8 @@
 //! "Transcript ▸ Transcribe… / View transcript / Export transcript…", Get captions, Remove fillers,
 //! Toggle transcript), the FRAME_HOOK that runs whisper / tracking / TTS jobs - the Subtitles pane's
 //! Transcribe button included, so its result lands whether or not the pane is still drawn (progress
-//! toasts via `feedback::Toast`, results applied on the UI thread as ONE labeled undo step), and the
-//! WINDOW_DRAWER for the non-blocking "View transcript" window (`ui::transcript_ui::window`).
+//! toasts via `feedback::Toast`, results applied on the UI thread as ONE labeled undo step). View
+//! transcript / Get captions open the Transcript pane (`transcript_pane`, ws:panels-multiscreen).
 //!
 //! Every job started here carries an OUTER `Progress` that only completes once its result is in the
 //! project - so an MCP `transcribe.run`/`media.transcribe`/`tracking.run`/`tts.speak` reply
@@ -60,7 +60,6 @@ pub(super) struct TranscriptState {
     /// `tts::voices()` running on a thread (a second of powershell - never on the UI thread, never
     /// at startup: only once the Speech panel is first opened).
     voices_rx: Option<Receiver<Vec<String>>>,
-    pub(super) window: transcript_ui::TranscriptWindow,
     /// Last finished whisper run per clip: None = ok, Some(error). What `transcribe.status` reports
     /// once a run has left `runs` (an `async:true` caller has no other way to see a failure).
     finished: Vec<(Id, Option<String>)>,
@@ -249,17 +248,9 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             true
         }
         Action::ViewTranscript => {
-            match first_clip(app) {
-                Some(c) => {
-                    let w = &mut app.transcript.window;
-                    if w.clip != c {
-                        w.query.clear();
-                    }
-                    w.clip = c;
-                    w.open = true;
-                }
-                None => app.toast("Select a clip to view its transcript"),
-            }
+            // ws:panels-multiscreen: the Transcript pane, on this clip's words (was a window)
+            let c = first_clip(app);
+            transcript_pane::open(app, c, c.is_some_and(|c| app.project.transcript(c).is_none()));
             true
         }
         Action::ExportTranscript => {
@@ -267,17 +258,13 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             true
         }
         Action::ToggleTranscript => {
-            // flips the Subtitles pane between its Cues and Transcript tabs
-            app.subtitles_ui.show_transcript = !app.subtitles_ui.show_transcript;
-            app.surface(Pane::Subtitles);
+            app.toggle_pane(Pane::Transcript); // ws:panels-multiscreen
             true
         }
         Action::GetCaptions => {
             // the button itself lives in the Subtitles pane and names the size - surface it there
             // rather than fetching from a palette row that can't show the MB before the click
-            app.subtitles_ui.transcribe.open = true;
-            app.subtitles_ui.show_transcript = false; // the Transcribe section is on the Cues tab
-            app.surface(Pane::Subtitles);
+            transcript_pane::open(app, None, true); // ws:panels-multiscreen: the Transcribe section's pane
             let (name, file, mb) = app.subtitles_ui.transcribe.model();
             if transcribe::have_model(file) {
                 app.toast(format!(
@@ -648,26 +635,6 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
         || t.voices_rx.is_some();
     if busy {
         ctx.request_repaint_after(Duration::from_millis(150));
-    }
-}
-
-/// WINDOW_DRAWER: the "View transcript" window (word click = seek; "Transcribe…" when empty).
-pub(super) fn window(app: &mut App, ctx: &egui::Context) {
-    if !app.transcript.window.open {
-        return;
-    }
-    let r = {
-        let App { transcript, project, playhead, .. } = app;
-        transcript_ui::window(ctx, &mut transcript.window, project, *playhead)
-    };
-    if let Some(t) = r.seek {
-        app.playhead = t;
-        app.player.pause();
-        app.player.seek(t);
-    }
-    if r.transcribe {
-        let c = app.transcript.window.clip;
-        transcribe_or_offer(app, c);
     }
 }
 

@@ -44,6 +44,9 @@ pub struct RowSpec<'a> {
     pub dim: bool,
     /// One text per fixed value column.
     pub values: &'a [&'a str],
+    /// Controls this row leaves empty (bit k = control k): the slot stays, so the columns still line up, and
+    /// the caller may draw its own widget there (`RowResp::slot`).
+    pub blank: u8,
 }
 
 pub struct RowResp {
@@ -54,6 +57,21 @@ pub struct RowResp {
     pub ctrl_x: f32,
     /// The label's rectangle.
     pub label: Rect,
+    /// The whole row (click / double-click / right-click).
+    pub body: egui::Response,
+}
+
+impl RowResp {
+    /// Control `k`'s slot.
+    pub fn slot(&self, k: usize) -> Rect {
+        let r = self.body.rect;
+        Rect::from_min_size(Pos2::new(self.ctrl_x + CTRL_W * k as f32, r.top()), vec2(CTRL_W, r.height()))
+    }
+    /// The fixed value columns, between the label and the controls.
+    pub fn values(&self) -> Rect {
+        let r = self.body.rect;
+        Rect::from_min_max(Pos2::new(self.label.right() + 4.0, r.top()), Pos2::new(self.ctrl_x - 4.0, r.bottom()))
+    }
 }
 
 /// What a drag or a key asked for (rows are numbered as they were drawn).
@@ -75,11 +93,19 @@ pub struct Rows {
     rects: Vec<Rect>,
     keys: Vec<u64>,
     labels: Vec<String>,
+    /// No grip and no moves: a list whose order is not the user's (a chat list sorted by date).
+    fixed: bool,
 }
 
 impl Rows {
     pub fn new(ui: &Ui, id: impl std::hash::Hash, ctrls: &'static [Ctrl], value_widths: &[f32], nested: bool) -> Rows {
-        Rows { id: ui.make_persistent_id(id), ctrls, widths: value_widths.to_vec(), nested, rects: Vec::new(), keys: Vec::new(), labels: Vec::new() }
+        Rows { id: ui.make_persistent_id(id), ctrls, widths: value_widths.to_vec(), nested, rects: Vec::new(), keys: Vec::new(), labels: Vec::new(), fixed: false }
+    }
+
+    /// A list the user doesn't reorder: no grip, no drag, no Alt+arrow moves.
+    pub fn fixed_order(mut self) -> Rows {
+        self.fixed = true;
+        self
     }
 
     fn drag_id(&self) -> Id {
@@ -104,16 +130,18 @@ impl Rows {
         let ink = if spec.dim { v.weak_text_color() } else { v.text_color() };
         let dot = v.weak_text_color();
         let font = FontId::proportional(13.0);
-        let mut out = RowResp { toggled: false, ctrl: None, ctrl_x: 0.0, label: Rect::NOTHING };
+        let mut out = RowResp { toggled: false, ctrl: None, ctrl_x: 0.0, label: Rect::NOTHING, body: body.clone() };
         // grip: a drag handle
         let grip = Rect::from_min_size(rect.min, vec2(GRIP_W, ROW_H));
-        let g = ui.interact(grip, self.id.with(("grip", spec.key)), Sense::drag());
+        let g = ui.interact(grip, self.id.with(("grip", spec.key)), if self.fixed { Sense::hover() } else { Sense::drag() });
         if g.hovered() || g.dragged() {
             ui.ctx().set_cursor_icon(if g.dragged() { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab });
         }
-        g.clone().on_hover_text("Drag to reorder. Select a row, then Alt+Shift+Up / Down (or Alt+Up / Down) moves it, Alt+Left / Right nests it.");
-        for (dx, dy) in [(-2.0, -5.0), (2.0, -5.0), (-2.0, 0.0), (2.0, 0.0), (-2.0, 5.0), (2.0, 5.0)] {
-            painter.circle_filled(grip.center() + vec2(dx, dy), 1.3, dot);
+        if !self.fixed {
+            g.clone().on_hover_text("Drag to reorder. Select a row, then Alt+Shift+Up / Down (or Alt+Up / Down) moves it, Alt+Left / Right nests it.");
+            for (dx, dy) in [(-2.0, -5.0), (2.0, -5.0), (-2.0, 0.0), (2.0, 0.0), (-2.0, 5.0), (2.0, 5.0)] {
+                painter.circle_filled(grip.center() + vec2(dx, dy), 1.3, dot);
+            }
         }
         if g.drag_started() {
             ui.data_mut(|d| {
@@ -133,7 +161,7 @@ impl Rows {
         // controls: the same columns on every row
         let ctrl_x0 = rect.right() - CTRL_W * self.ctrls.len() as f32;
         out.ctrl_x = ctrl_x0;
-        for (k, c) in self.ctrls.iter().enumerate() {
+        for (k, c) in self.ctrls.iter().enumerate().filter(|(k, _)| spec.blank & (1 << k) == 0) {
             let r = Rect::from_min_size(Pos2::new(ctrl_x0 + CTRL_W * k as f32, rect.top()), vec2(CTRL_W, ROW_H));
             let resp = ui.interact(r, self.id.with(("ctrl", spec.key, k)), Sense::click()).on_hover_text(c.hint);
             if resp.hovered() {
@@ -153,7 +181,9 @@ impl Rows {
             x -= *w;
         }
         // the label takes what is left and ends in an ellipsis
-        let left = arrow.right() + INDENT * spec.depth as f32;
+        // a fixed list without arrows needs neither column: its label starts at the row's edge
+        let lead = if self.fixed && spec.open.is_none() { rect.left() + 6.0 } else { arrow.right() };
+        let left = lead + INDENT * spec.depth as f32;
         out.label = Rect::from_min_max(Pos2::new(left, rect.top()), Pos2::new((x - 4.0).max(left + 20.0), rect.bottom()));
         let mut job = egui::text::LayoutJob::simple_singleline(spec.label.to_string(), font, ink);
         job.wrap = egui::text::TextWrapping::truncate_at_width(out.label.width());
@@ -175,7 +205,7 @@ impl Rows {
     /// the keyboard moves of the selected row.
     pub fn finish(self, ui: &mut Ui) -> Option<Moved> {
         let n = self.rects.len();
-        if n == 0 {
+        if n == 0 || self.fixed {
             return None;
         }
         if let Some(key) = ui.data(|d| d.get_temp::<u64>(self.drag_id())) {

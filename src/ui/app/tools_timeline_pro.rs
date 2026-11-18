@@ -28,6 +28,12 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             app.settings.overview = !app.settings.overview;
             true
         }
+        Action::WaveformsSimple | Action::WaveformsDetailed => {
+            let d = if a == Action::WaveformsDetailed { "detailed" } else { "simple" };
+            app.settings.timeline_waveform = d.into();
+            app.settings.save();
+            true
+        }
         Action::ToggleShowVideoTracks | Action::ToggleShowAudioTracks => {
             let video = a == Action::ToggleShowVideoTracks;
             let (v, au) = app.settings.track_kinds();

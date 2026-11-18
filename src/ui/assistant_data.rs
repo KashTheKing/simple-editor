@@ -16,6 +16,8 @@ pub const MAX_CONVERSATIONS: usize = 50;
 pub const THUMB: [u32; 2] = [96, 54];
 /// Longest edge of the PNG an agent gets for an attachment.
 pub const ATTACH_MAX: u32 = 1024;
+/// ...and for a capture of the editor (a panel, an area, a pasted picture): small text must stay readable.
+pub const CAPTURE_MAX: u32 = 2048;
 
 /// The agents the header / Settings offer: (stored `Settings.assistant_backend` value, label). The
 /// labels are the one place a vendor name appears (an option the user picks).
@@ -55,17 +57,6 @@ pub fn model_label(model: &str) -> &str {
     CLAUDE_MODELS.iter().find(|(id, _)| *id == model).map_or(model, |(_, l)| l)
 }
 
-/// "3 min ago" for a `now_secs`-style timestamp.
-pub fn ago(then: f64, now: f64) -> String {
-    let s = (now - then).max(0.0);
-    match s {
-        s if s < 60.0 => "just now".into(),
-        s if s < 3600.0 => format!("{} min ago", (s / 60.0) as u64),
-        s if s < 86_400.0 => format!("{} h ago", (s / 3600.0) as u64),
-        s => format!("{} d ago", (s / 86_400.0) as u64),
-    }
-}
-
 pub fn agent_label(backend: &str) -> &'static str {
     AGENTS.iter().find(|(v, _)| *v == backend).map_or("Agent", |(_, l)| l)
 }
@@ -86,15 +77,38 @@ pub enum Line {
     Done { undo: Option<(usize, String)> },
 }
 
-/// An image sent with a request: a PNG for the agent plus a thumbnail, both files in the store.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Something sent with a request. An image is a PNG for the agent plus a thumbnail, both files in the
+/// store; any other file is just its path (`file`, with `png` / `thumb` empty).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Attachment {
     pub name: String,
+    #[serde(default)]
     pub png: PathBuf,
     /// Raw RGBA, `THUMB` sized.
+    #[serde(default)]
     pub thumb: PathBuf,
+    #[serde(default)]
     pub width: u32,
+    #[serde(default)]
     pub height: u32,
+    /// The file the user attached (a dropped / picked / pasted file), when it came from disk.
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+}
+
+impl Attachment {
+    pub fn is_image(&self) -> bool {
+        !self.png.as_os_str().is_empty()
+    }
+    /// A non-image file, attached by path.
+    pub fn file(path: &Path) -> Self {
+        let name = path.file_name().map_or_else(|| path.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+        Self { name, file: Some(path.to_path_buf()), ..Default::default() }
+    }
+    /// What "Copy path" copies: the original file, else the stored PNG.
+    pub fn path(&self) -> &Path {
+        self.file.as_deref().unwrap_or(&self.png)
+    }
 }
 
 /// A pinned piece of context: a snapshot taken when the user added it.
@@ -156,6 +170,8 @@ pub struct Conversation {
     pub session: Option<String>,
     pub lines: Vec<Line>,
     pub tasks: Vec<Task>,
+    /// Kept at the top of the chat list.
+    pub pinned: bool,
 }
 
 impl Conversation {
@@ -191,6 +207,93 @@ pub fn short(s: &str, n: usize) -> String {
     match s.char_indices().nth(n) {
         Some((i, _)) => format!("{}…", &s[..i]),
         None => s,
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------
+// messages: what the chat shows as one bubble, and what its right-click menu copies
+
+/// One message of a conversation: the user's (a `User` line and the `Attached` after it) or the
+/// assistant's reply (every line up to and including its `Done`, or up to the next `User`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Msg {
+    pub user: bool,
+    pub lines: std::ops::Range<usize>,
+}
+
+pub fn messages(lines: &[Line]) -> Vec<Msg> {
+    let mut out: Vec<Msg> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        let user = matches!(l, Line::User(_));
+        let joins = match out.last() {
+            // the reply after a `Done` is a new one; `Attached` belongs to the user message above it
+            Some(m) if m.user => matches!(l, Line::Attached { .. }),
+            Some(m) => !user && !matches!(lines[m.lines.end - 1], Line::Done { .. }),
+            None => false,
+        };
+        match out.last_mut() {
+            Some(m) if joins => m.lines.end = i + 1,
+            _ => out.push(Msg { user, lines: i..i + 1 }),
+        }
+    }
+    out
+}
+
+/// A message as Markdown: the user's text, or the reply's text blocks (errors as plain lines).
+pub fn msg_markdown(lines: &[Line], m: &Msg) -> String {
+    let parts: Vec<&str> = lines[m.lines.clone()]
+        .iter()
+        .filter_map(|l| match l {
+            Line::User(t) | Line::Text(t) | Line::Error(t) => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    parts.join("
+
+")
+}
+
+/// A message as plain text: the Markdown with its markup taken out.
+pub fn msg_plain(lines: &[Line], m: &Msg) -> String {
+    crate::ui::markdown::plain(&msg_markdown(lines, m))
+}
+
+pub fn msg_attachments(lines: &[Line], m: &Msg) -> Vec<Attachment> {
+    lines[m.lines.clone()]
+        .iter()
+        .flat_map(|l| match l {
+            Line::Attached { images, .. } => images.clone(),
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+/// The chat list: chats that have something (and match `q`), pinned ones first, then the most recent.
+pub fn sidebar_order(convs: &[Conversation], q: &str) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..convs.len()).filter(|&i| !convs[i].is_empty() && matches(&convs[i], q)).collect();
+    idx.sort_by(|&a, &b| convs[b].pinned.cmp(&convs[a].pinned).then(convs[b].updated.total_cmp(&convs[a].updated)));
+    idx
+}
+
+/// The chat list's date column: "now", "5m", "3h", "2d", then "Nov 12" (UTC calendar day).
+pub fn short_date(then: f64, now: f64) -> String {
+    let s = (now - then).max(0.0);
+    match s {
+        s if s < 60.0 => "now".into(),
+        s if s < 3600.0 => format!("{}m", (s / 60.0) as u64),
+        s if s < 86_400.0 => format!("{}h", (s / 3600.0) as u64),
+        s if s < 7.0 * 86_400.0 => format!("{}d", (s / 86_400.0) as u64),
+        _ => {
+            // days since 1970-01-01 to a civil date (Howard Hinnant's algorithm)
+            let z = (then / 86_400.0).floor() as i64 + 719_468;
+            let doe = z.rem_euclid(146_097);
+            let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let (d, m) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
+            const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+            format!("{} {d}", MONTHS[(m - 1) as usize])
+        }
     }
 }
 
@@ -412,17 +515,35 @@ pub fn take_pins() -> Vec<Pin> {
     PINS.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }
 
+thread_local! {
+    /// A pane tab's "Attach to Assistant" clicks (a screenshot of that pane), drained by the Assistant's tick.
+    static CAPTURES: RefCell<Vec<crate::ui::layout::Pane>> = const { RefCell::new(Vec::new()) };
+}
+
+pub fn request_capture(pane: crate::ui::layout::Pane) {
+    CAPTURES.with(|q| q.borrow_mut().push(pane));
+}
+
+pub fn take_captures() -> Vec<crate::ui::layout::Pane> {
+    CAPTURES.with(|q| std::mem::take(&mut *q.borrow_mut()))
+}
+
 // ---------------------------------------------------------------------------------------------------
 // attachments
 
 /// Write an attachment for top-down RGBA `rgba` (`w` x `h`): a PNG at most `ATTACH_MAX` on its long
 /// edge for the agent, and a `THUMB` thumbnail, both under `dir`.
 pub fn write_attachment(dir: &Path, name: &str, rgba: &[u8], w: u32, h: u32) -> Result<Attachment, String> {
+    write_attachment_max(dir, name, rgba, w, h, ATTACH_MAX)
+}
+
+/// `write_attachment` with the PNG at most `max` on its long edge.
+pub fn write_attachment_max(dir: &Path, name: &str, rgba: &[u8], w: u32, h: u32, max: u32) -> Result<Attachment, String> {
     if w == 0 || h == 0 || rgba.len() < (w * h * 4) as usize {
         return Err("empty image".into());
     }
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let scale = (ATTACH_MAX as f32 / w.max(h) as f32).min(1.0);
+    let scale = (max as f32 / w.max(h) as f32).min(1.0);
     let (pw, ph) = (((w as f32 * scale) as u32).max(1), ((h as f32 * scale) as u32).max(1));
     let mut frame = crate::media::Frame::new(pw, ph);
     resample(rgba, w, h, &mut frame.rgba, pw, ph, (0, 0, pw, ph));
@@ -438,7 +559,7 @@ pub fn write_attachment(dir: &Path, name: &str, rgba: &[u8], w: u32, h: u32) -> 
     let thumb_path = dir.join(format!("{stem}.thumb"));
     std::fs::write(&png, crate::mcp::png_encode(&frame)).map_err(|e| e.to_string())?;
     std::fs::write(&thumb_path, &thumb).map_err(|e| e.to_string())?;
-    Ok(Attachment { name: name.to_string(), png, thumb: thumb_path, width: pw, height: ph })
+    Ok(Attachment { name: name.to_string(), png, thumb: thumb_path, width: pw, height: ph, file: None })
 }
 
 /// Nearest-neighbour copy of `src` (sw x sh) into the `(x, y, w, h)` box of `dst` (dw wide).
@@ -612,6 +733,7 @@ mod tests {
             session: Some(format!("s{id}")),
             lines: vec![Line::User(text.into()), Line::Done { undo: None }],
             tasks: Vec::new(),
+            pinned: false,
         }
     }
 
@@ -630,6 +752,7 @@ mod tests {
                 thumb: dir.join("a.thumb"),
                 width: 4,
                 height: 2,
+                file: None,
             }],
         });
         convs[1].tasks.push(Task {

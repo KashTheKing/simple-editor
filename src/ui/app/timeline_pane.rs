@@ -181,6 +181,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 boring_thr: settings.boring_thr,
                 realtime: &realtime_bar,
                 views: &settings.timeline_views,
+                wave_detailed: settings.timeline_waveform == "detailed",
             },
         )
     };

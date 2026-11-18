@@ -5,8 +5,17 @@ description: Levels, buses and filters in the Mixer, ducking and loudness, and r
 
 ![The Audio page](/img/tutorial/page-audio.png)
 
-The **Audio** page (<kbd>Alt+5</kbd>) has a small Preview, the **Mixer** (with **Subtitles** behind it), the
-Inspector, and a tall timeline so audio waveforms are easy to read.
+The **Audio** page (<kbd>Alt+6</kbd>) has everything for sound work in one place:
+
+- a **music** area: the Library (showing your audio files when you open the page) and the Gallery's
+  **Audio** side (sound effects, audio animations, crossfades, bus effects),
+- a small **Preview**,
+- the **Mixer** with the **Voiceover** and **Transcript** panels behind it,
+- the **Inspector** for the selected clip (an audio visualizer's controls are there too),
+- a tall timeline so waveforms are easy to read, with the Beat Aligner tabbed beside it.
+
+If you had already changed the Audio page, your arrangement is kept: **Window ▸ Layout ▸ Reset Page Layout**
+gives you the new one.
 
 ## Clip audio
 
@@ -64,15 +73,17 @@ use (turn it off on the [Export page](export.mdx)).
 
 ## Record a voiceover
 
-![The Voiceover window](/img/tutorial/voiceover.png)
+The **Voiceover** panel is on the Audio page behind the Mixer, and anywhere else from **File ▸ Record ▸
+Record Voiceover** (<kbd>Ctrl+Alt+R</kbd>), the Window menu or <kbd>Ctrl+P</kbd>.
 
 1. Put the playhead where the voiceover should start.
-2. **File ▸ Record ▸ Record Voiceover…** (<kbd>Ctrl+Alt+R</kbd>).
-3. Pick your microphone under **Input**, and **Mono** or **Stereo**.
-4. Leave **Record from the playhead** ticked: the video plays while you talk, so you can time your words.
-5. Click **Record**, speak, then **Stop**. The take lands on the timeline at the start point.
+2. Pick your microphone under **Input**, and **Mono** or **Stereo**.
+3. Leave **Punch in at the playhead** ticked: the video plays while you talk, so you can time your words.
+4. Click **Record**, speak (the meter shows your level), then **Stop**. The take lands on the timeline at
+   the start point.
 
-Didn't like it? **Retake** removes the last take and records again from the same spot. Recording needs
+Didn't like it? **Retake** removes the last take and records again from the same spot. Every take on the
+timeline is listed under the buttons: click its time to jump there, or **×** to delete it. Recording needs
 FFmpeg.
 
 **File ▸ Record ▸ Screen Recording…** records your desktop (or a region of it), optionally with your

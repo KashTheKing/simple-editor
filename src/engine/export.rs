@@ -253,35 +253,109 @@ fn is_stem_file(name: &str) -> bool {
 }
 
 // ---- ws:export-deliver ----
-/// One platform export tile ("YouTube 1080p", "Shorts 9:16", …): a target size + container +
-/// quality. Stored in `Settings.export_presets` (a plain Vec, so users can edit/remove tiles).
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// One export preset card ("YouTube 1080p", "Shorts 9:16", a user's own …): a target size +
+/// container + quality (+ encoder / speed / audio layout when it names them). Platform tiles live in
+/// `Settings.export_presets` (a plain Vec, so users can edit/remove tiles), the user's own in
+/// `Settings.export_user_presets`, the two built-ins in `builtin_export_presets` (never stored).
+/// Every field after `loudnorm` is serde-defaulted: a settings.json from before them still loads.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExportPreset {
     pub name: String,
     pub ext: String,
+    /// 0 × 0 = the project's own size.
     pub width: u32,
     pub height: u32,
     pub crf: u32,
     pub loudnorm: bool,
+    /// ffmpeg encoder, "" = "auto" (the probed fastest hardware encoder, else software).
+    #[serde(default)]
+    pub encoder: String,
+    /// "speed" | "balanced" | "small" (`Settings.export_speed`), "" = balanced.
+    #[serde(default)]
+    pub speed: String,
+    /// "mix" | "streams" | "stems", "" = leave the Audio section as it is.
+    #[serde(default)]
+    pub audio: String,
+    /// A hand-typed size: plain scale instead of fit-and-pad (platform tiles fit inside, with bars).
+    #[serde(default)]
+    pub stretch: bool,
+    /// Card icon: brand keys ("youtube", "youtubeshorts,instagram,tiktok" - `ui::brand_icons`) or a
+    /// tool glyph name; "" = guessed from the name.
+    #[serde(default)]
+    pub icon: String,
+    /// Card accent colour; None = the icon's own.
+    #[serde(default)]
+    pub color: Option<[u8; 3]>,
 }
 
 /// The 4 shipped tiles - also the serde field default for `Settings.export_presets`, so a
 /// settings.json from before this field existed backfills the same tiles a fresh install gets.
 pub fn default_export_presets() -> Vec<ExportPreset> {
-    let p = |name: &str, width, height, crf| ExportPreset {
+    let p = |name: &str, width, height, crf, icon: &str| ExportPreset {
         name: name.into(),
         ext: "mp4".into(),
         width,
         height,
         crf,
         loudnorm: true,
+        icon: icon.into(),
+        ..Default::default()
     };
     vec![
-        p("YouTube 1080p", 1920, 1080, 18),
-        p("YouTube 4K", 3840, 2160, 18),
-        p("Shorts / Reels / TikTok", 1080, 1920, 20),
-        p("Instagram 1:1", 1080, 1080, 20),
+        p("YouTube 1080p", 1920, 1080, 18, "youtube"),
+        p("YouTube 4K", 3840, 2160, 18, "youtube"),
+        p("Shorts / Reels / TikTok", 1080, 1920, 20, "youtubeshorts,instagram,tiktok"),
+        p("Instagram 1:1", 1080, 1080, 20, "instagram"),
     ]
+}
+
+/// The built-in preset that exports exactly the project (size, fps) at the best quality.
+pub const PRESET_MAX_QUALITY: &str = "Project settings — Max quality";
+/// The built-in quick-look preset: project size and fps, fastest encode, smaller file.
+pub const PRESET_FAST_PREVIEW: &str = "Fast preview";
+
+/// The two built-in cards, always first and never stored, renamed or deleted. Both keep the project's
+/// own resolution and frame rate (0 × 0). Max quality: CRF 16 (the slider's 100 %), software x264 on
+/// its slow preset (best quality per bit). Fast preview: CRF 28, "auto" (the probed hardware encoder)
+/// on the fastest preset, no loudness pass.
+pub fn builtin_export_presets() -> Vec<ExportPreset> {
+    vec![
+        ExportPreset {
+            name: PRESET_MAX_QUALITY.into(),
+            ext: "mp4".into(),
+            crf: CRF_BEST as u32,
+            loudnorm: true,
+            encoder: "libx264".into(),
+            speed: "small".into(),
+            icon: "star".into(),
+            color: Some([240, 180, 40]),
+            ..Default::default()
+        },
+        ExportPreset {
+            name: PRESET_FAST_PREVIEW.into(),
+            ext: "mp4".into(),
+            crf: 28,
+            loudnorm: false,
+            encoder: "auto".into(),
+            speed: "speed".into(),
+            icon: "bolt".into(),
+            color: Some([0, 172, 193]),
+            ..Default::default()
+        },
+    ]
+}
+
+/// Is `name` one of the two built-ins (which can't be renamed, edited or deleted)?
+pub fn is_builtin_preset(name: &str) -> bool {
+    name.eq_ignore_ascii_case(PRESET_MAX_QUALITY) || name.eq_ignore_ascii_case(PRESET_FAST_PREVIEW)
+}
+
+/// Every preset card in order: the 2 built-ins, then the platform tiles, then the user's own.
+pub fn all_export_presets(platform: &[ExportPreset], user: &[ExportPreset]) -> Vec<ExportPreset> {
+    let mut v = builtin_export_presets();
+    v.extend(platform.iter().cloned());
+    v.extend(user.iter().cloned());
+    v
 }
 
 /// ffmpeg's EBU R128 normaliser at the streaming-platform target. Fixed on purpose (see the issue's

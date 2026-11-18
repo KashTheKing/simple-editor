@@ -585,3 +585,32 @@ fn backspace_is_delete_except_over_panes_that_own_delete() {
     assert!(App::backspace_is_delete(Some(Pane::Timeline)));
     assert!(App::backspace_is_delete(None));
 }
+
+// ---- ws:panels-multiscreen ----
+/// The Voiceover, transcript and export-progress windows are gone; the actions that opened them bring up
+/// their panes instead. Source scan: `App` has no headless harness (see the note atop this file).
+#[test]
+fn old_popups_are_gone_or_forwarded_to_panes() {
+    let windows = include_str!("windows.rs");
+    assert!(!windows.contains("\"Exporting…\""), "the export progress window is the Rendering pane");
+    assert!(!windows.contains("frame_ui::show(ctx"), "Export Frame draws in the Rendering pane");
+    assert!(windows.contains("render_pane::reveal_on_start(self)"));
+    let capture = include_str!("../capture_ui.rs");
+    assert!(!capture.contains("\"Voiceover\""), "no Voiceover window");
+    let transcript = include_str!("../transcript_ui.rs");
+    assert!(!transcript.contains("egui::Window"), "no View transcript window");
+    let reg = include_str!("mod.rs");
+    assert!(!reg.contains("    transcript_ctl::window,"), "its WINDOW_DRAWERS entry is gone");
+    for drawer in ["voiceover_pane::draw,", "transcript_pane::draw,", "render_pane::draw,"] {
+        assert!(reg.contains(drawer), "{drawer} is a PANE_DRAWERS entry");
+    }
+    let acts = include_str!("actions.rs");
+    assert!(acts.contains("Voiceover => self.toggle_pane(Pane::Voiceover)"));
+    let tctl = include_str!("transcript_ctl.rs");
+    assert!(tctl.contains("transcript_pane::open(app, c,"), "View Transcript opens the pane");
+    assert!(tctl.contains("app.toggle_pane(Pane::Transcript)"), "Show / Hide Transcript toggles the pane");
+    // and each pane is in the Window menu and reached by one palette row (`palette_has_one_row_per_pane`)
+    for p in [Pane::Voiceover, Pane::Transcript, Pane::Rendering] {
+        assert!(Pane::ALL.contains(&p) && Pane::by_title(p.title()) == Some(p), "{p:?}");
+    }
+}

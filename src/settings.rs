@@ -174,6 +174,10 @@ pub fn default_palette() -> PaletteOverride {
     PaletteOverride { accent: None, ..crate::theme::preset("GitHub Dark").unwrap() }
 }
 
+fn default_waveform() -> String {
+    "simple".into()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -394,6 +398,14 @@ pub struct Settings {
     /// settings.json upgrading from before this key existed (`default_loudnorm`, not bool's false).
     #[serde(default = "default_loudnorm")]
     pub loudnorm: bool,
+    /// The user's own export presets (Export ▸ "Save current settings as preset…"), after the built-ins
+    /// and the platform tiles; Quick Export finds them by name too (`Settings::export_preset`).
+    #[serde(default)]
+    pub export_user_presets: Vec<crate::engine::export::ExportPreset>,
+    /// Which Export pane sections are open ("video" / "audio" / "advanced"); a missing key = the
+    /// section's own default (Video open, Audio open, Advanced closed).
+    #[serde(default)]
+    pub export_folds: BTreeMap<String, bool>,
     // ---- ws:inspector-gallery ----
     /// Which inspector `section()` blocks are expanded, keyed by the section's `id` string (stable
     /// across sessions - not the clip/effect it currently belongs to). Missing key = that section's own
@@ -456,6 +468,10 @@ pub struct Settings {
     /// Inline overview minimap strip above the ruler.
     #[serde(default)]
     pub overview: bool,
+    /// Audio clips on the timeline: "simple" (dB envelope, loudness body) or "detailed" (frequency
+    /// colours, onset ticks, spectrogram on tall tracks). A track's own `Track.waveform` wins.
+    #[serde(default = "default_waveform")]
+    pub timeline_waveform: String,
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
     // ---- ws:jobs-panel ----
@@ -620,6 +636,17 @@ pub struct Settings {
     pub cache_move_from: String,
     /// The browser the app sends the user to (an exe path); empty = the Windows default browser.
     pub web_browser: String,
+    // ---- ws:panels-multiscreen ----
+    /// Screens the editor is laid out for: 1 (one window), 2 or 3 (the pages' extra windows on the other
+    /// monitors). The current count's trees are `layout` / `page_layouts`; the others' are in `screen_layouts`.
+    pub screen_mode: u8,
+    /// How many monitors there were when "Use 2-screen mode?" was last answered (0 = never asked): it asks
+    /// again only when more monitors than that are connected.
+    pub screens_answered: u8,
+    /// The pages' trees for the screen counts not in use, as `"<count>|<page>"` -> Layout JSON.
+    pub screen_layouts: BTreeMap<String, String>,
+    /// The Audio page's "new default layout" note was shown (a saved Audio layout is never replaced).
+    pub audio_layout_offered: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -758,6 +785,8 @@ impl Default for Settings {
             export_presets: crate::engine::export::default_export_presets(),
             last_export: None,
             loudnorm: default_loudnorm(),
+            export_user_presets: Vec::new(),
+            export_folds: BTreeMap::new(),
             // ---- ws:inspector-gallery ----
             inspector_folds: BTreeMap::new(),
             caption_presets: Vec::new(),
@@ -800,6 +829,7 @@ impl Default for Settings {
             ],
             boring_thr: default_boring_thr(),
             overview: false,
+            timeline_waveform: default_waveform(),
             // ---- ws:text-titles ----
             // ---- ws:docs-refresh ----
             // ---- ws:jobs-panel ----
@@ -884,6 +914,11 @@ impl Default for Settings {
             cache_folder: String::new(),
             cache_move_from: String::new(),
             web_browser: String::new(),
+            // ---- ws:panels-multiscreen ----
+            screen_mode: 1,
+            screens_answered: 0,
+            screen_layouts: BTreeMap::new(),
+            audio_layout_offered: false,
         }
     }
 }
@@ -893,6 +928,17 @@ impl Default for Settings {
 static CACHE_FOLDER: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 
 impl Settings {
+    /// Every export preset card in order: built-ins, platform tiles, the user's own.
+    pub fn all_export_presets(&self) -> Vec<crate::engine::export::ExportPreset> {
+        crate::engine::export::all_export_presets(&self.export_presets, &self.export_user_presets)
+    }
+
+    /// An export preset by name (case-insensitive), wherever it lives - what the Export pane, Quick
+    /// Export and the `export.*` tools look presets up with.
+    pub fn export_preset(&self, name: &str) -> Option<crate::engine::export::ExportPreset> {
+        self.all_export_presets().into_iter().find(|p| p.name.eq_ignore_ascii_case(name))
+    }
+
     /// This page's (show video, show audio) timeline rows: the Audio page hides video by default.
     pub fn track_kinds(&self) -> (bool, bool) {
         self.track_kinds.get(&self.page).copied().unwrap_or((self.page != "Audio", true))

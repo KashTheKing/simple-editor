@@ -1,6 +1,7 @@
-//! Subtitles panel. Two tabs - Cues and Transcript - and one header row each. The Cues row: "+ Add" (cue
-//! [playhead, playhead+2 s) with the text "Subtitle", selected + text field focused), "Transcribe…" and
-//! "Style ▾" (each opens its section above the cues) and ⋯ (also the cue list's empty-space right-click):
+//! Subtitles panel: the cues. One header row: "Transcript" (opens the Transcript pane, which holds the
+//! transcription, the words and captions-from-transcript: `show_transcript_pane`), "+ Add" (cue
+//! [playhead, playhead+2 s) with the text "Subtitle", selected + text field focused), "Style ▾" (opens
+//! its section above the cues) and ⋯ (also the cue list's empty-space right-click):
 //! Import… (the app's one import path, shared with the timeline's subtitle lane), Export SRT… /
 //! Export VTT… (engine::subtitles::to_srt/to_vtt), Open folder (the app writes the .srt sidecar and
 //! opens the folder), Burn in (project.show_subtitles), To text clips (Project::cues_to_text_clips -
@@ -14,7 +15,7 @@
 //! playhead, Convert to text clip(s), Delete - on every selected cue when the row is part of the
 //! selection. Undo once per gesture (same edit_start rule as the inspector); returns what changed.
 //!
-//! The "Transcribe" section drives `engine::transcribe`: pick a whisper.cpp model (its download size is
+//! The "Transcribe" section (drawn by the Transcript pane) drives `engine::transcribe`: pick a whisper.cpp model (its download size is
 //! named before the click and the download shows a progress bar), and "Transcribe & generate subtitles"
 //! hands the selected clip to the app (`want`), whose `transcribe_clip` job finishes into cues whether or
 //! not this pane is still open (`transcript_ctl::tick`). Opening the section starts nothing. The raw
@@ -152,8 +153,6 @@ pub struct SubtitlesState {
     typing: Option<Id>,
     pub transcribe: TranscribeState,
     // ---- ws:transcript-captions ----
-    /// The Transcript tab is showing instead of the cues (`Action::ToggleTranscript` flips it).
-    pub show_transcript: bool,
     pub transcript: transcript_ui::TranscriptUiState,
 }
 
@@ -171,6 +170,64 @@ pub struct SubtitlesResponse {
     /// ⋯ ▸ Import…: the app runs the one import path the timeline's subtitle lane uses too
     /// (`timeline_pane::import_subtitles` - file dialog, parse, replace-or-confirm).
     pub import: bool,
+    // ---- ws:panels-multiscreen ----
+    /// The header's Transcript button: bring the Transcript pane up.
+    pub open_transcript: bool,
+}
+
+/// ---- ws:panels-multiscreen ----
+/// The Transcript pane: a "Transcribe & captions" toggle (model, language, cue grouping, the double-take
+/// finder, Generate cues: was the Subtitles pane's Transcribe section), then the words of one transcript
+/// (`transcript_ui::show`: click to seek, select and cut, fillers, speech).
+pub fn show_transcript_pane(
+    ui: &mut egui::Ui,
+    state: &mut SubtitlesState,
+    project: &mut Project,
+    playhead: &mut f64,
+    selection: &[Id],
+    palette: &Palette,
+    undo: &mut dyn FnMut(&Project),
+) -> SubtitlesResponse {
+    let mut resp = SubtitlesResponse::default();
+    let mut undone = false;
+    ui.horizontal(|ui| {
+        let arrow = if state.transcribe.open { "▴" } else { "▾" };
+        ui.toggle_value(&mut state.transcribe.open, format!("Transcribe & captions {arrow}"))
+            .on_hover_text("Speech to text: model, language and the cue grouping, then the double-take finder");
+    });
+    if state.transcribe.open {
+        let h = (ui.available_height() * 0.55).max(120.0);
+        egui::ScrollArea::vertical().id_salt("transcribe_setup").max_height(h).auto_shrink([false, true]).show(
+            ui,
+            |ui| transcribe_section(ui, &mut state.transcribe, project, selection, &mut undone, undo, &mut resp),
+        );
+    }
+    ui.separator();
+    // a selectable word label would take the right-click meant for the word menu
+    ui.style_mut().interaction.selectable_labels = false;
+    let mut lead = |_: &mut egui::Ui| {};
+    let r = transcript_ui::show(
+        ui,
+        &mut lead,
+        &mut state.transcript,
+        project,
+        playhead,
+        selection,
+        palette,
+        &mut undone,
+        undo,
+    );
+    resp.edited |= r.edited;
+    resp.seeked |= r.seeked;
+    if r.cut > 0 {
+        // the Transcribe section's copy for "Regenerate cues" follows the cut too
+        if let Some(tr) = state.transcribe.clip.and_then(|c| project.transcript(c)) {
+            if !state.transcribe.raw_words.is_empty() {
+                state.transcribe.raw_words = tr.words.clone();
+            }
+        }
+    }
+    resp
 }
 
 /// "+ Add": a 2 s cue starting at the playhead.
@@ -190,18 +247,12 @@ pub(crate) fn apply_import(project: &mut Project, cues: &[(f64, f64, String)], r
     }
 }
 
-/// The pane's two tabs, drawn at the start of whichever header row is showing.
-fn tabs(ui: &mut egui::Ui, transcript: &mut bool) {
-    ui.selectable_value(transcript, false, "Cues");
-    ui.selectable_value(transcript, true, "Transcript");
-}
-
 pub fn show(
     ui: &mut egui::Ui,
     state: &mut SubtitlesState,
     project: &mut Project,
     playhead: &mut f64,
-    selection: &[Id],
+    _selection: &[Id],
     fonts: &[String],
     palette: &Palette,
     undo: &mut dyn FnMut(&Project),
@@ -209,34 +260,15 @@ pub fn show(
     let mut resp = SubtitlesResponse::default();
     let mut undone = false;
 
-    // ---- ws:transcript-captions ---- the Transcript tab (`Action::ToggleTranscript` flips to it)
-    if state.show_transcript {
-        // a selectable word label would take the right-click meant for the word menu
-        ui.style_mut().interaction.selectable_labels = false;
-        let SubtitlesState { show_transcript, transcript, .. } = state;
-        let mut lead = |ui: &mut egui::Ui| tabs(ui, show_transcript);
-        let r =
-            transcript_ui::show(ui, &mut lead, transcript, project, playhead, selection, palette, &mut undone, undo);
-        resp.edited |= r.edited;
-        resp.seeked |= r.seeked;
-        if r.cut > 0 {
-            // the tab's own words follow the cut (Project.transcripts already did); the Transcribe
-            // section's copy for "Regenerate cues" follows too
-            if let Some(tr) = state.transcribe.clip.and_then(|c| project.transcript(c)) {
-                if !state.transcribe.raw_words.is_empty() {
-                    state.transcribe.raw_words = tr.words.clone();
-                }
-            }
-        }
-        return resp;
-    }
-
     let ph = *playhead;
     let bg = crate::ui::markers_ui::menu_area(ui);
     // ---- the one header row: Cues | Transcript · + Add · Transcribe… · Style ▾ · ⋯ ----
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0; // six controls in a ~350 pt side pane
-        tabs(ui, &mut state.show_transcript);
+        // ws:panels-multiscreen: the words, transcription and captions-from-transcript are the Transcript pane
+        if ui.button("Transcript").on_hover_text("Transcribe, edit the words, make captions").clicked() {
+            resp.open_transcript = true;
+        }
         ui.add_space(6.0);
         let key = menu::shortcut(Action::AddSubtitle);
         let tip = if key.is_empty() {
@@ -251,8 +283,6 @@ pub fn show(
             state.focus = Some(id);
             resp.edited = true;
         }
-        ui.toggle_value(&mut state.transcribe.open, "Transcribe…")
-            .on_hover_text("Speech to text: model, language and the cue grouping, then the double-take finder");
         // right-aligned, so ⋯ is never the one a narrow pane cuts off
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             menu::button(ui, "⋯", |ui| more_menu(ui, state, project, &mut undone, undo, &mut resp))
@@ -272,10 +302,6 @@ pub fn show(
     egui::ScrollArea::vertical().id_salt("subtitles_body").auto_shrink(false).show(ui, |ui| {
         if state.show_style {
             style_section(ui, project, fonts, &mut undone, undo, &mut resp);
-            ui.separator();
-        }
-        if state.transcribe.open {
-            transcribe_section(ui, &mut state.transcribe, project, selection, &mut undone, undo, &mut resp);
             ui.separator();
         }
         for i in 0..project.subtitles.len() {
@@ -1130,19 +1156,22 @@ mod tests {
         // the transcribe section draws too, with a clip selected - only its hints, nothing started
         let mut state = SubtitlesState {
             show_style: true,
-            show_transcript: true,
             transcribe: TranscribeState { open: true, ..Default::default() },
             ..Default::default()
         };
         let mut playhead = 2.5; // inside cue "b" → highlighted row
         let ctx = egui::Context::default();
         for i in 0..60 {
-            state.show_transcript = i >= 30; // both tabs
             let _ = ctx.run(egui::RawInput::default(), |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let mut undo = |_: &Project| panic!("no undo without edits");
-                    let r = show(ui, &mut state, &mut p, &mut playhead, &[clip], &fonts, &palette, &mut undo);
-                    assert!(!r.edited && !r.seeked);
+                    // the Subtitles pane, then the Transcript pane (ws:panels-multiscreen) with its setup open
+                    let r = if i < 30 {
+                        show(ui, &mut state, &mut p, &mut playhead, &[clip], &fonts, &palette, &mut undo)
+                    } else {
+                        show_transcript_pane(ui, &mut state, &mut p, &mut playhead, &[clip], &palette, &mut undo)
+                    };
+                    assert!(!r.edited && !r.seeked && !r.open_transcript);
                 });
             });
         }

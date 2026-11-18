@@ -81,27 +81,130 @@ pub(super) fn toggle_button(
     r
 }
 
-/// One vertical min..max line per point column over the visible part of an audio clip.
+/// Quietest level a waveform still shows (dB below full scale): the bottom of the perceptual scale.
+pub(super) const WAVE_FLOOR_DB: f32 = -36.0;
+
+/// Half-height fraction (0..1) for a linear amplitude on the dB scale: `WAVE_FLOOR_DB` and below = 0,
+/// 0 dBFS = 1, so a -30 dB voice is visible and a mastered song does not fill the whole clip.
+pub(super) fn db_h(amp: f32) -> f32 {
+    ((20.0 * amp.max(1e-9).log10() - WAVE_FLOOR_DB) / -WAVE_FLOOR_DB).clamp(0.0, 1.0)
+}
+
+/// Detailed waveform colour of a column from its [low, mid, high] levels: bass red-orange, mids green,
+/// highs cyan-blue, mixed by energy (mids x2, highs x4 so music's natural bass tilt still shows them).
+pub(super) fn band_color(bands: [u8; 3]) -> Color32 {
+    const C: [[f32; 3]; 3] = [[255.0, 72.0, 24.0], [70.0, 230.0, 70.0], [40.0, 180.0, 255.0]];
+    let w = [1.0, 2.0, 4.0];
+    let e: [f32; 3] = [0, 1, 2].map(|i| crate::media::waveform::amp_of(bands[i]).powi(2) * w[i]);
+    let sum = (e[0] + e[1] + e[2]).max(1e-12);
+    let c = [0, 1, 2].map(|k| ((C[0][k] * e[0] + C[1][k] * e[1] + C[2][k] * e[2]) / sum) as u8);
+    Color32::from_rgb(c[0], c[1], c[2])
+}
+
+/// The clip's audio over `area`, one column per point, batched into a single mesh. Simple: a centred
+/// dB-scale envelope (peak, translucent) with the loudness (RMS) body inside it in the solid colour.
+/// Detailed: each column coloured by its bands (`band_color`), on a dark backing, plus onset ticks.
 pub(super) fn draw_waveform(
     p: &egui::Painter,
-    peaks: &Peaks,
+    d: &WaveDetail,
     clip: &Clip,
-    vis: Rect,
+    area: Rect,
     state: &TimelineState,
     color: Color32,
+    detailed: bool,
 ) {
-    let mid = vis.center().y;
-    let half = (vis.height() * 0.5 - 1.0).max(0.0);
-    let stroke = Stroke::new(1.0, color);
-    let mut x = vis.left().floor();
-    while x < vis.right() {
-        let t0 = clip.src_time(state.time_at(x));
-        let t1 = clip.src_time(state.time_at(x + 1.0));
-        let (lo, hi) = peaks.range(t0, t1);
-        if hi > lo {
-            p.vline(x + 0.5, Rangef::new(mid - hi * half, mid - lo * half), stroke);
+    let mid = area.center().y;
+    let half = (area.height() * 0.5 - 1.0).max(0.0);
+    if detailed {
+        p.rect_filled(area, 0.0, Color32::from_black_alpha(150));
+    }
+    let edge = if detailed { Color32::TRANSPARENT } else { color.gamma_multiply(0.45) };
+    let mut mesh = egui::Mesh::default();
+    let mut quad = |x: f32, h: f32, c: Color32| {
+        if h >= 0.25 {
+            mesh.add_colored_rect(Rect::from_x_y_ranges(x..=x + 1.0, mid - h..=mid + h), c);
         }
+    };
+    let mut x = area.left().floor();
+    let (mut t0, mut ticks) = (clip.src_time(state.time_at(x)), Vec::new());
+    while x < area.right() {
+        let t1 = clip.src_time(state.time_at(x + 1.0));
+        if let Some(col) = d.col(t0, t1) {
+            let peak = db_h(col.lo.abs().max(col.hi.abs())) * half;
+            let body = if d.has_bands { db_h(col.rms) * half } else { 0.0 };
+            if detailed {
+                let c = if d.has_bands { band_color(col.bands) } else { color };
+                quad(x, peak, c.gamma_multiply(0.75));
+                quad(x, body, c.lerp_to_gamma(Color32::WHITE, 0.3));
+            } else {
+                quad(x, peak, edge);
+                quad(x, body, color);
+            }
+            // ticks only once a column is <= 50 ms: zoomed further out they would merge into a bar
+            let (a, b) = (t0.min(t1), t0.max(t1));
+            if detailed && b - a <= 0.05 {
+                let i = d.onsets.partition_point(|&o| o < a);
+                if d.onsets.get(i).is_some_and(|&o| o < b) {
+                    ticks.push(x);
+                }
+            }
+        }
+        t0 = t1;
         x += 1.0;
+    }
+    let tick = Color32::from_white_alpha(170);
+    for x in ticks {
+        mesh.add_colored_rect(Rect::from_x_y_ranges(x..=x + 1.0, area.top()..=area.top() + 5.0), tick);
+        mesh.add_colored_rect(Rect::from_x_y_ranges(x..=x + 1.0, area.bottom() - 5.0..=area.bottom()), tick);
+    }
+    p.add(mesh);
+}
+
+/// The spectrogram heat map over `area` (low frequencies at the bottom): cached texture tiles at the
+/// pyramid level that puts about one spectrogram column under each point.
+/// ponytail: maps the visible part through the clip's speed linearly (its two edges); a speed ramp or a
+/// freeze inside one clip is shown as if the speed were constant.
+pub(super) fn draw_spectrogram(
+    p: &egui::Painter,
+    wc: &mut WaveformCache,
+    path: &str,
+    stream: usize,
+    d: &WaveDetail,
+    clip: &Clip,
+    area: Rect,
+    state: &TimelineState,
+) {
+    use crate::media::waveform::{SPEC_PER_SEC, TILE};
+    let (sl, sr) = (clip.src_time(state.time_at(area.left())), clip.src_time(state.time_at(area.right())));
+    if d.spec.is_empty() || (sr - sl).abs() < 1e-6 || area.width() < 1.0 {
+        return;
+    }
+    let cols_per_pt = (sr - sl).abs() * SPEC_PER_SEC as f64 / area.width() as f64;
+    let level = cols_per_pt.max(1.0).log2().floor().min(16.0) as u8;
+    let per = SPEC_PER_SEC as f64 / (1u64 << level) as f64; // level-l columns per source second
+    let (ul, ur) = (sl * per, sr * per);
+    let n = (d.spec.len() as f64 / (1u64 << level) as f64).ceil();
+    let (lo, hi) = (ul.min(ur).max(0.0), ul.max(ur).min(n));
+    let xmap = |u: f64| area.left() + ((u - ul) / (ur - ul)) as f32 * area.width();
+    let mut k = (lo / TILE as f64).floor() as u32;
+    while (k as f64) * (TILE as f64) < hi {
+        let (k0, k1) = (k as f64 * TILE as f64, (k + 1) as f64 * TILE as f64);
+        let (a, b) = (lo.max(k0), hi.min(k1));
+        if b > a {
+            let (mut xa, mut xb) = (xmap(a), xmap(b));
+            let (mut ua, mut ub) = (((a - k0) / TILE as f64) as f32, ((b - k0) / TILE as f64) as f32);
+            if xa > xb {
+                (xa, xb, ua, ub) = (xb, xa, ub, ua);
+            }
+            let mut mesh = egui::Mesh::with_texture(wc.spec_tile(path, stream, d, level, k));
+            mesh.add_rect_with_uv(
+                Rect::from_x_y_ranges(xa..=xb, area.y_range()),
+                Rect::from_min_max(pos2(ua, 0.0), pos2(ub, 1.0)),
+                Color32::WHITE,
+            );
+            p.add(mesh);
+        }
+        k += 1;
     }
 }
 

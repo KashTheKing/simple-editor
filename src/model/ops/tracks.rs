@@ -55,6 +55,12 @@ impl Project {
         t.color = color;
         true
     }
+    /// Track `ti`'s waveform style override (None = follow the setting). Track menu / `track.set`.
+    pub fn set_track_waveform(&mut self, ti: usize, detailed: Option<bool>) -> bool {
+        let Some(t) = self.tracks.get_mut(ti) else { return false };
+        t.wave_detailed = detailed;
+        true
+    }
     /// Reorder track `ti` one slot up/down within its own kind (video tracks and audio tracks each
     /// stay contiguous - `add_track`'s invariant). False, unchanged, at a kind boundary.
     // Safe against the playback cache: video_dirty_spans (playback.rs) treats any Track.id mismatch at

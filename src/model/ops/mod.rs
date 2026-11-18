@@ -12,6 +12,7 @@ mod effects;
 mod graph;
 mod keyblocks;
 mod stacks; // ws:animator
+pub mod spans; // ws:animator (`MIN_SPAN`)
 mod markers;
 // ---- ws:pro-monitor ----
 mod multicam;

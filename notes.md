@@ -715,6 +715,14 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   `<cache>/gallery-thumbs/<key>.rgba` keyed by the template JSON. A failed render retries once, then the type icon.
 - In a fresh worktree `core.autocrlf=true` checks `library/` out as CRLF, so `library_index_matches_files` and
   `connecting_loads_the_index_once` fail there (sizes); not a code problem.
+- Quick Export (2026-11-17, feat/quick-export): top-bar button (`Action::QuickExportAs`, `ui/app/quick_export.rs`, MCP
+  `export.quick_file`). "Single footage" = `source_video` set, it is the only asset, every clip with media uses it, no
+  sequences, file on disk (module doc). Overwrite renders beside the file, hard-links `<name>.bak`, renames over, deletes
+  the backup. Found while testing: Overwrite Original Video could never replace the file - `Player::release_files` also
+  empties the frame cache, so the paused render thread re-rendered the current frame and REOPENED the source before the
+  rename. Fix: `player.set_project(&Project::new())` before `release_files`. `explorer <path>` opens Documents for a
+  forward-slash path - normalise first. NOT verified: the native Save As dialog and the Replace window by hand
+  (computer-use was denied); the overwrite was driven through `export.quick_file` + the in-app save prompt.
 
 ## Ctrl+P palette (2026-11-17, feat/ctrl-p-palette)
 - `ui/palette.rs`: `mode()` picks by the FIRST character only (plain = go to, `>` commands, `/` assistant, `:` tools by name).
@@ -732,3 +740,26 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
   the box now re-takes focus whenever it lost it. Git Bash rewrites a lone "/" argument into C:/Program Files/Git/ -
   use MSYS_NO_PATHCONV=1 when driving `/` queries through ui.input from bash.
 - NOT verified: Alt+Enter on a Gallery card live (gallery.apply path; tested only as a plan), very large projects by timing.
+## Assistant chat app (2026-11-17, feat/assistant-chat)
+
+- The "copy gives a giant string" bug: Ctrl+C with clips selected fires `CopyClips`, whose template JSON (HTML layers
+  included) goes to the OS clipboard (`App::os_clipboard`). Copy / Cut of clips now stand aside while a label holds a
+  text selection (`hotkeys::fires_with_text_selected`) and while the pointer is over the Assistant. Message copies
+  go through `markdown::plain` (Copy text) or the raw Markdown; tool-call lines are never copied.
+- egui only makes a label selection from a real drag: headless synthetic drags (and `ui.input` keys, which are
+  `Key` events, not `Event::Copy`) don't select or copy. Live-checked in a scratch instance instead.
+- A right-click on a message is `menu::context_area` (a rect, not a response): its selectable labels take the
+  right-click themselves, so `menu::context` on the message never fired.
+- Picture paste: egui-winit sends no event for Ctrl+V when the clipboard holds no text, so `assistant_ctl::paste_tick`
+  reads the V key with `GetAsyncKeyState` while the composer has focus and takes the picture / file list through
+  `arboard` (already in the build via egui-winit).
+- Captures ask for a screenshot one frame after they are queued (`Shot`), so the menu or the area overlay is gone from
+  the picture; the crop is `tools_uikit::crop_frame`. Captures keep up to 2048 px (`CAPTURE_MAX`), other images 1024.
+- Line-by-line agents (codex, custom) now merge consecutive stdout lines into one Markdown text, so fenced blocks and
+  lists render whole.
+
+## Panels + multi-screen (2026-11-17, feat/panels-multiscreen)
+- Voiceover / Transcript / Rendering are panes (`ui::voiceover_ui`, `app::voiceover_pane`, `subtitles_ui::show_transcript_pane` + `app::transcript_pane`, `app::render_pane`); the Voiceover, View transcript and Exporting… windows and the Export Frame window are gone. The Subtitles pane lost its Transcript tab and Transcribe… toggle (a Transcript button opens the pane).
+- Audio page default rebuilt (`Layout::audio_layout`); the Beat Aligner is found by title (`timeline_tabs`), so merging feat/beat-aligner needs its own `mix` line in audio_layout dropped (it would tab the aligner twice) and `BeatAligner` added to the Audio row of `every_page_contains_every_pane`.
+- Multi-screen: `Layout.screens` (one tile tree per extra window, panes keep a hidden tile in the main tree), drawn as immediate viewports in `layout::show_screen`; monitors / prompt / assignment in `ui::screens`; per-count layouts (`Settings.screen_layouts`, `"<n>|<page>"`) and placement in `app::screens_ctl`; `layout.screens` MCP tool. SE_BACKGROUND keeps screen windows on the main window's monitor (never the user's).
+- Live check: screen capture of the scratch instance's windows came back white for the main window too (environment), so the 2/3-screen windows were checked by window enumeration (titles, rects) plus ui.screenshot of the main viewport.

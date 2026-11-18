@@ -159,6 +159,10 @@ impl App {
                 }
             }
             crate::engine::browsers::set_choice(&self.settings.web_browser);
+            // ---- ws:panels-multiscreen ----
+            if std::mem::take(&mut self.settings_ui.open_screens) {
+                self.pending_actions.push(Action::ScreenSetup);
+            }
             if changed {
                 self.hotkeys.to_settings(&mut self.settings);
                 self.settings.save();
@@ -212,17 +216,6 @@ impl App {
                 // once the text rasterizer grows user-font support (engine-video agent).
             }
         }
-        // "Export Frame…" (Ctrl+Shift+F)
-        if self.frame_ui.open {
-            let choice = {
-                let App { frame_ui: st, project, settings, .. } = self;
-                frame_ui::show(ctx, st, project, settings)
-            };
-            if let Some(c) = choice {
-                self.settings.save();
-                self.export_frame(c);
-            }
-        }
         // GLSL editor - Apply is an effect edit like any other (undo + re-render), and the compile log
         // goes straight back into the window so a rejected shader is never a silent no-op
         if shader_ui::show(ctx, &mut self.shader_ui) {
@@ -265,26 +258,17 @@ impl App {
                 self.paste_ui.open = false;
             }
         }
-        // screen recording / voiceover
-        if self.capture_ui.screen_open || self.capture_ui.voice_open {
+        // screen recording (the voiceover is a pane now: voiceover_pane.rs)
+        if self.capture_ui.screen_open {
             let resp = {
-                let App { capture_ui: st, settings, palette, screen_rec, voice_rec, .. } = self;
-                capture_ui::show(ctx, st, settings, screen_rec.is_some(), voice_rec.is_some(), palette)
+                let App { capture_ui: st, settings, palette, screen_rec, .. } = self;
+                capture_ui::show(ctx, st, settings, screen_rec.is_some(), palette)
             };
             if resp.stop_screen {
                 self.stop_screen_capture();
             }
-            if resp.stop_voice {
-                self.stop_voiceover();
-            }
             if let Some(o) = resp.screen.filter(|_| resp.start_screen) {
                 self.start_screen_capture(o);
-            }
-            if let Some(o) = resp.voice.filter(|_| resp.start_voice) {
-                if resp.retake {
-                    self.drop_last_take();
-                }
-                self.start_voiceover(o, self.capture_ui.from_playhead);
             }
         }
         // imported timeline report - "Use this project" swaps it in
@@ -305,38 +289,7 @@ impl App {
                 });
             }
         }
-        // export / convert progress - non-modal: keep editing while it runs
-        if let Some((prog, kind)) = &self.export {
-            let prog = prog.clone();
-            let title = match kind {
-                ExportKind::File { .. } => "Exporting…",
-                ExportKind::Overwrite { .. } => "Saving over the original…",
-            };
-            egui::Window::new(title)
-                .collapsible(false)
-                .resizable(false)
-                .default_pos(ctx.content_rect().center() - egui::vec2(180.0, 60.0))
-                .show(ctx, |ui| {
-                    ui.set_width(360.0);
-                    ui.add(egui::ProgressBar::new(prog.fraction()).show_percentage());
-                    ui.label(prog.status());
-                    // ---- ws:export-deliver ----
-                    let elapsed = crate::ui::duration_text(prog.elapsed().as_secs_f64());
-                    match prog.eta() {
-                        Some(eta) => {
-                            ui.weak(format!("{elapsed} elapsed · ETA {}", crate::ui::duration_text(eta.as_secs_f64())))
-                        }
-                        None => ui.weak(format!("{elapsed} elapsed")),
-                    };
-                    let queued = self.export_queue.len();
-                    if queued > 0 {
-                        ui.weak(format!("{queued} more queued"));
-                    }
-                    if ui.button(if queued > 0 { "Cancel all" } else { "Cancel" }).clicked() {
-                        prog.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-                        self.export_queue.clear();
-                    }
-                });
-        }
+        // export progress and Export Frame: the Rendering pane (render_pane.rs, ws:panels-multiscreen)
+        render_pane::reveal_on_start(self);
     }
 }

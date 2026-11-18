@@ -169,7 +169,13 @@ mod tools_social;
 mod enhance_ctl;
 mod whatsnew;
 mod perf_ctl; // ws:perf-window
+mod quick_export; // ws:quick-export
 mod animator_ctl; // ws:animator
+// ---- ws:panels-multiscreen ----
+mod render_pane;
+mod screens_ctl;
+mod transcript_pane;
+mod voiceover_pane;
 mod beats_ctl; // ws:beat-aligner
 #[path = "windows.rs"]
 mod windows_dlg;
@@ -254,6 +260,8 @@ pub struct App {
     mcp: Option<(mcp::Server, Receiver<mcp::ToolCall>)>,
     mcp_port_running: u16,
     mcp_jobs: Vec<McpJob>,
+    /// ws:quick-export: the Quick Export output to open in the media player once its export finishes.
+    quick_open: Option<PathBuf>,
     /// Library "Convert To…" jobs: (progress, output path) - polled each frame, imported when done.
     convert_jobs: Vec<(Arc<Progress>, PathBuf)>,
     /// Asset id + target extension for the Convert To… options window.
@@ -318,6 +326,10 @@ pub struct App {
     /// whether playback was rolling under it).
     screen_rec: Option<(crate::engine::capture::Capture, PathBuf)>,
     voice_rec: Option<(crate::engine::capture::Capture, PathBuf, (f64, bool))>,
+    /// ws:panels-multiscreen: the Rendering pane was brought up for the export / Export Frame running now.
+    render_revealed: bool,
+    /// ws:panels-multiscreen: monitors, the setup window.
+    screens: screens_ctl::ScreensState,
     /// Running Draw take: the drawing every stroke joins, and the timeline time it started at.
     draw_rec: Option<(Id, f64)>,
     /// Viewport focus last frame (record-on-blur watches this).
@@ -865,6 +877,7 @@ impl App {
             mcp: None,
             mcp_port_running: 0,
             mcp_jobs: Vec::new(),
+            quick_open: None, // ws:quick-export
             convert_jobs: Vec::new(),
             convert_dialog: None,
             compress: None,
@@ -899,6 +912,8 @@ impl App {
             paste_ui: paste_ui::PasteUi::default(),
             screen_rec: None,
             voice_rec: None,
+            render_revealed: false,
+            screens: Default::default(),
             draw_rec: None,
             was_focused: true,
             attrs: None,
@@ -1069,6 +1084,7 @@ impl App {
         if self.settings.auto_close_gaps {
             crate::ui::timeline::close_all_gaps(&mut self.project);
         }
+        self.project.refresh_spans(); // ws:animator: the transitions under a span follow the edit
         let p = &self.project;
         self.selection.retain(|id| p.clip(*id).is_some());
         self.player.set_project(&self.project);
@@ -1399,7 +1415,10 @@ impl eframe::App for App {
         if self.screen_rec.is_some() || self.voice_rec.is_some() {
             let c = self.screen_rec.as_ref().map(|(c, _)| c).or(self.voice_rec.as_ref().map(|(c, _, _)| c));
             self.capture_ui.elapsed = c.and_then(|c| guarded(|| c.elapsed())).unwrap_or(0.0);
-            ctx.request_repaint_after(Duration::from_millis(250));
+            // ws:panels-multiscreen: the Voiceover pane's meter reads the take's tail, 10 times a second
+            let level = self.voice_rec.as_ref().and_then(|(_, out, _)| crate::ui::voiceover_ui::wav_tail_peak(out));
+            self.capture_ui.level = level.unwrap_or(0.0);
+            ctx.request_repaint_after(Duration::from_millis(if self.voice_rec.is_some() { 100 } else { 250 }));
         }
 
         // export progress
@@ -1499,6 +1518,8 @@ impl eframe::App for App {
                     // ---- ws:pages ----
                     editing: self.project.editing.and_then(|id| self.project.sequence(id)).map(|s| s.name.clone()),
                     locked: self.settings.panels_locked,
+                    // ---- ws:panels-multiscreen ----
+                    monitors: self.screens.monitors.len().clamp(1, 3) as u8,
                 };
                 // ---- ws:layout-modes-onboarding ----
                 // Both closures need `self` (draw: mutably; on_viewport: the hotkey table, then
@@ -1523,6 +1544,10 @@ impl eframe::App for App {
                 );
                 self.layout = l;
                 self.layout_dirty |= shown.changed;
+                // ---- ws:panels-multiscreen ----
+                if let Some(p) = shown.drag_out {
+                    screens_ctl::drop_outside(self, p, ctx.pixels_per_point());
+                }
                 for pane in std::mem::take(&mut self.deferred_surface) {
                     if pane == Pane::Source {
                         self.surface_source();
@@ -1557,6 +1582,10 @@ impl eframe::App for App {
             ctx.input_mut(|i| crate::hotkeys::consume_exact(i, &bksp));
         }
         actions.extend(self.hotkeys.poll_late(ctx));
+        // ---- ws:assistant-chat ---- over the Assistant, Ctrl+C / Ctrl+X are about its text, never the clips
+        if self.layout.hovered == Some(Pane::Assistant) {
+            actions.retain(|a| !matches!(a, Action::CopyClips | Action::CutClips));
+        }
         if let Some(text) = self.os_clipboard.take() {
             ctx.copy_text(text);
         }
@@ -1708,8 +1737,12 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     enhance_ctl::TOOLS,
     // ---- ws:perf-window ----
     perf_ctl::TOOLS,
+    // ---- ws:quick-export ----
+    quick_export::TOOLS,
     // ---- ws:animator ----
     animator_ctl::TOOLS,
+    // ---- ws:panels-multiscreen ----
+    screens_ctl::TOOLS,
     // ---- ws:beat-aligner ----
     beats_ctl::TOOLS,
 ];
@@ -1795,8 +1828,12 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     enhance_ctl::act,
     // ---- ws:perf-window ----
     perf_ctl::act,
+    // ---- ws:quick-export ----
+    quick_export::act,
     // ---- ws:animator ----
     animator_ctl::act,
+    // ---- ws:panels-multiscreen ----
+    screens_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -1881,6 +1918,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     perf_ctl::tick,
     // ---- ws:animator ----
     animator_ctl::frame,
+    // ---- ws:panels-multiscreen ----
+    screens_ctl::tick,
     // ---- ws:beat-aligner ----
     beats_ctl::frame,
 ];
@@ -1911,7 +1950,7 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:source-monitor ----
     // ---- ws:timeline-trim-gestures ----
     // ---- ws:transcript-captions ----
-    transcript_ctl::window,
+    // (transcript_ctl::window became the Transcript pane - ws:panels-multiscreen)
     // ---- ws:pro-monitor ----
     // (tools_monitor::window_scopes became the Scopes pane - ws:pages)
     tools_monitor::window_multicam,
@@ -1955,6 +1994,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     browser_ctl::windows,
     // ---- ws:perf-window ----
     perf_ctl::window,
+    // ---- ws:panels-multiscreen ----
+    screens_ctl::window,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -2017,6 +2058,10 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:online-library ----
     // ---- ws:animator ----
     animator_ctl::draw,
+    // ---- ws:panels-multiscreen ----
+    voiceover_pane::draw,
+    transcript_pane::draw,
+    render_pane::draw,
     // ---- ws:beat-aligner ----
     beats_ctl::draw,
 ];

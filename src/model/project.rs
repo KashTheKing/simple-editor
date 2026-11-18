@@ -54,6 +54,9 @@ pub struct Project {
     pub moodboard: Vec<MoodItem>,
     /// Saved drawing / polygon outlines, reusable as motion paths (see `PathAsset`).
     pub paths: Vec<PathAsset>,
+    /// ws:animator: transition spans over the main timeline (`ops::spans`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub spans: Vec<TransitionSpan>,
     pub(crate) next_id: Id,
     // ---- ws:registries-schema-hooks ----
     /// Per-clip word timing (timeline seconds) for the transcript panel / word-range cuts; filled by
@@ -92,6 +95,10 @@ pub struct Project {
     // ---- ws:pro-timeline ----
     // ---- ws:text-titles ----
     // ---- ws:docs-refresh ----
+    // ---- ws:quick-export ----
+    /// The last (folder, extension) a normal Quick Export saved to; the next dialog starts there.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quick_export: Option<(String, String)>,
     // ---- ws:beat-aligner ----
     /// The Beat Aligner's song, grid, marks and sections (`model::beats`).
     #[serde(skip_serializing_if = "crate::model::beats::is_empty")]

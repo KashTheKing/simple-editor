@@ -339,6 +339,8 @@ pub(crate) enum Glyph {
     // ---- ws:transcribe-islands ----
     // ---- ws:voice-input ----
     // ---- ws:docs-release ----
+    // ---- ws:quick-export ----
+    Upload,
 }
 
 impl Glyph {
@@ -496,6 +498,8 @@ impl Glyph {
         // ---- ws:transcribe-islands ----
         // ---- ws:voice-input ----
         // ---- ws:docs-release ----
+        // ---- ws:quick-export ----
+        Glyph::Upload,
     ];
 
     /// Stable lower-case name of the variant, kept in sync with `from_name` - what a saved icon
@@ -565,6 +569,7 @@ impl Glyph {
             Glyph::Bolt => "bolt",
             Glyph::ImportArrow => "import",
             Glyph::ExportArrow => "export",
+            Glyph::Upload => "upload", // ws:quick-export
             Glyph::Transition => "transition",
             Glyph::Subtitles => "subtitles",
             Glyph::Gear => "gear",
@@ -723,6 +728,7 @@ impl Glyph {
             Glyph::Bolt => 0xE945,                      // LightningBolt
             Glyph::ImportArrow => 0xE8B5,               // Import
             Glyph::ExportArrow => 0xEDE1,               // Export
+            Glyph::Upload => 0xE78B,                    // arrow up out of a box: Quick Export (ws:quick-export)
             Glyph::Transition => 0xEF1F,                // two overlapping squares
             Glyph::Subtitles => 0xE7F0,                 // CC
             Glyph::Gear => 0xE713,                      // Settings
@@ -1546,6 +1552,7 @@ pub(crate) fn action_glyph(a: crate::hotkeys::Action) -> Option<Glyph> {
         OpenFile | OpenProject => Glyph::Folder,
         Save | SaveProjectAs => Glyph::FloppyDisk,
         ExportVideo | ExportLossless | ExportXml => Glyph::ExportArrow,
+        QuickExportAs => Glyph::Upload, // ws:quick-export
         ImportMedia | ImportFolder => Glyph::ImportArrow,
         CopyClips => Glyph::Copy,
         CutClips => Glyph::Razor,

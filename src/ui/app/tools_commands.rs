@@ -38,6 +38,7 @@ const SCALAR_WHITELIST: &[&str] = &[
     // ---- ws:neutral-web ----
     "cache_folder", // get: the folder in use; set: a new one ("" = default), the old cache moves there
     "web_browser",  // an exe path, "" = the Windows default browser
+    "timeline_waveform", // simple | detailed
 ];
 
 fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
@@ -66,6 +67,7 @@ fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
         "cache_folder" => json!(Settings::cache_dir().to_string_lossy()),
         "web_browser" => json!(s.web_browser),
         "export_guide" => json!(s.export_guide),
+        "timeline_waveform" => json!(s.timeline_waveform),
         "export_captions" => json!(s.export_captions.map_or("follow".to_string(), |b| b.to_string())),
         _ => return None,
     })
@@ -125,6 +127,10 @@ fn set_scalar(s: &mut Settings, key: &str, value: &str) -> Result<(), String> {
             crate::engine::browsers::set_choice(v);
         }
         "export_guide" => s.export_guide = parse_bool(value)?,
+        "timeline_waveform" => match value {
+            "simple" | "detailed" => s.timeline_waveform = value.to_string(),
+            _ => return Err("timeline_waveform: simple | detailed".into()),
+        },
         // "follow" = burn captions in when the preview shows them (the old behaviour)
         "export_captions" => s.export_captions = if value == "follow" { None } else { Some(parse_bool(value)?) },
         _ => return Err(format!("'{key}' is not a whitelisted setting")),
@@ -369,6 +375,17 @@ mod tests {
         assert_eq!(get_scalar(&s, "not_a_real_key"), None);
         // a rejected key must not have mutated settings.json's shape
         assert_eq!(serde_json::to_string(&s).unwrap(), before);
+    }
+
+    #[test]
+    fn timeline_waveform_setting_round_trips() {
+        let mut s = Settings::default();
+        assert_eq!(get_scalar(&s, "timeline_waveform"), Some(json!("simple")));
+        set_scalar(&mut s, "timeline_waveform", "detailed").unwrap();
+        assert_eq!(get_scalar(&s, "timeline_waveform"), Some(json!("detailed")));
+        assert!(set_scalar(&mut s, "timeline_waveform", "fancy").is_err());
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.timeline_waveform, "detailed");
     }
 
     #[test]

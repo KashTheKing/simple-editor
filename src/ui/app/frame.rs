@@ -96,21 +96,21 @@ mod tests {
     #[test]
     fn auto_surface_only_in_dynamic_mode() {
         let now = Instant::now();
-        // Granular: Subtitles (behind Mixer on the Audio page) glows, Mixer stays in front
+        // Granular: Voiceover (behind Mixer on the Audio page) glows, Mixer stays in front
         let mut l = Layout::audio_layout();
         assert!(in_front(&l, Pane::Mixer));
-        assert_eq!(layout_ctl::react(&mut l, false, Pane::Subtitles, now), Surfaced::Pinned);
+        assert_eq!(layout_ctl::react(&mut l, false, Pane::Voiceover, now), Surfaced::Pinned);
         assert!(in_front(&l, Pane::Mixer), "Granular must never switch tabs");
-        assert_eq!(l.glow.iter().map(|(p, _)| *p).collect::<Vec<_>>(), vec![Pane::Subtitles]);
+        assert_eq!(l.glow.iter().map(|(p, _)| *p).collect::<Vec<_>>(), vec![Pane::Voiceover]);
         // Dynamic: the same change switches, no glow
         let mut l = Layout::audio_layout();
-        assert_eq!(layout_ctl::react(&mut l, true, Pane::Subtitles, now), Surfaced::Shown);
-        assert!(in_front(&l, Pane::Subtitles));
+        assert_eq!(layout_ctl::react(&mut l, true, Pane::Voiceover, now), Surfaced::Shown);
+        assert!(in_front(&l, Pane::Voiceover));
         assert!(l.glow.is_empty());
         // Dynamic with the active sibling pinned: glow instead of switching
         let mut l = Layout::audio_layout();
         l.set_pinned(Pane::Mixer, true);
-        assert_eq!(layout_ctl::react(&mut l, true, Pane::Subtitles, now), Surfaced::Pinned);
+        assert_eq!(layout_ctl::react(&mut l, true, Pane::Voiceover, now), Surfaced::Pinned);
         assert!(in_front(&l, Pane::Mixer));
         assert_eq!(l.glow.len(), 1);
         // a hidden / absent pane is reported and glows nothing in either mode
@@ -121,8 +121,8 @@ mod tests {
         assert!(l.glow.is_empty());
         // re-glowing a pane refreshes its entry rather than duplicating it
         let mut l = Layout::audio_layout();
-        layout_ctl::react(&mut l, false, Pane::Subtitles, now);
-        layout_ctl::react(&mut l, false, Pane::Subtitles, now + Duration::from_millis(300));
+        layout_ctl::react(&mut l, false, Pane::Voiceover, now);
+        layout_ctl::react(&mut l, false, Pane::Voiceover, now + Duration::from_millis(300));
         assert_eq!(l.glow.len(), 1);
         assert_eq!(l.glow[0].1, now + Duration::from_millis(300));
     }

@@ -66,6 +66,15 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     let color = if c.is_null() { None } else { Some(color3_arg(c).ok_or("color: [r,g,b] or null")?) };
                     app.project.set_track_color(ti, color);
                 }
+                if let Some(w) = arg_str(args, "waveform") {
+                    let d = match w {
+                        "simple" => Some(false),
+                        "detailed" => Some(true),
+                        "default" => None,
+                        _ => return Err("waveform: simple | detailed | default".into()),
+                    };
+                    app.project.set_track_waveform(ti, d);
+                }
                 Ok(json!({"ok": true}))
             }
             "track.move" => {
@@ -88,6 +97,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                             "index": i, "kind": format!("{:?}", t.kind), "name": t.name,
                             "locked": t.locked, "ripple": t.ripple.unwrap_or(false), "magnetic": t.magnetic,
                             "color": t.color, "clips": t.clips.len(),
+                            "waveform": t.wave_detailed.map_or("default", |d| if d { "detailed" } else { "simple" }),
                         })
                     })
                     .collect();
@@ -317,9 +327,9 @@ macro_rules! row {
 }
 
 pub const TOOLS: &[ToolDef] = &[
-    row!("track.set", ToolKind::Mutate, "Edit one track's flags/name/colour. Colour is [r,g,b] or null (canonical form - no competing colour-index field/tool).", &["index:integer:true:", "locked:boolean:false:", "ripple:boolean:false:", "magnetic:boolean:false:", "name:string:false:", "color:array:false:[r,g,b] or null"]),
+    row!("track.set", ToolKind::Mutate, "Edit one track's flags/name/colour. Colour is [r,g,b] or null (canonical form - no competing colour-index field/tool). waveform: this track's clip waveforms (default = the timeline_waveform setting).", &["index:integer:true:", "locked:boolean:false:", "ripple:boolean:false:", "magnetic:boolean:false:", "name:string:false:", "color:array:false:[r,g,b] or null", "waveform:string:false:simple | detailed | default"]),
     row!("track.move", ToolKind::Mutate, "Reorder a track one slot up/down within its own kind (video tracks / audio tracks stay contiguous).", &["index:integer:true:", "up:boolean:true:"]),
-    row!("track.list", ToolKind::Read, "Every track: index, kind, name, locked, ripple, magnetic, color, clip count.", &[]),
+    row!("track.list", ToolKind::Read, "Every track: index, kind, name, locked, ripple, magnetic, color, waveform, clip count.", &[]),
     row!("timeline.shift_time", ToolKind::Mutate, "Shift markers (matching the current sequence scope), main-timeline subtitle cues, and in/out at/after `from` by `dt` seconds.", &["from:number:true:", "dt:number:true:", "tracks:array:false:default ripple_tracks()"]),
     row!("timeline.close_gap", ToolKind::Mutate, "Close the gap under (track, t) - ripple tracks only.", &["track:integer:true:", "t:number:true:"]),
     row!("timeline.mark", ToolKind::Mutate, "Set in/out to a clip's [start,end) - defaults to the clip under the playhead. Returns {in,out}.", &["clip_id:integer:false:default: clip under playhead"]),

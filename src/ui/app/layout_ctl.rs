@@ -31,13 +31,16 @@ pub(super) fn is_dynamic(settings: &Settings) -> bool {
 }
 
 /// The page actions: Alt+N is the Nth page of `Settings.pages` (the user's order).
-pub(super) const PAGE_ACTIONS: [Action; 6] = [
+pub(super) const PAGE_ACTIONS: [Action; 9] = [
     Action::Workspace1,
     Action::Workspace2,
     Action::Workspace3,
     Action::Workspace4,
     Action::Workspace5,
     Action::Workspace6,
+    Action::Workspace7,
+    Action::Workspace8,
+    Action::Workspace9,
 ];
 
 pub(super) fn act(app: &mut App, a: Action) -> bool {
@@ -198,7 +201,14 @@ pub(super) fn page_default(page: &str) -> Layout {
 /// ride hidden instead of making it unloadable.
 pub(super) fn page_start(settings: &Settings, page: &str) -> Layout {
     let saved = settings.page_defaults.get(page).and_then(|j| Layout::from_json_migrating(j));
-    saved.unwrap_or_else(|| page_default(page))
+    // ws:panels-multiscreen: laid out for the screens in use; a default saved with its own screen
+    // windows keeps them while there is more than one screen
+    let mode = settings.screen_mode.max(1);
+    match saved {
+        Some(l) if mode > 1 && !l.screens.is_empty() => l,
+        Some(l) => l.for_screens(mode),
+        None => page_default(page).for_screens(mode),
+    }
 }
 
 /// Window ▸ Layout ▸ Save as this page's default: the arrangement on screen (restored first if a panel
@@ -365,6 +375,16 @@ pub(super) fn switch_page(app: &mut App, name: &str) -> bool {
         app.preview.crop_mode = false; // tools-panel: a page opens on its plain tool, never a leftover Crop
         if page == "Animate" {
             app.gallery.tab = crate::ui::gallery::GalleryTab::Animate; // the page's Gallery opens on the blocks
+        }
+        // ws:panels-multiscreen: the Audio page's music area - the Library's sounds, the Gallery's Audio side
+        if page == "Audio" {
+            use crate::ui::gallery::GalleryTab::*;
+            if app.library.kind_filter == 0 {
+                app.library.kind_filter = 2;
+            }
+            if !matches!(app.gallery.tab, Sounds | AudioAnimate | AudioTransitions | AudioEffects) {
+                app.gallery.tab = Sounds;
+            }
         }
         app.layout_json = app.settings.layout.clone();
         app.settings.save();

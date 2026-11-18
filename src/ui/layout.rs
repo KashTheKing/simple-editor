@@ -152,6 +152,16 @@ pub enum Pane {
     // ---- ws:animator ----
     /// Animation blocks, their curves and Flow (speed hand-offs) for the selected clips (`ui::animator`).
     Animator,
+    // ---- ws:panels-multiscreen ----
+    /// Voiceover recording: input, level meter, record / stop, punch-in at the playhead, the takes
+    /// (was the Voiceover window; `ui::voiceover_ui`).
+    Voiceover,
+    /// Transcribe a clip, edit its words, make captions from them (was the transcribe section of the
+    /// Subtitles pane and the View transcript window; `ui::app::transcript_pane`).
+    Transcript,
+    /// The running export: progress, ETA, the queue, Cancel, and the last finished file (was the
+    /// Exporting… window; `ui::app::render_pane`).
+    Rendering,
     // ---- ws:beat-aligner ----
     /// Mark a song's beats / a voiceover's phrases, tap along, name sections and cut to them (`ui::beat_aligner`).
     BeatAligner,
@@ -228,6 +238,10 @@ impl Pane {
         // ---- ws:docs-release ----
         // ---- ws:animator ----
         Pane::Animator,
+        // ---- ws:panels-multiscreen ----
+        Pane::Voiceover,
+        Pane::Transcript,
+        Pane::Rendering,
         // ---- ws:beat-aligner ----
         Pane::BeatAligner,
     ];
@@ -264,6 +278,9 @@ impl Pane {
             Pane::Clips => Glyph::FilmStrip,
             Pane::Assistant => Glyph::Assistant,
             Pane::Animator => Glyph::CurveIcon,
+            Pane::Voiceover => Glyph::Mic,
+            Pane::Transcript => Glyph::Transcript,
+            Pane::Rendering => Glyph::Queue,
             Pane::BeatAligner => Glyph::Waveform,
         }
     }
@@ -304,6 +321,9 @@ impl Pane {
             Pane::Clips => "Clips",
             Pane::Assistant => "Assistant",
             Pane::Animator => "Animator",
+            Pane::Voiceover => "Voiceover",
+            Pane::Transcript => "Transcript",
+            Pane::Rendering => "Rendering",
             Pane::BeatAligner => "Beat Aligner",
         }
     }
@@ -362,6 +382,57 @@ pub struct Layout {
     /// `RECT_SETTLE`, not on every frame of the drag.
     #[serde(skip)]
     rect_moved: Option<Instant>,
+    // ---- ws:panels-multiscreen ----
+    /// Multi-screen mode: the page's other windows ("Screen 2", "Screen 3"), each a tree of its own. A pane
+    /// on one keeps its (hidden) tile in `tree`, so every pane is always in the main tree and folding a
+    /// screen back (`fold_screen`) puts each pane where it was.
+    #[serde(default)]
+    pub screens: Vec<ScreenWin>,
+    /// A tab of the main tree being dragged while the pointer is outside the window: released there, it
+    /// moves to the screen under the pointer (`Shown::drag_out`).
+    #[serde(skip)]
+    drag_out: Option<Pane>,
+}
+
+/// ---- ws:panels-multiscreen ---- One extra OS window of a page in multi-screen mode.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ScreenWin {
+    /// Its number: 2, 3, ... (the main window is screen 1). Names the window and picks its monitor.
+    pub screen: u8,
+    pub tree: egui_tiles::Tree<Pane>,
+    /// The monitor (its device name, e.g. DISPLAY2) it was last on, so it reopens there.
+    #[serde(default)]
+    pub monitor: String,
+    /// Where the window was last: `[x, y, w, h]` in points (outer position, inner size).
+    #[serde(default)]
+    pub rect: Option<[f32; 4]>,
+    /// Where to open it this session (`[x, y, w, h]` in points, maximised there): set by
+    /// `ui::app::screens_ctl` from the monitor it was given; `None` = not placed yet (not drawn).
+    #[serde(skip)]
+    pub place: Option<[f32; 4]>,
+    #[serde(skip)]
+    opened: bool,
+}
+
+impl ScreenWin {
+    pub fn new(screen: u8, tree: egui_tiles::Tree<Pane>) -> Self {
+        Self { screen, tree, monitor: String::new(), rect: None, place: None, opened: false }
+    }
+    /// The panes shown in this window, in `Pane::ALL` order.
+    pub fn panes(&self) -> Vec<Pane> {
+        let t = &self.tree.tiles;
+        let mut out: Vec<Pane> =
+            t.iter().filter_map(|(&id, tile)| tile_pane(tile).filter(|_| t.is_visible(id))).collect();
+        out.sort_by_key(|p| Pane::ALL.iter().position(|q| q == p));
+        out
+    }
+}
+
+fn tile_pane(t: &egui_tiles::Tile<Pane>) -> Option<Pane> {
+    match t {
+        egui_tiles::Tile::Pane(p) => Some(*p),
+        _ => None,
+    }
 }
 
 /// How long a popped window must sit still before its new rect is persisted (see `Layout::rect_moved`).
@@ -455,19 +526,29 @@ impl Layout {
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
     }
 
-    /// The Audio page: a small [Preview] · [Mixer | Subtitles] · [Inspector] over the Timeline.
+    /// The Audio page (ws:panels-multiscreen): [music: Library | Gallery] · [a small Preview] · [Mixer |
+    /// Voiceover | Transcript] · [Inspector] over the Timeline, with the Beat Aligner tabbed beside it
+    /// (Timeline in front). `layout_ctl::switch_page` turns the Library to audio and the Gallery to its
+    /// Audio side on the way in. A saved Audio layout is kept: Window ▸ Layout ▸ Reset Page Layout gets this.
     pub fn audio_layout() -> Self {
         use egui_tiles::LinearDir::{Horizontal, Vertical};
         let mut tiles = egui_tiles::Tiles::default();
         let t = &mut tiles;
-        let preview = t.insert_pane(Pane::Preview);
-        let mix = Self::tabs(t, &[Pane::Mixer, Pane::Subtitles, Pane::BeatAligner], 0);
+        let music = Self::tabs(t, &[Pane::Library, Pane::Presets], 0);
+        let preview = Self::tabs(t, &[Pane::Preview], 0);
+        let mix = Self::tabs(t, &[Pane::Mixer, Pane::Voiceover, Pane::Transcript], 0);
         let inspector = t.insert_pane(Pane::Inspector);
-        let top = Self::linear(t, Horizontal, &[(preview, 0.3), (mix, 0.4), (inspector, 0.3)]);
-        let timeline = t.insert_pane(Pane::Timeline);
+        let row = [(music, 0.28), (preview, 0.24), (mix, 0.26), (inspector, 0.22)];
+        let top = Self::linear(t, Horizontal, &row);
+        let timeline = Self::tabs(t, &Self::timeline_tabs(), 0);
         let root = Self::linear(t, Vertical, &[(top, 0.45), (timeline, 0.55)]);
-        Self::stack_unplaced(t, mix);
+        Self::stack_unplaced(t, music);
         Self::new(egui_tiles::Tree::new("layout", root, tiles))
+    }
+
+    /// The Audio page's timeline slot: the Timeline with the Beat Aligner as the tab beside it.
+    fn timeline_tabs() -> Vec<Pane> {
+        vec![Pane::Timeline, Pane::BeatAligner]
     }
 
     /// The Animate page: [Gallery] · [Preview] · [Inspector] over a thin Timeline (the edit, for picking clips)
@@ -554,6 +635,8 @@ impl Layout {
             popped_rects: Vec::new(),
             opened: Vec::new(),
             rect_moved: None,
+            screens: Vec::new(),
+            drag_out: None,
         }
     }
     /// Ensure every `Pane::ALL` member absent from `tiles` (a new variant a page builder never
@@ -688,6 +771,13 @@ impl Layout {
     /// group so its row / column siblings reflow into the space; showing a pane brings its groups back.
     /// Run before every draw, so every hide / show path (cross, Window menu, `+`, undock) goes through it.
     pub fn sync_groups(&mut self) {
+        sync_tree_groups(&mut self.tree);
+    }
+}
+
+/// `Layout::sync_groups` for any tree (the main one and each screen window's).
+fn sync_tree_groups(tree: &mut egui_tiles::Tree<Pane>) {
+    {
         fn walk(tiles: &mut egui_tiles::Tiles<Pane>, id: egui_tiles::TileId) -> bool {
             let kids = match tiles.get(id) {
                 Some(egui_tiles::Tile::Container(c)) => c.children().copied().collect::<Vec<_>>(),
@@ -698,14 +788,17 @@ impl Layout {
             tiles.set_visible(id, shown);
             shown
         }
-        if let Some(root) = self.tree.root {
-            walk(&mut self.tree.tiles, root);
-            self.tree.tiles.set_visible(root, true);
+        if let Some(root) = tree.root {
+            walk(&mut tree.tiles, root);
+            tree.tiles.set_visible(root, true);
         }
     }
+}
+
+impl Layout {
     /// Visible = docked in the tree (and not hidden) or popped out.
     pub fn is_visible(&self, pane: Pane) -> bool {
-        if self.popped.contains(&pane) {
+        if self.popped.contains(&pane) || self.screen_of(pane).is_some() {
             return true;
         }
         self.tree.tiles.find_pane(&pane).map(|id| self.tree.tiles.is_visible(id)).unwrap_or(false)
@@ -716,6 +809,9 @@ impl Layout {
         if let Some(i) = self.popped.iter().position(|&p| p == pane) {
             self.popped.remove(i);
             return;
+        }
+        if self.take_out_of_screens(pane) {
+            return; // its main tile is already hidden: closed
         }
         match self.tree.tiles.find_pane(&pane) {
             Some(id) if self.tree.tiles.is_visible(id) => self.tree.tiles.set_visible(id, false),
@@ -730,6 +826,13 @@ impl Layout {
     /// Make the pane visible (docked or popped) and, if it is a tab, the active one.
     pub fn reveal(&mut self, pane: Pane) {
         if self.popped.contains(&pane) {
+            return;
+        }
+        if let Some(i) = self.screen_of(pane) {
+            let tree = &mut self.screens[i].tree;
+            if let Some(id) = tree.tiles.find_pane(&pane) {
+                tree.make_active(|tid, _| tid == id);
+            }
             return;
         }
         match self.tree.tiles.find_pane(&pane) {
@@ -747,6 +850,7 @@ impl Layout {
         }
         // undocking out of a maximised tree would come back docked too once the stash is restored
         self.unmaximize();
+        self.take_out_of_screens(pane);
         if let Some(id) = self.tree.tiles.find_pane(&pane) {
             self.tree.tiles.set_visible(id, false);
         }
@@ -754,6 +858,7 @@ impl Layout {
     }
     pub fn dock(&mut self, pane: Pane) {
         self.popped.retain(|&p| p != pane);
+        self.take_out_of_screens(pane);
         self.reveal(pane);
     }
     /// Back to `fresh` (a page's starting arrangement); the layout's own history stays.
@@ -781,6 +886,7 @@ impl Layout {
     /// wherever it sat hidden, or inserted when an old tree lacks it.
     pub fn add_to(&mut self, pane: Pane, group: egui_tiles::TileId) {
         self.popped.retain(|&p| p != pane);
+        self.take_out_of_screens(pane);
         let id = self.tree.tiles.find_pane(&pane).unwrap_or_else(|| self.tree.tiles.insert_pane(pane));
         self.tree.tiles.set_visible(id, true);
         if self.tree.tiles.parent_of(id) != Some(group) {
@@ -807,7 +913,7 @@ impl Layout {
         let current = self.to_json();
         let Some(json) = (if undoing { &mut self.undo } else { &mut self.redo }).pop() else { return false };
         let Some(other) = Self::from_json(&json) else { return false };
-        (self.tree, self.popped) = (other.tree, other.popped);
+        (self.tree, self.popped, self.screens) = (other.tree, other.popped, other.screens);
         if undoing { &mut self.redo } else { &mut self.undo }.push(current);
         true
     }
@@ -822,6 +928,152 @@ impl Layout {
             }
         }
         self.tree.make_active(|tid, _| tid == id);
+    }
+
+    // ---- ws:panels-multiscreen ----
+    /// The screen window (index into `screens`) showing `pane`, if any.
+    pub fn screen_of(&self, pane: Pane) -> Option<usize> {
+        self.screens.iter().position(|s| s.tree.tiles.find_pane(&pane).is_some_and(|id| s.tree.tiles.is_visible(id)))
+    }
+    /// Every pane shown in a screen window.
+    pub fn on_screens(&self) -> Vec<Pane> {
+        self.screens.iter().flat_map(|s| s.panes()).collect()
+    }
+    /// Take `pane` out of every screen window (dropping a window left empty). True when it was on one.
+    fn take_out_of_screens(&mut self, pane: Pane) -> bool {
+        let mut was = false;
+        for s in &mut self.screens {
+            while let Some(id) = s.tree.tiles.find_pane(&pane) {
+                was |= s.tree.tiles.is_visible(id);
+                s.tree.remove_recursively(id);
+            }
+        }
+        self.screens.retain(|s| !s.panes().is_empty());
+        was
+    }
+    /// Move to window ▸ Screen `n` (1 = the main window): the pane leaves wherever it is and joins that
+    /// window's first tab group, in front; a screen with no window yet gets one.
+    pub fn move_to_screen(&mut self, pane: Pane, n: u8) {
+        if n <= 1 {
+            self.dock(pane);
+            return;
+        }
+        if self.screen_of(pane).is_some_and(|i| self.screens[i].screen == n) {
+            return;
+        }
+        self.unmaximize();
+        self.popped.retain(|&p| p != pane);
+        self.take_out_of_screens(pane);
+        if let Some(id) = self.tree.tiles.find_pane(&pane) {
+            self.tree.tiles.set_visible(id, false);
+        }
+        match self.screens.iter_mut().find(|s| s.screen == n) {
+            Some(s) => {
+                let id = s.tree.tiles.insert_pane(pane);
+                let mut groups: Vec<egui_tiles::TileId> = s
+                    .tree
+                    .tiles
+                    .iter()
+                    .filter(|(_, t)| matches!(t, egui_tiles::Tile::Container(egui_tiles::Container::Tabs(_))))
+                    .map(|(&g, _)| g)
+                    .collect();
+                groups.sort_by_key(|g| format!("{g:?}")); // (a HashMap's order is arbitrary)
+                match groups.first().copied().or(s.tree.root).and_then(|g| s.tree.tiles.get_mut(g)) {
+                    Some(egui_tiles::Tile::Container(c)) => c.add_child(id),
+                    _ => {
+                        let root = s.tree.tiles.insert_tab_tile(vec![id]);
+                        s.tree = egui_tiles::Tree::new(egui::Id::new(("screen", n)), root, std::mem::take(&mut s.tree.tiles));
+                    }
+                }
+                s.tree.make_active(|tid, _| tid == id);
+            }
+            None => {
+                let mut tiles = egui_tiles::Tiles::default();
+                let id = tiles.insert_pane(pane);
+                let root = tiles.insert_tab_tile(vec![id]);
+                self.screens.push(ScreenWin::new(n, egui_tiles::Tree::new(egui::Id::new(("screen", n)), root, tiles)));
+                self.screens.sort_by_key(|s| s.screen);
+            }
+        }
+    }
+    /// A tab bar's `+` in screen window `i`: `pane` joins that window's group `group`, in front.
+    fn add_to_screen(&mut self, i: usize, pane: Pane, group: egui_tiles::TileId) {
+        let Some(n) = self.screens.get(i).map(|s| s.screen) else { return };
+        self.popped.retain(|&p| p != pane);
+        for (j, s) in self.screens.iter_mut().enumerate() {
+            if j != i {
+                if let Some(id) = s.tree.tiles.find_pane(&pane) {
+                    s.tree.remove_recursively(id);
+                }
+            }
+        }
+        if let Some(id) = self.tree.tiles.find_pane(&pane) {
+            self.tree.tiles.set_visible(id, false);
+        }
+        if let Some(s) = self.screens.iter_mut().find(|s| s.screen == n) {
+            let id = s.tree.tiles.find_pane(&pane).unwrap_or_else(|| s.tree.tiles.insert_pane(pane));
+            s.tree.tiles.set_visible(id, true);
+            if s.tree.tiles.parent_of(id) != Some(group) {
+                s.tree.move_tile_to_container(id, group, usize::MAX, false);
+            }
+            s.tree.make_active(|tid, _| tid == id);
+        }
+        self.screens.retain(|s| !s.panes().is_empty());
+    }
+    /// Close screen window `i`: each of its panes goes back to where it was in the main window.
+    pub fn fold_screen(&mut self, i: usize) {
+        if i >= self.screens.len() {
+            return;
+        }
+        let s = self.screens.remove(i);
+        for p in s.panes() {
+            self.reveal(p);
+        }
+    }
+    /// Fold every screen window back into the main one (Keep one screen, a missing monitor).
+    pub fn fold_all_screens(&mut self) {
+        while !self.screens.is_empty() {
+            self.fold_screen(0);
+        }
+    }
+    /// A built-in multi-screen arrangement of this (one-screen) layout: with `n` >= 2 the Timeline's tab
+    /// group goes to Screen 2 full size; with `n` >= 3 the viewer's (Preview | Source) goes to Screen 3.
+    /// The tools stay in the main window. A group with nothing shown (the Media page's Timeline) moves
+    /// nothing, so no empty window opens.
+    pub fn for_screens(mut self, n: u8) -> Self {
+        self.fold_all_screens();
+        let mut moves: Vec<(Pane, u8)> = Vec::new();
+        let mut group_of = |anchor: Pane, screen: u8, l: &Layout| {
+            let Some(id) = l.tree.tiles.find_pane(&anchor) else { return };
+            if !l.tree.tiles.is_visible(id) {
+                return;
+            }
+            let kids: Vec<egui_tiles::TileId> = match l.tree.tiles.parent_of(id).and_then(|p| l.tree.tiles.get_container(p)) {
+                Some(egui_tiles::Container::Tabs(t)) => t.children.clone(),
+                _ => vec![id],
+            };
+            for k in kids {
+                if let Some(&p) = l.tree.tiles.get_pane(&k).filter(|_| l.tree.tiles.is_visible(k)) {
+                    moves.push((p, screen));
+                }
+            }
+        };
+        if n >= 2 {
+            group_of(Pane::Timeline, 2, &self);
+        }
+        if n >= 3 {
+            group_of(Pane::Preview, 3, &self);
+        }
+        for (p, s) in moves {
+            self.move_to_screen(p, s);
+        }
+        // the anchor is its window's front tab
+        for p in [Pane::Timeline, Pane::Preview] {
+            if self.screen_of(p).is_some() {
+                self.reveal(p);
+            }
+        }
+        self
     }
 
     // ---- ws:layout-modes-onboarding ----
@@ -973,6 +1225,9 @@ pub struct Chrome<'a> {
     pub editing: Option<String>,
     /// `Settings.panels_locked`: a tab only clicks. Unlocked (the default) it drags to re-dock.
     pub locked: bool,
+    // ---- ws:panels-multiscreen ----
+    /// Monitors connected: a tab's Move to window ▸ offers Screen 2..this.
+    pub monitors: u8,
 }
 
 /// What one frame of `show` changed, for the app to apply and persist.
@@ -986,6 +1241,10 @@ pub struct Shown {
     pub set_icon: Vec<(Pane, Option<String>)>,
     /// Actions the chrome asked for: the Timeline tab's "Main" / × = `OpenParentSequence`.
     pub actions: Vec<Action>,
+    // ---- ws:panels-multiscreen ----
+    /// A tab of the main window was dragged out of it and let go there: the app moves it to the screen
+    /// under the mouse (`screens_ctl::drop_outside`).
+    pub drag_out: Option<Pane>,
 }
 
 struct Behaviour<'a> {
@@ -1023,6 +1282,11 @@ struct Behaviour<'a> {
     actions: Vec<Action>,
     /// `Layout.scroll_to`, taken: that tab scrolls its bar to itself this frame.
     scroll_to: Option<Pane>,
+    // ---- ws:panels-multiscreen ----
+    /// Move to window ▸ picks: (pane, screen number; 1 = main).
+    move_to: Vec<(Pane, u8)>,
+    /// The screen this tree is drawn in (1 = the main window).
+    screen: u8,
 }
 
 /// The panes a tab bar's `+` offers: every one not on screen (hidden, missing, and not popped out).
@@ -1214,11 +1478,30 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         menu::context(&button_response, |ui| {
             // ---- ws:pages ----
             let max = if self.maximized == Some(pane) { "Restore panel" } else { "Fullscreen Panel" };
-            if menu::row(ui, Some(Glyph::Maximize), max, &menu::shortcut(Action::MaximizePane)).clicked() {
+            if self.screen == 1 && menu::row(ui, Some(Glyph::Maximize), max, &menu::shortcut(Action::MaximizePane)).clicked() {
                 self.maximize.push(pane);
             }
             if menu::row(ui, Some(Glyph::PopOut), "Undock", "").on_hover_text("Into a window of its own").clicked() {
                 self.pop.push(pane);
+            }
+            // ---- ws:panels-multiscreen ----
+            if self.chrome.monitors >= 2 || self.screen > 1 {
+                menu::sub(ui, None, "Move to window", |ui| {
+                    for n in 1..=self.chrome.monitors.max(self.screen) {
+                        let name = if n == 1 { "Main window".to_string() } else { format!("Screen {n}") };
+                        if menu::check(ui, n == self.screen, &name, "").clicked() && n != self.screen {
+                            self.move_to.push((pane, n));
+                        }
+                    }
+                });
+            }
+            // ---- ws:assistant-chat ----
+            if pane != Pane::Assistant {
+                let r = menu::row(ui, Some(Glyph::Assistant), "Attach to Assistant", "");
+                if r.on_hover_text("A screenshot of this panel, into the Assistant's next message").clicked() {
+                    crate::ui::assistant_data::request_capture(pane);
+                    ui.ctx().request_repaint();
+                }
             }
             let close = menu::row(ui, Some(Glyph::Cross), "Close", "").on_hover_text("The Window menu brings it back");
             if close.clicked() {
@@ -1396,10 +1679,12 @@ pub fn show(
         hovered: None,
         panes: Vec::new(),
         tab_bars: Vec::new(),
-        popped: layout.popped.clone(),
+        popped: [layout.popped.clone(), layout.on_screens()].concat(),
         add: Vec::new(),
         actions: Vec::new(),
         scroll_to: layout.scroll_to.take(),
+        move_to: Vec::new(),
+        screen: 1,
     };
     // simplify first (tree.ui would, wrapping lone panes in fresh, visible tab groups), then hide empty groups
     layout.tree.simplify(&egui_tiles::Behavior::simplification_options(&beh));
@@ -1412,6 +1697,18 @@ pub fn show(
     // can preview or land it.
     if chrome.locked && layout.tree.dragged_id(ctx).is_some() {
         ctx.stop_dragging();
+    }
+    // ---- ws:panels-multiscreen ----
+    // a tab dragged out of the window: egui_tiles has nowhere to drop it, so the app moves it to the
+    // screen under the mouse once it is let go (`Shown::drag_out`)
+    let mut drag_out = None;
+    match layout.tree.dragged_id(ctx).and_then(|id| layout.tree.tiles.get_pane(&id).copied()) {
+        Some(p) => {
+            let area = ctx.content_rect();
+            let outside = ctx.input(|i| i.pointer.latest_pos()).is_none_or(|q| !area.contains(q));
+            layout.drag_out = outside.then_some(p);
+        }
+        None => drag_out = layout.drag_out.take(),
     }
     // ---- ws:ui-kit ----
     let cursor = ctx.output(|o| o.cursor_icon);
@@ -1461,6 +1758,10 @@ pub fn show(
         layout.popout(p);
         changed = true;
     }
+    for (p, n) in std::mem::take(&mut beh.move_to) {
+        layout.move_to_screen(p, n);
+        changed = true;
+    }
     // ---- ws:pages ----
     for (p, group) in beh.add {
         layout.add_to(p, group);
@@ -1499,6 +1800,29 @@ pub fn show(
             egui::CentralPanel::default().show(ctx, |ui| draw(ui, pane));
         });
     }
+    // ---- ws:panels-multiscreen ---- each screen window: its own tree, same chrome and pane drawing
+    let mut screen_ops = ScreenOps::default();
+    for i in 0..layout.screens.len() {
+        changed |= show_screen(ctx, layout, i, chrome, draw, on_viewport, now, &mut screen_ops);
+    }
+    for (i, p, group) in screen_ops.add {
+        layout.add_to_screen(i, p, group);
+    }
+    for p in screen_ops.hide {
+        layout.toggle(p);
+    }
+    for p in screen_ops.pop {
+        layout.popout(p);
+    }
+    for (p, n) in screen_ops.move_to {
+        layout.move_to_screen(p, n);
+    }
+    let mut folds = screen_ops.fold;
+    folds.sort_unstable();
+    for i in folds.into_iter().rev() {
+        layout.fold_screen(i);
+    }
+    layout.screens.retain(|s| !s.panes().is_empty());
     for (pane, rect) in placed {
         if layout.set_popped_rect(pane, rect) {
             layout.rect_moved = Some(now);
@@ -1518,7 +1842,102 @@ pub fn show(
         layout.dock(p);
         changed = true;
     }
-    Shown { changed, moved, set_icon, actions }
+    Shown { changed, moved, set_icon, actions, drag_out }
+}
+
+/// What the screen windows asked for this frame (applied after all of them drew).
+#[derive(Default)]
+struct ScreenOps {
+    add: Vec<(usize, Pane, egui_tiles::TileId)>,
+    hide: Vec<Pane>,
+    pop: Vec<Pane>,
+    move_to: Vec<(Pane, u8)>,
+    /// Windows the user closed: their panes go back to the main window.
+    fold: Vec<usize>,
+}
+
+/// ---- ws:panels-multiscreen ---- Screen window `i` of `layout`, once it has a place (`ScreenWin::place`,
+/// set by `screens_ctl`): an immediate viewport, so it shares the frame (and the App) with the main window
+/// and repaints only when the app does. True when its tree changed (a drag, a resize of a split).
+#[allow(clippy::too_many_arguments)]
+fn show_screen(
+    ctx: &egui::Context,
+    layout: &mut Layout,
+    i: usize,
+    chrome: &Chrome,
+    draw: &mut dyn FnMut(&mut egui::Ui, Pane),
+    on_viewport: &mut dyn FnMut(&egui::Context),
+    now: Instant,
+    ops: &mut ScreenOps,
+) -> bool {
+    let popped = [layout.popped.clone(), layout.on_screens()].concat();
+    let sw = &mut layout.screens[i];
+    let Some(place) = sw.place else { return false };
+    let mut builder = egui::ViewportBuilder::default()
+        .with_title(format!("Simple Editor - Screen {}", sw.screen))
+        .with_active(!crate::winpos::background());
+    if !sw.opened {
+        sw.opened = true;
+        let [x, y, w, h] = sw.rect.unwrap_or(place);
+        builder = builder.with_position([x, y]).with_inner_size([w, h]).with_maximized(sw.rect.is_none());
+    }
+    let mut beh = Behaviour {
+        draw,
+        chrome,
+        hide: Vec::new(),
+        pop: Vec::new(),
+        set_icon: Vec::new(),
+        edited: false,
+        dropped: false,
+        pinned: Vec::new(),
+        pin: Vec::new(),
+        maximize: Vec::new(),
+        maximized: None,
+        glow: Vec::new(),
+        hovered: None,
+        panes: Vec::new(),
+        tab_bars: Vec::new(),
+        popped,
+        add: Vec::new(),
+        actions: Vec::new(),
+        scroll_to: None,
+        move_to: Vec::new(),
+        screen: sw.screen,
+    };
+    let (mut closed, mut rect) = (false, None);
+    let tree = &mut sw.tree;
+    ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(("screen", sw.screen)), builder, |ctx, _class| {
+        let info = ctx.input(|i| i.viewport().clone());
+        closed = info.close_requested();
+        if let (Some(outer), Some(inner)) = (info.outer_rect, info.inner_rect) {
+            rect = Some([outer.min.x, outer.min.y, inner.width(), inner.height()]);
+        }
+        on_viewport(ctx);
+        egui::CentralPanel::default().show(ctx, |ui| {
+            tree.simplify(&egui_tiles::Behavior::simplification_options(&beh));
+            sync_tree_groups(tree);
+            tree.ui(&mut beh, ui);
+            activate_orphan_tabs(tree);
+        });
+    });
+    let edited = beh.edited;
+    ops.add.extend(beh.add.into_iter().map(|(p, g)| (i, p, g)));
+    ops.hide.extend(beh.hide);
+    ops.pop.extend(beh.pop);
+    ops.move_to.extend(beh.move_to);
+    if closed {
+        ops.fold.push(i);
+    }
+    let mut moved = false;
+    if let Some(r) = rect.filter(|r| sw.rect != Some(*r)) {
+        // the first report is where it opened: only a later one is the user moving it
+        moved = sw.rect.is_some() || sw.place != Some(r);
+        sw.rect = Some(r);
+    }
+    if moved {
+        layout.rect_moved = Some(now);
+    }
+    edited
 }
 
 #[cfg(test)]
@@ -1558,7 +1977,7 @@ mod tests {
             ("Edit", &[Library, Presets, Source, Preview, Inspector, Timeline]),
             ("Animate", &[Presets, Preview, Inspector, Timeline, Animator]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
-            ("Audio", &[Preview, Mixer, Subtitles, BeatAligner, Inspector, Timeline]),
+            ("Audio", &[Library, Presets, Preview, Mixer, Voiceover, Transcript, Inspector, Timeline, BeatAligner]),
             ("Export", &[Export, Preview, Inspector, Jobs, Timeline]),
         ];
         assert_eq!(PAGES, shown.map(|(p, _)| p), "the pages in order (Alt+1..6 are the first six)");
@@ -1590,6 +2009,33 @@ mod tests {
         assert!(in_front(&Layout::color_layout(), Nodes) && in_front(&Layout::audio_layout(), Mixer));
         assert!(in_front(&Layout::cut_layout(), Preview) && !in_front(&Layout::cut_layout(), Source));
         assert!(in_front(&Layout::cut_layout(), Planner), "Cut: Planner fronts the planning group");
+    }
+
+    // ---- ws:panels-multiscreen ----
+    /// The Audio page: the music group (Library | Gallery), a small Preview, the sound panes (Mixer in
+    /// front of Voiceover and Transcript), the Inspector, and the Timeline in front of its tab group (the
+    /// Beat Aligner rides there when the build has it). The other panes hide behind the music group.
+    #[test]
+    fn the_audio_page_has_every_sound_pane() {
+        use Pane::*;
+        let l = Layout::audio_layout();
+        let group = |p: Pane| l.tree.tiles.parent_of(l.tree.tiles.find_pane(&p).unwrap()).unwrap();
+        assert!(in_front(&l, Library) && in_front(&l, Preview) && in_front(&l, Mixer) && in_front(&l, Timeline));
+        assert_eq!(group(Library), group(Presets), "the music area is Library | Gallery");
+        assert_eq!(group(Mixer), group(Voiceover));
+        assert_eq!(group(Mixer), group(Transcript));
+        let egui_tiles::Container::Tabs(tl) = l.tree.tiles.get_container(group(Timeline)).unwrap() else {
+            panic!("the Timeline sits in a tab group (room for the Beat Aligner)")
+        };
+        assert_eq!(tl.active, l.tree.tiles.find_pane(&Timeline), "the Timeline is the group's front tab");
+        if let Some(&ba) = Pane::ALL.iter().find(|p| p.title() == "Beat Aligner") {
+            assert_eq!(group(ba), group(Timeline), "the Beat Aligner is tabbed with the Timeline");
+        }
+        assert_eq!(group(Subtitles), group(Library), "panes the page doesn't show hide behind the music");
+        // a small preview: narrower than the music area
+        let row = l.tree.tiles.parent_of(group(Preview)).unwrap();
+        let egui_tiles::Container::Linear(lin) = l.tree.tiles.get_container(row).unwrap() else { panic!() };
+        assert!(lin.shares[group(Preview)] < lin.shares[group(Library)]);
     }
 
     /// The Inspector is the top-right tile of every page's default: walk the tree from the root taking
@@ -1999,19 +2445,19 @@ mod tests {
     #[test]
     fn reveal_auto_respects_pinned_sibling() {
         let mut l = Layout::audio_layout();
-        // Mixer | Subtitles share a group on the Audio page, Mixer in front
+        // Mixer | Voiceover share a group on the Audio page, Mixer in front
         assert!(in_front(&l, Pane::Mixer));
-        assert_eq!(l.reveal_auto(Pane::Subtitles), Surfaced::Shown);
-        assert!(in_front(&l, Pane::Subtitles) && !in_front(&l, Pane::Mixer));
-        assert_eq!(l.reveal_auto(Pane::Subtitles), Surfaced::Shown, "already in front is still Shown");
+        assert_eq!(l.reveal_auto(Pane::Voiceover), Surfaced::Shown);
+        assert!(in_front(&l, Pane::Voiceover) && !in_front(&l, Pane::Mixer));
+        assert_eq!(l.reveal_auto(Pane::Voiceover), Surfaced::Shown, "already in front is still Shown");
 
-        assert!(l.toggle_pin(Pane::Subtitles));
+        assert!(l.toggle_pin(Pane::Voiceover));
         assert_eq!(l.reveal_auto(Pane::Mixer), Surfaced::Pinned);
-        assert!(in_front(&l, Pane::Subtitles), "the pinned tab stays in front");
-        assert_eq!(l.reveal_auto(Pane::Subtitles), Surfaced::Pinned, "a pinned pane is never auto-switched to");
+        assert!(in_front(&l, Pane::Voiceover), "the pinned tab stays in front");
+        assert_eq!(l.reveal_auto(Pane::Voiceover), Surfaced::Pinned, "a pinned pane is never auto-switched to");
         // a pin in one group does not affect another
         assert_eq!(l.reveal_auto(Pane::Inspector), Surfaced::Shown);
-        assert!(!l.toggle_pin(Pane::Subtitles));
+        assert!(!l.toggle_pin(Pane::Voiceover));
         assert_eq!(l.reveal_auto(Pane::Mixer), Surfaced::Shown);
 
         // closed from its tab: auto-surface must not re-open it (only the Window menu / `+` do)
@@ -2132,7 +2578,7 @@ mod tests {
     fn closing_a_lone_tab_reflows_its_neighbours() {
         let ctx = egui::Context::default();
         let icons = BTreeMap::new();
-        let chrome = Chrome { icons: &icons, tab_bar: None, cozy: true, editing: None, locked: false };
+        let chrome = Chrome { icons: &icons, tab_bar: None, cozy: true, editing: None, locked: false, monitors: 1 };
         let width = |l: &Layout, p: Pane| l.rects.iter().find(|(q, _)| *q == p).map(|(_, r)| r.width());
         let mut l = Layout::media_layout();
         frame(&ctx, &mut l, &chrome, vec![], 0.0);
@@ -2181,7 +2627,7 @@ mod tests {
         ctx.set_fonts(crate::theme::test_fonts());
         let icons = BTreeMap::new();
         let mut chrome =
-            Chrome { icons: &icons, tab_bar: None, cozy: true, editing: Some("Sequence 1".into()), locked: false };
+            Chrome { icons: &icons, tab_bar: None, cozy: true, editing: Some("Sequence 1".into()), locked: false, monitors: 1 };
         let mut l = Layout::default_layout();
         let mut t = 0.0;
         for _ in 0..2 {
@@ -2215,7 +2661,7 @@ mod tests {
             let ctx = egui::Context::default();
             ctx.set_fonts(crate::theme::test_fonts());
             let icons = BTreeMap::new();
-            let chrome = Chrome { icons: &icons, tab_bar: None, cozy: true, editing: None, locked };
+            let chrome = Chrome { icons: &icons, tab_bar: None, cozy: true, editing: None, locked, monitors: 1 };
             let mut l = Layout::default_layout();
             frame(&ctx, &mut l, &chrome, vec![], 0.0);
             frame(&ctx, &mut l, &chrome, vec![], 0.1);

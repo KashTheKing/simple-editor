@@ -34,6 +34,7 @@ impl Project {
             notes: Vec::new(),
             moodboard: Vec::new(),
             paths: Vec::new(),
+            spans: Vec::new(),
             next_id: 0,
             // ---- ws:registries-schema-hooks ----
             transcripts: Vec::new(),
@@ -62,6 +63,7 @@ impl Project {
             // ---- ws:pro-timeline ----
             // ---- ws:text-titles ----
             // ---- ws:docs-refresh ----
+            quick_export: None, // ws:quick-export
             // ---- ws:beat-aligner ----
             beats: Default::default(),
         };
