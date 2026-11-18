@@ -25,9 +25,19 @@ pub fn background() -> bool {
 /// Quiet launch, for agents and test instances: no What's New window, no welcome wizard, no "Recover
 /// unsaved project?" prompt - and nothing they would have recorded (last seen version, onboarded) is
 /// written, so the user's own next normal launch still gets them. On with `--quiet` (main sets
-/// `SE_QUIET`), `SE_QUIET=1`, or `SE_BACKGROUND=1` (every automation launch already sets that).
+/// `SE_QUIET`), `SE_QUIET=1`, or `SE_BACKGROUND=1` (every automation launch already sets that) - and
+/// always for a build run from a development worktree (`…\simple-editor-wt\…`), so agents' test windows
+/// stay quiet even when a launch forgets the flag. `SE_QUIET=0` turns it off for such a build.
 pub fn quiet() -> bool {
-    std::env::var_os("SE_QUIET").is_some_and(|v| v != "0") || background()
+    match std::env::var_os("SE_QUIET") {
+        Some(v) => v != "0",
+        None => background() || std::env::current_exe().is_ok_and(|p| is_dev_build(&p)),
+    }
+}
+
+/// A build inside a development worktree (`…\simple-editor-wt\<name>\target\…`), not the installed exe.
+pub fn is_dev_build(exe: &std::path::Path) -> bool {
+    exe.components().any(|c| c.as_os_str().to_string_lossy().eq_ignore_ascii_case("simple-editor-wt"))
 }
 
 /// How long a window rect must sit still before it's worth a settings.json write.
@@ -169,8 +179,8 @@ mod tests {
         std::env::remove_var("SE_BACKGROUND");
         assert!(!background());
         // quiet launch (no What's New / wizard / recover prompt): SE_QUIET, or implied by SE_BACKGROUND
-        std::env::remove_var("SE_QUIET");
-        assert!(!quiet(), "a normal launch shows the launch pop-ups");
+        std::env::set_var("SE_QUIET", "0");
+        assert!(!quiet(), "SE_QUIET=0 shows the launch pop-ups");
         std::env::set_var("SE_QUIET", "1");
         assert!(quiet());
         std::env::set_var("SE_QUIET", "0");
@@ -179,6 +189,10 @@ mod tests {
         assert!(quiet(), "every automation launch is quiet");
         std::env::remove_var("SE_BACKGROUND");
         std::env::remove_var("SE_QUIET");
+        // builds run from a development worktree are quiet; the installed exe is not
+        use std::path::Path;
+        assert!(is_dev_build(Path::new("D:/Projects/simple-editor-wt/animator/target/debug/simple-editor.exe")));
+        assert!(!is_dev_build(Path::new("D:/Projects/simple-editor/target/release/simple-editor.exe")));
     }
 
     #[test]
