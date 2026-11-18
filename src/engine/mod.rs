@@ -18,6 +18,7 @@ pub mod edl;
 pub mod effects;
 // ---- ws:export-encoders ----
 pub mod encoders;
+pub mod size_probe; // ws:export-size
 pub mod export;
 pub mod gallery;
 pub mod gallery_sync;

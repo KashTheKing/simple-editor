@@ -282,6 +282,7 @@ impl App {
             audio: export::AudioLayout::parse(&self.settings.export_audio),
             stem_by: export::StemBy::parse(&self.settings.export_stem_by),
             overlay: None,
+            target_bytes: self.settings.export_target_bytes(),
         }
     }
 

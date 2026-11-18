@@ -314,6 +314,7 @@ pub fn build_choice(
             audio: export::AudioLayout::parse(&settings.export_audio),
             stem_by: export::StemBy::parse(&settings.export_stem_by),
             overlay: None,
+            target_bytes: settings.export_target_bytes(),
         },
         lossless,
         use_project_bg: state.use_project_bg,
@@ -661,7 +662,9 @@ fn preset_card(ui: &mut egui::Ui, p: &ExportPreset, group: Group, on: bool, edit
 
     let quality = export::quality_percent_from_crf(p.crf);
     let what = match p.name.as_str() {
-        export::PRESET_MAX_QUALITY => "Exactly your project's size and frame rate, at the best quality.\n",
+        export::PRESET_MAX_QUALITY => {
+            "Exactly your project's size and frame rate, at the best quality.\nA big file: 3-4x the default quality's size.\n"
+        }
         export::PRESET_FAST_PREVIEW => {
             "Your project's size and frame rate, encoded as fast as possible to check an edit.\n"
         }
@@ -1235,10 +1238,7 @@ fn output_bar(
         } else {
             1
         };
-        parts.push(format!(
-            "~{}",
-            format_bytes(export::estimate_export_bytes(w, h, project.fps, export_dur, settings.crf, streams))
-        ));
+        parts.push(estimated_size(state, project, settings, (w, h, export_dur, streams), &ext));
     }
     ui.horizontal(|ui| {
         let preset = state.tile.clone().unwrap_or_else(|| "Custom settings".into());
@@ -1262,6 +1262,8 @@ fn output_bar(
             }
         });
         ui.end_row();
+
+        *save |= target_size_row(ui, settings);
 
         ui.label("File");
         ui.horizontal(|ui| {
@@ -1323,6 +1325,50 @@ fn output_bar(
         }
     });
     out
+}
+
+// ---- ws:export-size ----
+/// The summary's size: the target in Target size mode, else what `engine::size_probe` measured for
+/// these settings, else (while it measures) the formula's guess.
+fn estimated_size(
+    state: &ExportUi,
+    project: &Project,
+    settings: &Settings,
+    (w, h, dur, streams): (u32, u32, f64, u32),
+    ext: &str,
+) -> String {
+    if let Some(t) = settings.export_target_bytes() {
+        return format!("~{}", format_bytes(t));
+    }
+    let c = build_choice(state, project, settings, format!("estimate.{ext}").into());
+    match crate::engine::size_probe::measured(&crate::engine::size_probe::key(&c.opts)) {
+        Some(b) => format!("~{}", format_bytes(b)),
+        None => format!("~{}…", format_bytes(export::estimate_export_bytes(w, h, project.fps, dur, settings.crf, streams))),
+    }
+}
+
+/// The output bar's Target size row: off = Quality decides the size; on = about this many MB.
+fn target_size_row(ui: &mut egui::Ui, settings: &mut Settings) -> bool {
+    let mut changed = false;
+    ui.label("Target size");
+    ui.horizontal(|ui| {
+        let mut on = settings.export_target_mb > 0.0;
+        if ui
+            .checkbox(&mut on, "")
+            .on_hover_text("Aim the file at a size instead of a quality. Off: Quality decides the size.")
+            .changed()
+        {
+            settings.export_target_mb = if on { 50.0 } else { 0.0 };
+            changed = true;
+        }
+        if on {
+            changed |= ui
+                .add(egui::DragValue::new(&mut settings.export_target_mb).range(1.0..=100_000.0).speed(1.0).suffix(" MB"))
+                .changed();
+        }
+    });
+    ui.end_row();
+    changed
 }
 
 // ---- ws:export-audio-tracks ----
@@ -1545,7 +1591,7 @@ mod tests {
         assert_eq!(state.custom, (1080, 1920));
         assert_eq!(state.preset, "custom");
         assert!(state.letterbox);
-        assert_eq!(settings.crf, 20);
+        assert_eq!(settings.crf, export::DEFAULT_CRF);
         assert_eq!(state.tile.as_deref(), Some("Shorts / Reels / TikTok"));
         let c = build_choice(&state, &project, &settings, "x.mp4".into());
         assert_eq!(c.opts.out_size, Some((1080, 1920)));
@@ -1719,7 +1765,7 @@ mod tests {
         assert_eq!(s.encoder, "libx264");
         let yt = s.export_preset("YouTube 4K").unwrap();
         apply_preset(&mut st, &mut s, &yt);
-        assert_eq!((s.encoder.as_str(), s.export_speed.as_str(), s.crf), ("auto", "balanced", 18));
+        assert_eq!((s.encoder.as_str(), s.export_speed.as_str(), s.crf), ("auto", "balanced", export::DEFAULT_CRF - 2));
         assert_eq!((st.custom, st.letterbox, st.ext.as_str()), ((3840, 2160), true, "mp4"));
     }
 

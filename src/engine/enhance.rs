@@ -619,7 +619,7 @@ mod tests {
     }
 
     /// The encode picks a hardware H.264 encoder when the probe found one, else libx264; both get CRF-16-class
-    /// quality and AAC audio from the export's own argument builder.
+    /// quality (NVENC's CQ sits 6 above the CRF it matches) and AAC audio from the export's own argument builder.
     #[test]
     fn encode_args_use_the_hardware_encoder_with_libx264_fallback() {
         let pick = |w: &[&str]| {
@@ -629,7 +629,7 @@ mod tests {
         assert_eq!(pick(&["h264_nvenc", "h264_qsv"]), "h264_nvenc");
         assert_eq!(pick(&[]), "libx264");
         let nv = export::codec_args("mp4", "h264_nvenc", 16, "medium", &[]).join(" ");
-        assert!(nv.contains("-c:v h264_nvenc") && nv.contains("-cq 16") && nv.contains("-c:a aac"), "{nv}");
+        assert!(nv.contains("-c:v h264_nvenc") && nv.contains("-cq 22") && nv.contains("-c:a aac"), "{nv}");
         let sw = export::codec_args("mp4", "libx264", 16, "medium", &[]).join(" ");
         assert!(sw.contains("-c:v libx264") && sw.contains("-crf 16") && sw.contains("+faststart"), "{sw}");
     }

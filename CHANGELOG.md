@@ -2,6 +2,9 @@
 
 ## 1.3.1
 
+### Export size
+- **Exports are about 3x smaller**: the graphics-card encoder now uses lookahead, B-frames and adaptive quality, its quality scale is matched to x264's, and the default quality is a little lower (a 2:12 720p60 visualizer went from 267 MB to ~86 MB). Quick Export uses the same default instead of Max quality, a keyframe lands every 2 s, and the size in the Export output bar is measured from short samples of your timeline. New **Target size** (e.g. 50 MB) aims the file at a size instead of a quality.
+
 ### Beat Aligner
 - **New Beat Aligner panel** (the tab beside the Timeline on the Audio page, a tab on the Cut page, anywhere from a tab bar's +): pick a song, Detect finds the BPM, beat grid and downbeats (from the cached song analysis) under a bar ruler over a big waveform; fix it with BPM, ½ / ×2, Tap tempo, offset and beats per bar. Tap Space, B or M while it plays to drop marks (calibrated latency, optional snap to the beat with a strength), or let Continuous / Fill grid mark the grid. Drag marks (snapping to beats or sub-beats), select stretches into named, coloured sections (Intro, Verse, Chorus, Drop ...) and drag their chips to move or resize them. Then turn them into timeline markers, cut the picture at the marks, put a Library sound on each mark, snap clip edges to them or apply a Zoom Punch / Shake / any Animator block on each beat; export and import CSV, Resolve marker EDL and YouTube chapters. Voice mode marks a voiceover's phrases and pauses instead. Tools: `beats.*`.
 
