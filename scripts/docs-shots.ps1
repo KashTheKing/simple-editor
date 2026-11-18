@@ -277,7 +277,10 @@ function Resolve-Crop([string]$Crop) {
 function New-DemoMedia {
     New-Item -ItemType Directory -Force $Media | Out-Null
     & $Exe --selftest (Join-Path $Work 'selftest') | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "--selftest failed (exit $LASTEXITCODE)" }
+    # only its media is needed here: a slow check (e.g. waveform under load) must not stop the shots
+    $made = @('logo.png', 'test.mp4') | ForEach-Object { Test-Path (Join-Path $Work "selftest\$_") }
+    if ($made -contains $false) { throw "--selftest failed (exit $LASTEXITCODE) and made no demo media" }
+    if ($LASTEXITCODE -ne 0) { Write-Warning "--selftest exit $LASTEXITCODE; its demo media is there, carrying on" }
     $v = @('-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'veryfast', '-crf', '23', '-c:a', 'aac', '-shortest')
     $clips = @(
         @('fractal.mp4', 'mandelbrot=s=1280x720:r=30:start_scale=3:end_scale=0.3', 'aevalsrc=0.4*sin(2*PI*196*t)*(0.5+0.5*sin(2*PI*0.5*t)):s=48000', 8),
