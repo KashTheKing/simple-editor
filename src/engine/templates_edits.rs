@@ -1,7 +1,7 @@
 //! ---- ws:edit-templates ----
-//! Ready-made beat edits in the CapCut-template style: drop in a song and your clips, and the cuts land on
-//! the song's beats (`BeatSync`: each template is laid out on a 120 BPM grid and retimed to the song when
-//! placed, its drop on the song's drop). Everything here is native - slots, animation blocks, keyframed
+//! Ready-made beat edits in the CapCut-template style: the template brings its song, its sound effects and
+//! (phonk) the WASTED shot as fixed parts, and only its video shots are slots for your clips. Each is laid
+//! out on a 120 BPM grid (`BeatSync`), its song cut to that grid with the drop on the template's drop. Everything here is native - slots, animation blocks, keyframed
 //! speed, effect windows, transitions (the white flash is a Fade to Color, the zoom one the library's
 //! Zoom Momentum shader) and a low-pass bus whose cutoff opens on the drop. Text cards are text clips.
 //!
@@ -17,7 +17,6 @@ const BPM: f64 = 120.0;
 const ZOOM_MOMENTUM: &str = include_str!("../../library/transitions/zoom-momentum.glsl");
 
 const SNAP: Ease = Ease::Bezier { x1: 0.9, y1: 0.0, x2: 0.1, y2: 1.0 };
-const RED: [u8; 4] = [214, 24, 24, 255];
 const YELLOW: [u8; 4] = [255, 210, 40, 255];
 
 fn key(f: f64, v: BlockVal, ease: Ease) -> BlockKey {
@@ -37,17 +36,6 @@ fn push_in(by: f64) -> KeyBlock {
 /// Accelerating into the cut: the zoom speeds up toward the end (feeds a zoom transition).
 fn rush_in(by: f64) -> KeyBlock {
     kb("Rush In", 1.0, vec![track("scale", vec![key(0.0, BlockVal::Mul(1.0), Ease::EaseIn), key(1.0, BlockVal::Mul(by), Ease::Linear)])])
-}
-/// A title slamming in: big and see-through to its size.
-fn slam() -> KeyBlock {
-    kb(
-        "Slam",
-        0.3,
-        vec![
-            track("scale", vec![key(0.0, BlockVal::Mul(1.7), Ease::EaseOut), key(1.0, BlockVal::Mul(1.0), Ease::Linear)]),
-            track("opacity", vec![key(0.0, BlockVal::Abs(0.0), Ease::EaseOut), key(0.5, BlockVal::Abs(1.0), Ease::Linear)]),
-        ],
-    )
 }
 /// Slow motion from the hit on: x1 to x0.25 at once, then held.
 fn slow_mo() -> KeyBlock {
@@ -149,24 +137,13 @@ impl Build {
         self.anim(id, &push_in(if len >= 4.0 { 1.14 } else { 1.08 }), hit, d - hit);
         id
     }
-    /// A sound slot (the song when `song`): an audio container over [start, start + dur).
-    fn sound(&mut self, name: &str, hint: &str, layer: u32, start: f64, dur: f64, hit: f64) -> Id {
-        let mut c = Clip::new(0, ClipKind::Audio, name, start, dur);
-        c.container = true;
-        c.container_label = name.to_string();
-        let id = self.push(c, layer, (0.0, 0.0), 1.0, &[]);
-        let mut s = Slot::new(name, id, SlotWant::Audio, SlotFit::Trim);
-        (s.hint, s.hit) = (hint.to_string(), hit);
-        self.d.slots.push(s);
-        id
+    /// A sound of the template's own (its song, a sound effect) over [start, start + dur): never a slot.
+    fn sound(&mut self, name: &str, layer: u32, start: f64, dur: f64) -> Id {
+        self.push(Clip::new(0, ClipKind::Audio, name, start, dur), layer, (0.0, 0.0), 1.0, &[])
     }
-    /// The song slot over the whole template, `drop` seconds in, fading out over its last second.
+    /// The song over the whole template, `drop` seconds in, fading out over its last second.
     fn song(&mut self, len: f64, drop: f64, bus: Id) -> Id {
-        let id = self.sound("Song", "", 0, 0.0, len, 0.0);
-        // the song is the first slot you fill
-        if let Some(s) = self.d.slots.pop() {
-            self.d.slots.insert(0, s);
-        }
+        let id = self.sound("Song", 0, 0.0, len);
         let c = self.clip_mut(id);
         c.fade_out = 1.0;
         c.bus = bus;
@@ -205,10 +182,15 @@ impl Build {
     }
 }
 
-/// Build edit template `i` (0 = Phonk Synced Edit, then Velocity Edit, Hype Montage, Meme Cut).
+/// The word's font: Pricedown when it is installed, else Impact.
+const WASTED_FONT: &str = "Pricedown, Impact";
+/// The game's red.
+const WASTED_RED: [u8; 4] = [245, 0, 4, 255];
+
+/// Build edit template `i` (0 = Wasted, then Velocity Edit, Hype Montage, Meme Cut).
 pub(super) fn build(b: &mut Build, i: usize) {
     match i {
-        0 => phonk(b),
+        0 => wasted_alone(b),
         1 => velocity_edit(b),
         2 => hype(b),
         _ => meme(b),
@@ -217,7 +199,9 @@ pub(super) fn build(b: &mut Build, i: usize) {
 
 /// Muffled build-up, then on the drop: the muffle opens, the shot goes grey and slow under a WASTED card
 /// with the real sound, and a flash into fast cuts with punches, shakes and zoom transitions.
-fn phonk(b: &mut Build) {
+/// The phonk edit: not a built-in (it needs a real phonk song, which is never shipped) - `templates::phonk_edit`
+/// saves it to your own Gallery with your song.
+pub(super) fn phonk(b: &mut Build) {
     let (fw, u) = (b.w, b.u);
     let drop_beat = 16.0;
     let drop = drop_beat * BEAT;
@@ -233,29 +217,12 @@ fn phonk(b: &mut Build) {
         b.trans(id, cut);
         n += 1;
     }
-    // the wasted shot: 2 beats of action, then the drop hits - slow-mo, grey and red, a shake, a slow push
+    // the wasted shot: 2 beats of action, then the drop hits
     let (ws, wl) = (14.0, 6.0);
     let w = b.slot("Wasted shot", SlotWant::Video, 0, ws * BEAT, wl * BEAT, (0.0, 0.0), 1.1, &[]);
-    let hit = drop - ws * BEAT;
-    b.anim(w, &push_in(1.06), 0.0, hit);
-    b.anim(w, &slow_mo(), hit, wl * BEAT - hit);
-    b.named(w, "Shake", hit, 0.45);
-    b.anim(w, &push_in(1.16), hit + 0.45, wl * BEAT - hit - 0.45);
-    b.fx(w, EffectKind::Color, &[(0, -0.05), (1, 1.3), (2, 0.1)], hit, 0.0);
-    b.fx(w, EffectKind::Tint, &[(0, 170.0), (1, 20.0), (2, 20.0), (3, 0.2)], hit, 0.0);
-    b.fx(w, EffectKind::Vignette, &[(0, 0.7), (2, 0.8)], hit, 0.0);
+    wasted(b, w, drop - ws * BEAT, 1, 1);
     b.trans(w, Cut::Zoom(0.3));
-    // the WASTED card: a dark band across the frame and the word, tilted like the game's
-    let card = (wl - (drop_beat - ws)) * BEAT;
-    let band = b.rect("Wasted band", [0, 0, 0, 165], (fw * 0.55, 74.0 * u), 1, drop, card, (0.0, 0.0), &[("Fade In", 0.0, 0.2)]);
-    let word = b.title("wasted", "Montserrat", 150.0, RED, 2, drop, card, -6.0 * u);
-    let s = slam();
-    b.anim(word, &s, 0.0, 0.3);
-    b.anim(word, &push_in(1.06), 0.3, card - 0.3);
-    for id in [band, word] {
-        b.clip_mut(id).rotation = Animated::new(-2.0);
-    }
-    b.clip_mut(band).shape.as_mut().expect("a rect").corner = 0.0;
+    b.fix(w); // (the template's own shot: the drop is built around it)
     // after the drop: a flash out of the card, then fast cuts on every beat
     let post: [f64; 13] = [2.0, 2.0, 2.0, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 4.0];
     let mut at = ws + wl;
@@ -282,9 +249,72 @@ fn phonk(b: &mut Build) {
     let end = at * BEAT;
     let bus = b.muffle_bus(drop);
     b.song(end, drop, bus);
-    // the real sound: its hit on the drop (the slot finds a file called "wasted" in your sounds)
-    b.sound("Wasted sound", "wasted", 1, drop - 0.6, 4.5, 0.6);
     b.d.thumb_t = drop + 0.5;
+    b.samples(
+        "phonk-synced-edit",
+        &["rage-quit.mp4", "city-night.mp4", "throw-pc.mp4", "glass-break.mp4", "devs-carry.mp4"],
+        &[("Wasted shot", "hit-by-truck.mp4"), ("Song", "song.m4a")],
+    );
+    b.local_sample("Wasted sound", "wasted.m4a");
+}
+
+/// The GTA-style WASTED moment on shot `w` from clip second `hit` to its end, its card on the layers from
+/// `layer` up: the picture drains to grey in a quarter second, a slight slow-mo and a slow zoom-in under a
+/// dark band with the lowercase red word, which turns white later on. All native clips and effects; the
+/// word asks for Pricedown (free to use in videos, not ours to ship: install it and the card uses it) and
+/// falls back to Impact. The sting is your own sound (`local_sample`): it is never shipped.
+fn wasted(b: &mut Build, w: Id, hit: f64, layer: u32, sound_layer: u32) {
+    let (fw, fh, u) = (b.w, b.h, b.u);
+    let (start, len) = {
+        let c = b.clip_mut(w);
+        (c.start, c.duration)
+    };
+    let card = len - hit;
+    b.anim(w, &push_in(1.04), 0.0, hit);
+    let slow = kb("Slight Slow-mo", 1.0, vec![track("speed", vec![key(0.0, BlockVal::Mul(1.0), Ease::EaseOut), key(0.1, BlockVal::Mul(0.55), Ease::Hold), key(1.0, BlockVal::Mul(0.55), Ease::Linear)])]);
+    b.anim(w, &slow, hit, card);
+    b.anim(w, &push_in(1.18), hit, card);
+    // grey and a touch darker, fast
+    let k = |t: f64, v: f64| Keyframe { t, v, ease: Ease::EaseOut };
+    let mut grey = Effect::new(EffectKind::Color);
+    grey.params[0].keys = vec![k(hit, 0.0), k(hit + 0.25, -0.08)];
+    grey.params[2].keys = vec![k(hit, 1.0), k(hit + 0.25, 0.0)];
+    (grey.start, grey.len) = (hit, 0.0);
+    b.clip_mut(w).effects.push(grey);
+    b.fx(w, EffectKind::Vignette, &[(0, 0.75), (1, 0.6), (2, 0.7)], hit, 0.0);
+    // the card: a band about a fifth of the frame high, black at 77%, tilted a degree
+    let at = start + hit;
+    let band = b.rect("Wasted band", [0, 0, 0, 196], (fw * 0.56, fh * 0.106), layer, at, card, (0.0, fh * 0.027), &[("Fade In", 0.0, 0.12)]);
+    b.clip_mut(band).shape.as_mut().expect("a rect").corner = 0.0;
+    // the word: red for a while, then white over it
+    let white_at = (card * 0.62).min(2.5);
+    // (measured on the game: the word is a quarter of the frame wide, a little above the band's middle)
+    let (size, y) = (170.0, fh * 0.02);
+    let red = b.title("wasted", WASTED_FONT, size, WASTED_RED, layer + 1, at, card, y);
+    b.named(red, "Fade In", 0.0, 0.12);
+    let white = b.title("wasted", WASTED_FONT, size, [255, 255, 255, 255], layer + 2, at + white_at, card - white_at, y);
+    b.named(white, "Fade In", 0.0, 0.3);
+    for id in [band, red, white] {
+        b.clip_mut(id).rotation = Animated::new(-1.0);
+    }
+    for id in [red, white] {
+        if let Some(t) = b.clip_mut(id).text.as_mut() {
+            t.bold = false;
+            t.outline_width = Animated::new(3.5 * u);
+        }
+    }
+    // the sting lands on the hit (its file is cut so the sting is 0.6 s in)
+    b.sound("Wasted sound", sound_layer, (at - 0.6).max(0.0), 4.5);
+}
+
+/// One shot that plays, then gets WASTED: the moment alone, no music.
+fn wasted_alone(b: &mut Build) {
+    let w = b.slot("Clip 1", SlotWant::Video, 0, 0.0, 6.5, (0.0, 0.0), 1.05, &[]);
+    b.named(w, "Fade In", 0.0, 0.25);
+    wasted(b, w, 1.5, 1, 0);
+    b.d.thumb_t = 2.4;
+    b.samples("wasted", &["hit-by-truck.mp4"], &[]);
+    b.local_sample("Wasted sound", "wasted.m4a");
 }
 
 /// Speed ramps on every shot: slow on the hit, rushing into a zoom cut; a flash every bar.
@@ -326,6 +356,7 @@ fn velocity_edit(b: &mut Build) {
     }
     b.song(at * BEAT, drop, 0);
     b.d.thumb_t = drop + 0.3;
+    b.samples("velocity-edit", &["city-cinematic.mp4", "car-iced.mp4", "frozen-npcs.mp4", "glass-break.mp4"], &[("Song", "song.m4a")]);
 }
 
 /// Whip pans between shots, a zoom punch on every beat, a shake on every bar, a big title on the drop.
@@ -367,6 +398,7 @@ fn hype(b: &mut Build) {
     b.named(go, "Pop Out", 4.0 * BEAT - 0.25, 0.25);
     b.song(at * BEAT, drop, 0);
     b.d.thumb_t = drop + 0.4;
+    b.samples("hype-montage", &["zoom-out.mp4", "city-bridge.mp4", "podium.mp4", "throw-pc.mp4", "glass-break.mp4"], &[("Song", "song.m4a")]);
 }
 
 /// Each shot plays, then freezes on a flash with a zoom, a shake and a caption that pops.
@@ -402,6 +434,7 @@ fn meme(b: &mut Build) {
     }
     b.song(6.0 * 4.0 * BEAT, drop, 0);
     b.d.thumb_t = 1.5 * BEAT + 0.4;
+    b.samples("meme-cut", &["rage-quit.mp4", "pc-on-fire.mp4", "xbox-in-bed.mp4"], &[("Song", "song.m4a")]);
 }
 
 #[cfg(test)]

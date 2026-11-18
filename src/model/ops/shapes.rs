@@ -65,7 +65,10 @@ impl Project {
             return false;
         }
         clip.asset = asset.id;
-        clip.src_in = 0.0;
+        // the slot keeps its in point while the new footage is long enough for it, else starts at 0
+        if asset.kind == ClipKind::Image || clip.src_in + clip.src_len() > asset.duration + EPS {
+            clip.src_in = 0.0;
+        }
         if clip.kind == ClipKind::Audio {
             clip.audio_stream = 0;
         } else if asset.kind == ClipKind::Image {
@@ -100,7 +103,9 @@ impl Project {
                 if let Some(c) = self.clip_mut(aid) {
                     if c.kind == ClipKind::Audio && c.container {
                         c.asset = asset.id;
-                        c.src_in = 0.0;
+                        if c.src_in + c.src_len() > asset.duration + EPS {
+                            c.src_in = 0.0;
+                        }
                         if stream_idx < asset.audio_streams.len() {
                             c.audio_stream = asset.audio_streams[stream_idx].index;
                             stream_idx += 1;
@@ -126,6 +131,30 @@ impl Project {
             }
         }
         true
+    }
+    /// Replace the footage of slot `clip` (with its sound half) and, when `linked`, of every slot sharing its
+    /// media link: each keeps its own in point, speed, effects and timing. Returns how many slots changed.
+    pub fn replace_slot_media(&mut self, clip: Id, asset: Id, linked: bool) -> usize {
+        let Some(c) = self.clip(clip) else { return 0 };
+        let ml = if linked { c.media_link } else { 0 };
+        let mut ids = vec![clip];
+        if ml != 0 {
+            ids.extend(self.all_clips().filter(|(_, o)| o.media_link == ml && o.id != clip && o.kind != ClipKind::Audio).map(|(_, o)| o.id));
+        }
+        ids.into_iter().filter(|&id| self.replace_container_pair(id, asset)).count()
+    }
+    /// Give slot `clip` (and its sound half) its own media again: replacing it no longer changes the slots
+    /// it was linked to. False when it was not linked.
+    pub fn unlink_slot_media(&mut self, clip: Id) -> bool {
+        let ids = self.expand_links(&[clip]);
+        let mut any = false;
+        for id in ids {
+            if let Some(c) = self.clip_mut(id) {
+                any |= c.media_link != 0;
+                c.media_link = 0;
+            }
+        }
+        any
     }
     /// Convert clips to containers (slots). Linked clips are included.
     pub fn make_container(&mut self, clip_ids: &[Id]) {

@@ -362,7 +362,7 @@ fn a_template_exports_and_imports_with_and_without_footage() {
         a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.name == y.name && (x.t - y.t).abs() < 1e-9 && x.ctl.is_some())
     };
     assert!(same(&got.clip(va[0]).unwrap().blocks, &pops), "the animation comes along");
-    assert_eq!(got.slot_list().len(), 1);
+    assert_eq!(got.slot_list().len(), 0, "a picture is never a slot (only video clips are)");
     // it lists in the Gallery like any saved template, and a second import is numbered
     assert_eq!(gallery::list(&root, Kind::Template).len(), 1);
     assert_eq!(import_package(&root, &with).unwrap().name, "Beach Intro (2)");
@@ -370,16 +370,16 @@ fn a_template_exports_and_imports_with_and_without_footage() {
     let r = gallery::import(&root, &[with.clone()]);
     assert_eq!(r.added, [(Kind::Template, "Beach Intro (3)".to_string())]);
 
-    // without footage: every footage clip is an empty slot, no file inside
+    // without footage: the video clip is an empty slot; the picture is the template's own and rides along
     let without = dir.join("without.setemplate");
-    assert_eq!(export_package("Beach Intro", &d, false, None, &without).unwrap(), Exported { files: 0, empty: 2 });
+    assert_eq!(export_package("Beach Intro", &d, false, None, &without).unwrap(), Exported { files: 1, empty: 1 }, "the picture rides along");
     assert!(std::fs::metadata(&without).unwrap().len() < std::fs::metadata(&with).unwrap().len());
     let root2 = dir.join("gallery2");
     let got: TemplateData = serde_json::from_value(import_package(&root2, &without).unwrap().data).unwrap();
-    assert!(got.assets.is_empty());
-    assert_eq!(got.slot_list().len(), 2, "the logo slot, and the beach clip that lost its footage");
-    assert!(got.clips.iter().filter(|c| c.uses_asset()).all(|c| c.asset == 0 && c.container));
-    assert!(!root2.join("templates").join("footage").exists());
+    assert_eq!(got.assets.len(), 1, "only the logo");
+    assert_eq!(got.slot_list().len(), 1, "the beach clip that lost its footage");
+    assert!(got.clips.iter().filter(|c| c.uses_asset() && c.kind != ClipKind::Image).all(|c| c.asset == 0 && c.container));
+    assert!(got.clips.iter().any(|c| c.kind == ClipKind::Image && c.asset != 0 && !c.container));
     // ... and it still places, with the animation on the empty slot
     let mut q = Project::new();
     let n = got.clips.len();
@@ -418,4 +418,76 @@ fn no_absolute_path_survives_in_a_shared_header() {
                        "c": {"file": "E:\\page.html", "n": 3}});
     scrub(&mut v);
     assert_eq!(v, json!({"a": "warm.cube", "b": ["x.mp4", "y.mov", "C: is a drive", "/s"], "c": {"file": "page.html", "n": 3}}));
+}
+
+#[test]
+fn shared_footage_is_trimmed_to_what_the_template_uses() {
+    let Some(ff) = crate::media::ffpipe::ffmpeg_exe() else { return };
+    let dir = tmp("trim");
+    let src = dir.join("long.mp4");
+    let ok = crate::media::ffpipe::command(&ff)
+        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30:duration=20", "-c:v", "libx264", "-preset", "ultrafast"])
+        .arg(&src)
+        .status()
+        .is_ok_and(|s| s.success());
+    if !ok {
+        return;
+    }
+    let mut p = Project::new();
+    let a = p.add_asset(asset(&src.to_string_lossy(), ClipKind::Video, 20.0, 0));
+    let v = p.insert_asset_clips(a, 0.0, None)[0];
+    let c = p.clip_mut(v).unwrap();
+    (c.src_in, c.duration) = (12.0, 2.0);
+    let d = capture(&p, &[v]);
+    let out = dir.join("t.setemplate");
+    export_package("Trim", &d, true, None, &out).unwrap();
+    let item = import_package(&dir.join("gallery"), &out).unwrap();
+    let got: TemplateData = serde_json::from_value(item.data).unwrap();
+    let (fa, fc) = (&got.assets[0], &got.clips[0]);
+    assert!((fa.duration - 2.5).abs() < 1e-6, "2 s used + a quarter second each side: {}", fa.duration);
+    assert!((fc.src_in - 0.25).abs() < 1e-6, "the clip starts where it did in the footage: {}", fc.src_in);
+    let probed = crate::media::probe(&fa.path, crate::media::Backend::Ffmpeg).unwrap();
+    assert!(probed.duration > 2.3 && probed.duration < 2.8, "the file inside is the trimmed part: {}", probed.duration);
+    assert!(std::fs::metadata(&fa.path).unwrap().len() < std::fs::metadata(&src).unwrap().len());
+}
+
+#[test]
+fn only_video_clips_become_slots_when_saved_or_exported() {
+    let dir = tmp("video-only");
+    let files: Vec<PathBuf> = ["shot.mp4", "song.mp3", "boom.wav", "logo.png"].iter().map(|n| dir.join(n)).collect();
+    for f in &files {
+        std::fs::write(f, b"data").unwrap();
+    }
+    let mut p = Project::new();
+    let shot = p.add_asset(asset(&files[0].to_string_lossy(), ClipKind::Video, 4.0, 1));
+    let song = p.add_asset(asset(&files[1].to_string_lossy(), ClipKind::Audio, 4.0, 1));
+    let sfx = p.add_asset(asset(&files[2].to_string_lossy(), ClipKind::Audio, 1.0, 1));
+    let logo = p.add_asset(asset(&files[3].to_string_lossy(), ClipKind::Image, 0.0, 0));
+    let v = p.insert_asset_clips(shot, 0.0, None)[0];
+    let s = p.insert_asset_clips(song, 0.0, None)[0];
+    let x = p.insert_asset_clips(sfx, 1.0, None)[0];
+    let l = p.insert_asset_clips(logo, 0.0, None)[0];
+    // every clip a container on the timeline, and every one asked to be a slot / a placeholder
+    let ids: Vec<Id> = p.all_clips().map(|(_, c)| c.id).collect();
+    p.make_container(&ids);
+    // (a sound left out is dropped, so the sounds ride along; the video and the picture are asked to be placeholders)
+    let slot = |clip, include| Part { clip, slot: Some(("S".into(), SlotWant::Any, SlotFit::Trim)), include };
+    let d = build(&p, &ids, &[slot(v, false), slot(s, true), slot(x, true), slot(l, false)], 0.0);
+    let slots = d.slot_list();
+    assert_eq!(slots.len(), 1, "only the video clip is a slot: {:?}", slots.iter().map(|s| &s.name).collect::<Vec<_>>());
+    assert_eq!(d.clip(slots[0].clip).unwrap().kind, ClipKind::Video);
+    for id in [s, x, l] {
+        let c = d.clip(id).unwrap();
+        assert!(!c.container && c.asset != 0, "{}: locked in with its media", c.name);
+    }
+    // exported without footage: only the video becomes an empty slot, sound, music and picture ride along
+    let out = dir.join("t.setemplate");
+    assert_eq!(export_package("T", &d, false, None, &out).unwrap().files, 3, "song, sound and picture inside");
+    let item = import_package(&dir.join("gallery"), &out).unwrap();
+    let got: TemplateData = serde_json::from_value(item.data).unwrap();
+    assert_eq!(got.slot_list().len(), 1);
+    for id in [s, x, l] {
+        let c = got.clip(id).unwrap();
+        assert!(c.asset != 0 && !c.container, "{}: still the template's own after the round trip", c.name);
+    }
 }

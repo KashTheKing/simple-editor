@@ -181,6 +181,25 @@ pub struct TemplateData {
     /// A beat-synced edit: how it follows its song.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<BeatSync>,
+    /// Where its own sample footage is in the content library (`templates/<slug>`, files fetched on use).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub media: String,
+    /// The sample footage each slot comes with when it is dropped on the timeline (files in `media`).
+    /// Slots naming the same file show the same footage, linked: replace it once and they all change.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub samples: Vec<Sample>,
+}
+
+/// A slot's sample footage: a file of the template's `media` folder, trimmed to what the template uses.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Sample {
+    /// The slot's clip (a template clip id).
+    pub clip: Id,
+    pub file: String,
+    /// Only from your own media folder, never fetched (a sound the template may not ship): without it the
+    /// clip is left out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local: bool,
 }
 
 impl TemplateData {
@@ -593,6 +612,9 @@ pub fn build(project: &Project, ids: &[Id], parts: &[Part], thumb_t: f64) -> Tem
             }
             continue;
         }
+        if c.kind != ClipKind::Video {
+            continue; // (only video clips can be slots)
+        }
         match &p.slot {
             Some((n, want, fit)) => d.set_slot(p.clip, if n.trim().is_empty() { &name } else { n.trim() }, *want, *fit),
             None if !p.include => d.set_slot(p.clip, &name, SlotWant::Any, SlotFit::Trim),
@@ -605,6 +627,13 @@ pub fn build(project: &Project, ids: &[Id], parts: &[Part], thumb_t: f64) -> Tem
         if !p.include {
             d.strip_footage(p.clip);
         }
+    }
+    // only video clips are slots: sound, music and pictures are the template's own (a video's sound half
+    // follows its picture)
+    let videos: Vec<Id> = d.clips.iter().filter(|c| c.kind == ClipKind::Video && c.container).map(|c| c.link).filter(|&l| l != 0).collect();
+    for c in d.clips.iter_mut().filter(|c| c.kind != ClipKind::Video && !(c.link != 0 && videos.contains(&c.link))) {
+        c.container = false;
+        c.container_label.clear();
     }
     let used: Vec<Id> = d.clips.iter().filter(|c| c.uses_asset()).map(|c| c.asset).collect();
     d.assets.retain(|a| used.contains(&a.id));
@@ -695,6 +724,100 @@ pub fn apply_synced(p: &mut Project, mut d: TemplateData, at: f64, fills: &[Fill
     }
     ids.retain(|id| p.clip(*id).is_some());
     ids
+}
+
+/// Place template `d` as ONE nested-sequence clip at `at` (video track `track` preferred), its slots filled
+/// with their sample footage (`media`: sample file -> project asset). Inside, every slot is a container;
+/// slots showing the same footage share a media link. Its media goes into the bin `Templates/<name>` (an
+/// asset already filed elsewhere stays there). Returns the sequence clip.
+pub fn place_nested(p: &mut Project, name: &str, mut d: TemplateData, at: f64, track: Option<usize>, media: &[(String, Id)]) -> Option<Id> {
+    fill_fixed(&mut d, p, media);
+    let slots = d.slot_list();
+    let fills: Vec<Fill> = d
+        .samples
+        .iter()
+        .filter_map(|s| {
+            let i = slots.iter().position(|x| x.clip == s.clip)?;
+            let asset = media.iter().find(|m| m.0 == s.file)?.1;
+            // (a sample sound is cut so its hit is where the slot wants it)
+            Some(Fill { slot: i, asset, onset: slots[i].hit })
+        })
+        .collect();
+    let before: Vec<Id> = p.assets.iter().map(|a| a.id).collect();
+    let n = p.sequences.iter().filter(|s| s.name == name || s.name.starts_with(&format!("{name} "))).count();
+    let title = if n == 0 { name.to_string() } else { format!("{name} {}", n + 1) };
+    let seq = p.new_sequence(title, p.width, p.height, p.fps);
+    let mut inner = std::mem::take(&mut p.sequence_mut(seq)?.tracks);
+    std::mem::swap(&mut p.tracks, &mut inner);
+    apply_synced(p, d, 0.0, &fills, None);
+    // (the filled slots' cards are gone: no empty track is left behind them)
+    while let Some(i) = p.tracks.iter().position(|t| t.clips.is_empty() && p.tracks.iter().filter(|o| o.kind == t.kind).count() > 1) {
+        p.remove_track(i);
+    }
+    // footage shown in several slots: one media link per file
+    let mut uses: Vec<(Id, usize)> = Vec::new();
+    for (_, c) in p.all_clips().filter(|(_, c)| c.container && c.kind != ClipKind::Audio && c.asset != 0) {
+        match uses.iter_mut().find(|u| u.0 == c.asset) {
+            Some(u) => u.1 += 1,
+            None => uses.push((c.asset, 1)),
+        }
+    }
+    for (asset, _) in uses.into_iter().filter(|u| u.1 > 1) {
+        let ml = p.new_id();
+        let ids: Vec<Id> = p.all_clips().filter(|(_, c)| c.container && c.asset == asset).map(|(_, c)| c.id).collect();
+        for id in p.expand_links(&ids) {
+            if let Some(c) = p.clip_mut(id) {
+                c.media_link = ml;
+            }
+        }
+    }
+    std::mem::swap(&mut p.tracks, &mut inner);
+    p.sequence_mut(seq)?.tracks = inner;
+    let bin = format!("Templates/{name}");
+    for a in p.assets.iter_mut().filter(|a| a.folder.is_empty() && (!before.contains(&a.id) || media.iter().any(|m| m.1 == a.id))) {
+        a.folder = bin.clone();
+    }
+    p.insert_sequence_clip(seq, at, track)
+}
+
+/// Give the template's fixed parts (clips that are not slots: its song, sound effects, the WASTED shot)
+/// their sample media, `media` = sample file -> project asset; slots are filled by `apply_synced` instead.
+pub fn fill_fixed(d: &mut TemplateData, p: &Project, media: &[(String, Id)]) {
+    let slots: Vec<Id> = d.slot_list().iter().map(|s| s.clip).collect();
+    let mut next = d.assets.iter().map(|a| a.id).max().unwrap_or(0) + 1;
+    for s in d.samples.clone().iter().filter(|s| !slots.contains(&s.clip)) {
+        let Some(a) = media.iter().find(|m| m.0 == s.file).and_then(|m| p.asset(m.1)) else { continue };
+        let id = match d.assets.iter().find(|x| x.path == a.path) {
+            Some(x) => x.id,
+            None => {
+                let mut x = a.clone();
+                (x.id, next) = (next, next + 1);
+                d.assets.push(x);
+                next - 1
+            }
+        };
+        if let Some(c) = d.clips.iter_mut().find(|c| c.id == s.clip) {
+            (c.asset, c.src_in, c.audio_stream) = (id, 0.0, 0);
+        }
+    }
+    // a fixed part whose media is not on this PC (a local-only sound) is left out
+    let empty: Vec<usize> = (0..d.clips.len())
+        .filter(|&i| d.samples.iter().any(|s| s.clip == d.clips[i].id && !slots.contains(&s.clip)) && d.clips[i].asset == 0)
+        .collect();
+    for &i in empty.iter().rev() {
+        d.clips.remove(i);
+        if i < d.layers.len() {
+            d.layers.remove(i);
+        }
+    }
+}
+
+/// The phonk edit (not a built-in: it needs a real song, which is never shipped) for a `w` x `h` frame,
+/// its media in your own folder: `<gallery>/templates/media/phonk-synced-edit/`.
+pub fn phonk_edit(w: u32, h: u32) -> TemplateData {
+    let mut b = Build::new(w, h);
+    edits::phonk(&mut b);
+    b.done()
 }
 
 /// Put sound `asset` into the sound slot `clip` from source second `src_in` (a negative one starts the
@@ -856,6 +979,38 @@ impl Build {
             curve: Default::default(),
         });
     }
+    /// Make clip `id` a fixed part of the template (its song, a sound effect, the WASTED shot): not a slot,
+    /// nothing to fill; its sample footage comes with the template.
+    fn fix(&mut self, id: Id) {
+        self.d.slots.retain(|s| s.clip != id);
+        let c = self.clip_mut(id);
+        c.container = false;
+        c.container_label.clear();
+    }
+    /// Sample footage from the content library's `templates/<slug>` folder: `named` slots get their file,
+    /// the other picture slots take `shots` in turn (a file in several slots is the same footage, linked).
+    fn samples(&mut self, slug: &str, shots: &[&str], named: &[(&str, &str)]) {
+        self.d.media = format!("templates/{slug}");
+        let mut k = 0;
+        for s in &self.d.slots {
+            if s.want != SlotWant::Audio && !shots.is_empty() {
+                k += 1;
+                self.d.samples.push(Sample { clip: s.clip, file: shots[(k - 1) % shots.len()].to_string(), local: false });
+            }
+        }
+        // the fixed parts, by clip name
+        for &(name, file) in named {
+            if let Some(c) = self.d.clips.iter().find(|c| c.name == name) {
+                self.d.samples.push(Sample { clip: c.id, file: file.to_string(), local: false });
+            }
+        }
+    }
+    /// A fixed part whose media is yours only (`Sample.local`): used when it is in your media folder.
+    fn local_sample(&mut self, name: &str, file: &str) {
+        if let Some(c) = self.d.clips.iter().find(|c| c.name == name) {
+            self.d.samples.push(Sample { clip: c.id, file: file.to_string(), local: true });
+        }
+    }
     fn done(mut self) -> TemplateData {
         self.d.add_cards(self.w as u32, self.h as u32);
         self.d
@@ -877,8 +1032,8 @@ pub const BUILTIN_NAMES: [&str; 14] = [
     "Vertical Short Opener",
     "End Card",
     "Photo Grid",
-    // ---- edit templates (templates_edits.rs): beat-synced to the song you give them ----
-    "Phonk Synced Edit",
+    // ---- edit templates (templates_edits.rs): beat-synced to the song they bring ----
+    "Wasted",
     "Velocity Edit",
     "Hype Montage",
     "Meme Cut",
@@ -1059,12 +1214,14 @@ fn scrub(v: &mut Value) {
     }
 }
 
-/// Write template `d` (called `name`) to `out` as one file. `footage`: the files its clips use ride along;
-/// without it - or for a file that is gone - those clips become empty slots. `thumb`: its Gallery picture.
+/// Write template `d` (called `name`) to `out` as one file. `footage`: its video files ride along; without
+/// it - or for a file that is gone - those clips become empty slots. Sound and pictures always ride along. `thumb`: its Gallery picture.
 pub fn export_package(name: &str, d: &TemplateData, footage: bool, thumb: Option<&Path>, out: &Path) -> Result<Exported, String> {
     let mut d = d.clone();
     let mut files: Vec<(String, PathBuf, u64, bool)> = Vec::new();
     let mut gone: Vec<Id> = Vec::new();
+    let mut cut: Vec<(Id, f64)> = Vec::new(); // (asset, source seconds its trimmed copy starts at)
+    let mut temps: Vec<PathBuf> = Vec::new();
     for (i, a) in d.assets.iter_mut().enumerate() {
         a.rel_path = None;
         if a.html.is_some() {
@@ -1074,12 +1231,34 @@ pub fn export_package(name: &str, d: &TemplateData, footage: bool, thumb: Option
         }
         let src = PathBuf::from(&a.path);
         match std::fs::metadata(&src) {
-            Ok(m) if footage && m.is_file() => {
-                let n = format!("{i}-{}", base_name(&a.path));
-                files.push((n.clone(), src, m.len(), false));
+            // (without footage, only video is left out: sound, music and pictures are the template's own)
+            Ok(m) if (footage || a.kind != ClipKind::Video) && m.is_file() => {
+                // only the part of the footage the template uses rides along
+                let used = d.clips.iter().filter(|c| c.uses_asset() && c.asset == a.id).map(|c| (c.src_in, c.src_in + c.src_len()));
+                let (lo, hi) = used.fold((f64::INFINITY, 0.0_f64), |(l, h), (a, b)| (l.min(a), h.max(b)));
+                let (lo, hi) = ((lo - 0.25).max(0.0), hi + 0.25);
+                let trimmed = (a.kind != ClipKind::Image && a.range.is_none() && lo.is_finite() && hi - lo < a.duration - 1.0)
+                    .then(|| trim_copy(&src, lo, hi - lo, a.kind == ClipKind::Audio, i))
+                    .flatten();
+                let (n, src, len) = match trimmed {
+                    Some((p, len)) => {
+                        cut.push((a.id, lo));
+                        a.duration = hi - lo;
+                        temps.push(p.clone());
+                        let ext = p.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+                        (format!("{i}-{}", base_name(&Path::new(&a.path).with_extension(ext).to_string_lossy())), p, len)
+                    }
+                    None => (format!("{i}-{}", base_name(&a.path)), src, m.len()),
+                };
+                files.push((n.clone(), src, len, false));
                 a.path = n;
             }
             _ => gone.push(a.id),
+        }
+    }
+    for c in d.clips.iter_mut().filter(|c| c.uses_asset()) {
+        if let Some(&(_, lo)) = cut.iter().find(|x| x.0 == c.asset) {
+            c.src_in = (c.src_in - lo).max(0.0);
         }
     }
     let stripped: Vec<Id> = d.clips.iter().filter(|c| c.uses_asset() && gone.contains(&c.asset)).map(|c| c.id).collect();
@@ -1110,12 +1289,32 @@ pub fn export_package(name: &str, d: &TemplateData, footage: bool, thumb: Option
         }
         f.flush()
     };
-    if let Err(e) = write() {
+    let wrote = write();
+    temps.iter().for_each(|t| drop(std::fs::remove_file(t)));
+    if let Err(e) = wrote {
         let _ = std::fs::remove_file(&tmp);
         return Err(format!("{}: {e}", out.display()));
     }
     std::fs::rename(&tmp, out).map_err(|e| format!("{}: {e}", out.display()))?;
     Ok(Exported { files: files.iter().filter(|f| !f.3).count(), empty })
+}
+
+/// `len` seconds of `src` from `from`, re-encoded into a temp file (H.264 / AAC, or AAC alone for a sound):
+/// (its path, its size). None when ffmpeg is missing or fails - the whole file rides along instead.
+fn trim_copy(src: &Path, from: f64, len: f64, sound: bool, i: usize) -> Option<(PathBuf, u64)> {
+    let ff = crate::media::ffpipe::ffmpeg_exe()?;
+    let stem = src.file_stem()?.to_string_lossy().into_owned();
+    let out = std::env::temp_dir().join(format!("se-template-{}-{i}-{stem}.{}", std::process::id(), if sound { "m4a" } else { "mp4" }));
+    let mut c = crate::media::ffpipe::command(&ff);
+    c.args(["-v", "error", "-y", "-ss", &format!("{from:.3}"), "-i"]).arg(src).args(["-t", &format!("{len:.3}"), "-map", "0:v:0?", "-map", "0:a?"]);
+    if sound {
+        c.args(["-vn", "-c:a", "aac", "-b:a", "192k"]);
+    } else {
+        c.args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k"]);
+    }
+    let ok = c.arg(&out).stdin(std::process::Stdio::null()).output().ok()?.status.success();
+    let size = std::fs::metadata(&out).ok().filter(|m| ok && m.len() > 0)?.len();
+    Some((out, size))
 }
 
 /// Read a `.setemplate` file into the gallery at `root`: its footage is unpacked into

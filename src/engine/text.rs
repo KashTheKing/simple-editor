@@ -131,8 +131,11 @@ impl TextRasterizer {
     /// Resolve a font by family name + weight/style (used for the base style and for any span that
     /// overrides font/bold/italic). Unknown family falls back to the first loaded face, same as before.
     fn font_for(&mut self, family: &str, bold: bool, italic: bool) -> Option<FontArc> {
+        // "Pricedown, Impact": the first one installed (a font a template may not ship, then a stand-in)
+        let mut families: Vec<Family> = family.split(',').map(str::trim).filter(|f| !f.is_empty()).map(Family::Name).collect();
+        families.push(Family::SansSerif);
         let q = Query {
-            families: &[Family::Name(family), Family::SansSerif],
+            families: &families,
             weight: if bold { Weight::BOLD } else { Weight::NORMAL },
             style: if italic { Style::Italic } else { Style::Normal },
             stretch: Default::default(),
@@ -569,6 +572,15 @@ mod tests {
         s2.bold = true;
         s2.italic = true;
         assert!(alpha_sum(&tr.render(&s2, 0.5, 0.0)) > 0);
+        // a list takes the first installed font: a missing one, then Impact = Impact
+        if std::path::Path::new("C:/Windows/Fonts/impact.ttf").is_file() {
+            let mut one = style.clone();
+            one.font = "Impact".into();
+            let mut list = style.clone();
+            list.font = "No Such Font 123, Impact".into();
+            let (x, y) = (tr.render(&one, 0.5, 0.0), tr.render(&list, 0.5, 0.0));
+            assert_eq!((x.width, x.height, &x.rgba), (y.width, y.height, &y.rgba));
+        }
 
         // outline + shadow + box make the image bigger and add non-white pixels
         let mut s3 = style.clone();

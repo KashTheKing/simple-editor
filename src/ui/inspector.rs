@@ -127,6 +127,13 @@ thread_local! {
     /// (that needs a canvas click handler in `preview.rs`, owned by canvas-handles-monitor) -
     /// `App::poll_panels` still drains it and toasts an honest "not wired yet".
     static PENDING_EYEDROP: RefCell<Option<Id>> = const { RefCell::new(None) };
+    /// A slot's Media row: (clip, Some(asset) = a Library clip dropped on it, None = Unlink). `App` runs
+    /// it through `container.replace` / `container.unlink` (one undo step each).
+    static PENDING_SLOT: RefCell<Option<(Id, Option<Id>)>> = const { RefCell::new(None) };
+}
+
+pub fn take_pending_slot() -> Option<(Id, Option<Id>)> {
+    PENDING_SLOT.with(|p| p.borrow_mut().take())
 }
 
 /// Asset the user asked to open in the Library pane (its own asset-details box is the only place
@@ -878,18 +885,37 @@ fn clip_section(
 
                 ui.label("Media");
                 ui.horizontal(|ui| {
-                    if clip.asset == 0 {
-                        ui.weak("(Empty Slot)");
-                    } else if let Some(a) = project.asset(clip.asset) {
-                        ui.label(a.name());
-                    } else {
-                        ui.weak("Missing asset");
+                    let text = match project.asset(clip.asset) {
+                        _ if clip.asset == 0 => RichText::new("(Empty Slot)").weak(),
+                        Some(a) => RichText::new(a.name()),
+                        None => RichText::new("Missing asset").weak(),
+                    };
+                    let r = ui.add(egui::Label::new(text).truncate().sense(egui::Sense::hover())).on_hover_text("Drop a Library clip here to use it");
+                    if let Some(pl) = r.dnd_release_payload::<crate::ui::DragPayload>() {
+                        if let crate::ui::DragPayload::Asset(aid) = *pl {
+                            PENDING_SLOT.with(|p| *p.borrow_mut() = Some((clip.id, Some(aid))));
+                        }
                     }
                     if ui.small_button("Replace…").clicked() {
                         PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::ReplaceContainerMedia));
                     }
                 });
                 ui.end_row();
+                let shared = if clip.media_link == 0 {
+                    0
+                } else {
+                    project.all_clips().filter(|(_, o)| o.media_link == clip.media_link && o.kind != ClipKind::Audio).count()
+                };
+                if shared > 1 {
+                    ui.label("Linked");
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{shared} slots")).on_hover_text("Replacing this footage changes every slot linked to it");
+                        if ui.small_button("Unlink").on_hover_text("Give this slot its own footage").clicked() {
+                            PENDING_SLOT.with(|p| *p.borrow_mut() = Some((clip.id, None)));
+                        }
+                    });
+                    ui.end_row();
+                }
             });
         });
     }

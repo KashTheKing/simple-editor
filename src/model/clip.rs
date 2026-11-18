@@ -14,6 +14,10 @@ pub struct Clip {
     /// User-facing label for the container slot (e.g. "Main Shot", "B-Roll 1"). Empty = unnamed.
     #[serde(default)]
     pub container_label: String,
+    /// Container slots sharing a non-zero media link show the same footage: replacing it in one replaces
+    /// it in all of them (a template's reused shot). 0 = its own media.
+    #[serde(default, skip_serializing_if = "is_zero_link")]
+    pub media_link: Id,
     /// Asset id (0 for Text clips).
     #[serde(default)]
     pub asset: Id,
@@ -139,6 +143,10 @@ pub enum AudioRole {
     Ambience,
 }
 
+fn is_zero_link(i: &Id) -> bool {
+    *i == 0
+}
+
 impl Clip {
     pub fn new(id: Id, kind: ClipKind, name: impl Into<String>, start: f64, duration: f64) -> Self {
         Self {
@@ -147,6 +155,7 @@ impl Clip {
             kind,
             container: false,
             container_label: String::new(),
+            media_link: 0,
             asset: 0,
             name: name.into(),
             start,
