@@ -168,6 +168,7 @@ mod whatsnew;
 mod perf_ctl; // ws:perf-window
 mod quick_export; // ws:quick-export
 mod animator_ctl; // ws:animator
+mod tools_animate_bulk; // ws:animator: animate.audit, keyblocks.convert_all, animate.spans_from_transitions
 // ---- ws:panels-multiscreen ----
 mod render_pane;
 mod screens_ctl;
@@ -1768,6 +1769,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     quick_export::TOOLS,
     // ---- ws:animator ----
     animator_ctl::TOOLS,
+    tools_animate_bulk::TOOLS,
     // ---- ws:panels-multiscreen ----
     screens_ctl::TOOLS,
     // ---- ws:animator-templates ----

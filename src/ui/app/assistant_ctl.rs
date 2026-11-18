@@ -260,6 +260,18 @@ pub(super) fn preamble(ctx: &Value, atts: &[aui::Attachment]) -> String {
     s
 }
 
+/// One line naming the skills, so a request in plain words that one covers is done its way. Empty when none.
+pub(super) fn skills_hint(all: &[Skill]) -> String {
+    if all.is_empty() {
+        return String::new();
+    }
+    let names: Vec<&str> = all.iter().take(60).map(|s| s.name.as_str()).collect();
+    format!(
+        "\nSkills (saved step-by-step procedures; when the request is what one of them does, skills.get {{name}} and follow it): {}.",
+        names.join(", ")
+    )
+}
+
 fn live_context(app: &App) -> Option<Value> {
     app.settings.assistant_follow.then(|| tools_context::context_json(app))
 }
@@ -347,7 +359,8 @@ fn send(app: &mut App) {
         switch_mcp_on(app);
         return;
     }
-    let full = format!("{}\n\nRequest: {request}", preamble(&ctx, &images));
+    // ws:animator: a request in plain words that a skill covers (e.g. "convert my keyframes to blocks") finds it
+    let full = format!("{}{}\n\nRequest: {request}", preamble(&ctx, &images), skills_hint(&skills::all()));
     let skill = skill.map(|(s, _)| s.name);
     let conv = app.assistant.conv_mut().id;
     enqueue(app, Req { kind: Kind::Chat, conv, label: prompt, full, images, skill });

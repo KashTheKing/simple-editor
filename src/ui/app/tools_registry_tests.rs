@@ -121,6 +121,8 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("refresh_spans", "animate.span_set"),
     ("trim_clip", "timeline.trim"),
     ("block_from_keys", "keyblocks.from_keys"),
+    ("convert_keys_to_blocks", "keyblocks.convert_all"),
+    ("spans_from_transitions", "animate.spans_from_transitions"),
     ("loop_key_block", "keyblocks.loop"),
     ("loop_keys", "keyblocks.loop_keys"),
     ("collide_drop", "animate.collide"),
