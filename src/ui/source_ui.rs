@@ -1,7 +1,7 @@
 //! ---- ws:source-monitor ----
 //! The Source monitor (`Pane::Source`): the old library preview (`App.lib_preview`, deleted) promoted
-//! to a dockable two-up with its own `Player`, in/out marks with ticks on the shared scrub bar, the
-//! program monitor's transport row plus Insert / Overwrite, and - on the right-click - the marks, the
+//! to a dockable two-up with its own `Player`, in/out marks on the shared bar's seek line, the
+//! program monitor's bar (`media_bar`) plus Insert / Overwrite, and - on the right-click - the marks, the
 //! smart edits, Source Tape and Subclip. Pure UI - `App`-side glue (opening a file,
 //! the per-frame texture upload, focus routing, the edits themselves) lives in `ui::app::source_pane`
 //! and `ui::app::source_ctl`; button clicks bubble up through `SourceResponse`, never mutate `App`.
@@ -16,7 +16,7 @@ use crate::theme::Palette;
 use crate::ui::library::PreviewFrame;
 use crate::ui::spiky_ball::Orb;
 use crate::ui::tools::{self, Glyph};
-use crate::ui::{menu, preview};
+use crate::ui::{media_bar, menu, preview};
 use eframe::egui;
 use std::path::PathBuf;
 
@@ -196,6 +196,21 @@ pub struct SourceResponse {
     pub clicked: bool,
     /// The player is refilling its read-ahead: the caller schedules a poll repaint (`animate_until`).
     pub buffering: bool,
+    /// The bar's speed menu (unsigned), Reverse and Loop.
+    pub rate: Option<f64>,
+    pub reverse: bool,
+    pub toggle_loop: bool,
+}
+
+/// The Source Tape's previous / next cut from `t` (its clip starts, and the end).
+fn tape_cut(st: &SourceState, t: f64, next: bool) -> f64 {
+    let mut cuts: Vec<f64> = st.tape.as_ref().map(|tp| tp.offsets.clone()).unwrap_or_default();
+    cuts.push(st.duration);
+    if next {
+        cuts.into_iter().find(|&c| c > t + 1e-6).unwrap_or(st.duration)
+    } else {
+        cuts.into_iter().rev().find(|&c| c < t - 1e-6).unwrap_or(0.0)
+    }
 }
 
 /// Frame-step target: one frame of `fps` either way, clamped to `[0, duration]`.
@@ -213,37 +228,9 @@ pub(crate) fn mark_x(bar: egui::Rect, duration: f64, t: f64) -> f32 {
     bar.left() + bar.width() * (t / duration.max(f64::MIN_POSITIVE)).clamp(0.0, 1.0) as f32
 }
 
-/// In/out marks (accent triangles + a shaded band between them) and tape cut ticks over the bar.
-fn paint_marks(p: &egui::Painter, bar: egui::Rect, duration: f64, st: &SourceState, palette: &Palette) {
-    if let Some(tape) = &st.tape {
-        for &o in tape.offsets.iter().skip(1) {
-            let x = mark_x(bar, duration, o);
-            p.line_segment(
-                [egui::pos2(x, bar.top()), egui::pos2(x, bar.bottom())],
-                egui::Stroke::new(1.0, palette.text),
-            );
-        }
-    }
-    if let Some((a, b)) = st.marks() {
-        let band = egui::Rect::from_min_max(
-            egui::pos2(mark_x(bar, duration, a), bar.top()),
-            egui::pos2(mark_x(bar, duration, b), bar.bottom()),
-        );
-        p.rect_filled(band, 0.0, palette.selection.gamma_multiply(0.35));
-    }
-    for (t, dir) in [(st.src_in, 1.0f32), (st.src_out, -1.0)] {
-        let Some(t) = t else { continue };
-        let x = mark_x(bar, duration, t);
-        let top = egui::pos2(x, bar.top() - 1.0);
-        let tri = vec![top, egui::pos2(x + dir * 5.0, top.y), egui::pos2(x, top.y + 5.0)];
-        p.add(egui::Shape::convex_polygon(tri, palette.accent, egui::Stroke::NONE));
-        p.line_segment([egui::pos2(x, bar.top()), egui::pos2(x, bar.bottom())], egui::Stroke::new(1.5, palette.accent));
-    }
-}
-
-//// Draw the Source monitor: the video (its file name in the corner), a scrub line with the marks, and
-/// one transport row - the program monitor's (`preview::transport_row`) with Insert and Overwrite on the
-/// right. Marks, the smart edits, Source Tape, Subclip, playback resolution and Close are on the video's
+/// Draw the Source monitor: the video (its file name in the corner) over the media player's bar
+/// (`media_bar`, the program monitor's too) with the marks on its seek bar and Insert, Overwrite and
+/// Zoom ▾ on the right. Marks, the smart edits, Source Tape, Subclip, playback resolution and Close are on the video's
 /// right-click. Ports `draw_lib_preview`'s transport/scrub/video body.
 pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> SourceResponse {
     let mut resp = SourceResponse::default();
@@ -266,41 +253,77 @@ pub fn show(ui: &mut egui::Ui, st: &mut SourceState, c: SourceCtx<'_>) -> Source
     let (fit_px, width) = (st.fit_px, st.width);
     let SourceCtx { settings, thumbs, waveforms, frame, focused, smart, .. } = c;
 
+    let mut thumbs = thumbs;
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
         if !is_image {
-            let (mut seek, mut edit) = (None, None);
-            let (hit, _) = preview::transport_row(
+            // the media player's bar (`media_bar`): the plain player controls for the file; the Source
+            // Tape (a run of clips) also gets the editor's frame steps, cuts and marks
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), media_bar::BAR_H), egui::Sense::hover());
+            let edit = st.tape.is_some();
+            let cuts = st.tape.as_ref().map(|t| t.offsets.iter().skip(1).copied().collect()).unwrap_or_default();
+            let ctx = ui.ctx().clone();
+            let (project, rate, looping) = (&st.project, st.player.rate(), st.player.loop_range().is_some());
+            let mut thumb = |t: f64| {
+                let (path, src) = media_bar::thumb_source(project, t)?;
+                thumbs.as_deref_mut()?.texture(&ctx, &path, src, 90)
+            };
+            let mut edit_btn = None;
+            let (out, _) = media_bar::show(
                 ui,
-                playing,
-                |ui| seek = preview::timecode_label(ui, &mut st.tc_edit, playhead, duration, fps),
+                palette,
+                rect,
+                media_bar::Bar {
+                    t: playhead,
+                    dur: duration,
+                    fps,
+                    playing,
+                    rate,
+                    looping,
+                    edit,
+                    marks: (st.src_in, st.src_out),
+                    markers: Vec::new(),
+                    cuts,
+                    fullscreen: false,
+                    fullscreen_button: false,
+                    tc_edit: Some(&mut st.tc_edit),
+                    thumb: &mut thumb,
+                },
+                |_| {},
                 |ui| {
+                    for (a, g) in [
+                        (Action::SpliceInsert, Glyph::Indent(true)),
+                        (Action::OverwriteAtPlayhead, Glyph::Indent(false)),
+                    ] {
+                        if tools::glyph_text_button(ui, g, "").on_hover_text(preview::tip(a)).clicked() {
+                            edit_btn = Some(a);
+                        }
+                    }
                     if has_video {
                         preview::zoom_button(ui, &mut st.view, fit_px, width);
                     }
-                    for (a, g) in [
-                        (Action::OverwriteAtPlayhead, Glyph::Indent(false)),
-                        (Action::SpliceInsert, Glyph::Indent(true)),
-                    ] {
-                        if tools::glyph_text_button(ui, g, "").on_hover_text(preview::tip(a)).clicked() {
-                            edit = Some(a);
-                        }
-                    }
                 },
             );
-            resp.actions.extend(edit);
-            match hit {
-                Some(Action::GoStart) => resp.seek = Some(0.0),
-                Some(Action::StepBack) => resp.seek = Some(step_time(playhead, fps, false, duration)),
-                Some(Action::PlayPause) => resp.toggle_play = true,
-                Some(Action::StepForward) => resp.seek = Some(step_time(playhead, fps, true, duration)),
-                Some(Action::GoEnd) => resp.seek = Some(duration),
-                _ => {}
+            resp.actions.extend(edit_btn);
+            for a in out.actions {
+                match a {
+                    Action::GoStart => resp.seek = Some(0.0),
+                    Action::GoEnd => resp.seek = Some(duration),
+                    Action::StepBack => resp.seek = Some(step_time(playhead, fps, false, duration)),
+                    Action::StepForward => resp.seek = Some(step_time(playhead, fps, true, duration)),
+                    Action::PrevCut | Action::NextCut => resp.seek = Some(tape_cut(st, playhead, a == Action::NextCut)),
+                    Action::PlayPause => resp.toggle_play = true,
+                    Action::MarkIn => resp.mark_in = true,
+                    Action::MarkOut => resp.mark_out = true,
+                    _ => {}
+                }
             }
-            resp.seek = seek.or(resp.seek);
-            // scrub line: the one shared implementation (preview.rs), with the marks painted over it
-            let (seek, bar) = preview::scrub_bar(ui, duration, playhead, palette, ui.available_width());
-            resp.seek = seek.or(resp.seek);
-            paint_marks(ui.painter(), bar, duration, st, palette);
+            if let Some(s) = out.skip {
+                resp.seek = Some((playhead + s).clamp(0.0, duration));
+            }
+            resp.seek = out.seek.or(resp.seek);
+            resp.rate = out.rate;
+            resp.reverse = out.reverse;
+            resp.toggle_loop = out.toggle_loop;
         }
 
         // video, filling whatever is left
@@ -568,6 +591,7 @@ mod tests {
     #[test]
     fn marks_default_and_refuse_inverted() {
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
         let mut st = state(&ctx);
         assert_eq!(st.marks(), None);
         st.src_in = Some(1.0);
@@ -584,6 +608,7 @@ mod tests {
     #[test]
     fn assert_no_idle_repaint_source_pane() {
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
         let mut audio = asset(4.0);
         audio.kind = ClipKind::Audio;
         audio.width = 0;
@@ -600,10 +625,12 @@ mod tests {
     #[test]
     fn source_zooms_like_the_preview() {
         let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
         let mut st = state(&ctx);
         let mut settings = Settings::default();
         let palette = crate::theme::palette_with(&egui::Context::default(), &settings.palette);
         let ctx2 = egui::Context::default();
+        ctx2.set_fonts(crate::theme::test_fonts());
         let mut labels = String::new();
         for events in [vec![egui::Event::PointerMoved(egui::pos2(300.0, 200.0))], vec![egui::Event::Zoom(1.5)]] {
             let out = ctx2.run(egui::RawInput { events, ..Default::default() }, |ctx| {
@@ -633,7 +660,8 @@ mod tests {
     fn idle_frames(st: &mut SourceState) {
         let mut settings = Settings::default();
         let palette = crate::theme::palette_with(&egui::Context::default(), &settings.palette);
-        let ctx2 = egui::Context::default(); // the pane's own ctx: the Player's ctx is a different one
+        let ctx2 = egui::Context::default();
+        ctx2.set_fonts(crate::theme::test_fonts()); // the pane's own ctx: the Player's ctx is a different one
         for focused in [false, true] {
             for _ in 0..30 {
                 let _ = ctx2.run(egui::RawInput::default(), |ctx| {

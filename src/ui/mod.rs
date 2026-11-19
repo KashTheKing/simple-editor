@@ -45,6 +45,7 @@ pub mod library;
 pub mod markdown;
 pub mod markers_ui;
 // ---- ws:ui-kit ----
+pub mod media_bar; // the media player's bottom bar for the Preview / Source monitors
 pub mod menu;
 pub mod mixer_ui;
 pub mod moodboard_ui;

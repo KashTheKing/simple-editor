@@ -74,7 +74,7 @@ fn icon_font(px: f32) -> FontId {
     FontId::new(px, crate::theme::icons())
 }
 
-fn glyph(p: &egui::Painter, at: Pos2, c: char, px: f32, col: Color32) {
+pub(crate) fn glyph(p: &egui::Painter, at: Pos2, c: char, px: f32, col: Color32) {
     if c == icon::MINI {
         // drawn, not the font's (its arrows read as full screen / restore): the window, an arrow
         // popping down-right out of it into the small player in its corner
@@ -116,7 +116,7 @@ fn radius(ui: &Ui) -> CornerRadius {
 
 /// A flat icon button: a soft highlight under the pointer, the glyph in the theme's text colour (the
 /// accent when `on`). The hit area is `rect` grown by `HIT`.
-fn icon_button(ui: &mut Ui, pal: &Palette, rect: Rect, c: char, px: f32, on: bool, tip: &str) -> Response {
+pub(crate) fn icon_button(ui: &mut Ui, pal: &Palette, rect: Rect, c: char, px: f32, on: bool, tip: &str) -> Response {
     let id = ui.id().with(("btn", c, rect.min.x as i32, rect.min.y as i32));
     let r = ui.interact(rect.expand(HIT), id, Sense::click()).on_hover_text(tip);
     let p = ui.painter();
@@ -130,7 +130,7 @@ fn icon_button(ui: &mut Ui, pal: &Palette, rect: Rect, c: char, px: f32, on: boo
 }
 
 /// A vertical gradient (`top` colour to `bottom` colour).
-fn vgrad(p: &egui::Painter, rect: Rect, top: Color32, bottom: Color32) {
+pub(crate) fn vgrad(p: &egui::Painter, rect: Rect, top: Color32, bottom: Color32) {
     let mut m = egui::Mesh::default();
     m.colored_vertex(rect.left_top(), top);
     m.colored_vertex(rect.right_top(), top);
@@ -148,7 +148,7 @@ fn lerp(a: Color32, b: Color32, k: f32) -> Color32 {
 
 /// The play button: a disc in the theme's panel colour with a ring in the accent (shading to a lighter
 /// accent and back round it).
-fn play_button(ui: &mut Ui, pal: &Palette, center: Pos2, radius: f32, playing: bool) -> Response {
+pub(crate) fn play_button(ui: &mut Ui, pal: &Palette, center: Pos2, radius: f32, playing: bool) -> Response {
     let rect = Rect::from_center_size(center, vec2(radius * 2.0, radius * 2.0));
     let tip = if playing { "Pause (Space)" } else { "Play (Space)" };
     let id = ui.id().with(("play", center.x as i32, center.y as i32));
@@ -186,7 +186,7 @@ pub fn tick_steps(dur: f64, px: f32) -> (f64, f64) {
 }
 
 /// Ticks across the line: a longer one per major step, a short one per minor, just above and below.
-fn ticks(p: &egui::Painter, pal: &Palette, x0: f32, x1: f32, y: f32, dur: f64) {
+pub(crate) fn ticks(p: &egui::Painter, pal: &Palette, x0: f32, x1: f32, y: f32, dur: f64) {
     let (major, minor) = tick_steps(dur, x1 - x0);
     let step = if minor > 0.0 { minor } else { major };
     if step <= 0.0 {
@@ -842,7 +842,7 @@ pub fn speed_label(rate: f64) -> String {
 }
 
 /// The speed button: the current rate as text, in the accent when it is not 1×.
-fn speed_button(ui: &mut Ui, pal: &Palette, rect: Rect, rate: f64, open: bool) -> Response {
+pub(crate) fn speed_button(ui: &mut Ui, pal: &Palette, rect: Rect, rate: f64, open: bool) -> Response {
     let r = ui.interact(rect.expand(HIT), ui.id().with("speed"), Sense::click()).on_hover_text("Playback speed");
     let p = ui.painter();
     let down = r.is_pointer_button_down_on();

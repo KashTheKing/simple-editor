@@ -331,6 +331,26 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         if let Some(t) = resp.seek {
             st.player.seek(t.clamp(0.0, duration));
         }
+        // the bar's speed menu / Reverse / Loop: the Source's own player
+        let rate = if st.player.is_playing() { st.player.rate() } else { 0.0 };
+        let new_rate = match (resp.rate, resp.reverse) {
+            (Some(s), _) => Some(if rate < 0.0 { -s } else { s }),
+            (None, true) => Some(if rate < 0.0 { rate.abs() } else if rate == 0.0 { -1.0 } else { -rate }),
+            _ => None,
+        };
+        if let Some(r) = new_rate {
+            if !side_by_side {
+                app.player.pause();
+            }
+            if !st.player.is_playing() {
+                st.player.play();
+            }
+            st.player.set_rate(r);
+        }
+        if resp.toggle_loop {
+            let range = super::preview_pane::loop_range(st.src_in, st.src_out, duration);
+            st.player.set_loop(if st.player.loop_range().is_some() { None } else { range });
+        }
         let t = st.player.time();
         if resp.mark_in {
             source_ctl::mark_in(st, t);
