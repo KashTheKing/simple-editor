@@ -384,7 +384,8 @@ impl App {
         menu::sub(ui, None, "Pages", |ui| {
             for (i, page) in self.settings.pages.clone().iter().enumerate() {
                 let key = layout_ctl::PAGE_ACTIONS.get(i).map(|&a| menu::shortcut(a)).unwrap_or_default();
-                if menu::check(ui, &self.settings.page == page, &format!("{page} page"), &key).clicked() {
+                let x = crate::ui::experimental::page(page);
+                if menu::check_badged(ui, &self.settings.page == page, &format!("{page} page"), &key, x).clicked() {
                     layout_ctl::switch_page(self, page);
                 }
             }
@@ -450,7 +451,8 @@ impl App {
     /// A Window-menu row: the pane's name, ticked while it is on screen; a click shows or hides it.
     fn pane_row(&mut self, ui: &mut egui::Ui, p: Pane) {
         let key = toggle_action(p).map(menu::shortcut).unwrap_or_default();
-        if menu::check(ui, self.layout.is_visible(p), p.title(), &key).clicked() {
+        let x = crate::ui::experimental::pane(p);
+        if menu::check_badged(ui, self.layout.is_visible(p), p.title(), &key, x).clicked() {
             self.toggle_pane(p);
         }
     }

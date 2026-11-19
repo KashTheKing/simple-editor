@@ -187,7 +187,12 @@ pub fn window(ctx: &egui::Context, title: &str) {
             }
             let caption = caption_buttons(ui, &pal, bar, max);
             let text = Rect::from_min_max(pos2(bar.left() + 36.0, bar.top()), pos2(caption.left() - 8.0, bar.bottom()));
-            ui.painter().with_clip_rect(text).text(text.left_center(), Align2::LEFT_CENTER, title, FontId::proportional(12.0), pal.text);
+            let t = ui.painter().with_clip_rect(text).text(text.left_center(), Align2::LEFT_CENTER, title, FontId::proportional(12.0), pal.text);
+            // a popped-out experimental pane (Screen Recording, the Assistant...) keeps its badge
+            if crate::ui::layout::Pane::by_title(title).is_some_and(crate::ui::experimental::pane) && t.right() + 90.0 < caption.left() {
+                let pill = crate::ui::experimental::paint(ui.painter(), pos2(t.right() + 8.0, bar.center().y));
+                crate::ui::experimental::tip(ui, pill, ui.id());
+            }
         });
     }
     if !(max || full) {

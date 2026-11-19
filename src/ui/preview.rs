@@ -1236,7 +1236,7 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
             if menu::check(ui, c.movie_mode, "Movie Mode (pre-render)", &menu::shortcut(Action::MovieMode)).clicked() {
                 r.set_movie_mode = Some(!c.movie_mode);
             }
-            if menu::row(ui, Some(Glyph::Guides), "Emulator", "").on_hover_text("See the video on real devices with each platform's app round it").clicked() {
+            if menu::row_badged(ui, Some(Glyph::Guides), "Emulator", "", true).on_hover_text("See the video on real devices with each platform's app round it").clicked() {
                 r.open_emulator = true;
             }
             // ws:preview-audio-only

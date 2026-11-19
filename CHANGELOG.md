@@ -61,7 +61,7 @@
 ### Music, playlists and Burn to Disc
 - **Tags and cover art for songs and videos**: click a song or video in the Library and the Inspector shows its Tags (title, artist, album, album artist, genre, year, track, disc, comment, lyrics; for video: title, description, genre, rating) and the cover / thumbnail (from a file, from the Source monitor's frame, or removed). Edit several files at once (differing fields show Mixed). Save writes into the files without re-encoding, through a temp file and a `.bak` kept until it worked. A new **Playlists** panel (beside the Media Browser on the Media page): drag songs in from the Library, reorder with the grip or Alt+Up/Down, total length, gap or crossfade, play it in the Source monitor, put it on the timeline as a mix, export `.m3u8`, or **Make visualizer video** (each song with a linked visualizer of the chosen style, its cover art and a title card). **Burn to Disc**: an audio CD (CD audio tracks, gaps, CD-Text, 74 / 80 min check) or a data disc (ISO 9660 + Joliet + UDF, playlists with their `.m3u8`) to a drive (disc check, erase, speed, verify, test only, eject) or to a disc image (`.iso`, `.bin` + `.cue`) with no drive; it runs as a job you can cancel. No video DVD (it needs DVD authoring). Tools: `playlist.*`, `media.tags_get` / `media.tags_set`, `disc.drives` / `disc.burn`.
 
-### Screen recording
+### Screen recording (Experimental)
 - **Recordings can't be lost any more.** A stopped recording used to be imported the moment its file appeared, before ffmpeg had written the end of the mp4, so it failed with "moov atom not found". Now the video is recorded into a crash-safe file, the sound beside it, and on Stop they are put together into the mp4, which is checked before it goes into the Library. If the app or the PC stops mid-recording, the pieces are finished into the mp4 on the next start. A recording that still can't be finished says so in plain words and keeps its pieces.
 - **Choose the sound: System audio only, Microphone only, Both or None.** System audio is what your computer plays, recorded directly (no "Stereo Mix" needed). The choice is remembered (also in Settings ▸ Capture).
 - **Screen Recording is a panel in its own window now**, not a popup: a live preview of what is being recorded, the source (a screen, all screens, a window or a region), the audio choice, microphone and system-audio level meters, the output folder and big Record / Stop buttons with the time.
@@ -79,7 +79,7 @@
   done. Both run in the background and pause while something plays.
 
 
-### Device Emulator
+### Device Emulator (Experimental)
 - **New Device Emulator pane** (right-click the Preview ▸ Emulator, or Window ▸ Device Emulator): your video playing inside an iPhone 16 Pro (Dynamic Island), iPhone 14 (notch), Pixel 9 and Galaxy S24 (Android status bar, punch-hole camera, gesture or three-button bar), iPad Air, a desktop browser or a TV, with YouTube, Shorts, TikTok, Reels and the other apps round it. A Gallery of every device and platform (each playing), Landscape / Portrait, the platform's comments, captions, Screenshot; the choice is kept per project. Play, scrub, CC, the settings menu, the speaker and theatre / fullscreen work like the real players, and buffering shows each platform's own spinner. Tools: `emulator.open`, `emulator.screenshot`.
 - **Device Emulator Export**: an Export button beside Screenshot renders the timeline, or the In/Out range, as a video exactly as the emulator shows it: the device frame and the platform UI round the playing video, its progress bar and time following the video, with the project audio. A normal background export (progress, Cancel, Jobs pane); the file is the device frame's size and opens in the media player. Tool: `emulator.export`.
 - **Device Emulator: picking a platform with the Gallery open now shows it**: the gallery ignored the device, platform and orientation pickers, so switching from YouTube Shorts changed nothing on screen. A pick now brings that pairing up large. Phone platform UIs now sit fully under the status bar (they overlapped it by 24 pt), and tap targets end at the screen edge.
@@ -93,7 +93,7 @@
 - **Audio Only** (Preview right-click, Playback menu, Ctrl+P, `preview.audio_only`): the Preview plays the timeline's sound with a visualizer of the whole mix instead of the picture (no video decoded), with an Audio Only badge; saved per project, export unaffected. The Source monitor has it too (right-click ▸ Audio Only). **Visualizers are layers of their own**: Gallery ▸ Audio ▸ Visualizers (click = at the playhead, drag onto a video track) adds one that reacts to everything the timeline plays; Inspector: Type, Import shader…, Source (its song or Timeline mix) and a **Frequency bands** curve editor (drag a point per band) with presets and beat source. Also: Ctrl+Shift-drop a song from the Library / Media Browser to add it with a visualizer, and Add Audio Visualizer at the top of a song's right-click menu. Switching between the Source and Preview tabs stops the one hidden (side by side, both play).
 ### Inspector
 - **Compact Inspector properties**: a visual clip shows Transform and Blend and fades (Opacity there) instead of one Properties fold; every keyframable property in the Inspector (Transform, effects, text, shapes, masks, visualizer camera, HTML parameters) is one row of a fixed-width name, the value and ◀ ◆ ▶ right after it, so long names and numbers never move the controls. Scale is Scale X / Scale Y, linked by default (editing one sets the other); Position X / Y are not linked by default; the link sits between the two rows. Speed is one row, in Transform (visual clips) or Audio (audio clips), with no separate Speed, Sound or Speed folds, a video clip shows its linked audio's Volume, Pan and the rest, several text clips edit together (Mixed where they differ), and the clip menu reads Hide Animations while the Animator is shown.
-### Assistant scripts and the library
+### Assistant scripts and the library (Experimental)
 - **The Assistant can manage the whole project with Luau scripts**: `scripts.eval` runs a script straight away against the project and its library (tracks, clips, effects, keyframes, markers, subtitles, sequences, assets, bins, linked folders) as one undo step named after its purpose, undone entirely if it fails. It is sandboxed to the project and library (no files, exports, settings or network), so it needs no Allow; output comes back capped. **Compact library tools**: `media.summary`, filters and fields on `media.list`, `media.bulk_set` and `library.bins`, so a library of hundreds of assets is organised in a few calls. New built-in skill **/organize-library** sorts the library into Footage / SFX / Music / Voiceover / Images / Graphics / Unused bins and tags everything, never deleting.
 
 ### Beat Aligner
@@ -175,7 +175,7 @@
 - Library items without a thumbnail (HTML, icons, effects, transitions, LUTs) show their type symbol, a sound shows
   a waveform symbol while its waveform loads, and card names stay on one line with an ellipsis.
 
-### Assistant chat
+### Assistant chat (Experimental)
 - **The Assistant is a chat app now**: a collapsible sidebar of chats (New chat, search over every chat, pin, rename,
   save, delete), user and reply bubbles with Markdown, code blocks with a Copy button, tool steps folded, and a composer
   that grows with the text. Opening the pane starts a new chat with the cursor in the composer; the agent, Tasks, Skills
@@ -189,7 +189,7 @@
   drag anywhere in the window, or the timeline range (a picture plus its clips and tracks); every pane tab's right-click
   menu has Attach to Assistant. New tool: `assistant.capture`.
 
-### AI enhancer
+### AI enhancer (Experimental)
 - **AI Upscale is no longer starved on a busy PC**: the upscaler runs at normal priority and steps down only while
   the timeline or Source monitor plays; the result is encoded on the graphics card (NVENC / QSV / AMF, x264 fallback).
   A short upscale with every core busy went from over 30 minutes to about 2.5 minutes.
@@ -305,7 +305,7 @@
 - MCP: `templates.slots`, `templates.use`, `templates.build`, `templates.export`, `templates.import`; `templates.list` / `templates.apply` know the built-in ones.
 - Fixed: with several clips selected and the playhead on a frame where the first one's scale is 0 (the start of a Pop In), the Inspector's Scale box counted showing the value as an edit and shifted the scale of every selected clip.
 
-### Animate page and the Animator
+### Animate page and the Animator (Experimental)
 - New **Animate** page (after Edit, Alt+4): Gallery, Preview, Inspector, a thin Timeline and the new **Animator** panel. The page bar gets it once on existing installs; Color and Audio move to Alt+5 / Alt+6 and Export keeps Ctrl+E.
 - **Animator** panel: Blocks (one lane per selected clip; drag, stretch, snap with a guide line, open a block to drag its keys; blocks that overlap stack in rows), Curves (the block's keys as curves with bezier handles, box and Shift select, ease presets, value or velocity), Flow and Speed. Narrow, it becomes a list of the clip's blocks with their controls.
 - **Animation blocks have controls**: every Gallery animation preset is now a block with Side, Strength, Length and Ease in the Inspector; changing one rewrites its keys. Projects from before keep their keys untouched.

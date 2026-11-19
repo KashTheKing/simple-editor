@@ -810,18 +810,39 @@ pub fn show(ctx: &egui::Context, state: &mut PaletteState, rows: &[Row]) -> Opti
                         _ if i == state.sel && row.alt.is_some() => format!("Alt+Enter: {}", row.alt.unwrap_or("")),
                         _ => row.shortcut.clone(),
                     };
-                    let gutter = egui::Atom::custom(ui.id().with(("palette-icon", i)), egui::vec2(18.0, 16.0));
+                    let icon_id = ui.id().with(("palette-icon", i));
+                    let gutter = egui::Atom::custom(icon_id, egui::vec2(18.0, 16.0));
                     let sub = egui::RichText::new(format!("  {}", row.sub)).weak();
-                    let button = egui::Button::selectable(i == state.sel, (gutter, row.label.as_str(), sub))
+                    // an experimental feature's row wears the badge after its label (`ui::experimental`)
+                    let badge = match row.cmd {
+                        Command::Action(a) => crate::ui::experimental::action(a),
+                        Command::Pane(p) => crate::ui::experimental::pane(p),
+                        _ => false,
+                    };
+                    let badge_id = ui.id().with(("palette-badge", i));
+                    let pill = egui::Atom::custom(badge_id, crate::ui::experimental::size(ui) + egui::vec2(6.0, 0.0));
+                    let atoms = if badge {
+                        egui::Atoms::new((gutter, row.label.as_str(), pill, sub))
+                    } else {
+                        egui::Atoms::new((gutter, row.label.as_str(), sub))
+                    };
+                    let button = egui::Button::selectable(i == state.sel, atoms)
                         .truncate()
                         .shortcut_text(right)
                         .min_size(egui::vec2(ui.available_width(), 0.0));
                     let resp = ui
                         .add_enabled_ui(row.enabled, |ui| {
                             let r = button.atom_ui(ui);
-                            if let (Some(g), Some((_, rect))) = (row.glyph, r.custom_rects().next()) {
-                                let fg = ui.style().interact(&r.response).text_color();
-                                tools::draw_glyph(ui.painter(), rect, g, fg);
+                            for (id, rect) in r.custom_rects() {
+                                if id == icon_id {
+                                    if let Some(g) = row.glyph {
+                                        let fg = ui.style().interact(&r.response).text_color();
+                                        tools::draw_glyph(ui.painter(), rect, g, fg);
+                                    }
+                                } else if id == badge_id {
+                                    let p = crate::ui::experimental::paint(ui.painter(), rect.left_center() + egui::vec2(6.0, 0.0));
+                                    crate::ui::experimental::tip(ui, p, badge_id);
+                                }
                             }
                             r.response
                         })

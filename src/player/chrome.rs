@@ -1028,7 +1028,10 @@ fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
         app.convert = Some(Default::default());
         app.flyout = None;
     }
-    if flyout_row(ui, pal, None, Some(icon::UPSCALE), "Upscale…").clicked() {
+    let up = flyout_row(ui, pal, None, Some(icon::UPSCALE), "Upscale…");
+    let at = pos2(up.rect.left() + 48.0 + ui.painter().layout_no_wrap("Upscale…".into(), FontId::proportional(14.0), pal.text).size().x, up.rect.center().y);
+    crate::ui::experimental::tip(ui, crate::ui::experimental::paint(ui.painter(), at), up.id);
+    if up.clicked() {
         app.upscale = Some(Default::default());
         app.flyout = None;
     }
