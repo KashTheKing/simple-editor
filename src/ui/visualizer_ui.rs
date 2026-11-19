@@ -505,7 +505,7 @@ mod tests {
         let mut p = Project::new();
         let plain = p.add_shape_clip(crate::model::ShapeKind::Rect, 0.0, 1.0);
         let vis = p.add_shape_clip(crate::model::ShapeKind::Rect, 2.0, 1.0);
-        p.clip_mut(vis).unwrap().effects.push(crate::model::Effect::from_shader(visualizer::BUILTIN[1].1));
+        p.clip_mut(vis).unwrap().effects.push(crate::model::Effect::from_shader(visualizer::BUILTIN[2].1));
         assert_eq!(style(&p, vis).as_deref(), Some("Spectrum Bars"));
         assert_eq!(style(&p, plain), None);
         let before = p.to_json();

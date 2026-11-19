@@ -738,6 +738,25 @@
       "thumb": "thumbs/effects-voxel-blocks.jpg"
     },
     {
+      "id": "effects/waveform",
+      "kind": "effect",
+      "name": "Waveform",
+      "desc": "Audio visualizer: the song's own waveform scrolling right to left past a fixed playhead in the centre, mirrored around the middle line, in the accent blue on black. Right-click an audio clip ▸ Audio ▸ Add Audio Visualizer and pick this style.",
+      "tags": [
+        "visualizer",
+        "audio",
+        "music",
+        "waveform",
+        "oscilloscope",
+        "scrolling",
+        "minimal"
+      ],
+      "file": "effects/waveform.glsl",
+      "size": 2081,
+      "credit": "",
+      "thumb": "thumbs/effects-waveform.jpg"
+    },
+    {
       "id": "effects/zoom-blur",
       "kind": "effect",
       "name": "Zoom Blur",

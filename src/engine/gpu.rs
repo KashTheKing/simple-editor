@@ -83,6 +83,9 @@ const UNIFORMS: &[&str] = &[
     "u_cam_target",
     "u_fov",
     "u_cam_roll",
+    // the Waveform style's peaks (`visualizer::wave_at`)
+    "u_wave",
+    "u_wave_off",
     "u_mask",
     "u_has_mask",
     "u_dst",
@@ -1308,6 +1311,7 @@ impl GpuRenderer {
             *p = v as f32;
         }
         let camera = crate::engine::visualizer::camera_at(effect, t); // ws:audio-visualizer
+        let wave = crate::engine::visualizer::wave_at(effect, t);
         // uniforms persist on a cached program, so a motion kind must set these every draw
         let motion = effect.needs_motion().then(|| motion.unwrap_or((self.blank, self.blank, 0.0)));
         // ---- ws:color-engine ----
@@ -1326,6 +1330,10 @@ impl GpuRenderer {
                 gl.uniform_3_f32(prog.uni.get("u_cam_target"), g[0], g[1], g[2]);
                 gl.uniform_1_f32(prog.uni.get("u_fov"), c.fov);
                 gl.uniform_1_f32(prog.uni.get("u_cam_roll"), c.roll);
+            }
+            if let Some(w) = &wave {
+                gl.uniform_1_f32_slice(prog.uni.get("u_wave"), &w.samples);
+                gl.uniform_1_f32(prog.uni.get("u_wave_off"), w.off);
             }
             if let Some((prev, next, frames)) = motion {
                 gl.active_texture(glow::TEXTURE0 + U_PREV);
@@ -3094,11 +3102,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
             (top, bottom)
         };
         let lum = |p: &[u8]| p[0] as u64 + p[1] as u64 + p[2] as u64;
-        let bars = crate::engine::visualizer::BUILTIN[1].1;
+        let bars = crate::engine::visualizer::BUILTIN[2].1;
         let px = unsafe { run_sized(&gl, bars, w, h, 1.0, &defaults(bars)) }.unwrap();
         let (top, bottom) = halves(&px, &lum);
         assert!(bottom > top * 3, "Spectrum Bars stand on a floor below the horizon: top {top} bottom {bottom}");
-        let voxel = crate::engine::visualizer::BUILTIN[2].1;
+        let voxel = crate::engine::visualizer::BUILTIN[3].1;
         let px = unsafe { run_sized(&gl, voxel, w, h, 1.0, &defaults(voxel)) }.unwrap();
         let c = |p: &[u8]| (p[0] as i32, p[1] as i32, p[2] as i32);
         let sky = |p: &[u8]| {
@@ -3155,6 +3163,67 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         assert!(frame(&mut r, 0.8) == cold, "the same moment renders the same pixels after any history");
     }
 
+    /// The Waveform style through the renderer (preview and export): the test song is loud for 1 s, then
+    /// nearly silent. At 1.0 s the loud second has scrolled past into the left half (tall, lit far from the
+    /// centre line), the quiet part waits on the right (dark away from the line) - not blank, and the
+    /// right way round.
+    #[test]
+    fn the_waveform_style_draws_the_song() {
+        let Some(gl) = gl() else {
+            eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+            return;
+        };
+        use crate::engine::visualizer;
+        let (w, h) = (320u32, 180u32);
+        let wav = visualizer::tests::song_wav("waveform");
+        let mut p = crate::model::Project::new();
+        (p.width, p.height) = (w, h);
+        let asset = visualizer::tests::song_asset(&mut p, &wav);
+        visualizer::add_song(&mut p, asset, 0.0, &visualizer::find(Some("Waveform")).unwrap(), crate::media::Backend::Ffmpeg).unwrap();
+        let mut pool = crate::media::DecoderPool::new(crate::media::Backend::Ffmpeg);
+        let (mut spare, mut text) = (Vec::new(), crate::engine::text::TextRasterizer::new());
+        let (mut shapes, mut comp) = (crate::engine::shapes::ShapeRasterizer::new(), crate::engine::compose::Compositor::new());
+        let mut r = GpuRenderer::new(std::sync::Arc::new(gl)).expect("renderer");
+        let layers = crate::playback::decode_layers(&p, 1.0, w, h, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
+        let mut out = Frame::default();
+        r.render_frame(&p, 1.0, w, h, &layers, &mut out);
+        let _ = std::fs::remove_file(wav);
+        let lum = |x: u32, y: u32| out.rgba[((y * w + x) * 4) as usize..][..3].iter().map(|&c| c as u32).sum::<u32>();
+        // a quarter of the way down: far from the centre line
+        let (past, ahead) = (lum(w / 4, h / 4), lum(3 * w / 4, h / 4));
+        assert!(past > 150, "the loud second is drawn tall on the left: {past}");
+        assert!(ahead < 40, "the quiet part ahead stays low: {ahead}");
+        assert!(lum(w / 2, h / 4) > 600, "the playhead line");
+    }
+
+    /// A proof picture: `SE_SHOT_SONG` (any audio file) as the Waveform style at `SE_SHOT_T` seconds,
+    /// 960x540, written to `SE_SHOTS/waveform.ppm` through the preview / export renderer.
+    #[test]
+    #[ignore]
+    fn shot_waveform_style() {
+        let (Ok(song), Ok(dir), Some(gl)) = (std::env::var("SE_SHOT_SONG"), std::env::var("SE_SHOTS"), gl()) else { return };
+        let t: f64 = std::env::var("SE_SHOT_T").ok().and_then(|v| v.parse().ok()).unwrap_or(3.0);
+        use crate::engine::visualizer;
+        let (w, h) = (960u32, 540u32);
+        let mut p = crate::model::Project::new();
+        (p.width, p.height) = (w, h);
+        let asset = visualizer::tests::song_asset(&mut p, std::path::Path::new(&song));
+        visualizer::add_song(&mut p, asset, 0.0, &visualizer::find(Some("Waveform")).unwrap(), crate::media::Backend::Ffmpeg).unwrap();
+        let mut pool = crate::media::DecoderPool::new(crate::media::Backend::Ffmpeg);
+        let (mut spare, mut text) = (Vec::new(), crate::engine::text::TextRasterizer::new());
+        let (mut shapes, mut comp) = (crate::engine::shapes::ShapeRasterizer::new(), crate::engine::compose::Compositor::new());
+        let mut r = GpuRenderer::new(std::sync::Arc::new(gl)).expect("renderer");
+        let layers = crate::playback::decode_layers(&p, t, w, h, &mut pool, &mut spare, &mut text, &mut shapes, &mut comp);
+        let mut out = Frame::default();
+        r.render_frame(&p, t, w, h, &layers, &mut out);
+        let mut ppm = format!("P6 {w} {h} 255
+").into_bytes();
+        for px in out.rgba.chunks_exact(4) {
+            ppm.extend_from_slice(&px[..3]);
+        }
+        std::fs::write(std::path::Path::new(&dir).join("waveform.ppm"), ppm).unwrap();
+    }
+
     /// The 3D camera through the renderer (what preview and export draw): the default camera is the very
     /// orbit the shader falls back to without one (library thumbnails), a moved camera draws something
     /// else, and the same camera at the same time draws the same pixels again.
@@ -3166,7 +3235,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         };
         use crate::engine::visualizer;
         let (w, h) = (320u32, 180u32);
-        let voxel = visualizer::BUILTIN[2].1;
+        let voxel = visualizer::BUILTIN[3].1;
         // the shader alone, no camera uniforms: its fallback orbit
         let defaults: Vec<f32> = crate::engine::shaderlib::parse_meta(voxel).params.iter().map(|p| p.default as f32).collect();
         let fallback = unsafe { run_sized(&gl, voxel, w as i32, h as i32, 1.5, &defaults) }.unwrap();

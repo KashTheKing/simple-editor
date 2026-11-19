@@ -35,6 +35,8 @@ pub struct Orb {
     beat: (f64, f64, Option<f64>),
     /// The source time, which is also the shader's `u_time`.
     time: f32,
+    /// The waveform around `time`, for a style that scrolls it (`visualizer::WAVE_PARAM`); None = flat.
+    wave: Option<Box<visualizer::Wave>>,
     /// (source the program was built from, program) - rebuilt when the style changes.
     gl: Arc<Mutex<Option<(String, Gl)>>>,
 }
@@ -46,7 +48,7 @@ struct Gl {
 
 impl Default for Orb {
     fn default() -> Self {
-        Self { level: [0.0; 1 + BANDS], beat: (0.0, 0.0, None), time: 0.0, gl: Arc::default() }
+        Self { level: [0.0; 1 + BANDS], beat: (0.0, 0.0, None), time: 0.0, wave: None, gl: Arc::default() }
     }
 }
 
@@ -56,6 +58,12 @@ impl Orb {
         self.level = song.map_or([0.0; 1 + BANDS], |a| a.at(t));
         self.beat = song.map_or((0.0, 0.0, None), |a| a.beat_at(t));
         self.time = t as f32;
+        self.set_wave(song.map(|a| a.wave_at(t)));
+    }
+
+    /// The waveform a Waveform style scrolls (`show` sets it from the song; a live player sets it too).
+    pub fn set_wave(&mut self, w: Option<visualizer::Wave>) {
+        self.wave = w.map(Box::new);
     }
 
     /// Show a live level instead of an analysis (every band at `level`, no beat): the mix meters while
@@ -64,6 +72,7 @@ impl Orb {
         self.level = [level.clamp(0.0, 1.0); 1 + BANDS];
         self.beat = (0.0, 0.0, None);
         self.time = t as f32;
+        self.wave = None;
     }
 
     /// Show these levels (`[level, band1..]`, 0..1) at `t`, no beat: a live player's output.
@@ -106,6 +115,7 @@ impl Orb {
             .collect();
         // a `// @camera` style gets the default camera at this moment, as a clip with no camera set does
         let camera = visualizer::camera_at(&crate::model::Effect::from_shader(src), self.time as f64);
+        let wave = meta.params.iter().any(|p| p.id == visualizer::WAVE_PARAM).then(|| self.wave.clone());
         let (gl_state, time, src) = (self.gl.clone(), self.time, src.to_string());
         let cb = egui_glow::CallbackFn::new(move |info, painter| {
             let gl = painter.gl();
@@ -135,6 +145,12 @@ impl Orb {
                     gl.uniform_3_f32(u("u_cam_target").as_ref(), c.target[0], c.target[1], c.target[2]);
                     gl.uniform_1_f32(u("u_fov").as_ref(), c.fov);
                     gl.uniform_1_f32(u("u_cam_roll").as_ref(), c.roll);
+                }
+                if let Some(w) = &wave {
+                    // no waveform yet: a flat line (the uniforms persist on the program)
+                    let (samples, off) = w.as_ref().map_or(([0.0; visualizer::WAVE_N], 0.0), |w| (w.samples, w.off));
+                    gl.uniform_1_f32_slice(gl.get_uniform_location(prog, "u_wave").as_ref(), &samples);
+                    gl.uniform_1_f32(gl.get_uniform_location(prog, "u_wave_off").as_ref(), off);
                 }
                 gl.bind_vertex_array(Some(vao));
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);

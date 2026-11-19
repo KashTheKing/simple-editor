@@ -21,11 +21,50 @@ pub const BEAT_PARAMS: [&str; 3] = ["beat", "beats", "bpm"];
 
 /// (name, source) of the built-in styles, the first is the default. "Spectrum Bars" is the Source
 /// monitor's original noa-style bar field, ported to a shader.
-pub const BUILTIN: [(&str, &str); 3] = [
+pub const BUILTIN: [(&str, &str); 4] = [
     ("Neon Orb", include_str!("../../library/effects/neon-orb.glsl")),
+    ("Waveform", include_str!("../../library/effects/waveform.glsl")),
     ("Spectrum Bars", include_str!("../../library/effects/spectrum-bars.glsl")),
     ("Voxel Blocks", include_str!("../../library/effects/voxel-blocks.glsl")),
 ];
+
+/// The waveform input (`// @param wave 0 0 1`): the song's peaks (0..1 of its loudest) baked one key per
+/// 1/`WAVE_HZ` s, which the renderer hands the shader as a window around now (`Wave`) - a style that
+/// scrolls the song past needs history and lookahead, not just the value at the current time.
+pub const WAVE_PARAM: &str = "wave";
+/// Waveform keys a second: one per `media::waveform` peak bucket.
+pub const WAVE_HZ: f64 = crate::media::waveform::PEAKS_PER_SEC as f64;
+/// Peaks in the shader's window (`u_wave[WAVE_N]`): 2.56 s across the frame.
+pub const WAVE_N: usize = 256;
+
+/// What a waveform shader gets: `samples[j]` = the peak of bucket `floor(t * WAVE_HZ) - WAVE_N / 2 + j`
+/// (0 outside the song), `off` = how far `t` is into its bucket (0..1). The buckets sit on a fixed grid
+/// and only `off` moves between them, so the shape slides smoothly instead of being resampled each frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Wave {
+    pub samples: [f32; WAVE_N],
+    pub off: f32,
+}
+
+/// The window at second `t`, `peak(k)` = bucket k's peak (any k, negative included).
+pub fn wave_window(t: f64, peak: impl Fn(i64) -> f32) -> Wave {
+    let x = if t.is_finite() { t * WAVE_HZ } else { 0.0 };
+    let base = x.floor();
+    let k0 = base as i64 - (WAVE_N / 2) as i64;
+    Wave { samples: std::array::from_fn(|j| peak(k0 + j as i64)), off: (x - base) as f32 }
+}
+
+/// The waveform window of a Waveform-style effect at clip-local second `t` (None for any other effect):
+/// read straight from its baked `wave` keys, which `bake` lays one per bucket from clip-local 0.
+pub fn wave_at(e: &Effect, t: f64) -> Option<Wave> {
+    if e.kind != crate::model::EffectKind::Shader {
+        return None;
+    }
+    let i = crate::engine::shaderlib::parse_meta(&e.shader).params.iter().position(|p| p.id == WAVE_PARAM)?;
+    let keys = e.params.get(i).map_or(&[][..], |a| &a.keys[..]);
+    // ponytail: indexes the bake's grid; hand-edited wave keys read by position, not by time
+    Some(wave_window(t, |k| usize::try_from(k).ok().and_then(|k| keys.get(k)).map_or(0.0, |kf| kf.v as f32)))
+}
 
 /// One pickable style.
 #[derive(Clone, Debug, PartialEq)]
@@ -41,7 +80,7 @@ pub fn is_visualizer(src: &str) -> bool {
     crate::engine::shaderlib::parse_meta(src)
         .params
         .iter()
-        .any(|p| AUDIO_PARAMS.contains(&p.id.as_str()) || BEAT_PARAMS.contains(&p.id.as_str()))
+        .any(|p| AUDIO_PARAMS.contains(&p.id.as_str()) || BEAT_PARAMS.contains(&p.id.as_str()) || p.id == WAVE_PARAM)
 }
 
 /// The built-ins, then every installed library effect that is a visualizer (by its `@name`, else id).
@@ -269,6 +308,8 @@ pub struct Analysis {
     pub frames: Vec<Frame>,
     pub beats: Vec<f64>,
     pub bpm: Option<f64>,
+    /// The waveform, one peak per 1/`WAVE_HZ` clip-local s (0..1 of the song's loudest).
+    pub wave: Vec<f32>,
 }
 
 /// Frames a second of the whole-song analysis (`SongAnalysis`).
@@ -287,6 +328,8 @@ pub struct SongAnalysis {
     pub beats: Vec<f64>,
     /// `[peak, band energies]` before any mixing, at `ANALYSIS_HZ`: what a band mixer re-mixes.
     pub raw: Vec<Frame>,
+    /// The loudest peak in `raw`: what the waveform is normalised to.
+    pub wave_max: f32,
 }
 
 impl SongAnalysis {
@@ -320,7 +363,19 @@ impl SongAnalysis {
     /// The analysis of already-computed raw frames (default mix).
     pub fn from_raw(raw: Vec<Frame>) -> SongAnalysis {
         let m = crate::model::AudioMix::default();
-        SongAnalysis { frames: shape_mix(&raw, ANALYSIS_HZ, &m), beats: beats_mix(&raw, ANALYSIS_HZ, &m), raw }
+        let wave_max = raw.iter().fold(0.0f32, |m, f| m.max(f[0]));
+        SongAnalysis { frames: shape_mix(&raw, ANALYSIS_HZ, &m), beats: beats_mix(&raw, ANALYSIS_HZ, &m), raw, wave_max }
+    }
+
+    /// Bucket `k`'s waveform peak (0..1 of the loudest; 0 outside the song).
+    pub fn peak(&self, k: i64) -> f32 {
+        let v = usize::try_from(k).ok().and_then(|k| self.raw.get(k)).map_or(0.0, |f| f[0]);
+        if self.wave_max > 0.0 { (v / self.wave_max).min(1.0) } else { 0.0 }
+    }
+
+    /// The waveform window at source second `t` (`ANALYSIS_HZ` = `WAVE_HZ`: one raw frame per bucket).
+    pub fn wave_at(&self, t: f64) -> Wave {
+        wave_window(t, |k| self.peak(k))
     }
 
     /// This song heard through `m` (`m` = default: `self` itself, no work).
@@ -328,7 +383,9 @@ impl SongAnalysis {
         if *m == crate::model::AudioMix::default() {
             return self.clone();
         }
-        SongAnalysis { frames: shape_mix(&self.raw, ANALYSIS_HZ, m), beats: beats_mix(&self.raw, ANALYSIS_HZ, m), raw: Vec::new() }
+        // the raw frames stay: the waveform is the song's, whatever the mix
+        let raw = self.raw.clone();
+        SongAnalysis { frames: shape_mix(&raw, ANALYSIS_HZ, m), beats: beats_mix(&raw, ANALYSIS_HZ, m), raw, wave_max: self.wave_max }
     }
 
     /// Each band's average energy over source seconds [from, to], 0..1 of the loudest band: the band
@@ -390,7 +447,18 @@ impl SongAnalysis {
         let end = from + len * speed;
         let beats: Vec<f64> = self.beats.iter().filter(|&&b| b >= from && b <= end).map(|b| (b - from) / speed).collect();
         let bpm = crate::engine::analysis::bpm(&beats);
-        Analysis { frames, beats, bpm }
+        // one bucket per 1/WAVE_HZ clip-local s: the loudest source bucket it covers
+        let nw = (len * WAVE_HZ).floor() as usize + 1;
+        let wave = (0..nw)
+            .map(|i| {
+                let s = (from + i as f64 / WAVE_HZ * speed) * WAVE_HZ;
+                // (1e-9: float noise in `s` must not pull in a neighbour bucket)
+                let k0 = (s + 1e-9).floor() as i64;
+                let k1 = ((s + speed - 1e-9).ceil() as i64).max(k0 + 1);
+                (k0..k1).map(|k| self.peak(k)).fold(0.0, f32::max)
+            })
+            .collect();
+        Analysis { frames, beats, bpm, wave }
     }
 }
 
@@ -495,6 +563,8 @@ pub fn bake(e: &mut Effect, an: &Analysis, fps: f64) -> usize {
                 k.push(key(end, if count { v } else { 1.0 }));
             }
             k
+        } else if p.id == WAVE_PARAM {
+            an.wave.iter().enumerate().map(|(i, &v)| key(i as f64 / WAVE_HZ, p.min + (p.max - p.min) * v as f64)).collect()
         } else if p.id == "bpm" {
             e.params[pi] = Animated::new(an.bpm.unwrap_or(p.default).clamp(p.min, p.max));
             n += 1;
@@ -774,7 +844,7 @@ impl Look {
         crate::engine::shaderlib::parse_meta(src)
             .params
             .into_iter()
-            .filter(|p| !AUDIO_PARAMS.contains(&p.id.as_str()) && !BEAT_PARAMS.contains(&p.id.as_str()))
+            .filter(|p| !AUDIO_PARAMS.contains(&p.id.as_str()) && !BEAT_PARAMS.contains(&p.id.as_str()) && p.id != WAVE_PARAM)
             .collect()
     }
 
@@ -882,6 +952,52 @@ pub(crate) mod tests {
         assert!(find(Some("nope")).unwrap_err().contains("Neon Orb"));
     }
 
+    /// Waveform is a built-in, second in the pickers, and Neon Orb stays the default.
+    #[test]
+    fn waveform_is_the_second_style() {
+        let all = styles_from([]);
+        assert_eq!(all[1].name, "Waveform");
+        assert!(is_visualizer(&all[1].src));
+        assert!(crate::engine::shaderlib::parse_meta(&all[1].src).params.iter().any(|p| p.id == WAVE_PARAM));
+        assert_eq!(find(Some("waveform")).unwrap().name, "Waveform");
+        assert_eq!(find(None).unwrap().name, "Neon Orb");
+        assert!(!Look::look_params(&all[1].src).iter().any(|p| p.id == WAVE_PARAM), "the waveform is an input, not a look");
+    }
+
+    /// The window around a time: silence before the song's start and after its end, bucket k at
+    /// `WAVE_N / 2` when `t` is k / WAVE_HZ, and a pure function of `t` - played backwards it shows the
+    /// very windows it showed going forwards. The baked keys (timeline, export) give the same window as the
+    /// song analysis (Source monitor, Audio Only, player).
+    #[test]
+    fn the_wave_window_at_the_start_the_end_and_in_reverse() {
+        // 3 s: peak k / 300 (rising), the loudest 0.5 -> normalised to k / 299 of 1
+        let raw: Vec<Frame> = (0..300).map(|k| [0.5 * k as f32 / 299.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]).collect();
+        let song = SongAnalysis::from_raw(raw);
+        let h = WAVE_N / 2;
+        let w = song.wave_at(0.0);
+        assert!(w.samples[..h].iter().all(|&v| v == 0.0), "nothing before the start");
+        assert_eq!((w.samples[h], w.off), (0.0, 0.0));
+        assert!((w.samples[h + 10] - 10.0 / 299.0).abs() < 1e-6);
+        let w = song.wave_at(2.995);
+        assert!((w.samples[h] - 299.0 / 299.0).abs() < 1e-6 && (w.off - 0.5).abs() < 1e-3, "{} {}", w.samples[h], w.off);
+        assert!(w.samples[h + 1..].iter().all(|&v| v == 0.0), "nothing after the end");
+        let times: Vec<f64> = (0..120).map(|i| i as f64 / 60.0).collect();
+        let fwd: Vec<Wave> = times.iter().map(|&t| song.wave_at(t)).collect();
+        let back: Vec<Wave> = times.iter().rev().map(|&t| song.wave_at(t)).collect();
+        assert!(fwd.iter().eq(back.iter().rev()), "reverse = forward, frame for frame");
+        // the bake of a clip from the song's start reads back as the same windows
+        let mut e = Effect::from_shader(BUILTIN[1].1);
+        bake(&mut e, &song.span(0.0, 3.0, 1.0, FPS), FPS);
+        for &t in &[0.0, 0.37, 1.5, 2.99] {
+            let (a, b) = (wave_at(&e, t).unwrap(), song.wave_at(t));
+            assert!((a.off - b.off).abs() < 1e-6 && a.samples.iter().zip(&b.samples).all(|(x, y)| (x - y).abs() < 1e-6), "t {t}");
+        }
+        assert!(wave_at(&Effect::from_shader(BUILTIN[0].1), 0.0).is_none(), "Neon Orb takes no waveform");
+        // a clip from 1 s at double speed: bucket i covers source buckets 100 + 2i and 101 + 2i
+        let an = song.span(1.0, 1.0, 2.0, FPS);
+        assert!((an.wave[10] - 121.0 / 299.0).abs() < 1e-6, "{}", an.wave[10]);
+    }
+
     /// A low hum lights band 1, a high whine band 6; loud halves give a high level, silence 0.
     #[test]
     fn analyze_separates_bass_from_treble_and_follows_loudness() {
@@ -913,8 +1029,8 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
         ];
         let all = styles_from(lib);
         let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Neon Orb", "Spectrum Bars", "Voxel Blocks", "Pulse Rings", "my-viz"]);
-        assert!(!all[0].custom && all[3].custom);
+        assert_eq!(names, ["Neon Orb", "Waveform", "Spectrum Bars", "Voxel Blocks", "Pulse Rings", "my-viz"]);
+        assert!(!all[0].custom && all[4].custom);
         assert_eq!(find_in(all.clone(), Some("PULSE RINGS")).unwrap().src, RINGS);
         assert!(crate::engine::shaderlib::lint(RINGS, false).is_empty(), "{:?}", crate::engine::shaderlib::lint(RINGS, false));
     }
@@ -1276,7 +1392,7 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
     fn the_band_mix_round_trips_in_the_project() {
         let mut p = Project::new();
         let id = p.add_shape_clip(crate::model::ShapeKind::Rect, 0.0, 2.0);
-        let mut e = Effect::from_shader(BUILTIN[2].1);
+        let mut e = Effect::from_shader(BUILTIN[3].1);
         e.audio_mix = crate::model::AudioMix::preset("edm");
         assert_eq!(e.audio_mix.as_ref().unwrap().preset, "EDM");
         p.clip_mut(id).unwrap().effects.push(e);
@@ -1298,7 +1414,7 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
     /// fly-through), the auto-orbit adds its turn on top; only `// @camera` shaders have one.
     #[test]
     fn the_camera_round_trips_and_keyframes_interpolate() {
-        let mut e = Effect::from_shader(BUILTIN[2].1);
+        let mut e = Effect::from_shader(BUILTIN[3].1);
         assert!(camera_at(&Effect::from_shader(BUILTIN[0].1), 0.0).is_none(), "Neon Orb is 2D");
         let def = camera_at(&e, 0.0).unwrap();
         assert!((def.fov - 35f32.to_radians()).abs() < 1e-5);
