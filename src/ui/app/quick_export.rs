@@ -195,7 +195,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 
 /// Top bar: the Quick Export button (right side, beside the Jobs indicator).
 pub(super) fn button(app: &mut App, ui: &mut egui::Ui) {
-    let r = tools::icon_button(ui, &app.palette, egui::Id::new("se-quick-export"), tools::Glyph::Upload, "Quick export", false);
+    let r = crate::ui::titlebar::icon_button(ui, &app.palette, egui::Id::new("se-quick-export"), tools::Glyph::Upload, "Quick export");
     if r.clicked() {
         app.act(Action::QuickExportAs);
     }

@@ -1622,9 +1622,10 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
                 });
             });
         });
-    // under the box, on the right: model, effort, permission mode
+    // under the box: the Experimental badge on the left; model, effort, permission mode on the right
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
+        crate::ui::experimental::badge(ui);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             mode_picker(ui, mode, out);
             if v.backend == "claude" {
