@@ -3,7 +3,7 @@ title: How the 1.4.0 trailer was made
 description: A step-by-step walkthrough of the Simple Editor 1.4.0 trailer - beat grid, screen recordings, 3D screens with motion blur, keyframed text labels, a visualizer background and sound design - and the free project to download.
 ---
 
-![The trailer project on the Edit page](/img/trailer/edit-page.jpg)
+![A frame from the trailer](/img/trailer/trailer-frame.jpg)
 
 The 1.4.0 trailer was cut entirely in Simple Editor: its own timeline, keyframes, the **3D Plane** and **Motion Blur**
 effects, an audio visualizer and plain Text clips for every title. Nothing was done in another program. This page shows
@@ -58,6 +58,8 @@ when the screen is small and moving.
 
 ## 3. One shot per bar
 
+![The trailer project on the Edit page](/img/trailer/edit-page.jpg)
+
 ![The trailer timeline: background, screens, wall, labels, music and sound effects](/img/trailer/timeline.jpg)
 
 Each take goes on the **Screens** track exactly on a bar line. Then its **Speed** (Inspector ▸ Transform) is set so
@@ -68,28 +70,34 @@ Make the cuts land exactly on frames. At 60 fps a 2.4 s bar is exactly 144 frame
 
 ## 4. The 3D move
 
-![A screen's 3D Plane and Motion Blur in the Inspector](/img/trailer/inspector-3d-plane.jpg)
+![A shot's Position X and Scale keyframes](/img/trailer/inspector-transform.jpg)
 
-Every screen has two effects: **3D Plane** (Effects ▸ Transform) and **Motion Blur**. The 3D Plane's **Yaw**,
-**Pitch**, **Roll** and **Distance** are keyframed in the same four phases on every shot:
+Every screen moves the same way in four phases, and each shot comes in from the other side (right, left, right),
+so the motion keeps flowing:
 
-| When | Yaw | Distance | Ease to the next key |
+| When | Position X | Scale | Ease to the next key |
 |---|---|---|---|
-| 0 s (the downbeat) | 42° | 7.6 | fast start, soft landing: `cubic-bezier(0.12, 0.9, 0.22, 1)` |
-| 0.3 s | 13° | 5.15 | linear drift |
-| beat 3 (1.2 s) | | 5.05 → 4.5 → 5.0 | a quick push in and back: the **punch** on the beat |
-| 0.22 s before the cut | -5° | 4.85 | slow start, fast exit: `cubic-bezier(0.75, 0, 0.95, 0.45)` |
-| the cut | -44° | 7.2 | |
+| 0 s (the downbeat) | 760 px to the side | 37 % | fast start, soft landing: `cubic-bezier(0.12, 0.9, 0.22, 1)` |
+| 0.3 s | 30 px | 72 % | linear drift |
+| beat 3 (1.2 s) | | 74 % → 81 % → 74 % | a quick push in and back: the **punch** on the beat |
+| 0.22 s before the cut | -30 px | 75 % | slow start, fast exit: `cubic-bezier(0.75, 0, 0.95, 0.45)` |
+| the cut | 980 px to the other side | 41 % | |
 
-So a screen flies in fast and lands softly on the downbeat, drifts slowly while you read it, punches on the third
-beat and whips out just before the next cut. Each shot comes in from the other side (positive yaw, then negative),
-so the motion keeps flowing left, right, left. Pitch and roll move a little the same way so it never looks flat.
+So a screen flies in fast and lands softly on the downbeat, drifts while you read it, punches on the third beat and
+whips out just before the next cut.
+
+![The 3D Plane and Motion Blur on a shot](/img/trailer/inspector-3d-plane.jpg)
+
+The tilt is a **3D Plane** effect (Effects ▸ Transform) with **Yaw**, **Pitch** and **Roll** keyframed on the same
+four times: 42° of yaw on the way in, 13° while it drifts, -44° on the way out, with a few degrees of pitch and roll
+so it never looks flat. Its **Distance** stays at 2.414, the distance at which a screen fills the frame, so the size
+comes only from Scale.
+
+**Motion Blur** (Shutter angle 300°, 16 samples) smears the fast parts of the move and leaves the slow drift sharp.
+It is drawn by the graphics card, so you see it in a GPU export.
 
 Shape the eases on the Animate page's **Curves** tab: a steep start and a long flat landing for the fly-in, the
 opposite for the whip out.
-
-**Motion Blur** (Shutter angle 300°, 16 samples) smears the fast parts of the move and leaves the slow drift sharp.
-That smear is most of what makes it feel like velocity.
 
 ## 5. The background
 
@@ -121,9 +129,11 @@ last bar line up to 240 % while the **Opacity** drops to 0, so the card blows ou
 
 ## 7. The screen wall
 
-Two bars before the end card, four takes play at once in a 2×2 grid: each at 47 % scale, moved ±470 px across and
-±265 px up and down, each with its own 3D Plane. Their Distance keys are a quarter of a beat apart, so they land
-one after another. Select the four clips and **Nest** them (Ctrl+P, type Nest), and the wall becomes one clip on one track.
+![The screen wall](/img/trailer/trailer-wall.jpg)
+
+Two bars before the end card, four takes play at once in a 2×2 grid, moved ±470 px across and ±265 px up and
+down. Each scales in to 45 % half a beat after the one before, so they land one after another, and each has its own
+3D Plane tilt. Select the four clips and **Nest** them (Ctrl+P, type Nest), and the wall becomes one clip on one track.
 
 ## 8. Sound design
 
@@ -161,6 +171,9 @@ Inside:
 - `HISTORY.md` - every step in order.
 - `trailer-build.py` - the same edit as a script that drives Simple Editor's MCP server (the same one the [Assistant](./assistant) uses), so you can
   rebuild it with your own takes and song.
+
+If the clips show as offline after you unzip it somewhere else, run **Relink Media…** (Ctrl+P, type Relink) and pick the
+project's folder: every file is found by name.
 
 The song is not included. The **Music** track has a comment where it goes: drop your own song there from 0:00, then
 open the Beat Aligner and move the shots if your song's tempo is not 100 BPM.
