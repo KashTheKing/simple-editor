@@ -131,6 +131,8 @@ pub fn act(app: &mut App, a: Action) -> bool {
             let style = crate::engine::visualizer::last_used(&app.settings.visualizer_style);
             match crate::engine::visualizer::add(&mut app.project, src, &style, backend) {
                 Ok(id) => {
+                    // ws:player-visualizer-look: the look picked in the player (or none)
+                    let _ = app.settings.visualizer_look.apply(&mut app.project, id, &style, backend);
                     app.push_undo_labeled(before, "Add Audio Visualizer");
                     app.selection = vec![id];
                     app.after_edit();
@@ -192,6 +194,7 @@ pub(super) fn add_songs_with_visualizer(app: &mut App, assets: &[Id], at: f64) -
     for &a in assets {
         match crate::engine::visualizer::add_song(&mut app.project, a, at, &style, backend) {
             Ok(pair) => {
+                let _ = app.settings.visualizer_look.apply(&mut app.project, pair.1, &style, backend); // ws:player-visualizer-look
                 at += app.project.clip(pair.0).map_or(0.0, |c| c.duration);
                 out.push(pair);
             }

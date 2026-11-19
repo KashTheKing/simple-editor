@@ -1061,6 +1061,27 @@ fn audio_section(ui: &mut egui::Ui, state: &ExportUi, settings: &mut Settings) -
     save | changed
 }
 
+// ---- ws:player-metadata ----
+/// Fill the export's metadata rows from `p`: each field it fills replaces (or adds) that key; its Explorer
+/// tags go in as `keywords` (also written as Windows' Tags once the file is out, `export_keywords`).
+pub fn apply_meta_preset(rows: &mut Vec<(String, String)>, p: &crate::engine::tags::MetaPreset) {
+    let kw = (!p.keywords.trim().is_empty()).then(|| ("keywords".to_string(), p.keywords.trim().to_string()));
+    for (k, v) in p.values.iter().filter(|(_, v)| !v.trim().is_empty()).map(|(k, v)| (k.clone(), v.clone())).chain(kw) {
+        match rows.iter_mut().find(|(rk, _)| rk.trim() == k) {
+            Some(r) => r.1 = v,
+            None => rows.push((k, v)),
+        }
+    }
+}
+
+/// The Explorer tags an export with these metadata rows asks for (its `keywords` row).
+pub fn export_keywords(on: bool, rows: &[(String, String)]) -> Vec<String> {
+    if !on {
+        return Vec::new();
+    }
+    rows.iter().find(|(k, _)| k.trim() == "keywords").map(|(_, v)| crate::engine::tags::split_keywords(v)).unwrap_or_default()
+}
+
 /// Advanced: range, metadata, background, burn-ins, scaler / encoder / preset, smart render, GPU note.
 fn advanced_section(
     ui: &mut egui::Ui,
@@ -1098,6 +1119,19 @@ fn advanced_section(
             ];
         }
         if state.metadata_on {
+            // ---- ws:player-metadata: a saved preset fills the fields in one click ----
+            if !settings.metadata_presets.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.add_space(18.0);
+                    egui::ComboBox::from_id_salt("export_meta_preset").selected_text("Apply preset").show_ui(ui, |ui| {
+                        for p in &settings.metadata_presets {
+                            if ui.selectable_label(false, &p.name).clicked() {
+                                apply_meta_preset(&mut state.metadata, p);
+                            }
+                        }
+                    });
+                });
+            }
             let mut drop: Option<usize> = None;
             for (i, (k, v)) in state.metadata.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
@@ -1961,5 +1995,19 @@ mod tests {
         let s = Settings { export_folds: [("advanced".to_string(), true)].into(), ..Default::default() };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back.export_folds.get("advanced"), Some(&true));
+    }
+
+    /// ws:player-metadata: a preset fills the export's metadata rows (replacing a key that is there),
+    /// and its Explorer tags become the `keywords` row the finished file gets as Windows' Tags.
+    #[test]
+    fn a_metadata_preset_fills_the_export_rows() {
+        let mut p = crate::engine::tags::MetaPreset { name: "Ch".into(), keywords: "a; b".into(), ..Default::default() };
+        p.values.insert("artist".into(), "Kash".into());
+        p.values.insert("genre".into(), "".into());
+        let mut rows = vec![("title".to_string(), "My video".to_string()), ("artist".to_string(), String::new())];
+        apply_meta_preset(&mut rows, &p);
+        assert_eq!(rows, [("title".into(), "My video".into()), ("artist".into(), "Kash".into()), ("keywords".into(), "a; b".into())]);
+        assert_eq!(export_keywords(true, &rows), ["a", "b"]);
+        assert!(export_keywords(false, &rows).is_empty(), "Write metadata off: nothing");
     }
 }

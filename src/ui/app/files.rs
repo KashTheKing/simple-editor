@@ -531,6 +531,16 @@ impl App {
         self.fire_hook("export_done", json!({"path": hook_path.to_string_lossy(), "ok": true}));
         match kind {
             ExportKind::File { path } => {
+                // ws:player-metadata: a preset's Explorer tags, through Windows' own handler (off this thread)
+                let kw = crate::ui::export_ui::export_keywords(self.export_ui.metadata_on, &self.export_ui.metadata);
+                if !kw.is_empty() {
+                    let p = path.clone();
+                    std::thread::spawn(move || {
+                        if crate::engine::tags::keywords_writable(&p) {
+                            let _ = crate::engine::tags::write_keywords(&p, &kw);
+                        }
+                    });
+                }
                 let took = crate::ui::duration_text(prog.elapsed().as_secs_f64());
                 let queued = self.export_queue.len();
                 let msg = if queued > 0 {

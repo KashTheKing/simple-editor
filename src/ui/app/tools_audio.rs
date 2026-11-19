@@ -421,6 +421,7 @@ pub const TOOLS: &[ToolDef] = &[
             if let Some(asset) = a.id("asset_id") {
                 let at = a.f64("at").unwrap_or(app.playhead);
                 let (song, vis) = visualizer::add_song(&mut app.project, asset, at, &style, backend)?;
+                app.settings.visualizer_look.apply(&mut app.project, vis, &style, backend)?; // ws:player-visualizer-look
                 apply_mix(app, vis, mix, backend)?;
                 apply_camera(app, vis, args)?;
                 return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": vis, "audio_clip_id": song, "style": style.name})));
@@ -440,6 +441,7 @@ pub const TOOLS: &[ToolDef] = &[
                 return Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": id, "style": name})));
             }
             let vid = visualizer::add(&mut app.project, id, &style, backend)?;
+            app.settings.visualizer_look.apply(&mut app.project, vid, &style, backend)?; // ws:player-visualizer-look
             apply_mix(app, vid, mix, backend)?;
             apply_camera(app, vid, args)?;
             Ok(ToolOutcome::Done(json!({"ok": true, "clip_id": vid, "style": style.name})))
