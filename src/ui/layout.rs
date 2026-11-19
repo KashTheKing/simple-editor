@@ -1435,9 +1435,6 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         let pinned = pane.is_some_and(|p| self.pinned.contains(&p));
         let glow = pane.and_then(|p| self.glow.iter().find(|(g, _)| *g == p).map(|(_, a)| *a));
         let pin_w = if pinned { 14.0 } else { 0.0 };
-        // an experimental feature's tab wears the badge after its title (`ui::experimental`)
-        let badge = pane.is_some_and(crate::ui::experimental::pane);
-        let badge_w = if badge { crate::ui::experimental::size(ui).x + 6.0 } else { 0.0 };
         // ---- ws:pages ----
         let timeline = pane == Some(Pane::Timeline);
         let text = if timeline { "Main".into() } else { self.tab_title_for_tile(tiles, tile_id) };
@@ -1449,7 +1446,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         let seq_w = seq.as_ref().map_or(0.0, |g| seq_gap + g.size().x + 2.0 + close_w);
         let x_margin = self.tab_title_spacing(ui.visuals());
         let (icon_w, gap) = if glyph.is_some() { (16.0, 4.0) } else { (0.0, 0.0) };
-        let width = galley.size().x + icon_w + gap + pin_w + badge_w + seq_w + 2.0 * x_margin;
+        let width = galley.size().x + icon_w + gap + pin_w + seq_w + 2.0 * x_margin;
         let (_, tab_rect) = ui.allocate_space(egui::vec2(width, ui.available_height()));
         // locked, a tab only clicks: no drag starts, so nothing re-docks by accident
         let sense = if self.chrome.locked { egui::Sense::click() } else { egui::Sense::click_and_drag() };
@@ -1528,11 +1525,6 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
                     egui::vec2(pin_w, tab_rect.height()),
                 );
                 draw_glyph(ui.painter(), pin_rect, Glyph::Pin, text_color);
-            }
-            if badge {
-                let at = egui::pos2(tp.x + text_w + pin_w + 6.0, tab_rect.center().y);
-                let pill = crate::ui::experimental::paint(ui.painter(), at);
-                crate::ui::experimental::tip(ui, pill, id);
             }
             // ---- ws:pages ----
             if let Some(g) = seq {

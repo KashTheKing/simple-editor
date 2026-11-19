@@ -28,7 +28,6 @@ pub mod gallery_filter;
 pub mod guides;
 pub mod social;
 pub mod emulator; // ws:device-emulator
-pub mod experimental; // the Experimental badge
 pub mod history_ui;
 pub mod spiky_ball;
 pub mod visualizer_ui; // ws:audio-visualizer

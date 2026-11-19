@@ -162,12 +162,13 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(caption_w); // clear of the window buttons
-                // ---- ws:quick-export ---- (right-most; the Jobs indicator sits beside it while jobs run)
+                // right to left: Quick Export (right-most), Performance, then Jobs on its left (always shown)
+                // ---- ws:quick-export ----
                 quick_export::button(self, ui);
-                // ---- ws:jobs-panel ----
-                jobs_pane::indicator(self, ui);
                 // ---- ws:perf-window ----
                 perf_ctl::button(self, ui);
+                // ---- ws:jobs-panel ----
+                jobs_pane::indicator(self, ui);
             });
         });
         out
@@ -384,8 +385,7 @@ impl App {
         menu::sub(ui, None, "Pages", |ui| {
             for (i, page) in self.settings.pages.clone().iter().enumerate() {
                 let key = layout_ctl::PAGE_ACTIONS.get(i).map(|&a| menu::shortcut(a)).unwrap_or_default();
-                let x = crate::ui::experimental::page(page);
-                if menu::check_badged(ui, &self.settings.page == page, &format!("{page} page"), &key, x).clicked() {
+                if menu::check(ui, &self.settings.page == page, &format!("{page} page"), &key).clicked() {
                     layout_ctl::switch_page(self, page);
                 }
             }
@@ -446,8 +446,7 @@ impl App {
     /// A Window-menu row: the pane's name, ticked while it is on screen; a click shows or hides it.
     fn pane_row(&mut self, ui: &mut egui::Ui, p: Pane) {
         let key = toggle_action(p).map(menu::shortcut).unwrap_or_default();
-        let x = crate::ui::experimental::pane(p);
-        if menu::check_badged(ui, self.layout.is_visible(p), p.title(), &key, x).clicked() {
+        if menu::check(ui, self.layout.is_visible(p), p.title(), &key).clicked() {
             self.toggle_pane(p);
         }
     }

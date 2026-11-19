@@ -59,6 +59,7 @@ impl App {
         relocate_assets(&mut project, path.parent());
         self.set_project(project, Some(path.to_path_buf()));
         self.dirty = true;
+        self.saved = None; // the repair itself still needs saving
         self.toast(format!(
             "Repaired a damaged project ({why}). {} Original kept as {}",
             r.notes.join("; "),
@@ -184,6 +185,7 @@ impl App {
         match self.project.save_with_chats(&path, assistant_ctl::chats_json(self)) {
             Ok(()) => {
                 self.dirty = false;
+                self.saved = Some(self.project.to_json());
                 // ---- ws:online-library ---- library LUTs the project uses go beside it
                 crate::engine::lut::set_project(Some(&path));
                 if let Ok(v) = serde_json::to_value(&self.project) {
@@ -243,7 +245,7 @@ impl App {
     /// `on_yes` runs on a LATER frame once it resolves Save (and the save succeeded) or Discard - never
     /// on Cancel. Replaces the old blocking `confirm_discard() -> bool`.
     pub(crate) fn confirm_discard_then(&mut self, on_yes: impl FnOnce(&mut App) + 'static) {
-        if !self.dirty {
+        if !self.dirty || self.still_clean() {
             on_yes(self);
             return;
         }
@@ -254,6 +256,17 @@ impl App {
             "Save changes as a project file (.sedit)?"
         };
         confirm::ask_discard(msg, on_yes);
+    }
+
+    /// Marked dirty, but the project equals how it was opened or last saved (a fresh project nobody
+    /// touched, an edit that was undone, a no-op tweak): clears `dirty` and says so. Serialising the
+    /// project here is fine: it only runs when a save prompt is about to show.
+    pub(crate) fn still_clean(&mut self) -> bool {
+        let same = self.saved.as_deref().is_some_and(|s| s == self.project.to_json());
+        if same {
+            self.dirty = false;
+        }
+        same
     }
 
     pub(super) fn ffmpeg_missing(&mut self) -> bool {
@@ -860,6 +873,21 @@ mod tests {
         assert!(home.contains("HomeAction::New(i) => app.new_project(i)"), "home cards must make a new project");
         let set = fn_body(include_str!("mod.rs"), "fn set_project(");
         assert!(set.contains("self.close_source()"), "the old project's Source clip must not survive");
+    }
+
+    /// An untouched project never asks to save: the save prompt and the window close compare against the
+    /// snapshot taken when the project was opened, created or saved, and that snapshot is stable.
+    #[test]
+    fn an_unchanged_project_never_asks_to_save() {
+        let a = crate::model::Project::new();
+        assert_eq!(a.to_json(), crate::model::Project::new().to_json(), "a fresh project serialises the same every time");
+        let body = fn_body(include_str!("files.rs"), "pub(crate) fn confirm_discard_then(");
+        assert!(body.contains("self.still_clean()"));
+        let set = fn_body(include_str!("mod.rs"), "fn set_project(");
+        assert!(set.contains("self.saved = Some(self.project.to_json())"));
+        let save = fn_body(include_str!("files.rs"), "pub(crate) fn save_project(");
+        assert!(save.contains("self.saved = Some(self.project.to_json())"));
+        assert!(include_str!("mod.rs").contains("self.dirty && !self.still_clean()"), "closing the window too");
     }
 
     #[test]

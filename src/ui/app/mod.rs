@@ -202,6 +202,10 @@ pub struct App {
     project: Project,
     project_path: Option<PathBuf>,
     dirty: bool,
+    /// The project as it was opened or last saved (`Project::to_json`); None when that state itself still
+    /// needs saving (a repaired or recovered project, a chat change). `still_clean` compares against it so
+    /// an edit that changed nothing (or was undone) never asks to save.
+    saved: Option<String>,
     undo: Vec<UndoEntry>,
     redo: Vec<UndoEntry>,
     settings: Settings,
@@ -372,6 +376,9 @@ pub struct App {
     source_pending: Option<source_pane::Pending>,
     /// Movie mode pre-render cache.
     prerender: PreRender,
+    /// The project Movie Mode's pre-render was last made from: an edit re-renders only the seconds that
+    /// differ from it (`playback::video_dirty_spans`), not the whole timeline. None = render everything.
+    prerender_base: Option<Project>,
     /// Movie mode paused the clock because the frame under the playhead was not rendered yet.
     movie_stall: bool,
     /// True while playback is held because the player reported buffering (spinner shown).
@@ -883,6 +890,7 @@ impl App {
             project: Project::new(),
             project_path: None,
             dirty: false,
+            saved: Some(Project::new().to_json()),
             undo: Vec::new(),
             redo: Vec::new(),
             settings,
@@ -987,6 +995,7 @@ impl App {
             source_focus: false,
             source_pending: None,
             prerender: PreRender::new(),
+            prerender_base: None,
             movie_stall: false,
             buffer_stall: false,
             play_gate: playgate::Gate::default(),
@@ -1153,10 +1162,20 @@ impl App {
         self.player.set_project(&self.project);
         audio_only::edited(&self.project); // ws:preview-audio-only: the mix is analysed / baked again
         if self.settings.movie_mode {
-            // the picture changed: drop what was pre-rendered and render the range again
+            // drop only what the edit can have changed (the edited clips' old and new spans); a change that
+            // could touch any frame (format, a track reorder...) or no earlier render still clears it all
+            let spans = self.prerender_base.as_ref().and_then(|b| crate::playback::video_dirty_spans(b, &self.project));
             let end = self.project.duration();
             let App { prerender, .. } = self;
-            guarded(|| prerender.invalidate(0.0, end));
+            match spans {
+                Some(spans) => spans.into_iter().for_each(|(a, b)| {
+                    guarded(|| prerender.invalidate(a, b));
+                }),
+                None => {
+                    guarded(|| prerender.invalidate(0.0, end));
+                }
+            }
+            self.prerender_base = Some(self.project.clone());
             self.request_prerender();
         }
     }
@@ -1167,6 +1186,8 @@ impl App {
         self.project_path = path;
         assistant_ctl::project_changed(self, self.project_path.clone().as_deref());
         self.dirty = false;
+        self.saved = Some(self.project.to_json());
+        self.prerender_base = None; // a new project: Movie Mode renders it from scratch
         self.undo.clear();
         self.redo.clear();
         // ws:mcp-context: the group's snapshot and the comment watermark belong to the old project
@@ -1386,7 +1407,7 @@ impl eframe::App for App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 prog.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
                 self.close_after_export = true;
-            } else if self.dirty && self.screenshot.is_none() {
+            } else if self.dirty && !self.still_clean() && self.screenshot.is_none() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 // non-blocking now: the Close re-send happens at the top of `update` once this resolves
                 // (see `pending_close` above), not synchronously here.

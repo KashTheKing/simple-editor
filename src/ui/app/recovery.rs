@@ -83,6 +83,7 @@ pub(super) fn boot(app: &mut App) {
             Some(project) => {
                 app.set_project(project, app.project_path.clone());
                 app.dirty = true; // the recovered state hasn't been saved as-is yet
+                app.saved = None;
                 app.toast("Recovered the autosaved project");
             }
             None => app.toast("Couldn't read that autosave"),

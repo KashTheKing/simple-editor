@@ -56,10 +56,7 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         ui.end_row();
 
         // ---- ws:ai-enhancer ----
-        ui.horizontal(|ui| {
-            ui.label("AI enhancer");
-            crate::ui::experimental::badge(ui);
-        });
+        ui.label("AI enhancer");
         ui.horizontal(enhancer_row);
         ui.end_row();
 

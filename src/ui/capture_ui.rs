@@ -414,25 +414,35 @@ fn sources(ui: &mut egui::Ui, state: &mut CaptureUi, settings: &mut Settings, c:
     ui.label("Audio tracks");
     let mut remove = None;
     let is_app = state.area == "app";
-    egui::Grid::new("rec_tracks").num_columns(5).spacing([8.0, 4.0]).show(ui, |ui| {
-        let n = settings.capture_tracks.len();
-        for (i, t) in settings.capture_tracks.iter_mut().enumerate() {
+    // one aligned row per track; the name box takes the width the fixed controls leave (a grid squeezed it
+    // to a few letters in a narrow panel, so names could be neither read nor edited)
+    let n = settings.capture_tracks.len();
+    let kind_w = 110.0;
+    let fixed = 22.0 + kind_w + 52.0 + 24.0 + 4.0 * 8.0; // tick, kind, meter, ✕, gaps
+    let name_w = (ui.available_width() - fixed).clamp(90.0, 260.0);
+    for (i, t) in settings.capture_tracks.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
             save |= ui.checkbox(&mut t.on, "").on_hover_text("Record this track").changed();
-            save |= ui.add(egui::TextEdit::singleline(&mut t.name).desired_width(110.0)).changed();
+            save |= ui
+                .add(egui::TextEdit::singleline(&mut t.name).desired_width(name_w).hint_text("Track name"))
+                .on_hover_text(t.name.clone())
+                .changed();
             let mut k = t.kind.key().to_string();
             let kinds: Vec<(&str, &str)> = TrackKind::ALL.iter().map(|k| (k.key(), k.label())).collect();
-            if combo(ui, &format!("rec_track_kind{i}"), &mut k, &kinds, Some(110.0)) {
+            if combo(ui, &format!("rec_track_kind{i}"), &mut k, &kinds, Some(kind_w)) {
                 t.kind = TrackKind::ALL.into_iter().find(|x| x.key() == k).unwrap_or_default();
                 save = true;
             }
             let live = t.on && (t.kind != TrackKind::App || is_app);
-            meter(ui, if live { track_level(t.kind, mode, state.levels) } else { 0.0 }, c.palette);
+            // a fixed-width meter: the shared one fills the row's free width and would push ✕ off the end
+            let level = if live { track_level(t.kind, mode, state.levels) } else { 0.0 };
+            ui.allocate_ui(egui::vec2(52.0, 16.0), |ui| meter(ui, level, c.palette));
             if ui.add_enabled(n > 1, egui::Button::new("✕").small()).on_hover_text("Remove this track").clicked() {
                 remove = Some(i);
             }
-            ui.end_row();
-        }
-    });
+        });
+    }
     if let Some(i) = remove {
         settings.capture_tracks.remove(i);
         save = true;

@@ -2607,7 +2607,7 @@ fn clip_menu_is_grouped_without_the_adjustment_row() {
     let mut probe = MenuProbe::new();
     probe.run(vec![], &mut draw);
     assert!(probe.has("Match Frame") && probe.has("Reveal in Library"), "{:?}", probe.texts());
-    let rows = probe.texts().iter().filter(|t| t.chars().count() > 1 && *t != crate::ui::experimental::LABEL).count(); // not the icon glyphs or a badge
+    let rows = probe.texts().iter().filter(|t| t.chars().count() > 1).count(); // not the icon glyphs
     // (25 since ws:animator's "Show Animations" joined the top level)
     assert!(rows <= 25, "grouped into submenus, not ~32 flat rows: {rows}");
     assert!(probe.has("Show Animations"));

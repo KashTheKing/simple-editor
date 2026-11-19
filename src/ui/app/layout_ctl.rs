@@ -574,13 +574,10 @@ fn name_dialog(app: &mut App, ctx: &egui::Context, id: egui::Id) {
 pub(super) fn page_switcher(app: &mut App, ui: &mut egui::Ui) {
     let pages = app.settings.pages.clone();
     let font = egui::TextStyle::Button.resolve(ui.style());
-    // the Animate tab wears the Experimental badge after its name
-    let pill = crate::ui::experimental::size(ui) + egui::vec2(6.0, 0.0);
-    let badge_w = |p: &str| if crate::ui::experimental::page(p) { pill.x } else { 0.0 };
     let pad = ui.spacing().button_padding.x * 2.0 + 12.0;
     let widths: Vec<f32> = pages
         .iter()
-        .map(|p| ui.painter().layout_no_wrap(p.to_string(), font.clone(), egui::Color32::PLACEHOLDER).size().x + pad + badge_w(p))
+        .map(|p| ui.painter().layout_no_wrap(p.to_string(), font.clone(), egui::Color32::PLACEHOLDER).size().x + pad)
         .collect();
     let gap = 0.0;
     let total = widths.iter().sum::<f32>() + gap * pages.len().saturating_sub(1) as f32;
@@ -592,7 +589,16 @@ pub(super) fn page_switcher(app: &mut App, ui: &mut egui::Ui) {
     let mut rects = Vec::with_capacity(pages.len());
     let mut drag: Option<(usize, bool)> = None; // (the page being dragged, released this frame)
     let accent = ui.visuals().selection.bg_fill;
-    ui.painter().rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+    // one segmented control: square inside, fully round (pill) on the outer ends (the first page's left, the last's right)
+    let r = (rect.height() / 2.0).min(255.0) as u8;
+    let last = pages.len().saturating_sub(1);
+    let ends = |i: usize| egui::CornerRadius {
+        nw: if i == 0 { r } else { 0 },
+        sw: if i == 0 { r } else { 0 },
+        ne: if i == last { r } else { 0 },
+        se: if i == last { r } else { 0 },
+    };
+    ui.painter().rect_filled(rect, r, ui.visuals().extreme_bg_color);
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {
@@ -600,27 +606,17 @@ pub(super) fn page_switcher(app: &mut App, ui: &mut egui::Ui) {
             for (i, (page, &w)) in pages.iter().zip(&widths).enumerate() {
                 let on = app.settings.page == *page;
                 let color = if on { crate::ui::tools::on_accent(accent) } else { ui.visuals().text_color() };
-                let badge_id = egui::Id::new(("page-badge", i));
                 let text = egui::RichText::new(page).color(color);
-                let b = if crate::ui::experimental::page(page) {
-                    egui::Button::new((text, egui::Atom::custom(badge_id, pill)))
-                } else {
-                    egui::Button::new(text)
-                };
-                let mut b = b
+                let mut b = egui::Button::new(text)
                     .min_size(egui::vec2(w, 0.0))
                     .frame_when_inactive(on)
+                    .corner_radius(ends(i))
                     .sense(egui::Sense::click_and_drag());
                 if on {
                     b = b.fill(accent);
                 }
                 let key = PAGE_ACTIONS.get(i).map(|&a| app.hotkeys.text(a)).unwrap_or_default();
-                let laid = b.atom_ui(ui);
-                if let Some((_, rect)) = laid.custom_rects().find(|(id, _)| *id == badge_id) {
-                    crate::ui::experimental::paint(ui.painter(), rect.left_center() + egui::vec2(6.0, 0.0));
-                }
-                let tip = if crate::ui::experimental::page(page) { format!("\n{}", crate::ui::experimental::TIP) } else { String::new() };
-                let r = laid.response.on_hover_text(format!("{page} page   {key}{tip}\nDrag to reorder, right-click for more"));
+                let r = b.atom_ui(ui).response.on_hover_text(format!("{page} page   {key}\nDrag to reorder, right-click for more"));
                 rects.push(r.rect);
                 if r.clicked() && !on {
                     pick = Some(page.clone());

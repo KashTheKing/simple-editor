@@ -1583,7 +1583,7 @@ fn dropped_delta(prev_idx: i64, idx: i64, rate: f64) -> u64 {
 /// None = the change can affect any frame (or is too entangled to bound): clear everything.
 /// Edits that cannot change pixels (markers, in/out points, audio tracks, buses, planner, notes,
 /// labels, folders) produce no spans at all - the whole cache survives them.
-fn video_dirty_spans(old: &Project, new: &Project) -> Option<Vec<(f64, f64)>> {
+pub(crate) fn video_dirty_spans(old: &Project, new: &Project) -> Option<Vec<(f64, f64)>> {
     // serde_json string equality instead of a PartialEq derive cascade across the whole model
     fn json<T: serde::Serialize>(v: &T) -> String {
         serde_json::to_string(v).unwrap_or_default()

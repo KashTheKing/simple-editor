@@ -795,7 +795,8 @@ fn header(
     undo: &mut dyn FnMut(&Project),
     out: &mut AnimResp,
 ) {
-    ui.horizontal(|ui| {
+    // wraps: a narrow Animator gets two or three rows instead of controls drawn over each other
+    ui.horizontal_wrapped(|ui| {
         if !compact {
             segmented(ui, &mut st.view, &[(View::Blocks, "Blocks"), (View::Curves, "Curves"), (View::Flow, "Flow"), (View::Speed, "Speed")]);
             ui.add_space(6.0);
@@ -912,7 +913,9 @@ fn header(
             drop_collide(project, ids, playhead, k, undo, out);
         }
         if st.view == View::Flow || compact {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| mode_seg(ui, st));
+            // in the flow, not pinned right: pinned, it was drawn over the chips once the row ran out of room
+            ui.add_space(6.0);
+            mode_seg(ui, st);
         }
     });
 }
@@ -1046,17 +1049,20 @@ fn capture(c: &Clip, b: &AppliedBlock, w: f64, h: f64) -> KeyBlock {
     }
 }
 
+/// "Smooth by easing" and its three choices, left to right, in one row that wraps as a unit.
 fn mode_seg(ui: &mut Ui, st: &mut AnimState) {
-    for (m, n, tip) in [
-        (Match::Both, "both", "Both moves change to meet halfway"),
-        (Match::Earlier, "the earlier move", "The earlier move ends at the speed the next one starts at"),
-        (Match::Next, "the next move", "The next move starts at the speed the earlier one ends at"),
-    ] {
-        if chip(ui, st.mode == m, n).on_hover_text(tip).clicked() {
-            st.mode = m;
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Smooth by easing").size(11.0).weak());
+        for (m, n, tip) in [
+            (Match::Next, "the next move", "The next move starts at the speed the earlier one ends at"),
+            (Match::Earlier, "the earlier move", "The earlier move ends at the speed the next one starts at"),
+            (Match::Both, "both", "Both moves change to meet halfway"),
+        ] {
+            if chip(ui, st.mode == m, n).on_hover_text(tip).clicked() {
+                st.mode = m;
+            }
         }
-    }
-    ui.label(egui::RichText::new("Smooth by easing").size(11.0).weak());
+    });
 }
 
 /// The lanes a clip's blocks sit in, by what they animate.
