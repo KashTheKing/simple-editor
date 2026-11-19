@@ -1,5 +1,5 @@
 //! The "Experimental" badge: a small pill in a muted warning colour, with the explanation on hover. One
-//! look for every feature still being worked on (the Animator, the Device Emulator, the Assistant, the
+//! look for every feature still being worked on (the Animator, the Platform Emulator, the Assistant, the
 //! AI upscaler, Screen Recording): wherever it is entered - its pane tab, Window menu row, page tab,
 //! dialog, Ctrl+P row - `badge` / `paint` draw it, and `pane` / `action` / `page` say which ones wear it.
 
