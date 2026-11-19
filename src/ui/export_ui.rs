@@ -1221,7 +1221,7 @@ fn advanced_section(
 /// A filled accent-coloured button (the primary action).
 fn accent_button<'a>(ui: &egui::Ui, text: &'a str) -> egui::Button<'a> {
     let accent = ui.visuals().selection.bg_fill;
-    egui::Button::new(egui::RichText::new(text).strong().color(crate::ui::tools::on_accent(accent)))
+    egui::Button::new(egui::RichText::new(text).strong().color(crate::ui::tools::on_accent_over(accent, ui.visuals().panel_fill)))
         .fill(accent)
         .min_size(egui::vec2(96.0, 28.0))
 }

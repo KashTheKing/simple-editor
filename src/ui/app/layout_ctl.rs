@@ -599,7 +599,9 @@ pub(super) fn page_switcher(app: &mut App, ui: &mut egui::Ui) {
             ui.spacing_mut().item_spacing.x = gap;
             for (i, (page, &w)) in pages.iter().zip(&widths).enumerate() {
                 let on = app.settings.page == *page;
-                let color = if on { crate::ui::tools::on_accent(accent) } else { ui.visuals().text_color() };
+                // the switcher's accent is translucent over the bar: measure it as it shows
+                let bar_bg = ui.visuals().extreme_bg_color;
+                let color = if on { crate::ui::tools::on_accent_over(accent, bar_bg) } else { ui.visuals().text_color() };
                 let badge_id = egui::Id::new(("page-badge", i));
                 let text = egui::RichText::new(page).color(color);
                 let b = if crate::ui::experimental::page(page) {

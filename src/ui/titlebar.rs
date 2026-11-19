@@ -170,7 +170,7 @@ pub fn set_palette(ctx: &egui::Context, pal: Palette) {
     ctx.data_mut(|d| d.insert_temp(egui::Id::new("titlebar-palette"), pal));
 }
 
-fn palette(ctx: &egui::Context) -> Palette {
+pub fn palette(ctx: &egui::Context) -> Palette {
     ctx.data(|d| d.get_temp(egui::Id::new("titlebar-palette"))).unwrap_or_else(|| crate::theme::palette(ctx))
 }
 

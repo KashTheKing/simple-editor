@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Assistant in your theme**: the chat list, messages and input box now use the theme's colours (they could show light panels with unreadable text in a dark theme). The open chat is lit with the accent, steps sit in a framed row, Undo / Copy / Retry look like buttons, the chat-list button lights while the list is open, the model and permission pickers show ▾, and Send fills with the accent once there is something to send.
+- **Readable text on the accent**: active pane tabs, the page switcher and accent buttons pick white or black text for at least 4.5:1 contrast (dark text on the blue tab was hard to read).
+
 ## 1.4.0
 
 ### Media player

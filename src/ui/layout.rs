@@ -1518,7 +1518,9 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
             let text_w = galley.size().x;
             // while a sequence is open "Main" is the way back: dimmed until hovered
             let main_color = if seq.is_some() && !main_hot { text_color.gamma_multiply(0.6) } else { text_color };
-            ui.painter().galley(tp, galley, main_color);
+            // the theme's override_text_color is baked into the title galley: force the tab's own colour
+            // (white / black on the active accent tab)
+            ui.painter().galley_with_override_text_color(tp, galley, main_color);
             // ---- ws:layout-modes-onboarding ----
             // a tab kept in front ("Stay on this tab") wears a small pin after its title; a glowing one
             // an accent underline that fades out (the "look here" cue used instead of switching tabs)

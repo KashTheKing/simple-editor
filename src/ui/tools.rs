@@ -1606,13 +1606,26 @@ pub(crate) fn color_chip<'a>(color: Color32, selected: bool, palette: &Palette) 
     egui::Button::new("").fill(color).stroke(ring).corner_radius(CornerRadius::same(8)).min_size(egui::vec2(15.0, 15.0))
 }
 
-/// Readable text colour on top of the accent fill.
+/// Readable text colour on top of an accent fill: white whenever it reaches the WCAG 4.5:1 text contrast
+/// (mid blues get white), else black - one of the two always does. A translucent fill is measured as its
+/// own colour (un-premultiplied); where it sits over something, use `on_accent_over`.
 pub(crate) fn on_accent(c: Color32) -> Color32 {
-    let l = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
-    if l > 140.0 {
-        Color32::BLACK
-    } else {
+    let [r, g, b, _] = c.to_srgba_unmultiplied();
+    pick_on([r, g, b])
+}
+
+/// `on_accent` for a fill as it shows over `bg` (`selection.bg_fill` is the accent at partial alpha).
+pub(crate) fn on_accent_over(fill: Color32, bg: Color32) -> Color32 {
+    let k = (255 - fill.a()) as u16;
+    let mix = |f: u8, b: u8| (f as u16 + b as u16 * k / 255).min(255) as u8;
+    pick_on([mix(fill.r(), bg.r()), mix(fill.g(), bg.g()), mix(fill.b(), bg.b())])
+}
+
+fn pick_on(c: [u8; 3]) -> Color32 {
+    if crate::theme::contrast(c, [255, 255, 255]) >= 4.5 {
         Color32::WHITE
+    } else {
+        Color32::BLACK
     }
 }
 
@@ -2235,5 +2248,53 @@ mod tests {
         h.hidden.clear();
         h.frame(vec![]);
         assert!(h.ctx.read_response(egui::Id::new(("tools-panel", 6))).is_some(), "Reset brings it back");
+    }
+
+    /// Text on every accent fill reads at WCAG AA (4.5:1): the default accent and a few user ones, the
+    /// stock and preset themes, dark and light - the opaque accent (active pane tab, panel toggles,
+    /// Send), the translucent selection over the bar / panel (page switcher, Export), and a selected
+    /// list row (`list_rows`: half the selection tint).
+    #[test]
+    fn text_on_accent_fills_is_readable() {
+        let rgb = |c: Color32| [c.r(), c.g(), c.b()];
+        let over = |f: Color32, b: Color32| {
+            let k = (255 - f.a()) as u16;
+            let m = |x: u8, y: u8| (x as u16 + y as u16 * k / 255).min(255) as u8;
+            [m(f.r(), b.r()), m(f.g(), b.g()), m(f.b(), b.b())]
+        };
+        let sys = crate::theme::system_accent();
+        let accents = [[sys.r(), sys.g(), sys.b()], [51, 95, 255], [0, 120, 215], [76, 194, 255], [255, 210, 0], [0, 255, 240], [120, 60, 200], [230, 70, 70], [16, 124, 16]];
+        let mut looks = vec![crate::theme::PaletteOverride::default()];
+        looks.extend(["GitHub Dark", "GitHub Light", "Catppuccin Latte"].iter().filter_map(|n| crate::theme::preset(n)));
+        let ctx = egui::Context::default();
+        let mut bad = Vec::new();
+        for a in accents {
+            for base in &looks {
+                for theme in ["dark", "light"] {
+                    let ov = crate::theme::PaletteOverride { accent: Some(a), ..base.clone() };
+                    crate::theme::apply_visuals(&ctx, theme, &ov, "");
+                    let v = ctx.style().visuals.clone();
+                    let accent = Color32::from_rgb(a[0], a[1], a[2]);
+                    let fills: [(&str, [u8; 3], Color32); 5] = [
+                        ("accent", a, on_accent(accent)),
+                        ("active tab", rgb(v.widgets.active.bg_fill), on_accent(v.widgets.active.bg_fill)),
+                        ("selection over bar", over(v.selection.bg_fill, v.extreme_bg_color), on_accent_over(v.selection.bg_fill, v.extreme_bg_color)),
+                        ("selection over panel", over(v.selection.bg_fill, v.panel_fill), on_accent_over(v.selection.bg_fill, v.panel_fill)),
+                        ("selected row", over(v.selection.bg_fill.gamma_multiply(0.5), v.panel_fill), on_accent_over(v.selection.bg_fill.gamma_multiply(0.5), v.panel_fill)),
+                    ];
+                    for (what, fill, text) in fills {
+                        let c = crate::theme::contrast(fill, rgb(text));
+                        if c < 4.5 {
+                            bad.push(format!("{what} {fill:?} text {:?} = {c:.2} ({theme}, accent {a:?}, preset '{}')", rgb(text), base.preset));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "low contrast:
+{}", bad.join("
+"));
+        // mid blues get white
+        assert_eq!(on_accent(Color32::from_rgb(51, 95, 255)), Color32::WHITE);
     }
 }
