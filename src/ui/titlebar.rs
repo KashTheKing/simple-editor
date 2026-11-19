@@ -58,16 +58,35 @@ pub fn bar_style(style: &mut egui::Style) {
     }
 }
 
-/// An icon button of the bar (Performance, Quick Export): full height, 40 px wide, the hover fill of the
-/// window buttons; the glyph at its usual size.
+/// An icon button of the bar (Quick Export): full height, 40 px wide, the hover fill of the window
+/// buttons; the glyph at its usual size.
 pub fn icon_button(ui: &mut Ui, pal: &Palette, id: egui::Id, g: crate::ui::tools::Glyph, tip: &str) -> Response {
+    panel_toggle_button(ui, pal, id, g, tip, false)
+}
+
+/// A button that opens a panel (Performance): `open` (the panel on screen, `App::pane_drawn`) fills it
+/// with the accent, and its click toggles the panel (`App::toggle_panel`). The bar's icon button shape.
+pub fn panel_toggle_button(ui: &mut Ui, pal: &Palette, id: egui::Id, g: crate::ui::tools::Glyph, tip: &str, open: bool) -> Response {
     let (rect, _) = ui.allocate_exact_size(vec2(ICON_W, BUTTON.y), Sense::hover());
     let r = ui.interact(rect, id, Sense::click());
-    if r.hovered() {
-        ui.painter().rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
-    }
-    crate::ui::tools::draw_glyph(ui.painter(), rect, g, pal.text);
+    let fg = toggle_fill(ui, pal, rect, &r, open);
+    crate::ui::tools::draw_glyph(ui.painter(), rect, g, fg);
     r.on_hover_text(tip)
+}
+
+/// A bar button's fill: the accent while `on` (its panel open), the hover fill under the pointer.
+/// Returns the colour to draw its content in.
+pub fn toggle_fill(ui: &Ui, pal: &Palette, rect: Rect, r: &Response, on: bool) -> Color32 {
+    if on {
+        let fill = if r.hovered() { pal.accent.gamma_multiply(0.85) } else { pal.accent };
+        ui.painter().rect_filled(rect, 0.0, fill);
+        crate::ui::tools::on_accent(pal.accent)
+    } else {
+        if r.hovered() {
+            ui.painter().rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+        }
+        pal.text
+    }
 }
 
 /// The width of a bar icon button.

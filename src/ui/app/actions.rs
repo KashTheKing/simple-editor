@@ -603,6 +603,16 @@ impl App {
         self.layout_dirty = true;
     }
 
+    /// What a button that opens a panel does (Performance, Jobs...): on screen, it closes; otherwise it
+    /// opens in front. The button shows `pane_drawn(p)` as its on state (`titlebar::panel_toggle_button`).
+    pub(super) fn toggle_panel(&mut self, p: Pane) {
+        if self.layout_swapped_out() {
+            return self.surface(p);
+        }
+        self.layout.toggle_shown(p, self.pane_drawn(p));
+        self.layout_dirty = true;
+    }
+
     /// Gallery tab shortcut: show the Gallery on `tab`; pressed again while it is showing that tab, hide it.
     fn toggle_gallery_tab(&mut self, tab: crate::ui::gallery::GalleryTab) {
         if self.pane_drawn(Pane::Presets) && self.gallery.tab == tab && self.gallery.lib.is_none() {

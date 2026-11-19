@@ -419,11 +419,13 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
     true
 }
 
-/// Top bar: the Performance button (beside Jobs and Quick Export).
+/// Top bar: the Performance button (beside Jobs and Quick Export). It toggles the pane and is lit while
+/// the pane is on screen.
 pub(super) fn button(app: &mut App, ui: &mut egui::Ui) {
     let id = egui::Id::new("se-perf-button");
-    if crate::ui::titlebar::icon_button(ui, &app.palette, id, tools::Glyph::Perf, "Performance").clicked() {
-        app.act(Action::PerfWindow);
+    let open = app.pane_drawn(Pane::Performance);
+    if crate::ui::titlebar::panel_toggle_button(ui, &app.palette, id, tools::Glyph::Perf, "Performance", open).clicked() {
+        app.toggle_panel(Pane::Performance);
     }
 }
 
@@ -540,7 +542,7 @@ mod tests {
     fn perf_button_triggers_the_action() {
         let pal = crate::theme::Palette::new(true, egui::Color32::LIGHT_BLUE);
         let id = egui::Id::new("se-perf-button");
-        let draw = |ui: &mut egui::Ui| crate::ui::titlebar::icon_button(ui, &pal, id, tools::Glyph::Perf, "Performance");
+        let draw = |ui: &mut egui::Ui| crate::ui::titlebar::panel_toggle_button(ui, &pal, id, tools::Glyph::Perf, "Performance", false);
         assert!(super::super::jobs_pane::tests::click_widget(draw, |r| r.center()));
         let src = include_str!("perf_ctl.rs");
         let body = |f: &str| {
@@ -548,7 +550,8 @@ mod tests {
             s[..s.find("\n}\n").unwrap()].to_string()
         };
         let button = body("pub(super) fn button");
-        assert!(button.contains("\"Performance\"") && button.contains("app.act(Action::PerfWindow)"));
+        assert!(button.contains("\"Performance\"") && button.contains("app.toggle_panel(Pane::Performance)"));
+        assert!(button.contains("let open = app.pane_drawn(Pane::Performance)"), "lit while the pane is on screen");
         assert!(body("pub(super) fn act").contains("open(app)"));
         assert!(body("fn open(app").contains("app.surface(Pane::Performance)"));
         let menus = include_str!("menus.rs");
@@ -568,6 +571,54 @@ mod tests {
         for mut l in [Layout::export_layout(), Layout::blank_layout()] {
             l.reveal(Pane::Performance);
             assert!(l.is_visible(Pane::Performance));
+        }
+    }
+
+    /// The top bar's Performance / Jobs buttons toggle their pane: closed (or a tab behind another) ->
+    /// open in front; on screen -> closed. Closed some other way (Window menu, its tab), the next click
+    /// opens it again instead of "closing" it twice: the button goes by what is on screen.
+    #[test]
+    fn the_panel_buttons_toggle_their_pane() {
+        for p in [Pane::Performance, Pane::Jobs] {
+            for mut l in [Layout::export_layout(), Layout::blank_layout()] {
+                l.toggle_shown(p, false);
+                assert!(l.is_visible(p), "{p:?} opened");
+                l.toggle_shown(p, true);
+                assert!(!l.is_visible(p), "{p:?} closed by the second click");
+                l.toggle_shown(p, false);
+                assert!(l.is_visible(p), "{p:?} opened again");
+                l.toggle(p); // the Window menu closes it
+                l.toggle_shown(p, false);
+                assert!(l.is_visible(p), "{p:?}: a click after closing it elsewhere opens it");
+            }
+        }
+        // on the Export page Jobs and Performance share a tab group: a click on the one behind brings it
+        // to the front (it was not on screen) instead of closing it
+        let mut l = Layout::export_layout();
+        l.reveal(Pane::Jobs);
+        assert_eq!(l.stacked_front(Pane::Jobs, Pane::Performance), Some(Pane::Jobs));
+        l.toggle_shown(Pane::Performance, false);
+        assert_eq!(l.stacked_front(Pane::Jobs, Pane::Performance), Some(Pane::Performance));
+        assert!(l.is_visible(Pane::Performance));
+    }
+
+    /// Lit (the accent) only while its panel is open; the click still lands either way.
+    #[test]
+    fn a_panel_button_is_lit_while_its_panel_is_open() {
+        let pal = crate::theme::Palette::new(true, egui::Color32::LIGHT_BLUE);
+        let id = egui::Id::new("se-perf-button");
+        for open in [true, false] {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts());
+            let out = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    crate::ui::titlebar::panel_toggle_button(ui, &pal, id, tools::Glyph::Perf, "Performance", open);
+                });
+            });
+            let lit = out.shapes.iter().any(|c| matches!(&c.shape, egui::Shape::Rect(r) if r.fill == pal.accent));
+            assert_eq!(lit, open);
+            let draw = |ui: &mut egui::Ui| crate::ui::titlebar::panel_toggle_button(ui, &pal, id, tools::Glyph::Perf, "Performance", open);
+            assert!(super::super::jobs_pane::tests::click_widget(draw, |r| r.center()));
         }
     }
 }

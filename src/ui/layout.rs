@@ -894,6 +894,15 @@ impl Layout {
             None => self.insert_into_root(pane),
         }
     }
+    /// A panel button's click (`App::toggle_panel`): the pane `on_screen` (drawn last frame) closes,
+    /// otherwise it opens and comes to the front - also when it was a tab behind another one.
+    pub fn toggle_shown(&mut self, pane: Pane, on_screen: bool) {
+        if on_screen && self.is_visible(pane) {
+            self.toggle(pane);
+        } else {
+            self.reveal(pane);
+        }
+    }
     /// Make the pane visible (docked or popped) and, if it is a tab, the active one.
     pub fn reveal(&mut self, pane: Pane) {
         if self.popped.contains(&pane) {

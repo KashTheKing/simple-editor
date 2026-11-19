@@ -220,26 +220,25 @@ pub(super) fn indicator(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     app.jobs.drew = true;
-    if count_button(ui, &app.palette, n).clicked() {
-        app.toggle_pane(Pane::Jobs);
+    if count_button(ui, &app.palette, n, app.pane_drawn(Pane::Jobs)).clicked() {
+        app.toggle_panel(Pane::Jobs);
     }
 }
 
 /// The indicator's one button: count then glyph (right-to-left layout puts the glyph on the right), one
-/// hit rect over both, with the hover fill `tools::icon_button` uses.
-fn count_button(ui: &mut egui::Ui, palette: &crate::theme::Palette, n: usize) -> egui::Response {
+/// hit rect over both, the bar's full height and fills.
+fn count_button(ui: &mut egui::Ui, palette: &crate::theme::Palette, n: usize, open: bool) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(n.to_string(), egui::FontId::proportional(13.0), palette.text);
     let w = 10.0 + galley.size().x + 2.0 + 28.0;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, crate::ui::titlebar::BUTTON.y), egui::Sense::hover());
     let r = ui.interact(rect, egui::Id::new("se-jobs-indicator"), egui::Sense::click());
+    // lit while the Jobs pane is on screen (a panel button, `titlebar::toggle_fill`)
+    let fg = crate::ui::titlebar::toggle_fill(ui, palette, rect, &r, open);
     let p = ui.painter();
-    if r.hovered() {
-        p.rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
-    }
     let text_at = egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0);
-    p.galley(text_at, galley, palette.text);
+    p.galley_with_override_text_color(text_at, galley, fg);
     let icon = egui::Rect::from_min_max(egui::pos2(rect.right() - 28.0, rect.top()), rect.right_bottom());
-    tools::draw_glyph(p, icon, tools::Glyph::Queue, palette.text);
+    tools::draw_glyph(p, icon, tools::Glyph::Queue, fg);
     r.on_hover_text("Background jobs - show the Jobs pane")
 }
 
@@ -384,7 +383,7 @@ pub(super) mod tests {
     #[test]
     fn jobs_button_full_rect_is_clickable() {
         let pal = crate::theme::Palette::new(true, egui::Color32::LIGHT_BLUE);
-        let draw = |ui: &mut egui::Ui| count_button(ui, &pal, 3);
+        let draw = |ui: &mut egui::Ui| count_button(ui, &pal, 3, false);
         assert!(click_widget(draw, |r| egui::pos2(r.left() + 8.0, r.center().y)), "a click on the count");
         assert!(click_widget(draw, |r| egui::pos2(r.right() - 12.0, r.center().y)), "a click on the glyph");
         assert!(click_widget(draw, |r| r.center()), "a click between them");
