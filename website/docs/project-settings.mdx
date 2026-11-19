@@ -1,0 +1,60 @@
+---
+title: Project settings
+description: Size, frame rate, SDR or HDR colour and a Max length for Shorts, and the Match project card on import.
+---
+
+![Project settings in the Inspector](/img/tutorial/project-settings.png)
+
+Click an empty part of the timeline so nothing is selected, and the Inspector shows the project: **Name**,
+**Format**, **Resolution**, **Frame rate**, **Color**, **Max length** and **Background**. The same rows are at
+the top of the [Export](export.mdx) panel. An open nested sequence has its own.
+
+## Frame rate
+
+A project's frame rate is always a clean number. Phones and screen recorders often report rates like
+26.0221…; Simple Editor snaps a measured rate to the nearest standard one within 3 % (23.976, 24, 25, 29.97,
+30, 48, 50, 59.94, 60, 90, 120, 144 or 240) or rounds it to three decimals. A custom rate you type is rounded
+the same way, and older projects are fixed when they open.
+
+## Match project to this video?
+
+![The Match project card](/img/tutorial/match-project.png)
+
+When you import a video whose size, frame rate or HDR differs from the project (or the first video into an
+empty project), a small card asks **Match project to this video?**:
+
+- **Match** sets the project's size, frame rate and, for an HDR video, its colour to the video's, as one undo
+  step.
+- **Keep** leaves the project as it is.
+- **Don't ask again** stops the card; **Settings ▸ General** turns it back on.
+
+Importing many files at once asks only once.
+
+## Color: SDR or HDR
+
+| Color | What you get |
+|---|---|
+| **SDR Rec.709** | Standard video: looks the same on every screen and site. The default. |
+| **HDR10 (Rec.2100 PQ)** | 10-bit HEVC (or AV1 for WebM) with PQ and HDR10 metadata, for HDR TVs, phones and YouTube HDR |
+| **HDR HLG** | 10-bit HEVC (or AV1) with HLG: broadcast HDR that still plays as SDR on SDR screens |
+
+In an HDR project, graphics, text and SDR footage sit at 203 nits, the usual "paper white". The Preview
+shows HDR tone-mapped. The Export panel shows the colour space and tells you when a format can't carry it
+(GIF, AVI or an 8-bit encoder).
+
+HDR footage in any project is tone-mapped to SDR when it is decoded for the Preview, proxies, thumbnails and SDR
+exports, so it no longer looks washed out.
+
+## Max length
+
+![Max length on the timeline](/img/tutorial/max-length.png)
+
+**Max length** is for videos with a time limit (Shorts, Reels, TikTok). Tick it and type a length, or pick
+one: 0:15, 0:30, 1:00, 1:30, 3:00, 10:00, 1 h, 2 h, 12 h. Longer lengths can be typed in any of these ways:
+`9999h`, `1h 30m`, `2d 1:00:00`.
+
+The timeline then draws a red line at the limit and shades everything after it, clips included, with
+**over by 0:04** in its toolbar. Zoom to Fit and the scrollbar include the part past the line.
+
+Nothing is cut. Exports stop at the limit, and the Export panel says so in one line with a button to include
+the rest.

@@ -16,15 +16,17 @@ want to:
 Open it with **Window ▸ Assistant** or from the command palette. It opens as a tab beside the
 **Inspector**, top right, on every page.
 
-## The header
+![The Assistant chat](/img/tutorial/assistant.png)
 
-One row across the top:
+## Chats and the menu
 
-- **The conversation menu** (its title and ▾) lists this project's conversations, newest first; pick one
-  to go back to it, × deletes one. **+** starts a new chat. Conversations are kept per project (up to 50)
-  in `%APPDATA%\SimpleEditor\assistant`, with their tasks and the images you attached; an unsaved project
-  shares one "untitled" set. Going back to a conversation continues it where it left off.
-- **The agent picker** decides who answers (also in **Settings ▸ Assistant**):
+The Assistant is laid out like a chat app. On the left, a sidebar you can fold away lists this project's
+chats: **New chat**, a search over every chat, and on each one pin, rename, save and delete. Opening the pane
+starts a new chat with the cursor in the box. Chats are kept per project in `%APPDATA%\SimpleEditor\assistant`,
+with their tasks and the images you attached.
+
+The **⋯** menu holds the rest: the agent, **Tasks**, **Skills**, and import / export. The agent decides who
+answers (also in **Settings ▸ Assistant**):
 
 | Agent | What runs |
 |---|---|
@@ -33,9 +35,8 @@ One row across the top:
 | **Custom command** | Your own command line, for any agent that speaks MCP. `{prompt}`, `{mcp_url}` and `{model}` are filled in; "double quotes" group words; no shell runs it. |
 | **External agent** | Nothing is started. Requests wait for an agent you already connected over MCP, which picks them up with `assistant.wait`. Tasks and Handle my comments need one of the other agents. |
 
-- **The model picker**: for Claude Code, **Default**, `fable`, `opus`, `sonnet` or `haiku`, or **Other…**
-  to type any model name; for Codex and a custom command, a text field (empty = the agent's default).
-  Switching agents goes back to its default model.
+Under the message box sit, small, the **model** (the latest few with a tick on the one in use, an **Effort**
+submenu and **More models**) and the chat's **permission mode** (see [Permissions](#permissions)).
 
 **API key** (Settings ▸ Assistant) is optional. Leave it empty to use the agent's own sign-in. A key you
 save is kept in Windows Credential Manager (as `SimpleEditor/assistant`), never in `settings.json`, and
@@ -44,7 +45,7 @@ variable** you name (custom command). Sending a request turns the MCP server on 
 
 ## Tasks
 
-The **Tasks** tab is where the panel opens.
+Open **Tasks** from the **⋯** menu.
 
 1. Type what you want in **Describe a task…** ("cut every pause longer than a second in the selected
    clips") and press <kbd>Enter</kbd> or **Add**.
@@ -69,9 +70,15 @@ many are waiting. Each one is one undo step, and undoing it reopens the comment.
 
 ## Chat
 
-The **Chat** tab is laid out like a chat app: your messages on the right, the assistant's answers on the
-left. The tools it called fold into one line under its answer (**3 actions**; click to see them). Under
-each finished answer, **Undo** takes back everything it did in one step, and **Copy** copies the answer.
+Your messages are on the right, the assistant's answers on the left, with Markdown and code blocks (each with
+a **Copy** button). The tools it called fold into one line under its answer (**3 actions**; click to see them).
+Under each finished answer, **Undo** takes back everything it did in one step. Right-click a message for **Copy
+text** (no markup), **Copy as Markdown**, **Copy attachments**, **Retry**, **Edit and resend** and **Delete**.
+
+**Attach** files with the **+** menu, by dropping them on the pane, or with <kbd>Ctrl+V</kbd> (a picture, or
+files copied in Explorer). The same menu captures the editor into the message: the current frame, a panel, an
+area you drag anywhere in the window, or the timeline range (a picture plus its clips). Every tab's right-click
+menu also has **Attach to Assistant**.
 
 Type in the box at the bottom and press <kbd>Enter</kbd> (<kbd>Shift+Enter</kbd> for a new line), or
 click **Send**; while the assistant works, **Send** becomes **Stop** (what it did so far stays, as one
@@ -108,20 +115,32 @@ something after it, use **History** to step back further. If you edit by hand wh
 running, your edit is its own undo step and the request continues as a second step after it; **Undo** then
 undoes only that last part. The clips a request changed get a short outline on the timeline.
 
-## Approve risky tools
+## Permissions
 
-Some tools reach outside the project: exports, opening or creating a project, changing settings, running
-scripts or tasks and converting media, and the menu commands that do the same (`ui.action` with New /
-Open Project, Save, the exports, Settings…). When an agent calls one, a small **An agent wants to leave
-the project** window appears with who is asking, the tool and its arguments:
+![Settings, Permissions tab](/img/tutorial/settings-permissions.png)
 
-- **Allow** runs it once.
-- **Always allow this session** runs it and stops asking for that tool (or that menu command) until you
-  restart.
+Every MCP tool is **Allow** (runs), **Ask** (waits for your yes) or **Block** (never runs). Reading the project
+is allowed; edits, exports, jobs and anything that leaves the project (opening or creating a project, changing
+settings, converting media) ask. **Settings ▸ Permissions** lists every tool by area with its state, a search
+box, a button per area to set all of its tools, and **Reset to defaults**.
+
+When a tool set to Ask is called from a chat, the question appears in the chat above the message box; from any
+other MCP client, in an **An agent asks for access** window. Both show the tool and its arguments:
+
+- **Allow once** runs it this time.
+- **Always allow** runs it and sets it to Allow in Settings ▸ Permissions.
 - **Deny** tells the agent you said no.
 
-Turn the check off with **Settings ▸ Assistant ▸ Guard**. It applies to every MCP client, not only the
-Assistant panel. Running a task yourself (**Run**) never asks.
+Each chat has a **permission mode**, picked under its message box:
+
+| Mode | What it does |
+|---|---|
+| **Ask permissions** | Every tool set to Ask waits for your answer |
+| **Accept edits** (default) | Edits to the project run; exports, opening files and settings still ask |
+| **Bypass permissions** | Tools set to Ask run without asking; blocked tools still never run. The box gets a warning-coloured border |
+
+Settings ▸ Permissions has the same choice for MCP clients other than the Assistant. **Settings ▸ Assistant ▸
+Guard** off lets every Ask tool through for every client. Running a task yourself (**Run**) never asks.
 
 ## Comments for any agent
 

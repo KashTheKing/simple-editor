@@ -44,11 +44,14 @@ param(
 #   crop   '' = the whole window; 'Timeline' = that panel with its tab bar; 'Library+Source' = both;
 #          '0,0,400,300' = a rect in window points; parts are joined, so 'Timeline+0,300,700,548' works.
 #   empty  $true = start without the demo project (the home screen).
+#   env    environment variables for that launch only, e.g. @{ SE_MCP_FULL_ACCESS = '0' }.
+#   settings  more settings.json fields for that launch, e.g. ', "assistant_guard": false'.
 #   steps  run in order once the demo project is open (Edit page, nothing selected, playhead at 0,
 #          timeline zoomed to fit):
 #     page Color                  switch page             seek 10.5              move the playhead
 #     select pattern,title        select demo clips (names in New-DemoProject; 'xfade' is the transition)
 #     open fractal [3]            open a Library item in the Source monitor (paused, at 3 s)
+#     pick music                  select Library items (the same names, without the extension)
 #     act zoom_fit                run an Action by id (see src/hotkeys.rs, or the MCP tool ui.actions)
 #     show Mixer                  bring a panel to the front (adds it if it is hidden)
 #     click|rclick|dclick|move <Panel> <x> <y> [ctrl+shift+alt]
@@ -60,8 +63,8 @@ param(
 # ---------------------------------------------------------------------------------------------------
 $Shots = @(
     # getting started
-    @{ name = 'home'; empty = $true; crop = '560,275,1040,545'; steps = @() }
-    @{ name = 'welcome'; empty = $true; crop = '540,330,1060,510'; steps = @('tool onboarding.reset {}') }
+    @{ name = 'home'; empty = $true; crop = '560,250,1040,575'; steps = @() }
+    @{ name = 'welcome'; empty = $true; crop = '555,255,1045,580'; steps = @('tool onboarding.reset {}') }
     @{ name = 'edit-page'; crop = ''; steps = @('select pattern', 'seek 10.5') }
     # the interface
     @{ name = 'page-media'; crop = ''; steps = @('page Media', 'open fractal 3') }
@@ -69,32 +72,32 @@ $Shots = @(
     @{ name = 'page-color'; crop = ''; steps = @('page Color', 'select pattern', 'seek 10.5') }
     @{ name = 'page-audio'; crop = ''; steps = @('page Audio', 'select music', 'seek 10.5') }
     @{ name = 'page-export'; crop = ''; steps = @('page Export', 'seek 10.5') }
-    @{ name = 'page-menu'; crop = '600,0,960,70'; steps = @('rclick @ 767 12') }
-    @{ name = 'tab-menu'; crop = '8,30,360,200'; steps = @('rclick Library 39 13') }
+    @{ name = 'page-menu'; crop = '600,0,960,250'; steps = @('rclick @ 738 17') }
+    @{ name = 'tab-menu'; crop = '8,30,360,330'; steps = @('rclick Library 39 13') }
     @{ name = 'add-panel-menu'; crop = '8,30,470,360'; steps = @('click Library -12 13') }
-    @{ name = 'window-menu'; crop = '215,0,760,640'; steps = @('click @ 243 12', 'move @ 267 431') }
-    @{ name = 'palette'; crop = '520,70,1080,265'; steps = @('key K ctrl', 'type split') }
+    @{ name = 'window-menu'; crop = '240,0,900,660'; steps = @('click @ 272 17', 'move @ 297 568') }
+    @{ name = 'palette'; crop = '505,70,1095,275'; steps = @('key P ctrl', 'type >split') }
     @{ name = 'cheatsheet'; crop = '0,30,560,700'; steps = @('key F1') }
-    @{ name = 'scripts-menu'; crop = '215,0,760,560'; steps = @('click @ 243 12', 'move @ 267 475') }
+    @{ name = 'scripts-menu'; crop = '240,0,900,800'; steps = @('click @ 272 17', 'move @ 297 634') }
     @{ name = 'settings-hotkeys'; crop = '550,150,1600,900'; steps = @('act settings', 'click @ 856 204') }
     # library and source
     @{ name = 'library'; crop = 'Library'; steps = @() }
     @{ name = 'library-item-menu'; crop = 'Library'; steps = @('rclick Library 90 166') }
     @{ name = 'library-empty-menu'; crop = '8,30,480,705'; steps = @('rclick Library 200 380') }
     @{ name = 'source'; crop = 'Source'; steps = @('open fractal 3', 'tool source.mark {"in": 2, "out": 6}') }
-    @{ name = 'source-menu'; crop = 'Source'; steps = @('open fractal', 'rclick Source 395 200') }
+    @{ name = 'source-menu'; crop = '357,30,1148,892'; steps = @('open fractal', 'rclick Source 395 200') }
     # viewer
     @{ name = 'viewer'; crop = 'Preview'; steps = @('select pattern', 'seek 10.5') }
-    @{ name = 'viewer-menu'; crop = '357,30,1148,630'; steps = @('select pattern', 'seek 10.5', 'rclick Preview 395 150') }
+    @{ name = 'viewer-menu'; crop = '357,30,1148,892'; steps = @('select pattern', 'seek 10.5', 'rclick Preview 395 150') }
     @{ name = 'viewer-shapes'; crop = '357,30,760,320'; steps = @('seek 10.5', 'click Preview 22 123') }
     # timeline
     @{ name = 'timeline'; crop = 'Timeline'; steps = @('select pattern', 'seek 10.5') }
     @{ name = 'timeline-clip-menu'; crop = '560,190,1200,892'; steps = @('seek 10.5', 'rclick Timeline 772 188') }
-    @{ name = 'timeline-track-menu'; crop = '8,400,400,892'; steps = @('rclick Timeline 32 188') }
+    @{ name = 'timeline-track-menu'; crop = '8,320,400,892'; steps = @('rclick Timeline 32 188') }
     @{ name = 'timeline-ruler-menu'; crop = '560,548,1100,800'; steps = @('seek 10.5', 'rclick Timeline 700 57') }
-    @{ name = 'timeline-transition-menu'; crop = '450,640,900,860'; steps = @('rclick Timeline 603 188') }
-    @{ name = 'timeline-seam-menu'; crop = '1100,640,1592,820'; steps = @('rclick Timeline 1280 200') }
-    @{ name = 'timeline-gap-menu'; crop = '600,600,1000,820'; steps = @('rclick Timeline 716 124') }
+    @{ name = 'timeline-transition-menu'; crop = '450,640,900,900'; steps = @('rclick Timeline 603 188') }
+    @{ name = 'timeline-seam-menu'; crop = '1100,640,1592,900'; steps = @('rclick Timeline 1273 200') }
+    @{ name = 'timeline-gap-menu'; crop = '600,600,1000,900'; steps = @('rclick Timeline 716 124') }
     @{ name = 'timeline-cue-menu'; crop = '400,590,800,780'; steps = @('rclick Timeline 462 83') }
     @{ name = 'timeline-marker-menu'; crop = '250,560,650,720'; steps = @('rclick Timeline 321 50') }
     @{ name = 'timeline-nested'; crop = 'Timeline'; steps = @('dclick Timeline 1421 188') }
@@ -102,11 +105,11 @@ $Shots = @(
     # inspector, effects, titles
     @{ name = 'inspector-clip'; crop = 'Inspector'; steps = @('select pattern', 'seek 10.5') }
     @{ name = 'inspector-text'; crop = '357,30,1592,547'; steps = @('select title', 'seek 2.5') }
-    @{ name = 'keyframes'; crop = '8,548,700,720'; steps = @('select title', 'seek 1.5') }
-    @{ name = 'keyframe-menu'; crop = '1149,30,1592,330'; steps = @('select gradient', 'seek 17', 'rclick Inspector 135 165') }
-    @{ name = 'inspector-effects'; crop = '1149,30,1592,560'; steps = @('tool inspector.folds {"section": "effects", "open": true}', 'select gradient', 'seek 17', 'rclick Inspector 101 303') }
+    @{ name = 'keyframes'; crop = '0,585,1600,900'; steps = @('page Animate', 'select title', 'seek 1.5', 'click @ 81 623') }
+    @{ name = 'keyframe-menu'; crop = '1149,30,1592,640'; steps = @('select gradient', 'seek 17', 'rclick Inspector 135 165') }
+    @{ name = 'inspector-effects'; crop = '0,30,560,820'; steps = @('tool inspector.folds {"section": "effects", "open": true}', 'select gradient', 'seek 17', 'tool layout.maximize {"pane": "Inspector"}', 'wait 0.5', 'rclick Inspector 101 528') }
     @{ name = 'effects'; crop = '0,30,1000,640'; steps = @('show Effects', 'select gradient', 'seek 17', 'tool layout.maximize {"pane": "Effects"}') }
-    @{ name = 'transitions'; crop = 'Transitions'; steps = @('show Transitions') }
+    @{ name = 'transitions'; crop = 'Gallery'; steps = @('show Gallery', 'tool gallery.tab {"tab": "Transitions"}') }
     @{ name = 'gallery'; crop = 'Gallery'; steps = @('show Gallery', 'select pattern') }
     # color, audio, captions, export
     @{ name = 'color-inspector'; crop = '8,30,700,892'; steps = @('page Color', 'select pattern', 'seek 10.5', 'tool layout.maximize {"pane": "Inspector"}') }
@@ -121,6 +124,31 @@ $Shots = @(
     @{ name = 'markers'; crop = 'Markers'; steps = @('show Markers') }
     @{ name = 'tracking'; crop = 'Tracking'; steps = @('show Tracking') }
     @{ name = 'planner'; crop = 'Planner'; steps = @('show Planner') }
+    # 1.4.0
+    @{ name = 'page-animate'; crop = ''; steps = @('page Animate', 'select title', 'seek 1.5') }
+    @{ name = 'project-settings'; crop = '1149,30,1592,280'; steps = @('tool project.set {"max_duration": 20}') }
+    @{ name = 'max-length'; crop = 'Timeline'; steps = @('tool project.set {"max_duration": 20}', 'act zoom_fit', 'seek 10.5') }
+    @{ name = 'match-project'; crop = '680,765,920,862'; steps = @("tool media.import {`"paths`": [`"$($Work -replace '\\', '/')/media/vertical.mp4`"]}", 'wait 2') }
+    @{ name = 'settings-permissions'; crop = '551,150,1600,900'; env = @{ SE_MCP_FULL_ACCESS = '0' }; settings = ', "assistant_guard": false'; steps = @('act settings', 'click @ 1135 204') }
+    # release builds have no "Full access" badge: switch the dev build's full access off for this one
+    @{ name = 'assistant'; crop = 'Assistant'; env = @{ SE_MCP_FULL_ACCESS = '0' }; steps = @('show Assistant') }
+    # the live preview paused: it would show whatever is on this PC's screen
+    @{ name = 'screen-recording'; crop = 'Screen Recording'; steps = @('tool capture.screen {"action": "open", "dock": true, "preview": false}', 'show Screen Recording', 'wait 1') }
+    @{ name = 'music-playlists'; crop = '0,30,760,900'; steps = @('page Media', 'show Playlists') }
+    @{ name = 'music-tags'; crop = 'Inspector'; steps = @('pick song', 'wait 8', 'move Inspector 200 300', 'wait 0.5') }
+    @{ name = 'music-burn'; crop = '622,292,978,606'; steps = @('act burn_disc', 'wait 1') }
+    @{ name = 'device-emulator'; crop = '440,90,1160,890'; steps = @('tool emulator.open {"device": "iphone", "platform": "yt_shorts"}', 'tool layout.maximize {"pane": "Device Emulator"}', 'seek 10.5', 'wait 1') }
+)
+
+# The media player (a file opened from Explorer) has no MCP: each shot is one launch with SE_PLAYER_SHOT (the
+# window saves itself after `wait` s and closes) and SE_PLAYER_SHOT_SETUP (the state, see src/player/mod.rs).
+# Every demo file's sound is silent, so nothing is heard.
+$PlayerShots = @(
+# (no `at=`: the setup runs as the window shows, before the file's length is known, and a seek then is lost)
+    @{ name = 'player'; file = 'player.mp4'; setup = 'hover=0.6' }
+    @{ name = 'player-menu'; file = 'player.mp4'; setup = 'menu=760:180' }
+    @{ name = 'player-metadata'; file = 'player.mp4'; setup = 'meta' }
+    @{ name = 'player-song'; file = 'song.m4a'; setup = '' }
 )
 
 # ---------------------------------------------------------------------------------------------------
@@ -161,21 +189,21 @@ function Test-PortBusy {
 # already seen, dark theme with a fixed teal accent so shots don't depend on this PC's Windows accent, the
 # window at -WindowRect), no autosave (a killed run leaves one, and the next launch would offer to recover
 # it) and no project lock.
-function Reset-Profile {
+function Reset-Profile([string]$Extra = '') {
     $dir = Join-Path $Prof 'SimpleEditor'
     New-Item -ItemType Directory -Force $dir | Out-Null
     $json = '{"mcp_enabled": true, "mcp_port": ' + $Port + ', "onboarded": true, "last_seen_version": "' + $Version +
         '", "theme": "dark", "palette": {"mode":"dark","background":[13,17,23],"panel":[22,27,34],"header":[33,38,45],"border":[48,54,61],"text":[230,237,243],"text_dim":[139,148,158]}, "bg_image": "", "window_rect": [' +
-        ($WindowRect -join ', ') + ']}'
+        ($WindowRect -join ', ') + ']' + $Extra + '}'
     [IO.File]::WriteAllText((Join-Path $dir 'settings.json'), $json, (New-Object Text.UTF8Encoding $false))
     Remove-Item -Recurse -Force -ErrorAction SilentlyContinue (Join-Path $Prof 'SimpleEditor\autosave')
     Remove-Item -Force -ErrorAction SilentlyContinue "$Demo.lock"
 }
 
-function Start-Editor([string[]]$ArgList) {
+function Start-Editor([string[]]$ArgList, [hashtable]$Env = @{}) {
     if (Test-PortBusy) { throw "port $Port is already in use - pass -Port <free port>" }
     $saved = @{}
-    foreach ($k in 'APPDATA', 'LOCALAPPDATA', 'SE_SCREENSHOT_WHEN', 'SE_BACKGROUND') {
+    foreach ($k in @('APPDATA', 'LOCALAPPDATA', 'SE_SCREENSHOT_WHEN', 'SE_BACKGROUND') + @($Env.Keys)) {
         $saved[$k] = [Environment]::GetEnvironmentVariable($k)
     }
     try {
@@ -183,6 +211,7 @@ function Start-Editor([string[]]$ArgList) {
         $env:LOCALAPPDATA = $Prof
         $env:SE_SCREENSHOT_WHEN = $Go
         $env:SE_BACKGROUND = '1' # open at window_rect, never take focus
+        foreach ($k in $Env.Keys) { [Environment]::SetEnvironmentVariable($k, $Env[$k]) }
         $quoted = $ArgList | ForEach-Object { '"' + $_ + '"' }
         $p = Start-Process -FilePath $Exe -ArgumentList $quoted -PassThru
     } finally {
@@ -229,6 +258,7 @@ function Invoke-Step([string]$Step) {
             $name, $at = $rest -split ' '
             $null = Invoke-Mcp 'source.open' @{ asset_id = $Assets[$name]; seek = [double]$at }
         }
+        'pick' { $null = Invoke-Mcp 'library.select' @{ ids = @($rest -split ',' | ForEach-Object { $Assets[$_] }) } }
         'select' {
             $c = @(); $tr = @()
             foreach ($n in $rest -split ',') {
@@ -297,6 +327,40 @@ function New-DemoMedia {
     & ffmpeg -hide_banner -loglevel error -y -f lavfi -i 'aevalsrc=0.6*sin(2*PI*180*t)*sin(2*PI*3*t)*gte(mod(t\,3)\,0.8):s=48000:d=12' (Join-Path $Media 'voice.wav')
     if ($LASTEXITCODE -ne 0) { throw 'ffmpeg failed on the audio clips' }
     Copy-Item (Join-Path $Work 'selftest\logo.png'), (Join-Path $Work 'selftest\test.mp4') $Media
+    # for the media player and the Match project card: silent sound only (three named tracks), a song with a
+    # cover and tags, and a tall clip that differs from the project
+    $mute = 'anullsrc=r=48000:cl=stereo'
+    & ffmpeg -hide_banner -loglevel error -y -f lavfi -i 'mandelbrot=s=1280x720:r=30:start_scale=2:end_scale=0.05' -f lavfi -i $mute -f lavfi -i $mute -f lavfi -i $mute -t 12 `
+        -map 0 -map 1 -map 2 -map 3 -c:v libx264 -pix_fmt yuv420p -preset veryfast -crf 23 -c:a aac `
+        -metadata:s:a:0 handler_name=Game -metadata:s:a:1 handler_name=Microphone -metadata:s:a:2 handler_name=Music -metadata title='Fractal flight' (Join-Path $Media 'player.mp4')
+    & ffmpeg -hide_banner -loglevel error -y -f lavfi -i 'gradients=s=600x600:c0=0x00b7c3:c1=0x5a2a82:x0=0:y0=0:x1=600:y1=600,format=rgb24' -frames:v 1 (Join-Path $Work 'cover.png')
+    & ffmpeg -hide_banner -loglevel error -y -f lavfi -i $mute -i (Join-Path $Work 'cover.png') -t 90 -map 0 -map 1 -c:a aac -c:v png -disposition:v attached_pic `
+        -metadata title='Night Drive' -metadata artist='Demo Band' -metadata album='Test Tones' (Join-Path $Media 'song.m4a')
+    & ffmpeg -hide_banner -loglevel error -y -f lavfi -i 'testsrc2=s=1080x1920:r=30' -f lavfi -i $mute -t 4 @v (Join-Path $Media 'vertical.mp4')
+    if ($LASTEXITCODE -ne 0) { throw 'ffmpeg failed on the player media' }
+}
+
+function Invoke-PlayerShot($Shot) {
+    Reset-Profile
+    $out = Join-Path $OutDir "$($Shot.name).png"
+    Remove-Item -Force -ErrorAction SilentlyContinue $out
+    $saved = @{}
+    foreach ($k in 'APPDATA', 'LOCALAPPDATA', 'SE_BACKGROUND', 'SE_PLAYER_SHOT', 'SE_PLAYER_SHOT_SETUP') { $saved[$k] = [Environment]::GetEnvironmentVariable($k) }
+    try {
+        $env:APPDATA = $Prof; $env:LOCALAPPDATA = $Prof; $env:SE_BACKGROUND = '1'
+        $env:SE_PLAYER_SHOT = "$out|10" # 10 s: a debug build reads the tags, thumbnails and cover in that time
+        $env:SE_PLAYER_SHOT_SETUP = $Shot.setup
+        $p = Start-Process -FilePath $Exe -ArgumentList @('"' + (Join-Path $Media $Shot.file) + '"') -PassThru # no --size: it opens at window_rect
+    } finally {
+        foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
+    }
+    if (-not $p.WaitForExit(60000)) { Stop-Process -Id $p.Id -Force; throw "$($Shot.name): the player never closed" }
+    if (-not (Test-Path $out)) { throw "$($Shot.name): the player saved no picture" }
+    # 256 colours, as the editor shots
+    $tmp = Join-Path $Work 'player.png'
+    Move-Item -Force $out $tmp
+    & ffmpeg -hide_banner -loglevel error -y -i $tmp -vf 'split[a][b];[a]palettegen=stats_mode=full[p];[b][p]paletteuse' $out
+    Write-Host ("  {0,-28} {1,5} KB" -f $Shot.name, [math]::Round((Get-Item $out).Length / 1KB))
 }
 
 # The demo project every shot opens. Clip ids go into $Clips / $Transitions under the names the steps use.
@@ -304,7 +368,7 @@ function New-DemoProject {
     Reset-Profile
     $p = Start-Editor @('--size', "${W}x${H}")
     try {
-        $names = 'fractal.mp4', 'pattern.mp4', 'gradient.mp4', 'bars.mp4', 'music.wav', 'voice.wav', 'logo.png', 'test.mp4'
+        $names = 'fractal.mp4', 'pattern.mp4', 'gradient.mp4', 'bars.mp4', 'music.wav', 'voice.wav', 'logo.png', 'test.mp4', 'song.m4a'
         $ids = (Invoke-Mcp 'media.import' @{ paths = @($names | ForEach-Object { Join-Path $Media $_ }) }).asset_ids
         $a = @{}
         for ($i = 0; $i -lt $names.Count; $i++) { $a[$names[$i]] = $ids[$i]; $Assets[($names[$i] -split '\.')[0]] = $ids[$i] }
@@ -351,6 +415,7 @@ function New-DemoProject {
             (Invoke-Mcp 'plan.add' @{ title = $t }).id
         }
         $null = Invoke-Mcp 'plan.set' @{ id = $plan[0]; done = $true }
+        $null = Invoke-Mcp 'playlist.create' @{ name = 'Road trip'; assets = @($a['song.m4a'], $a['music.wav'], $a['voice.wav']) }
         $null = Invoke-Mcp 'project.set' @{ name = 'Demo' }
         $null = Invoke-Mcp 'project.save' @{ path = $Demo }
         Wait-Idle # waveform peaks and proxies land in the profile's cache, so every shot's launch finds them
@@ -361,12 +426,13 @@ function New-DemoProject {
 }
 
 function Invoke-Shot($Shot) {
-    Reset-Profile
+    Reset-Profile $Shot.settings
     Remove-Item -Force -ErrorAction SilentlyContinue $Ppm, $Go
     $argList = @('--size', "${W}x${H}")
     if (-not $Shot.empty) { $argList += $Demo }
     $argList += @('--screenshot', $Ppm)
-    $p = Start-Editor $argList
+    $shotEnv = if ($Shot.env) { $Shot.env } else { @{} }
+    $p = Start-Editor $argList $shotEnv
     try {
         Wait-Idle
         if (-not $Shot.empty) { Invoke-Step 'act zoom_fit'; Invoke-Step 'wait 0.3' }
@@ -434,6 +500,7 @@ try {
     foreach ($s in $todo) {
         if (-not (Invoke-Shot $s) -and -not (Invoke-Shot $s)) { throw "$($s.name): the window keeps being resized" }
     }
+    $PlayerShots | Where-Object { $n = $_.name; @($Only | Where-Object { $n -like $_ }).Count -gt 0 } | ForEach-Object { Invoke-PlayerShot $_ }
     # the README's screenshot is the Edit page shot
     if (@($todo | Where-Object { $_.name -eq 'edit-page' }).Count -gt 0) {
         Copy-Item (Join-Path $OutDir 'edit-page.png') (Join-Path $Repo 'docs\images\screenshot.png')

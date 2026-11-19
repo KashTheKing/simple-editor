@@ -1,0 +1,85 @@
+---
+title: Animate page and the Animator
+description: Animation blocks with controls, Curves, Flow and Speed views, physics, motion paths and timeline-wide transitions.
+---
+
+![The Animate page](/img/tutorial/page-animate.png)
+
+The **Animate** page (<kbd>Alt+4</kbd>, after Edit) is for moving things: the Gallery, the Preview, the
+Inspector, a thin Timeline and the **Animator** panel. The Animator is also on any page from the Window menu,
+<kbd>Ctrl+P</kbd>, or a clip's right-click ▸ **Show Animations**.
+
+## Blocks
+
+An animation in Simple Editor is a **block**: a move from where the clip starts (**From**) to where it ends
+(**To**), with an ease for how it travels between them. Every Gallery animation (Fade In, Slide, Pop, Zoom
+Punch, Ken Burns…) drops as a block, and every block has controls in the Inspector: **Side**, **Strength**,
+**Length** and **Ease**. Change a control and the block rewrites its own keys.
+
+In the Animator each selected clip gets a lane per kind of property its blocks animate (Motion, Opacity,
+Speed, Sound). In a lane:
+
+- Drag a block to move it, drag its ends to stretch it. With **Snapping** on it snaps to other blocks and to
+  every clip's edges, with a guide line. Blocks that overlap stack in rows.
+- Open a block (**▸**) to see its move as one curve: pull the two middle points to shape the ease, an end point
+  sideways to stretch it.
+- **Split** a block at the playhead (<kbd>Ctrl+B</kbd> with the block picked, or right-click ▸ **Split at
+  playhead**).
+- Shift / Ctrl-click several blocks, then **Flow together** (each starts where the one before ends, speeds
+  matched) or **Link into one block**.
+- **Loop** (Inspector or right-click) repeats a block, optionally ping-pong; the bar shows a tick per cycle.
+
+Each kind of animation has its own colour (In teal, Out orange, Physics purple, Collide pink, Emphasis
+yellow, Camera blue, Text sky, Sound green, Speed red, Custom slate), on the block, its Inspector pill, its
+Gallery card and the strip along the bottom of the timeline clip. The timeline itself no longer draws keys.
+
+**Hand keys**: keys you set yourself with ◆ show as a dashed **Hand keys** row. Click it (or right-click the
+clip ▸ **Turn hand keys into blocks**) to turn them into a Custom block with controls; the motion stays the
+same. **Record** off means changing a value never adds a key.
+
+## Views: Blocks, Curves, Flow, Speed
+
+All four views share one ruler, playhead, zoom bar (<kbd>Ctrl</kbd>+wheel to zoom, <kbd>Shift</kbd>+wheel to
+pan) and the **Selected clips / Whole timeline** switch on the right.
+
+- **Blocks**: the lanes above.
+- **Curves**: the clip's channels with their keys as curves with bezier handles; box-select, ease presets,
+  value or velocity. Hold <kbd>Shift</kbd> while dragging keys to lock to time or value. Select keys ▸
+  **Make a block** or **Loop keys**.
+- **Flow**: wherever one move hands over to the next, on one clip or across a cut, a ⚡ or ✓ badge shows
+  whether the speeds match. **Smooth** eases the next move, the earlier one or both so they meet.
+- **Speed**: the clip's speed ramp. Ramps are real time remapping, so they never jump; Speed Ramp In / Out,
+  Slow-mo Hit and Speed Up blocks, and "Ramp through the cut".
+
+Drag a row's bottom edge (or <kbd>Alt</kbd>+wheel) for taller graphs.
+
+## Special blocks
+
+- **Simulated**: Camera Shake (jolts per second, fade out, tilt, hide edges), Spring In, Bounce Drop, Throw
+  Out, Wobble.
+- **Physics**: Gravity Fall and Throw & Bounce are rigid bodies with Mass, Gravity, Elasticity, Friction, Air
+  drag, Velocity and Spin. **Drop with collisions** (two or more pictures selected, **⋯ ▸ Drop with
+  collisions**) lets the clips fall, land and push each other apart.
+- **Sound**: Duck, Pan Sweep, Pan Swing and Tremolo.
+- **Path**: the pencil in the Animator's toolbar (<kbd>D</kbd>). Draw in the Viewer and each selected clip
+  travels your stroke; **Timing** is Shape or As drawn, **Smoothing** rounds the stroke, **Turn along path**
+  faces the clip the way it goes.
+- **Link to layer**: one clip's property follows another's (a multiplier plus an offset).
+
+**Onion skin**: while the Animator is open the Preview shows the selected layer's outline a few frames before
+and after.
+
+## Transitions over the whole timeline
+
+The lane at the top of the Animator holds **timeline spans**: a bar there puts its transition on every cut
+under it, closes the gaps between the footage clips first, and keeps doing so wherever you move or stretch it.
+Delete it and its transitions go. Add one from **+ Animation ▸ Transitions ▸ Timeline** or a right-click in the
+lane; its Inspector card sets the transition, duration, ease and direction.
+
+## Stacks and presets
+
+**Clip ▸ Nest ▸ Stack Clip with Overlays** groups a clip and the overlays above it into one nested clip on the
+clip's own track, so a transition moves them together.
+
+Right-click a block ▸ **Save as preset** puts it in the Gallery. Presets can be imported, and the preset folder
+opened to share the files.

@@ -897,3 +897,17 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - launch.ps1 children die with the PowerShell tool's console; launch through `cmd /c` with CreateNoWindow.
   Never rewrite a scratch settings.json with PowerShell's ConvertTo-Json/Out-File (BOM): the app then
   loads defaults - capture_dir "" = the user's Videos folder.
+
+## 2026-11-19 docs for 1.4.0 (claude/1-4-0-b2656e)
+- New pages: media-player, animator, project-settings, screen-recording (moved out of audio.mdx). Updated
+  interface, getting-started, assistant (chat layout + permissions), export (Target size, Quick Export), inspector,
+  music-and-discs, README features; shortcuts.md regenerated with `--dump-hotkeys`.
+- docs-shots.ps1: new rows for the 1.4.0 pages, per-shot `env` and `settings`, a `pick` step (Library
+  selection), and `$PlayerShots` for the media player (SE_PLAYER_SHOT + SE_PLAYER_SHOT_SETUP, no MCP there).
+  Player setup must not use `at=`: it runs at reveal, before the file's length is known, and the seek is lost
+  (black frame, 0:00 length). The player takes no `--size` (it opens at window_rect). Every player demo file is
+  silent (anullsrc) - the older demo clips have sine tones, never open them in the player.
+- Dev builds have MCP full access, which shows a "Full access" badge: the assistant / permissions shots run with
+  SE_MCP_FULL_ACCESS=0 (+ assistant_guard false so `act settings` doesn't wait for an Allow).
+- Pass -Only as an array (`-Command "& .\scripts\docs-shots.ps1 -Only @('a','b')"`); with -File it arrives as one
+  string and nothing matches. Windows can keep demo media open after a run: use a fresh -Work if it can't be wiped.

@@ -1,0 +1,80 @@
+---
+title: Media player
+description: The fast player a video or song opens in from Explorer - reverse, loop, speed, audio tracks, metadata and song covers.
+---
+
+![The media player](/img/tutorial/player.png)
+
+Open a video or a song from Explorer (right-click ▸ **Edit with Simple Editor**, or double-click it when
+Simple Editor is the app that opens it) and it plays in Simple Editor's own media player, not the editor. The first frame is on screen in about half a
+second. The player uses your theme's colours and accent from **Settings ▸ Appearance**.
+
+Press <kbd>Esc</kbd>, or click the pencil at the top left, to take the file into the editor at the same moment.
+
+## The controls
+
+The bar at the bottom hides with the mouse cursor after a moment and comes back when you move the mouse.
+
+| Control | What it does |
+|---|---|
+| Play / Pause (the big round button) | <kbd>Space</kbd> or <kbd>K</kbd>; a click on the picture does the same, a double-click goes full screen |
+| Back / Forward 10 | skip 10 seconds (<kbd>←</kbd> / <kbd>→</kbd>) |
+| Previous / Next | the other files in the same folder (<kbd>Ctrl+←</kbd> / <kbd>Ctrl+→</kbd>) |
+| Shuffle | play the folder in a random order |
+| Loop | play the file again from the start (also while reversing) |
+| Reverse | play backwards in real time, at the chosen speed, with the sound backwards too |
+| **1×** | playback speed, from 0.25× to 4× |
+| CC | subtitles and audio tracks |
+| Speaker | volume (<kbd>↑</kbd> / <kbd>↓</kbd>, <kbd>M</kbd> mutes) |
+| Mini player, Full screen | a small window that stays on top; full screen is also <kbd>F</kbd> or <kbd>F11</kbd> |
+
+The seek bar has a tick for every second and smaller ones between. Rest the mouse on it to see a thumbnail
+of that moment; the thumbnails load in the background, the end of the file first.
+
+**Rename** the file by clicking its name at the bottom left, typing and pressing <kbd>Enter</kbd>. If the
+file is in an open project's Library, the Library follows it.
+
+## Audio tracks and Audio Only
+
+A file with more than one audio track (a game recording with the game and your microphone, say) lists them
+all under the CC button. All of them play by default; tick the ones you want to hear, any combination, or turn
+them all off. The choice is remembered per file.
+
+**Audio Only** hides the picture and shows a visualizer of the sound instead. Pick its style and how strongly
+it reacts in **Visualizer style**.
+
+## Songs
+
+![A song with its cover](/img/tutorial/player-song.png)
+
+A song opens in Audio Only, with its cover art over a blurred copy of it (or the visualizer, if you picked
+that last time). Covers and thumbnails show a soft shimmer while they load.
+
+## The right-click menu
+
+![The player's right-click menu](/img/tutorial/player-menu.png)
+
+Right-click the picture for everything on the bar plus:
+
+- **Resolution**: the playback size, **Auto** (the picture's size on screen) or a fixed number of lines.
+  Remembered per file.
+- **Screenshot frame** saves the frame you see as a picture. The message that follows has **Open**,
+  **Open Folder** and **Add to Project**.
+- **Convert…** saves the file in another format.
+- **Upscale…** makes a sharper, bigger copy with the AI enhancer (see [Advanced](advanced.mdx)).
+- **Properties / Metadata…** (below).
+- **Rename**, **Open in Editor** and **Show in folder**.
+
+## Metadata
+
+![Properties / Metadata](/img/tutorial/player-metadata.png)
+
+**Properties / Metadata…** edits the file's tags: title, author, genre, copyright, description, comment,
+and for songs artist, album, track and the rest. Change the thumbnail or a song's cover from a picture or
+**Use the current frame**. **Tags** are the Windows tags you see and search for in Explorer (M4A, MP4, MOV,
+WMA and WMV files can hold them). **Save** writes them into the file without re-encoding it; **Clear all
+metadata…** removes every tag.
+
+**Metadata presets** save tags you use again and again (your name as author, a genre, a copyright line):
+**Save as preset…** here, or make them in **Settings ▸ Metadata**. Apply one with **Apply preset** here,
+from a Library item's right-click menu, or in **Export ▸ Apply preset** so every export gets it.

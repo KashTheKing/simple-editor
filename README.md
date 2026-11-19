@@ -51,8 +51,17 @@ ramping, transitions, blend modes), Simple Editor also has:
   parameters, and **Web Page Snapshot** (copy a real web page in, then fake a mouse over it)
 - **Online library**: shader effects and transitions, LUTs, HTML layers, icons and assistant skills,
   downloaded on first use
-- Faster, smaller exports: hardware encoders, Speed / Balanced / Smallest file, separate audio tracks
-- MCP server (about 300 tools) so any AI agent can help you edit; see [agents.md](agents.md)
+- **Animate page and Animator**: animation blocks with controls, curves, speed ramps, physics, motion paths
+  and transitions across the whole timeline
+- **Media player**: open a video or song from Explorer and it plays in half a second; reverse, loop, speed,
+  audio tracks, Audio Only visualizers, thumbnails on the seek bar and metadata editing
+- **Screen recording**: a screen, window, region or one game / app, with its sound on separate audio tracks
+- **Device Emulator**: watch your video inside 101 phones, tablets, desktops and TVs with YouTube, Shorts,
+  TikTok and Reels around it, and export it that way
+- **Beat Aligner**, playlists, song tags and cover art, and **Burn to Disc** (audio CD, data disc or disc image)
+- HDR10 / HLG export, Max length for Shorts, and a project that matches your footage in one click
+- Smaller exports (about 3x smaller than 1.3), Target size, Quick Export, hardware encoders, separate audio tracks
+- MCP server so any AI agent can help you edit, with per-tool permissions; see [agents.md](agents.md)
 - Import/export project files with DaVinci Resolve and Premiere Pro
 - And a lot more
 
