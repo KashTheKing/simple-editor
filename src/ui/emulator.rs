@@ -1,5 +1,5 @@
 //! ---- ws:device-emulator ----
-//! The Device Emulator pane: the project's video playing inside real devices (iPhone with its Dynamic Island
+//! The Platform Emulator pane: the project's video playing inside real devices (iPhone with its Dynamic Island
 //! or notch, Pixel and Galaxy with the Android status bar and punch hole, iPad, a desktop browser, a TV) with
 //! each platform's own UI round it (`ui::social`). A gallery of every device x platform pairing, each card
 //! playing the video, and a large view of the one picked: turn it, open the comments, switch captions, play,
@@ -81,6 +81,8 @@ pub enum Asked {
     Screenshot,
     /// Export the timeline (or the In/Out range) as a video inside the device.
     Export,
+    /// Show or hide this platform's guide on the Preview.
+    PreviewGuides,
 }
 
 /// The pairings the gallery shows: every platform on an iPhone, a Pixel and a Galaxy; long form also on the
@@ -123,7 +125,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut EmuState, mut c: EmuCtx) -> Vec<Asked> {
         c.prefs.platform = d.platforms[0].id.clone();
     }
     let before = c.prefs.clone();
-    toolbar(ui, st, &before, c.prefs, c.cc, &mut asked, &d);
+    toolbar(ui, st, &before, c.prefs, c.cc, c.settings.guide.is_some(), &mut asked, &d);
     ui.add_space(4.0);
     if c.prefs.gallery {
         if let Some((p, dv)) = gallery(ui, st, &c, &d) {
@@ -136,7 +138,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut EmuState, mut c: EmuCtx) -> Vec<Asked> {
     asked
 }
 
-fn toolbar(ui: &mut egui::Ui, st: &mut EmuState, before: &Prefs, prefs: &mut Prefs, cc: bool, asked: &mut Vec<Asked>, d: &social::Data) {
+#[allow(clippy::too_many_arguments)]
+fn toolbar(ui: &mut egui::Ui, st: &mut EmuState, before: &Prefs, prefs: &mut Prefs, cc: bool, guides: bool, asked: &mut Vec<Asked>, d: &social::Data) {
     ui.horizontal_wrapped(|ui| {
         device_picker(ui, &mut prefs.device, d);
         let plats: Vec<(&str, &str)> = d.platforms.iter().map(|p| (p.id.as_str(), p.n.as_str())).collect();
@@ -153,6 +156,9 @@ fn toolbar(ui: &mut egui::Ui, st: &mut EmuState, before: &Prefs, prefs: &mut Pre
         }
         if ui.selectable_label(cc, "Captions").on_hover_text("Show or hide the project's subtitles (the player's CC button)").clicked() {
             asked.push(Asked::Captions);
+        }
+        if ui.selectable_label(guides, "Guides on Preview").on_hover_text("Draw this platform's safe zones, UI or device over the Preview").clicked() {
+            asked.push(Asked::PreviewGuides);
         }
         if ui.selectable_label(prefs.gallery, "Gallery").on_hover_text("Every device and platform at once; click one to bring it up large").clicked() {
             prefs.gallery = !prefs.gallery;
@@ -361,7 +367,7 @@ mod tests {
                 for _ in 0..3 {
                     assert!(run(&ctx, &mut st, &s, &mut prefs, vec![]).is_empty());
                 }
-                assert!(!ctx.has_requested_repaint(), "Device Emulator repainted while idle ({device}, gallery {gallery})");
+                assert!(!ctx.has_requested_repaint(), "Platform Emulator repainted while idle ({device}, gallery {gallery})");
             }
         }
     }

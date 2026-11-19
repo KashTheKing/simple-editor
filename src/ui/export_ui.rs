@@ -1158,13 +1158,13 @@ fn advanced_section(
         }
         // burn-in: the social guide (captions sit under the project settings)
         body_save |= ui
-            .add_enabled(settings.guide.is_some(), egui::Checkbox::new(&mut settings.export_guide, "Burn in social guide"))
+            .add_enabled(settings.guide.is_some(), egui::Checkbox::new(&mut settings.export_guide, "Burn in platform guide"))
             .on_hover_text(
-                "Draws the Social Guide chosen in the preview (right-click the Preview) over every frame, playing, its \
+                "Draws the Platform Emulator's guide shown on the Preview (right-click the Preview) over every frame, playing, its \
                  progress bar and time following the exported video (the In/Out range when that is what you export). \
                  A Device preview burns in as its UI preview.",
             )
-            .on_disabled_hover_text("Choose a guide first: right-click the Preview ▸ Social Guides.")
+            .on_disabled_hover_text("Show a guide first: right-click the Preview ▸ Platform Emulator ▸ Show Guides on Preview.")
             .changed();
 
         ui.add_space(4.0);

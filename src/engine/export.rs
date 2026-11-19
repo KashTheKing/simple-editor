@@ -2703,7 +2703,7 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The Device Emulator's Export: the file is the device frame's size (even) and the project's length,
+    /// The Platform Emulator's Export: the file is the device frame's size (even) and the project's length,
     /// with the project's audio; the frame inside it is the device (its body round the video, not the video
     /// scaled up).
     #[test]

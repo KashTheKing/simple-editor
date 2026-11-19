@@ -70,7 +70,7 @@ fn current(app: &App) -> Value {
     let s = &app.settings;
     let net = s.guide.as_deref().and_then(|g| social::data().platform(g).map(|p| p.net.clone()));
     json!({
-        "platform": s.guide, "mode": s.guide_mode, "device": s.guide_device, "worst_case": s.guide_worst,
+        "platform": s.guide, "pick": social::platform(s), "mode": s.guide_mode, "device": s.guide_device, "worst_case": s.guide_worst,
         "keep_aspect": s.guides_keep_aspect, "draw_in_render": s.guide_render,
         "profile": net.and_then(|n| s.active_profile(&n).map(|p| p.id.clone())),
         "state": app.preview.social.want.map_or(app.settings.guide_view.as_str(), |x| x.id()),
@@ -117,7 +117,7 @@ fn set_profile_fields(p: &mut SocialProfile, f: &Value) -> Result<(), String> {
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "guides.list",
-        desc: "The social guides: every platform (id, network, aspect, 'verified on' date, where it was measured), its zones as fractions of the frame, how comments/description/share/more behave, the devices, and the current setting. Draw one with guides.set; picture it with guides.preview.",
+        desc: "The Platform Emulator's guides: every platform (id, network, aspect, 'verified on' date, where it was measured), its zones as fractions of the frame, how comments/description/share/more behave, the devices, and the current setting. Draw one with guides.set; picture it with guides.preview.",
         args: &[],
         kind: ToolKind::Read,
         run: |app, _| {
@@ -151,7 +151,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "guides.set",
-        desc: "Choose what the viewer's social guide shows: platform ('off' hides it), mode (safe|ui|device), device class, the active profile of that platform's network, worst-case, keep-aspect, draw-in-render, and which sheet a device preview has open (state). Only the view changes - never the project or the export.",
+        desc: "Choose what the Preview's platform guide shows (the Platform Emulator's guides layer; its platform and device are the Platform Emulator pane's too): platform ('off' hides the guide, keeping the platform), mode (safe|ui|device), device class, the active profile of that platform's network, worst-case, keep-aspect, draw-in-render, and which sheet a device preview has open (state). Only the view changes - never the project or the export.",
         args: &[
             "platform:string:false:a guides.list id, or off",
             "mode:string:false:safe|ui|device",
@@ -167,9 +167,9 @@ pub const TOOLS: &[ToolDef] = &[
             let d = social::data();
             if let Some(p) = arg_str(args, "platform") {
                 if p == "off" || p.is_empty() {
-                    app.settings.guide = None;
+                    social::Set::Platform(None).apply(&mut app.settings);
                 } else if d.platform(p).is_some() {
-                    app.settings.guide = Some(p.to_string());
+                    social::Set::Platform(Some(p.to_string())).apply(&mut app.settings);
                 } else {
                     return Err(format!("unknown platform '{p}' (guides.list)"));
                 }
@@ -214,7 +214,7 @@ pub const TOOLS: &[ToolDef] = &[
         name: "guides.preview",
         desc: "A picture of the guide: the project's frame at time t inside the device (mode device, the default) with the platform UI and the chosen sheet open, or the frame with the safe-zone / UI-preview overlay. Uses the active profile (or `profile`). Nothing in the project or the viewer changes.",
         args: &[
-            "platform:string:false:default = the current guide, else tiktok",
+            "platform:string:false:default = the Platform Emulator's platform",
             "device:string:false:default = the current device",
             "mode:string:false:device (default)|safe|ui",
             "state:string:false:default|theatre|fullscreen|comments|desc|share|more|profile|sound",
@@ -227,7 +227,7 @@ pub const TOOLS: &[ToolDef] = &[
         run: |app, args| {
             let d = social::data();
             let mut s: Settings = app.settings.clone();
-            let plat = arg_str(args, "platform").map(str::to_string).or_else(|| s.guide.clone()).unwrap_or_else(|| "tiktok".into());
+            let plat = arg_str(args, "platform").map(str::to_string).unwrap_or_else(|| social::platform(&s).to_string());
             let platform = d.platform(&plat).ok_or_else(|| format!("unknown platform '{plat}' (guides.list)"))?;
             s.guide = Some(plat.clone());
             if let Some(v) = arg_str(args, "device") {

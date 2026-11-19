@@ -253,8 +253,8 @@ pub const TOOLS: &[ToolDef] = &[
     // ---- ws:mcp-context ---- an image result (MCP image content; Luau still gets {width,height,data_url})
     ToolDef {
         name: "render.frame",
-        desc: "Render the timeline at time t as a PNG image, max `width` px wide (default 640). `guide` draws the current social guide over it (default: the Settings 'draw in render' option; a device preview comes back as the device picture).",
-        args: &["t:number:true:", "width:integer:false:", "guide:boolean:false:draw the social guide (guides.set)", "playing:boolean:false:the guide's play button state (default: the editor's)"],
+        desc: "Render the timeline at time t as a PNG image, max `width` px wide (default 640). `guide` draws the Platform Emulator's guide over it (default: the Settings 'draw in render' option; a device preview comes back as the device picture).",
+        args: &["t:number:true:", "width:integer:false:", "guide:boolean:false:draw the platform guide (guides.set)", "playing:boolean:false:the guide's play button state (default: the editor's)"],
         kind: ToolKind::Read,
         run: super::tools_context::render_frame_image,
     },

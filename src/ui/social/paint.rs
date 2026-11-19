@@ -61,7 +61,7 @@ impl<'a> GuideView<'a> {
         g.mode = Mode::from_id(&s.guide_mode);
         Some(g)
     }
-    /// The guide for platform `id` on device `device` (the Device Emulator's own choice), in device mode, with
+    /// The guide for platform `id` on device `device` (the Platform Emulator's own choice), in device mode, with
     /// the rest of `s` (profiles, the desktop player view). None when `id` is not in the data.
     pub fn with(s: &'a Settings, id: &'a str, device: &'a str, title: &str, aspect: f32, playhead: f64, duration: f64) -> Option<GuideView<'a>> {
         let data = data();

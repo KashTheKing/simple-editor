@@ -32,7 +32,7 @@ pub(super) fn social_tab(ui: &mut egui::Ui, st: &mut SocialUi, s: &mut Settings)
     if st.net.is_empty() {
         st.net = "youtube".into();
     }
-    ui.weak("Fake accounts for the Social Guide preview (viewer right-click ▸ Social Guides). No logins, no passwords, no tokens are ever asked for or stored.");
+    ui.weak("Fake accounts for the Platform Emulator (and its guides: right-click the Preview ▸ Platform Emulator). No logins, no passwords, no tokens are ever asked for or stored.");
     ui.horizontal(|ui| {
         for (id, name) in NETS {
             if ui.selectable_label(st.net == id, name).clicked() {

@@ -648,6 +648,9 @@ pub struct Settings {
     /// How often each Gallery card was applied ("Tab:name" -> count), for the "Most used" order.
     pub gallery_used: std::collections::BTreeMap<String, u32>,
     // ---- ws:social-guides ----
+    /// The Platform Emulator's platform while its guide is hidden on the Preview (`guide` is the pick while
+    /// it is shown): read it through `ui::social::platform`.
+    pub platform: String,
     /// What the guide shows: "safe" (zones), "ui" (silhouettes with the profile) or "device" (phone frame).
     pub guide_mode: String,
     /// Device class of the guide / device preview: an id from guides.json `devices`.
@@ -658,7 +661,7 @@ pub struct Settings {
     pub guide_render: bool,
     /// Desktop long-form player view: "default", "theatre" or "fullscreen".
     pub guide_view: String,
-    /// Export ▸ "Burn in social guide": exports draw the chosen guide over every frame (UI overlay; a
+    /// Export ▸ "Burn in platform guide": exports draw the chosen guide over every frame (UI overlay; a
     /// Device preview burns as its UI overlay), its bar and time following the exported frame. Off by default.
     pub export_guide: bool,
     /// Export ▸ "Burn in captions": None = follow the preview's subtitle toggle (what exports always did).
@@ -693,7 +696,8 @@ pub struct Settings {
     /// The Audio page's "new default layout" note was shown (a saved Audio layout is never replaced).
     pub audio_layout_offered: bool,
     // ---- ws:device-emulator ----
-    /// The Device Emulator's device / platform / orientation, per project file ("" = an unsaved project).
+    /// The Platform Emulator's orientation and gallery, per project file ("" = an unsaved project); its platform
+    /// and device are the shared `platform` / `guide_device`.
     pub emulator: BTreeMap<String, crate::ui::emulator::Prefs>,
     // ---- ws:project-color-fps ----
     /// Ask "Match project to this video?" when an import differs from the project.
@@ -973,6 +977,7 @@ impl Default for Settings {
             library_online: false,
             gallery_used: Default::default(),
             // ---- ws:social-guides ----
+            platform: "tiktok".into(),
             guide_mode: "safe".into(),
             guide_device: "iphone".into(),
             guide_worst: false,

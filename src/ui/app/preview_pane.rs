@@ -164,15 +164,14 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         if let Some((x, y)) = resp.set_tracker {
             (app.tracking.cx, app.tracking.cy) = (x, y);
         }
-        if let Some(g) = resp.set_guide {
-            g.apply(&mut app.settings);
+        match resp.set_guide {
+            Some(crate::ui::social::Set::Open) => super::emulator_ctl::open(app),
+            Some(g) => g.apply(&mut app.settings),
+            None => {}
         }
         if let Some(s) = resp.set_visualizer_style {
             app.settings.visualizer_style = s;
             app.settings.save();
-        }
-        if resp.open_emulator {
-            super::emulator_ctl::open(app); // ws:device-emulator
         }
         // ---- ws:canvas-handles-monitor ----
         if let Some(on) = resp.set_canvas_snap {

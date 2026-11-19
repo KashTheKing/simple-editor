@@ -458,8 +458,6 @@ pub struct PreviewResponse {
     pub set_tracker: Option<(f32, f32)>,
     /// The user changed the social guide from the right-click (platform, mode, device, profile, options).
     pub set_guide: Option<crate::ui::social::Set>,
-    /// ws:device-emulator: the right-click's "Emulator" row: show the Device Emulator pane.
-    pub open_emulator: bool,
     /// The user picked an Audio Only visualizer style (Settings::visualizer_style).
     pub set_visualizer_style: Option<String>,
     // ---- ws:canvas-handles-monitor ----
@@ -1175,7 +1173,7 @@ fn fill_frame(project: &mut Project, id: Id) {
 /// The viewer's right-click (`state.menu_clips` / `menu_at` are set by the right-click itself): rows for
 /// the clip under the pointer (or the selection) - Reset Transform, Fill / Stretch to Frame, Crop
 /// Handles, Add Mask, Add Text Here - then the viewer's own: Stop and the marks, Zoom ▸, Playback
-/// Resolution ▸, Proxies, Movie Mode, Social Guides ▸, Scopes, Background ▸, Snap to Canvas. Action rows
+/// Resolution ▸, Proxies, Movie Mode, Platform Emulator ▸, Scopes, Background ▸, Snap to Canvas. Action rows
 /// go through `ui::menu`, so labels, icons and shortcuts match the menu bar.
 fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse) {
     menu::context(&resp, |ui| {
@@ -1236,9 +1234,6 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
             if menu::check(ui, c.movie_mode, "Movie Mode (pre-render)", &menu::shortcut(Action::MovieMode)).clicked() {
                 r.set_movie_mode = Some(!c.movie_mode);
             }
-            if menu::row(ui, Some(Glyph::Guides), "Emulator", "").on_hover_text("See the video on real devices with each platform's app round it").clicked() {
-                r.open_emulator = true;
-            }
             // ws:preview-audio-only
             let audio_only = c.project.audio_only_preview;
             let a = menu::check(ui, audio_only, "Audio Only", &menu::shortcut(Action::AudioOnlyPreview));
@@ -1260,7 +1255,7 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
                     }
                 });
             }
-            menu::sub(ui, Some(Glyph::Guides), "Social Guides", |ui| {
+            menu::sub(ui, Some(Glyph::Guides), "Platform Emulator", |ui| {
                 r.set_guide = crate::ui::social::menu_rows(ui, c.settings);
             });
             menu::action_item(ui, Action::ToggleScopes);
@@ -2930,6 +2925,41 @@ mod tests {
         assert_eq!(zoom_label((3.0, Vec2::ZERO), 640.0, 1920), "100 %");
         assert_eq!(zoom_label((1.5, Vec2::ZERO), 640.0, 1920), "50 %");
         assert!((zoom_pct(6.0, 640.0, 1920) - 200.0).abs() < 1e-3);
+    }
+
+    /// The Preview's right-click has one Platform Emulator ▸ menu in place of Social Guides ▸ and the Emulator row:
+    /// a platform there picks it and shows its guide, Open Platform Emulator asks for the pane.
+    #[test]
+    fn right_click_has_one_platform_emulator_menu() {
+        use crate::ui::social::Set;
+        let widget = |ctx: &egui::Context, label: &str| -> Option<Rect> {
+            ctx.viewport(|v| {
+                let w = &v.prev_pass.widgets;
+                w.layers()
+                    .flat_map(|(_, rs)| rs.iter())
+                    // a row's label ends with its shortcut text or a submenu's arrow
+                    .filter(|r| w.info(r.id).and_then(|i| i.label.clone()).is_some_and(|l| l.trim_end_matches(['⏵', ' ']) == label))
+                    .map(|r| r.rect)
+                    .last()
+            })
+        };
+        let pick = crate::ui::social::data().platforms[1].clone();
+        for (row, want) in [("Open Platform Emulator", Set::Open), (pick.n.as_str(), Set::Platform(Some(pick.id.clone())))] {
+            let mut h = H::new();
+            h.ctx.style_mut(|s| s.debug.show_interactive_widgets = true);
+            h.rclick(h.panel.center());
+            h.frame(vec![]);
+            assert!(widget(&h.ctx, "Social Guides").is_none() && widget(&h.ctx, "Emulator").is_none(), "the old rows are gone");
+            let sub = widget(&h.ctx, "Platform Emulator").expect("the Platform Emulator submenu");
+            for _ in 0..3 {
+                h.frame(vec![Event::PointerMoved(sub.center())]);
+            }
+            let r = widget(&h.ctx, row).unwrap_or_else(|| panic!("no {row} row"));
+            // along the submenu row first, then down to the item, as a pointer would
+            h.frame(vec![Event::PointerMoved(pos2(r.center().x, sub.center().y))]);
+            let out = h.click(r.center());
+            assert_eq!(out.set_guide, Some(want), "{row}");
+        }
     }
 
     /// Right-clicking a clip that isn't selected selects it, and the menu's clip rows act on it; a
