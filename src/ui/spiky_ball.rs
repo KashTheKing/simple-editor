@@ -79,6 +79,11 @@ impl Orb {
 
     /// Black backdrop plus the style `src`, drawn by the GPU into `rect`.
     pub fn paint(&self, painter: &egui::Painter, rect: egui::Rect, src: &str) {
+        self.paint_with(painter, rect, src, None);
+    }
+
+    /// `paint` with some of the style's own params set (the player's visualizer look: hue, glow ...).
+    pub fn paint_with(&self, painter: &egui::Painter, rect: egui::Rect, src: &str, set: Option<&std::collections::BTreeMap<String, f64>>) {
         painter.rect_filled(rect, 0.0, egui::Color32::BLACK);
         if rect.width() < 2.0 || rect.height() < 2.0 {
             return;
@@ -95,7 +100,7 @@ impl Orb {
                     "beat" => self.beat.0.clamp(p.min, p.max) as f32,
                     "beats" => self.beat.1.clamp(p.min, p.max) as f32,
                     "bpm" => self.beat.2.unwrap_or(p.default).clamp(p.min, p.max) as f32,
-                    _ => p.default as f32,
+                    id => set.and_then(|m| m.get(id)).copied().unwrap_or(p.default).clamp(p.min, p.max) as f32,
                 },
             })
             .collect();

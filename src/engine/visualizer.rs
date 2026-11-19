@@ -828,6 +828,28 @@ impl Look {
 pub(crate) mod tests {
     use super::*;
 
+    /// ws:player-visualizer-look: intensity x sensitivity x band gain shapes the live levels (kept in
+    /// 0..1), the look params are the style's own (not its audio inputs), and it round-trips through
+    /// settings.json.
+    #[test]
+    fn the_look_shapes_the_levels_and_lists_the_style_params() {
+        let mut l = Look::default();
+        let f: Frame = [0.5, 0.2, 0.2, 0.2, 0.2, 0.2, 0.9];
+        assert_eq!(l.shape(f), f, "the default look leaves the levels alone");
+        l.intensity = 2.0;
+        l.mix.gains[0] = 0.5;
+        let g = l.shape(f);
+        assert!((g[0] - 1.0).abs() < 1e-6 && (g[1] - 0.2).abs() < 1e-6 && g[6] == 1.0, "{g:?}");
+        let ids: Vec<String> = Look::look_params(BUILTIN[0].1).into_iter().map(|p| p.id).collect();
+        assert!(ids.contains(&"hue".to_string()) && !ids.contains(&"level".to_string()), "{ids:?}");
+        l.set("Neon Orb", "hue", 0.9);
+        assert_eq!(l.value("Neon Orb", "hue", 0.48), 0.9);
+        assert_eq!(l.value("Spectrum Bars", "speed", 1.0), 1.0, "another style keeps its defaults");
+        let s = crate::settings::Settings { visualizer_look: l.clone(), ..Default::default() };
+        let back: crate::settings::Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.visualizer_look, l);
+    }
+
     /// A test source: stereo `f(t)` at 48 kHz.
     struct Tone(fn(f64) -> f32, f64);
     impl AudioSource for Tone {
