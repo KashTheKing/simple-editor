@@ -594,11 +594,14 @@ pub fn context_menu(app: &mut PlayerApp, ui: &mut egui::Ui, ctx: &egui::Context)
             app.set_wave_seek(!on);
         }
     }
-    menu::sub(ui, None, "Visualizer style", |ui| {
-        ui.set_width(300.0);
-        let pal = crate::theme::palette_with(ctx, &app.look);
-        visualizer_controls(app, ui, &pal);
-    });
+    let showing = if has_video { app.engine.audio_only() } else { app.song_shows_visualizer() };
+    if showing {
+        menu::sub(ui, None, "Visualizer Settings", |ui| {
+            ui.set_width(300.0);
+            let pal = crate::theme::palette_with(ctx, &app.look);
+            visualizer_controls(app, ui, &pal);
+        });
+    }
     ui.separator();
     if menu::check(ui, app.fullscreen, "Full screen", "F").clicked() {
         app.toggle_fullscreen(ctx);

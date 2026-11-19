@@ -50,10 +50,11 @@ pub mod icon {
     pub const CONVERT: char = '\u{E8AB}'; // Switch
     pub const UPSCALE: char = '\u{E740}'; // FullScreen arrows: bigger
     pub const TAG: char = '\u{E8EC}'; // Tag
-    pub const ALL: [char; 32] = [
+    pub const VISUALIZER: char = '\u{E9E9}'; // Equalizer
+    pub const ALL: [char; 33] = [
         EDIT, SHUFFLE, PREVIOUS, NEXT, PLAY, PAUSE, BACK10, FORWARD30, REPEAT_ALL, LOOP, CAPTIONS, VOLUME[0], VOLUME[1],
         VOLUME[2], VOLUME[3], MUTE, FULLSCREEN, EXIT_FULLSCREEN, MINI, UNMINI, MORE, MINIMIZE, MAXIMIZE, RESTORE, CLOSE, MUSIC,
-        FOLDER, INFO, CHECK, CONVERT, UPSCALE, TAG,
+        FOLDER, INFO, CHECK, CONVERT, UPSCALE, TAG, VISUALIZER,
     ];
 }
 
@@ -932,6 +933,27 @@ fn flyout_row(ui: &mut Ui, pal: &Palette, check: Option<bool>, c: Option<char>, 
     r
 }
 
+/// An on / off row: its icon (always), the label and a switch on the right, in the accent when on.
+fn toggle_row(ui: &mut Ui, pal: &Palette, on: bool, c: char, label: &str) -> Response {
+    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    let p = ui.painter();
+    if r.hovered() {
+        p.rect_filled(rect, radius(ui), ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let cy = rect.center().y;
+    glyph(p, pos2(rect.left() + 18.0, cy), c, 15.0, if on { pal.accent } else { pal.text });
+    p.text(pos2(rect.left() + 40.0, cy), Align2::LEFT_CENTER, label, FontId::proportional(14.0), pal.text);
+    let sw = Rect::from_center_size(pos2(rect.right() - 26.0, cy), vec2(34.0, 18.0));
+    if on {
+        p.rect_filled(sw, 9.0, pal.accent);
+        p.circle_filled(pos2(sw.right() - 9.0, cy), 6.0, on_accent(pal.accent));
+    } else {
+        p.rect_stroke(sw, 9.0, Stroke::new(1.0, pal.text_dim), egui::StrokeKind::Inside);
+        p.circle_filled(pos2(sw.left() + 9.0, cy), 5.0, pal.text_dim);
+    }
+    r
+}
+
 pub(super) fn heading(ui: &mut Ui, pal: &Palette, s: &str) {
     ui.add_space(4.0);
     ui.label(egui::RichText::new(s).size(12.0).color(pal.text_dim));
@@ -1085,31 +1107,40 @@ fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
     ui.separator();
     // the whole folder, round and round (Loop on the bar repeats the one file)
     let all = app.playlist.repeat == Repeat::All;
-    if flyout_row(ui, pal, Some(all), None, "Repeat folder").clicked() {
+    if toggle_row(ui, pal, all, icon::REPEAT_ALL, "Repeat folder").clicked() {
         app.set_repeat_folder(!all);
     }
     let auto = app.autoplay();
-    if flyout_row(ui, pal, Some(auto), None, "Autoplay").clicked() {
+    if toggle_row(ui, pal, auto, icon::NEXT, "Autoplay").clicked() {
         app.set_autoplay(!auto);
     }
     ui.separator();
     if app.info.as_ref().is_some_and(|i| !i.audio_streams.is_empty()) {
         let showing = if has_video {
             let ao = app.engine.audio_only();
-            if flyout_row(ui, pal, Some(ao), None, "Audio Only").clicked() {
+            if toggle_row(ui, pal, ao, icon::MUSIC, "Audio Only").clicked() {
                 app.set_audio_only(!ao);
             }
             ao
         } else {
             // songs show their cover; the visualizer when asked for (or when there is no cover)
             let viz = app.song_viz;
-            if flyout_row(ui, pal, Some(viz), None, "Visualizer").clicked() {
+            if toggle_row(ui, pal, viz, icon::VISUALIZER, "Visualizer").clicked() {
                 app.set_song_visualizer(!viz);
             }
             app.song_shows_visualizer()
         };
         if showing {
-            super::panels::visualizer_controls(app, ui, pal);
+            // folded away until asked for (remembered)
+            let open = app.prefs.viz_settings_open;
+            let h = egui::CollapsingHeader::new(egui::RichText::new("Visualizer Settings").color(pal.text))
+                .id_salt("player-viz-settings")
+                .default_open(open)
+                .show(ui, |ui| super::panels::visualizer_controls(app, ui, pal));
+            if h.header_response.clicked() {
+                app.prefs.viz_settings_open = !open;
+                app.prefs_dirty = true;
+            }
         }
         ui.separator();
     }

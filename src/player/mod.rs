@@ -116,11 +116,13 @@ struct Prefs {
     autoplay: bool,
     /// Loop N times: N.
     loop_n: u32,
+    /// The More flyout's Visualizer Settings are unfolded.
+    viz_settings_open: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default(), res: Default::default(), song_viz: false, wave_seek: true, autoplay: false, loop_n: 1 }
+        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default(), res: Default::default(), song_viz: false, wave_seek: true, autoplay: false, loop_n: 1, viz_settings_open: false }
     }
 }
 
