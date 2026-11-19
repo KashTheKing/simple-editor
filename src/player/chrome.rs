@@ -515,11 +515,39 @@ fn bottom_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, bottom: Rect) {
     if icon_button(ui, pal, sq(cx + step * 2.4), icon::NEXT, 16.0, false, "Next (Ctrl+Right)").clicked() {
         app.next(&ctx);
     }
-    let looping = app.looping();
-    let ltip = if looping { "Loop: on" } else { "Loop: off" };
-    if icon_button(ui, pal, sq(cx + step * 3.4), icon::LOOP, 16.0, looping, ltip).clicked() {
-        app.set_loop(!looping);
+    // Loop: click cycles off -> for ever -> N times (a badge counts the rounds left) -> off;
+    // right-click sets N
+    let (looping, count) = (app.looping(), app.loop_count());
+    let ltip = match count {
+        Some((n, _)) => format!("Loop: {n} {} (right-click to change)", if n == 1 { "time" } else { "times" }),
+        None if looping => "Loop: for ever (right-click: how many times)".into(),
+        None => "Loop: off (right-click: how many times)".into(),
+    };
+    let lb = sq(cx + step * 3.4);
+    let lr = icon_button(ui, pal, lb, icon::LOOP, 16.0, looping, &ltip);
+    if lr.clicked() {
+        app.click_loop();
     }
+    if let Some((_, left)) = count {
+        let at = lb.center() + vec2(9.0, -9.0);
+        let g = ui.painter().layout_no_wrap(left.to_string(), FontId::proportional(10.0), on_accent(pal.accent));
+        let w = (g.size().x + 6.0).max(14.0);
+        ui.painter().rect_filled(Rect::from_center_size(at, vec2(w, 14.0)), 7.0, pal.accent);
+        ui.painter().galley(at - g.size() / 2.0, g, on_accent(pal.accent));
+    }
+    crate::ui::menu::context(&lr, |ui| {
+        ui.label("Loop how many times");
+        let mut n = app.playlist.loop_n;
+        if ui.add(egui::DragValue::new(&mut n).range(1..=999).suffix(" ×")).changed() {
+            app.set_loop_n(n);
+        }
+        if count.is_none() && ui.button("Loop this many times").clicked() {
+            while app.loop_count().is_none() {
+                app.click_loop();
+            }
+            ui.close();
+        }
+    });
     let rev = app.engine.is_reverse();
     if icon_button(ui, pal, sq(cx + step * 4.4), icon::REVERSE, 16.0, rev, "Reverse").clicked() {
         app.toggle_reverse();
@@ -1044,6 +1072,10 @@ fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
     let all = app.playlist.repeat == Repeat::All;
     if flyout_row(ui, pal, Some(all), None, "Repeat folder").clicked() {
         app.set_repeat_folder(!all);
+    }
+    let auto = app.autoplay();
+    if flyout_row(ui, pal, Some(auto), None, "Autoplay").clicked() {
+        app.set_autoplay(!auto);
     }
     ui.separator();
     if app.info.as_ref().is_some_and(|i| !i.audio_streams.is_empty()) {

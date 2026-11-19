@@ -503,6 +503,10 @@ pub fn context_menu(app: &mut PlayerApp, ui: &mut egui::Ui, ctx: &egui::Context)
     if menu::check(ui, looping, "Loop", "").clicked() {
         app.set_loop(!looping);
     }
+    let auto = app.autoplay();
+    if menu::check(ui, auto, "Autoplay", "").on_hover_text("When a file ends, play the next one in the folder").clicked() {
+        app.set_autoplay(!auto);
+    }
     if menu::row(ui, None, "Back 10 seconds", "Left").clicked() {
         app.skip(-SKIP_BACK);
     }

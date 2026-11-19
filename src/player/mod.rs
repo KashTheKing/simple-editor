@@ -27,7 +27,7 @@ pub mod video;
 use crate::ui::autohide::{self, AutoHide};
 use eframe::egui;
 use engine::{Engine, Info};
-use folder::{Playlist, Repeat};
+use folder::{End, Playlist, Repeat};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
@@ -112,11 +112,15 @@ struct Prefs {
     song_viz: bool,
     /// Songs / Audio Only: the hovered seek bar is the song's waveform.
     wave_seek: bool,
+    /// When a file ends, the next one in the folder plays.
+    autoplay: bool,
+    /// Loop N times: N.
+    loop_n: u32,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default(), res: Default::default(), song_viz: false, wave_seek: true }
+        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default(), res: Default::default(), song_viz: false, wave_seek: true, autoplay: false, loop_n: 1 }
     }
 }
 
@@ -234,6 +238,8 @@ pub struct PlayerApp {
     shot_fs: Vec<u64>,
     /// The waveform seek bar's peaks (the editor's cache: background decode, kept on disk per file).
     wave: Option<crate::media::waveform::WaveformCache>,
+    /// Autoplay backwards opened the previous file: start it from its end, reversed, once its length is in.
+    start_reversed: bool,
 }
 
 impl PlayerApp {
@@ -258,12 +264,17 @@ impl PlayerApp {
         let repeat = match prefs.repeat {
             1 => Repeat::All,
             2 => Repeat::One,
+            3 => Repeat::Count,
             _ => Repeat::Off,
         };
+        let mut playlist = Playlist::new(prefs.shuffle, repeat);
+        playlist.autoplay = prefs.autoplay;
+        playlist.loop_n = prefs.loop_n;
+        playlist.reset_loops();
         let c = ctx.clone();
         engine.set_wake(Arc::new(move || c.request_repaint()));
         PlayerApp {
-            playlist: Playlist::new(prefs.shuffle, repeat),
+            playlist,
             engine,
             info: None,
             error: None,
@@ -293,6 +304,7 @@ impl PlayerApp {
             shown_at_frame: 0,
             shot_fs: Vec::new(),
             wave: None,
+            start_reversed: false,
             reveal: Default::default(),
             frames: 0,
             cover: None,
@@ -358,6 +370,7 @@ impl PlayerApp {
     pub fn toggle_play(&mut self) {
         if self.ended && !self.engine.is_playing() {
             self.ended = false;
+            self.playlist.reset_loops();
             // played out: again from the start (backwards: from the end)
             self.engine.seek(if self.engine.is_reverse() { self.engine.duration() } else { 0.0 });
         }
@@ -371,14 +384,49 @@ impl PlayerApp {
         self.engine.set_playing(true);
     }
 
+    /// Loop for ever or N times.
     pub fn looping(&self) -> bool {
-        self.playlist.repeat == Repeat::One
+        matches!(self.playlist.repeat, Repeat::One | Repeat::Count)
     }
 
-    /// Loop: the file repeats (both ways); remembered.
+    /// Loop (both ways), for ever; off: nothing repeats. Remembered.
     pub fn set_loop(&mut self, on: bool) {
-        self.playlist.repeat = if on { Repeat::One } else { Repeat::Off };
-        self.prefs.repeat = self.playlist.repeat as u8;
+        self.set_repeat(if on { Repeat::One } else { Repeat::Off });
+    }
+
+    /// The bar's Loop button: Off -> for ever -> N times -> Off.
+    pub fn click_loop(&mut self) {
+        self.set_repeat(self.playlist.repeat.loop_click());
+    }
+
+    fn set_repeat(&mut self, r: Repeat) {
+        self.playlist.repeat = r;
+        self.playlist.reset_loops();
+        self.prefs.repeat = r as u8;
+        self.prefs_dirty = true;
+    }
+
+    /// Loop N times: (N, rounds left) while it is the loop picked.
+    pub fn loop_count(&self) -> Option<(u32, u32)> {
+        (self.playlist.repeat == Repeat::Count).then_some((self.playlist.loop_n, self.playlist.loops_left))
+    }
+
+    /// Loop N times' N (1-999); counting starts again. Remembered.
+    pub fn set_loop_n(&mut self, n: u32) {
+        self.playlist.loop_n = n.clamp(1, 999);
+        self.playlist.reset_loops();
+        self.prefs.loop_n = self.playlist.loop_n;
+        self.prefs_dirty = true;
+    }
+
+    pub fn autoplay(&self) -> bool {
+        self.playlist.autoplay
+    }
+
+    /// When a file ends, play the next one in the folder (backwards: the previous one). Remembered.
+    pub fn set_autoplay(&mut self, on: bool) {
+        self.playlist.autoplay = on;
+        self.prefs.autoplay = on;
         self.prefs_dirty = true;
     }
 
@@ -424,6 +472,10 @@ impl PlayerApp {
 
     /// Open `path` at `t`, playing or paused (a rename reopens the file where it was).
     pub fn open_at(&mut self, ctx: &egui::Context, path: &Path, t: f64, play: bool) {
+        if path != self.path() {
+            self.playlist.reset_loops();
+        }
+        self.start_reversed = false;
         let (vol, muted, rate) = (self.engine.volume(), self.engine.muted(), self.engine.rate());
         let audio_only = self.engine.audio_only();
         self.engine = Engine::start(path, t, play, true);
@@ -757,9 +809,7 @@ impl PlayerApp {
 
     /// Repeat the folder (on) or not.
     pub fn set_repeat_folder(&mut self, on: bool) {
-        self.playlist.repeat = if on { Repeat::All } else { Repeat::Off };
-        self.prefs.repeat = self.playlist.repeat as u8;
-        self.prefs_dirty = true;
+        self.set_repeat(if on { Repeat::All } else { Repeat::Off });
     }
 
     pub fn set_volume(&mut self, v: f32) {
@@ -940,27 +990,29 @@ impl PlayerApp {
         Some(((next - t).abs() / self.engine.rate()).max(0.0))
     }
 
-    /// The file played out: repeat / next per the playlist, else stop on the last frame.
+    /// The file reached its end (backwards: its start): round again, the next / previous file, or pause
+    /// there - `Playlist::after_end`.
     fn handle_end(&mut self, ctx: &egui::Context) {
+        if self.start_reversed && self.engine.duration() > 0.0 {
+            // the previous file, from its end, backwards
+            self.start_reversed = false;
+            self.engine.set_reverse(true);
+            self.engine.seek(self.engine.duration());
+            self.engine.set_playing(true);
+            return;
+        }
         if !self.engine.is_playing() || !self.engine.at_end() || self.scrub.is_some() {
             return;
         }
-        if self.engine.is_reverse() {
-            // back at the start: Loop goes round from the end, else stop on the first frame
-            if self.looping() {
-                self.seek(self.engine.duration());
-            } else {
-                self.engine.set_playing(false);
-                self.ended = true;
-                self.hide.poke(self.now());
+        let (cur, reverse) = (self.path().to_path_buf(), self.engine.is_reverse());
+        match self.playlist.after_end(&cur, reverse) {
+            End::Again => self.engine.seek(if reverse { self.engine.duration() } else { 0.0 }),
+            End::Open(p) if reverse => {
+                self.open_at(ctx, &p, 0.0, false);
+                self.start_reversed = true;
             }
-            return;
-        }
-        let cur = self.path().to_path_buf();
-        match self.playlist.after_end(&cur) {
-            Some(p) if p == cur => self.seek(0.0),
-            Some(p) => self.open(ctx, &p),
-            None => {
+            End::Open(p) => self.open(ctx, &p),
+            End::Stop => {
                 self.engine.set_playing(false);
                 self.ended = true;
                 self.hide.poke(self.now());
@@ -1100,6 +1152,10 @@ impl PlayerApp {
                 _ if item == "rename" => self.renaming = Some(self.title()),
                 _ if item == "reverse" => self.toggle_reverse(),
                 _ if item == "loop" => self.playlist.repeat = Repeat::One,
+                Some(("loop", n)) => {
+                    self.playlist.repeat = Repeat::Count;
+                    self.set_loop_n(n.parse().unwrap_or(1));
+                }
                 _ if item == "upscale" => self.upscale = Some(Default::default()),
                 _ if item == "visualizer" => self.song_viz = true,
                 _ if item == "cover_loading" => self.cover_rx = Some(std::sync::mpsc::channel().1),

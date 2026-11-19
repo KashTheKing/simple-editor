@@ -13,6 +13,7 @@
 - **Rename** a file by clicking its name at the bottom left; the editor's Library follows the renamed file. The cursor hides with the controls.
 - **Full screen** covers the whole screen from a maximized window too (no white strip at the bottom) and goes back to how the window was; the editor's full screen too.
 - **Waveform seek bar**: on a song (or in Audio Only), hovering the seek bar turns it into the whole song's waveform, the played part in your accent; on or off from the right-click menu.
+- **End of a file and Loop**: the end (or the start, in reverse) pauses there, or with Autoplay on plays the next file (in reverse the previous one, from its end); Loop cycles off, for ever and N times (a badge counts down, right-click sets N) and goes round in reverse too.
 
 ### Windows
 - **One title bar for every window**: the editor, popped-out panels, the Screen Recording window and the media player share the same title bar and minimise / maximise / close buttons. Not maximised, windows get rounded corners (unless the look is Sharp) and an outline. Moving a window no longer lags.
