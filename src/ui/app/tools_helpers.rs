@@ -82,6 +82,10 @@ pub(super) fn anim_of<'a>(clip: &'a mut Clip, name: &str) -> Option<&'a mut crat
         "width" | "scale x" => Some("scale_x"),
         "height" | "scale y" => Some("scale_y"),
         "rotation" | "rot" => Some("rotation"),
+        "crop left" => Some("crop_left"),
+        "crop right" => Some("crop_right"),
+        "crop top" => Some("crop_top"),
+        "crop bottom" => Some("crop_bottom"),
         "opacity" => Some("opacity"),
         "volume" => Some("volume"),
         "pan" => Some("pan"),
@@ -253,6 +257,12 @@ pub(super) fn apply_clip_fields(clip: &mut Clip, fields: &Value) -> Result<(), S
                     _ => &mut clip.pan,
                 };
                 a.keys.clear(); // "constant value": drop any animation
+                a.value = val;
+            }
+            "crop_left" | "crop_right" | "crop_top" | "crop_bottom" => {
+                let val = v.as_f64().ok_or_else(|| format!("{k}: number (0..0.5)"))?.clamp(0.0, 0.5);
+                let a = crate::model::prop_mut(clip, k).ok_or("crop")?;
+                a.keys.clear();
                 a.value = val;
             }
             // text style fields

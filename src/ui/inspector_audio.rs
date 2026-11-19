@@ -88,7 +88,7 @@ fn prop_line(
             let v = a.at(lt) * by;
             let mut shown = match p {
                 "volume" => gain_to_db(v),
-                "opacity" => v * 100.0,
+                "opacity" | "crop_left" | "crop_right" | "crop_top" | "crop_bottom" => v * 100.0,
                 _ => v,
             };
             let dv = DragValue::new(&mut shown);
@@ -97,6 +97,9 @@ fn prop_line(
                 "pan" => dv.range(-1.0..=1.0).fixed_decimals(2).speed(0.01),
                 "scale_x" | "scale_y" => dv.range(0.01..=20.0).speed(0.01),
                 "opacity" => dv.range(0.0..=100.0).suffix(" %").max_decimals(0).speed(1.0),
+                "crop_left" | "crop_right" | "crop_top" | "crop_bottom" => {
+                    dv.range(0.0..=50.0).suffix(" %").max_decimals(1).speed(0.2)
+                }
                 _ => dv.speed(1.0),
             };
             // the range limits what is typed or dragged, not what is shown: a Pop In starts at scale 0, and
@@ -106,6 +109,7 @@ fn prop_line(
                 let v = match p {
                     "volume" => db_to_gain(shown),
                     "opacity" => shown / 100.0,
+                    "crop_left" | "crop_right" | "crop_top" | "crop_bottom" => (shown / 100.0).clamp(0.0, 0.5),
                     _ if by.abs() > 1e-9 => shown / by,
                     _ => shown,
                 };
@@ -344,6 +348,18 @@ pub(super) fn section(
             let sx = prop_line(ui, &mut clip, "scale_x", "Scale X", lt, palette, &mut g, &path_list);
             let sy = prop_line(ui, &mut clip, "scale_y", "Scale Y", lt, palette, &mut g, &path_list);
             prop_line(ui, &mut clip, "rotation", "Rotation", lt, palette, &mut g, &path_list);
+            // the built-in crop: footage, stills, nested sequences, text and shapes (an adjustment layer
+            // draws nothing of its own to crop)
+            if clip.draws() && clip.kind != crate::model::ClipKind::Browser {
+                for (p, label) in [
+                    ("crop_left", "Crop Left"),
+                    ("crop_right", "Crop Right"),
+                    ("crop_top", "Crop Top"),
+                    ("crop_bottom", "Crop Bottom"),
+                ] {
+                    prop_line(ui, &mut clip, p, label, lt, palette, &mut g, &path_list);
+                }
+            }
             if with_speed {
                 // the one Speed row, writing through `Project::set_speed` (its own undo)
                 changed |= speed_rows(ui, project, ids, playhead, palette, undo);

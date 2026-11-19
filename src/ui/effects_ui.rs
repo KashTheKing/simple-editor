@@ -88,7 +88,7 @@ pub(crate) fn categories() -> Vec<&'static str> {
 /// Whether `kind` belongs in the catalogue for the selected clip: `audio` is the first selected clip's
 /// "is it an audio clip" (None = nothing selected, so nothing is filtered out).
 pub(crate) fn fits_selection(kind: EffectKind, audio: Option<bool>) -> bool {
-    audio.map_or(true, |a| kind.applies_to_audio() == a)
+    kind.in_catalogue() && audio.map_or(true, |a| kind.applies_to_audio() == a)
 }
 
 /// Test-only registry of widget rects so headless tests can click real widgets without pixel-guessing.

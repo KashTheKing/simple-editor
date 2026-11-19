@@ -91,6 +91,7 @@ actions! {
     NudgeRight => "nudge_right", "Nudge Right 1 Frame", sc(NONE, Key::Period);
     ToggleSnap => "snap", "Toggle Snapping", sc(NONE, Key::S);
     ToggleAutoCloseGaps => "auto_close_gaps", "Toggle Auto Close Gaps", None;
+    ToggleLinkedSelection => "linked_selection", "Toggle Linked Selection", None;
     ToggleShowVideoTracks => "show_video_tracks", "Show Video Tracks", None;
     ToggleShowAudioTracks => "show_audio_tracks", "Show Audio Tracks", None;
     AddVideoTrack => "add_video_track", "Add Video Track", None;
@@ -696,7 +697,7 @@ pub fn group(a: Action) -> &'static str {
         | WaveformsSimple | WaveformsDetailed
         | AddVideoTrack | AddAudioTrack | RenameTrack | ToggleTrackLock | ToggleTrackRipple | ToggleTrackMagnetic
         | OpenParentSequence | RenderSelection | BakeSelection | ShapesToHtml => "Timeline",
-        ToggleAutoCloseGaps | ToggleShowVideoTracks | ToggleShowAudioTracks => "Timeline",
+        ToggleAutoCloseGaps | ToggleLinkedSelection | ToggleShowVideoTracks | ToggleShowAudioTracks => "Timeline",
         Split | DuplicateClips | ToggleEnabled | LinkToggle | NudgeLeft | NudgeRight | Retime | FreezeFrame
         | AddTransition | AddLastTransition | AddTransitionEnd | ApplyFlow | AutoReframe | SaveTemplate => "Clip",
         NestSequence | UnnestClip | MakeContainer | UnmakeContainer | ReplaceContainerMedia => "Clip",
@@ -826,6 +827,25 @@ fn restore_clipboard_keys(ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A settings file whose hotkeys bind tools that left the timeline toolbar (Pen, Spacer, Track Select,
+    /// Stretch, Marker) still loads and keeps those bindings: the tools are off the toolbar, not gone.
+    #[test]
+    fn old_hotkeys_for_tools_off_the_toolbar_still_load() {
+        let json = r#"{"hotkeys": {"tool_pen": "Shift+P", "tool_spacer": "X", "tool_track_forward": "A",
+            "tool_stretch": "", "tool_marker": "Shift+M", "tool_keyframe": "K"}}"#;
+        let s: Settings = serde_json::from_str(json).expect("old settings load");
+        let h = Hotkeys::from_settings(&s);
+        assert!(same(h.get(Action::ToolPen), Some(KeyboardShortcut::new(SHIFT, Key::P))));
+        assert!(same(h.get(Action::ToolSpacer), Some(KeyboardShortcut::new(NONE, Key::X))));
+        assert!(same(h.get(Action::ToolTrackForward), Some(KeyboardShortcut::new(NONE, Key::A))));
+        assert_eq!(h.get(Action::ToolStretch), None, "an unbound tool stays unbound");
+        assert!(same(h.get(Action::ToolMarker), Some(KeyboardShortcut::new(SHIFT, Key::M))));
+        // an id no build knows is ignored, and the file round-trips
+        let mut back = Settings::default();
+        h.to_settings(&mut back);
+        assert_eq!(back.hotkeys.get("tool_pen").map(String::as_str), Some("Shift+P"));
+        assert!(!back.hotkeys.contains_key("tool_keyframe"));
+    }
     #[test]
     fn parse_format_roundtrip() {
         for &a in Action::ALL {

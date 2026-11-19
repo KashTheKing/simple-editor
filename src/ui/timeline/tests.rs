@@ -268,6 +268,7 @@ impl Harness {
                         palette: &pal,
                         snap: *snap,
                         snap_markers: *snap_markers,
+                        linked: true,
                         playing: false,
                         thumbs: None,
                         keep_ranges: &[],

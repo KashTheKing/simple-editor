@@ -215,6 +215,9 @@ pub struct Settings {
     /// Preview is rendered at most this wide (pixels) to keep CPU low.
     pub preview_max_width: u32,
     pub snap: bool,
+    /// Linked Selection (the timeline toolbar's chain): a click selects the clip's whole link group (its
+    /// audio with its video). Off, a click selects just that clip; Alt+click inverts either way.
+    pub linked_selection: bool,
     /// Magnetic timeline (CapCut-style): every edit packs each track's clips so no gap is left.
     pub auto_close_gaps: bool,
     pub show_library: bool,
@@ -849,6 +852,7 @@ impl Default for Settings {
             buffer_before_play: true,
             // ---- ws:snap-engine ----
             snap_markers: true,
+            linked_selection: true,
             // ---- ws:trim-model ----
             // ---- ws:canvas-handles-monitor ----
             hover_preview: true,

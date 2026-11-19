@@ -1613,6 +1613,7 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
         GalleryTab::Sounds => mine_items(GKind::Sound, 0.0).iter().map(|i| i.name.clone()).collect(),
         GalleryTab::Effects => crate::model::EffectKind::ALL
             .into_iter()
+            .filter(|k| k.in_catalogue())
             .map(|k| k.name().to_string())
             .chain(mine_items(GKind::Effect, 0.0).iter().map(|i| i.name.clone()))
             .collect(),
@@ -3471,7 +3472,7 @@ mod tests {
         let mut g = Gx::new(GalleryTab::Effects);
         g.cells = vec![("effects/glow", "Glow", Kind::Effect, true), ("effects/rain", "Rain", Kind::Effect, false)];
         g.frame(vec![]);
-        let built = EffectKind::ALL.len();
+        let built = EffectKind::ALL.iter().filter(|k| k.in_catalogue()).count();
         assert_eq!(g.state.count, (built + 2, built + 2), "everything, unfiltered");
         for (chip, src, shown) in [
             ("Online", Src::Online, 1),
@@ -3633,7 +3634,8 @@ mod tests {
         let f = |src| Filters { src, ..Default::default() };
         assert_eq!(names(GalleryTab::Effects, &f(Src::Online)), ["Rain"]);
         assert_eq!(names(GalleryTab::Effects, &f(Src::Installed)), ["Glow"]);
-        assert!(names(GalleryTab::Effects, &f(Src::BuiltIn)).len() == crate::model::EffectKind::ALL.len());
+        let built = crate::model::EffectKind::ALL.iter().filter(|k| k.in_catalogue()).count();
+        assert_eq!(names(GalleryTab::Effects, &f(Src::BuiltIn)).len(), built, "Crop is built in, not a catalogue effect");
         let q = Filters { q: "weather".into(), ..Default::default() };
         assert_eq!(names(GalleryTab::Effects, &q), ["Rain"], "the search reads tags");
         let cat = Filters { cat: "Shader".into(), ..Default::default() };

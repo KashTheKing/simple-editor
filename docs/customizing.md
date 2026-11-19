@@ -246,14 +246,14 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `clip.apply_motion` | Mutate | clip_id, name, scaled | Apply a motion preset (built-in or saved) to a clip. |
 | `clip.bypass` | Mutate | clip_ids, on | Enable/disable every colour-grade effect (Color/Primaries/Curves/Levels/HueShift/Qualifier/Lut) on the given clips in one step. |
 | `clip.connect_nodes` | Mutate | clip_id, from, port, to | Wire one node's output into another node's input port (cycles are refused). |
-| `clip.crop` | Mutate | at, bottom, clip_id, feather, left, right, top | Find-or-append a Crop effect on the clip and set its fraction params (0..0.5 each) at time `at`. |
+| `clip.crop` | Mutate | at, bottom, clip_id, left, right, top | Set the clip's built-in crop (Crop Left / Right / Top / Bottom, the share of the layer cut off each edge, 0..0.5) at time `at`. Keys it when that property is already keyframed. |
 | `clip.effects_bulk` | Mutate | clip_ids, index, params | Set one stack-index effect's params on every listed clip whose effect at that index shares its kind (Project::bulk_set_effect_params). |
 | `clip.fit` | Mutate | clip_id, mode | Fit (contain, native aspect) or stretch (fill canvas, non-uniform) the clip. |
 | `clip.keyframe` | Mutate | clip_id, ease, property, remove, t, value | Set (or remove with remove=true) a keyframe of a property at clip-local time t. |
 | `clip.mask_target` | Ui | effect | Point the existing mask-tool canvas drag at the clip's own mask, or one effect's. |
 | `clip.remove_effect` | Mutate | clip_id, index | Remove effect at index. |
 | `clip.reorder_effect` | Mutate | clip_id, from, to | Move an effect to a new stack index (Project::reorder_effect). |
-| `clip.set` | Mutate | clip_id, fields | Set clip fields: name, enabled, label, speed, reverse, freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …). |
+| `clip.set` | Mutate | clip_id, fields | Set clip fields: name, enabled, label, speed, reverse, freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, crop_left, crop_right, crop_top, crop_bottom (0..0.5), opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …). |
 | `clip.set_mask` | Mutate | clip_id, effect, fields | Edit a mask: fields {shape, cx, cy, rx, ry, rotation, feather, expand, opacity, invert, enabled, points:[[x,y],…]} in project pixels relative to the layer centre. |
 
 **`color.*`** (5 tools)
