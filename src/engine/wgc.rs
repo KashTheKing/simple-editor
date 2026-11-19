@@ -7,9 +7,12 @@
 //! One thread per capture: it owns the D3D11 device, the frame pool and the session, and once per
 //! `1/fps` takes the newest frame (WGC only delivers frames when something changed; the last one is
 //! repeated so the encoder sees a steady rate):
-//! * recording: the frame is copied to a staging texture and written to ffmpeg's stdin as raw BGRA
-//!   (`-f rawvideo -use_wallclock_as_timestamps 1`, so A/V sync works like gdigrab's wall clock). The
-//!   output keeps the size the window had at the start; a resized window is cropped / padded with black.
+//! * recording: the D3D11 video processor converts the frame to NV12 (BT.709, TV range) at the output
+//!   scale on the GPU; only that (1.5 bytes a pixel, not 4) is read back, double-buffered, and written
+//!   to ffmpeg's stdin (`-f rawvideo -pix_fmt nv12 -use_wallclock_as_timestamps 1`, so A/V sync works
+//!   like gdigrab's wall clock): ffmpeg converts nothing and a hardware encoder only encodes. The
+//!   output keeps the size the window had at the start; a resized window is cropped / padded with
+//!   black. A screen, or a region inside one, is a monitor capture cropped on the GPU.
 //! * preview: the frame goes into a texture with a mip chain, `GenerateMips` halves it on the GPU until
 //!   it fits `PREVIEW_MAX`, and only that small level is read back (a few KB, not the full frame).
 //!   Read-backs are double-buffered (map last tick's copy), so the thread never stalls on the GPU.
@@ -18,7 +21,6 @@
 
 use crate::engine::screen_grab::{Frame, FrameSlot, PREVIEW_MAX};
 use std::io::Write;
-use std::process::ChildStdin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -45,28 +47,38 @@ pub enum Target {
 /// A running WGC capture.
 pub struct AppCapture {
     stop: Arc<AtomicBool>,
-    encoder: Arc<Mutex<Option<ChildStdin>>>,
+    encoder: Arc<Mutex<Option<std::fs::File>>>,
     thread: Option<std::thread::JoinHandle<()>>,
     /// Output size (even), the window's size when the capture started.
     pub size: (u32, u32),
 }
 
 impl AppCapture {
-    /// Start capturing `hwnd`; frames go to `slot` for the preview. Fails when the window is gone or
-    /// Windows refuses to capture it.
-    pub fn start(hwnd: isize, cursor: bool, fps: u32, slot: Arc<FrameSlot>) -> Result<AppCapture, String> {
-        Self::start_target(Target::Window(hwnd), cursor, fps, slot)
+    /// Preview-only capture of a window or a monitor (`crop` = `[x, y, w, h]` inside a monitor).
+    pub fn preview(target: Target, crop: Option<[u32; 4]>, cursor: bool, fps: u32, slot: Arc<FrameSlot>) -> Result<AppCapture, String> {
+        Self::start_target(target, crop, None, cursor, fps, slot)
     }
-    /// Start capturing a window or a monitor.
-    pub fn start_target(target: Target, cursor: bool, fps: u32, slot: Arc<FrameSlot>) -> Result<AppCapture, String> {
+    /// Start capturing a window or a monitor (`crop` = `[x, y, w, h]` inside a monitor); frames go to
+    /// `slot` for the preview. `encode` = the output scale in percent: the encoder's NV12 conversion is
+    /// set up (and run once) now, so a GPU that can't do it fails here and the caller falls back to
+    /// gdigrab; `size` is then the encoder's frame size. Fails when the window is gone or Windows
+    /// refuses to capture it.
+    pub fn start_target(
+        target: Target,
+        crop: Option<[u32; 4]>,
+        encode: Option<u32>,
+        cursor: bool,
+        fps: u32,
+        slot: Arc<FrameSlot>,
+    ) -> Result<AppCapture, String> {
         let stop = Arc::new(AtomicBool::new(false));
-        let encoder: Arc<Mutex<Option<ChildStdin>>> = Arc::new(Mutex::new(None));
+        let encoder: Arc<Mutex<Option<std::fs::File>>> = Arc::new(Mutex::new(None));
         let (tx, rx) = mpsc::channel();
         let (s, e) = (stop.clone(), encoder.clone());
         let thread = std::thread::Builder::new()
             .name("app-capture".into())
             .spawn(move || {
-                if let Err(err) = run(target, cursor, fps.clamp(1, 120), &slot, &s, &e, &tx) {
+                if let Err(err) = run(target, crop, encode, cursor, fps.clamp(1, 120), &slot, &s, &e, &tx) {
                     let _ = tx.send(Err(err));
                 }
             })
@@ -81,7 +93,7 @@ impl AppCapture {
         }
     }
     /// Feed the recording: every frame from now on is written to this ffmpeg stdin.
-    pub fn attach_encoder(&self, stdin: ChildStdin) {
+    pub fn attach_encoder(&self, stdin: std::fs::File) {
         *self.encoder.lock().unwrap_or_else(|p| p.into_inner()) = Some(stdin);
     }
     /// Ask the thread to stop (returns at once; ffmpeg sees EOF when the thread lets go of stdin).
@@ -99,17 +111,33 @@ impl Drop for AppCapture {
     }
 }
 
+/// ffmpeg's stdin for the GPU path: an anonymous pipe with a 16 MB buffer. Through std's pipe (a few
+/// KB) a 1440p NV12 frame (5.5 MB) went over in thousands of pieces, which cost ffmpeg a core and
+/// capped the recording at ~40 fps. Returns (the read end, for the child; the write end).
+pub fn frame_pipe() -> Result<(std::fs::File, std::fs::File), String> {
+    use std::os::windows::io::FromRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    let (mut r, mut w) = (HANDLE::default(), HANDLE::default());
+    unsafe {
+        windows::Win32::System::Pipes::CreatePipe(&mut r, &mut w, None, 16 << 20).map_err(err("pipe"))?;
+        Ok((std::fs::File::from_raw_handle(r.0 as _), std::fs::File::from_raw_handle(w.0 as _)))
+    }
+}
+
 fn err(what: &str) -> impl Fn(windows::core::Error) -> String + '_ {
     move |e| format!("{what}: {}", e.message())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run(
     target: Target,
+    crop: Option<[u32; 4]>,
+    encode: Option<u32>,
     cursor: bool,
     fps: u32,
     slot: &FrameSlot,
     stop: &AtomicBool,
-    encoder: &Mutex<Option<ChildStdin>>,
+    encoder: &Mutex<Option<std::fs::File>>,
     ready: &mpsc::Sender<Result<(u32, u32), String>>,
 ) -> Result<(), String> {
     use windows::core::Interface;
@@ -119,7 +147,7 @@ fn run(
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
     use windows::Win32::Graphics::Direct3D11::*;
-    use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
+    use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC};
     use windows::Win32::Graphics::Dxgi::IDXGIDevice;
     use windows::Win32::System::WinRT::Direct3D11::{CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess};
     use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
@@ -163,14 +191,19 @@ fn run(
         let _ = session.SetIsBorderRequired(false);
         session.StartCapture().map_err(err("Graphics Capture"))?;
 
-        let (w0, h0) = ((size.Width.max(2) as u32) & !1, (size.Height.max(2) as u32) & !1);
-        let tex = |w: u32, h: u32, mips: u32, usage, bind: u32, cpu: u32, misc: u32| -> Result<ID3D11Texture2D, String> {
+        // the picture: the whole window / monitor, or the crop of a monitor
+        let (cx, cy) = crop.map(|c| (c[0], c[1])).unwrap_or((0, 0));
+        let (w0, h0) = match crop {
+            Some(c) => (c[2].max(2) & !1, c[3].max(2) & !1),
+            None => ((size.Width.max(2) as u32) & !1, (size.Height.max(2) as u32) & !1),
+        };
+        let texf = |w: u32, h: u32, mips: u32, format: DXGI_FORMAT, usage: D3D11_USAGE, bind: u32, cpu: u32, misc: u32| -> Result<ID3D11Texture2D, String> {
             let desc = D3D11_TEXTURE2D_DESC {
                 Width: w,
                 Height: h,
                 MipLevels: mips,
                 ArraySize: 1,
-                Format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                Format: format,
                 SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
                 Usage: usage,
                 BindFlags: bind,
@@ -181,12 +214,20 @@ fn run(
             device.CreateTexture2D(&desc, None, Some(&mut t)).map_err(err("Direct3D"))?;
             t.ok_or_else(|| "no texture".to_string())
         };
+        let tex = |w, h, mips, usage, bind, cpu, misc| texf(w, h, mips, DXGI_FORMAT_B8G8R8A8_UNORM, usage, bind, cpu, misc);
+        // this tick's picture: the video processor's input and the preview's source
+        let frame = tex(w0, h0, 1, D3D11_USAGE_DEFAULT, (D3D11_BIND_SHADER_RESOURCE.0 | D3D11_BIND_RENDER_TARGET.0) as u32, 0, 0)?;
+        let frame_rtv = {
+            let mut v = None;
+            device.CreateRenderTargetView(&frame, None, Some(&mut v)).map_err(err("Direct3D"))?;
+            v.ok_or("no view")?
+        };
         // two of each read-back texture: this tick's copy goes into one while last tick's is read from the
         // other, so the thread never waits for the GPU (one frame of extra lag, no stalls)
-        let staging = [
-            tex(w0, h0, 1, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ.0 as u32, 0)?,
-            tex(w0, h0, 1, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ.0 as u32, 0)?,
-        ];
+        let mut nv12 = match encode {
+            Some(scale) => Some(Nv12::new(&device, &ctx, &frame, (w0, h0), scale, fps, &texf)?),
+            None => None,
+        };
         // preview: halve until it fits
         let mut level = 0u32;
         while (w0 >> level).max(h0 >> level) > PREVIEW_MAX && level < 10 {
@@ -206,17 +247,17 @@ fn run(
             tex(pw, ph, 1, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ.0 as u32, 0)?,
             tex(pw, ph, 1, D3D11_USAGE_STAGING, 0, D3D11_CPU_ACCESS_READ.0 as u32, 0)?,
         ];
-        let (mut big_filled, mut small_filled) = ([false; 2], [false; 2]);
+        let mut small_filled = [false; 2];
         let mut tick = 0usize;
         let mut srv = None;
         device.CreateShaderResourceView(&mips, None, Some(&mut srv)).map_err(err("Direct3D"))?;
         let srv = srv.ok_or("no view")?;
-        let _ = ready.send(Ok((w0, h0)));
+        let _ = ready.send(Ok(nv12.as_ref().map(|n| n.size).unwrap_or((w0, h0))));
 
         let period = Duration::from_secs_f64(1.0 / fps as f64);
         let mut next = Instant::now();
         let mut have = false;
-        let mut buf: Vec<u8> = Vec::with_capacity((w0 * h0 * 4) as usize);
+        let mut buf: Vec<u8> = Vec::new();
         while !stop.load(Ordering::SeqCst) {
             // newest frame only; older ones are dropped
             let mut latest = None;
@@ -228,27 +269,21 @@ fn run(
                 if let Ok(surface) = f.Surface() {
                     if let Ok(access) = surface.cast::<IDirect3DDxgiInterfaceAccess>() {
                         if let Ok(src) = access.GetInterface::<ID3D11Texture2D>() {
-                            // copy what fits the fixed output size, top-left
+                            // copy what fits the fixed output size (from the crop's corner), top-left
+                            let (cw, ch) = (content.Width.max(1) as u32, content.Height.max(1) as u32);
                             let b = D3D11_BOX {
-                                left: 0,
-                                top: 0,
+                                left: cx.min(cw - 1),
+                                top: cy.min(ch - 1),
                                 front: 0,
-                                right: (content.Width.max(1) as u32).min(w0),
-                                bottom: (content.Height.max(1) as u32).min(h0),
+                                right: (cx + w0).min(cw),
+                                bottom: (cy + h0).min(ch),
                                 back: 1,
                             };
-                            if b.right < w0 || b.bottom < h0 {
+                            if b.right - b.left < w0 || b.bottom - b.top < h0 {
                                 // a smaller window leaves the rest black, not last frame's leftovers
-                                let rtv: Option<ID3D11RenderTargetView> = {
-                                    let mut v = None;
-                                    let _ = device.CreateRenderTargetView(&mips, None, Some(&mut v));
-                                    v
-                                };
-                                if let Some(v) = rtv {
-                                    ctx.ClearRenderTargetView(&v, &[0.0, 0.0, 0.0, 1.0]);
-                                }
+                                ctx.ClearRenderTargetView(&frame_rtv, &[0.0, 0.0, 0.0, 1.0]);
                             }
-                            ctx.CopySubresourceRegion(&mips, 0, 0, 0, 0, &src, 0, Some(&b));
+                            ctx.CopySubresourceRegion(&frame, 0, 0, 0, 0, &src, 0, Some(&b));
                             have = true;
                         }
                     }
@@ -262,20 +297,8 @@ fn run(
             if have {
                 let feeding = encoder.lock().map(|g| g.is_some()).unwrap_or(false);
                 let (cur, prev) = (tick % 2, (tick + 1) % 2);
-                if feeding {
-                    ctx.CopySubresourceRegion(&staging[cur], 0, 0, 0, 0, &mips, 0, None);
-                    big_filled[cur] = true;
-                    let mut m = D3D11_MAPPED_SUBRESOURCE::default();
-                    if big_filled[prev]
-                        && ctx.Map(&staging[prev], 0, D3D11_MAP_READ, 0, Some(&mut m)).is_ok()
-                        && !m.pData.is_null()
-                    {
-                        let row = w0 as usize * 4;
-                        buf.clear();
-                        for y in 0..h0 as usize {
-                            buf.extend_from_slice(std::slice::from_raw_parts((m.pData as *const u8).add(y * m.RowPitch as usize), row));
-                        }
-                        ctx.Unmap(&staging[prev], 0);
+                if let (true, Some(n)) = (feeding, nv12.as_mut()) {
+                    if n.convert(&ctx, cur, prev, &mut buf) {
                         let mut g = encoder.lock().unwrap_or_else(|p| p.into_inner());
                         if let Some(si) = g.as_mut() {
                             if si.write_all(&buf).is_err() {
@@ -285,6 +308,7 @@ fn run(
                     }
                 }
                 if slot.wanted.load(Ordering::Relaxed) {
+                    ctx.CopySubresourceRegion(&mips, 0, 0, 0, 0, &frame, 0, None);
                     if level > 0 {
                         ctx.GenerateMips(&srv);
                     }
@@ -323,11 +347,158 @@ fn run(
     Ok(())
 }
 
-/// The monitor whose rectangle is exactly `[x, y, w, h]` (a "Screen N" source), as an `HMONITOR`.
-pub fn monitor_at(rect: [i32; 4]) -> Option<isize> {
+type TexFn<'a> = dyn Fn(
+        u32,
+        u32,
+        u32,
+        windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT,
+        windows::Win32::Graphics::Direct3D11::D3D11_USAGE,
+        u32,
+        u32,
+        u32,
+    ) -> Result<windows::Win32::Graphics::Direct3D11::ID3D11Texture2D, String>
+    + 'a;
+
+/// The encoder's GPU half: the D3D11 video processor turns the BGRA picture into NV12 at the output
+/// size, and two staging textures read it back without waiting for the GPU.
+struct Nv12 {
+    vctx: windows::Win32::Graphics::Direct3D11::ID3D11VideoContext,
+    vp: windows::Win32::Graphics::Direct3D11::ID3D11VideoProcessor,
+    input: windows::Win32::Graphics::Direct3D11::ID3D11VideoProcessorInputView,
+    output: windows::Win32::Graphics::Direct3D11::ID3D11VideoProcessorOutputView,
+    target: windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
+    staging: [windows::Win32::Graphics::Direct3D11::ID3D11Texture2D; 2],
+    filled: [bool; 2],
+    /// Output size (even).
+    size: (u32, u32),
+}
+
+/// The output size of a `scale` % recording of a `w x h` picture (even, at least 2x2).
+pub fn scaled_size((w, h): (u32, u32), scale: u32) -> (u32, u32) {
+    let s = scale.clamp(10, 100);
+    (((w * s / 100) & !1).max(2), ((h * s / 100) & !1).max(2))
+}
+
+impl Nv12 {
+    unsafe fn new(
+        device: &windows::Win32::Graphics::Direct3D11::ID3D11Device,
+        ctx: &windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext,
+        frame: &windows::Win32::Graphics::Direct3D11::ID3D11Texture2D,
+        (w, h): (u32, u32),
+        scale: u32,
+        fps: u32,
+        texf: &TexFn,
+    ) -> Result<Nv12, String> {
+        use windows::core::Interface;
+        use windows::Win32::Graphics::Direct3D11::*;
+        use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_RATIONAL};
+        let e = err("GPU colour conversion");
+        let (ow, oh) = scaled_size((w, h), scale);
+        unsafe {
+            let vdev: ID3D11VideoDevice = device.cast().map_err(&e)?;
+            let vctx: ID3D11VideoContext = ctx.cast().map_err(&e)?;
+            let rate = DXGI_RATIONAL { Numerator: fps, Denominator: 1 };
+            let desc = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
+                InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
+                InputFrameRate: rate,
+                InputWidth: w,
+                InputHeight: h,
+                OutputFrameRate: rate,
+                OutputWidth: ow,
+                OutputHeight: oh,
+                Usage: D3D11_VIDEO_USAGE_OPTIMAL_SPEED,
+            };
+            let en = vdev.CreateVideoProcessorEnumerator(&desc).map_err(&e)?;
+            let vp = vdev.CreateVideoProcessor(&en, 0).map_err(&e)?;
+            let target = texf(ow, oh, 1, DXGI_FORMAT_NV12, D3D11_USAGE_DEFAULT, D3D11_BIND_RENDER_TARGET.0 as u32, 0, 0)?;
+            let read = D3D11_CPU_ACCESS_READ.0 as u32;
+            let staging = [
+                texf(ow, oh, 1, DXGI_FORMAT_NV12, D3D11_USAGE_STAGING, 0, read, 0)?,
+                texf(ow, oh, 1, DXGI_FORMAT_NV12, D3D11_USAGE_STAGING, 0, read, 0)?,
+            ];
+            let iv = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+                FourCC: 0,
+                ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: 0 } },
+            };
+            let mut input = None;
+            vdev.CreateVideoProcessorInputView(frame, &en, &iv, Some(&mut input)).map_err(&e)?;
+            let ov = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
+                ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 } },
+            };
+            let mut output = None;
+            vdev.CreateVideoProcessorOutputView(&target, &en, &ov, Some(&mut output)).map_err(&e)?;
+            vctx.VideoProcessorSetStreamFrameFormat(&vp, 0, D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+            vctx.VideoProcessorSetStreamAutoProcessingMode(&vp, 0, false);
+            // in: full-range RGB; out: BT.709 YCbCr at 16-235 (bit 2 = 709 matrix, bits 4-5 = nominal range)
+            vctx.VideoProcessorSetStreamColorSpace(&vp, 0, &D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: 0 });
+            vctx.VideoProcessorSetOutputColorSpace(&vp, &D3D11_VIDEO_PROCESSOR_COLOR_SPACE { _bitfield: 0x4 | (1 << 4) });
+            let mut n = Nv12 {
+                vctx,
+                vp,
+                input: input.ok_or("no input view")?,
+                output: output.ok_or("no output view")?,
+                target,
+                staging,
+                filled: [false; 2],
+                size: (ow, oh),
+            };
+            // one conversion now: a driver that can't do it fails here, not mid-recording
+            n.blt()?;
+            Ok(n)
+        }
+    }
+
+    fn blt(&mut self) -> Result<(), String> {
+        use std::mem::ManuallyDrop;
+        use windows::Win32::Graphics::Direct3D11::D3D11_VIDEO_PROCESSOR_STREAM;
+        let streams = [D3D11_VIDEO_PROCESSOR_STREAM {
+            Enable: true.into(),
+            pInputSurface: ManuallyDrop::new(Some(self.input.clone())),
+            ..Default::default()
+        }];
+        let r = unsafe { self.vctx.VideoProcessorBlt(&self.vp, &self.output, 0, &streams) }.map_err(err("GPU colour conversion"));
+        let [s] = streams;
+        drop(ManuallyDrop::into_inner(s.pInputSurface));
+        r
+    }
+
+    /// Convert this tick's picture into staging `cur` and read last tick's (`prev`) into `buf` as packed
+    /// NV12 (the Y rows, then the interleaved UV rows). False when there is nothing to read yet.
+    fn convert(&mut self, ctx: &windows::Win32::Graphics::Direct3D11::ID3D11DeviceContext, cur: usize, prev: usize, buf: &mut Vec<u8>) -> bool {
+        use windows::Win32::Graphics::Direct3D11::{D3D11_MAPPED_SUBRESOURCE, D3D11_MAP_READ};
+        if self.blt().is_err() {
+            return false;
+        }
+        unsafe {
+            ctx.CopyResource(&self.staging[cur], &self.target);
+            self.filled[cur] = true;
+            let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+            if !self.filled[prev] || ctx.Map(&self.staging[prev], 0, D3D11_MAP_READ, 0, Some(&mut m)).is_err() || m.pData.is_null() {
+                return false;
+            }
+            let (w, h) = (self.size.0 as usize, self.size.1 as usize);
+            let (pitch, base) = (m.RowPitch as usize, m.pData as *const u8);
+            buf.clear();
+            // the UV plane follows the Y plane's `h` rows
+            for y in 0..h + h / 2 {
+                buf.extend_from_slice(std::slice::from_raw_parts(base.add(y * pitch), w));
+            }
+            ctx.Unmap(&self.staging[prev], 0);
+        }
+        true
+    }
+}
+
+/// The monitor that holds all of `[x, y, w, h]` (as an `HMONITOR`) and the rectangle relative to it.
+pub fn monitor_holding(rect: [i32; 4]) -> Option<(isize, [u32; 4])> {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONULL};
     let [x, y, w, h] = rect;
+    if w < 2 || h < 2 {
+        return None;
+    }
     unsafe {
         let m = MonitorFromPoint(POINT { x: x + w / 2, y: y + h / 2 }, MONITOR_DEFAULTTONULL);
         if m.is_invalid() {
@@ -338,7 +509,8 @@ pub fn monitor_at(rect: [i32; 4]) -> Option<isize> {
             return None;
         }
         let r = info.rcMonitor;
-        ([r.left, r.top, r.right - r.left, r.bottom - r.top] == rect).then_some(m.0 as isize)
+        let inside = x >= r.left && y >= r.top && x + w <= r.right && y + h <= r.bottom;
+        inside.then(|| (m.0 as isize, [(x - r.left) as u32, (y - r.top) as u32, w as u32, h as u32]))
     }
 }
 
