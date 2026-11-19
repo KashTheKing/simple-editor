@@ -583,6 +583,13 @@ pub fn context_menu(app: &mut PlayerApp, ui: &mut egui::Ui, ctx: &egui::Context)
             app.set_song_visualizer(!viz);
         }
     }
+    if !streams.is_empty() {
+        let on = app.wave_seek_on();
+        let tip = "Songs and Audio Only: hovering the seek bar shows the whole song's waveform";
+        if menu::check(ui, on, "Waveform seek bar", "").on_hover_text(tip).clicked() {
+            app.set_wave_seek(!on);
+        }
+    }
     menu::sub(ui, None, "Visualizer style", |ui| {
         ui.set_width(300.0);
         let pal = crate::theme::palette_with(ctx, &app.look);

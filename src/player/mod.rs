@@ -110,11 +110,13 @@ struct Prefs {
     res: std::collections::HashMap<String, u32>,
     /// Songs show the visualizer instead of their cover.
     song_viz: bool,
+    /// Songs / Audio Only: the hovered seek bar is the song's waveform.
+    wave_seek: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default(), res: Default::default(), song_viz: false }
+        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default(), res: Default::default(), song_viz: false, wave_seek: true }
     }
 }
 
@@ -230,6 +232,8 @@ pub struct PlayerApp {
     pub(crate) symbols: bool,
     /// `SE_PLAYER_SHOT_SETUP=fullscreen=20:200`: toggle full screen at these frames after the reveal.
     shot_fs: Vec<u64>,
+    /// The waveform seek bar's peaks (the editor's cache: background decode, kept on disk per file).
+    wave: Option<crate::media::waveform::WaveformCache>,
 }
 
 impl PlayerApp {
@@ -288,6 +292,7 @@ impl PlayerApp {
             }),
             shown_at_frame: 0,
             shot_fs: Vec::new(),
+            wave: None,
             reveal: Default::default(),
             frames: 0,
             cover: None,
@@ -487,6 +492,29 @@ impl PlayerApp {
 
     /// A song shows the visualizer: picked, or it has no cover (once that is known - while the cover
     /// loads, its placeholder shows).
+    /// The waveform seek bar applies: it is on, and this is a song or a video in Audio Only.
+    pub fn wave_seek(&self) -> bool {
+        self.prefs.wave_seek && self.info.as_ref().is_some_and(|i| !i.audio_streams.is_empty() && (!i.has_video || self.engine.audio_only()))
+    }
+
+    pub fn wave_seek_on(&self) -> bool {
+        self.prefs.wave_seek
+    }
+
+    pub fn set_wave_seek(&mut self, on: bool) {
+        self.prefs.wave_seek = on;
+        self.prefs_dirty = true;
+    }
+
+    /// The playing file's peaks (its first ticked audio track); None while they are computed (started
+    /// here, on a background thread), empty if the audio could not be read.
+    pub fn peaks(&mut self, ctx: &egui::Context) -> Option<Arc<crate::media::waveform::Peaks>> {
+        let stream = self.engine.audio_streams().and_then(|v| v.first().copied()).unwrap_or(0);
+        let path = self.path().to_string_lossy().into_owned();
+        let w = self.wave.get_or_insert_with(|| crate::media::waveform::WaveformCache::new(ctx.clone(), crate::media::Backend::Auto));
+        w.get(&path, stream)
+    }
+
     pub fn song_shows_visualizer(&self) -> bool {
         self.song_viz || (self.cover.is_none() && self.cover_rx.is_none())
     }

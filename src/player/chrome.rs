@@ -196,15 +196,35 @@ fn scrubber(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect, t: f64,
     let y = rect.center().y;
     let k = if dur > 0.0 { (t / dur).clamp(0.0, 1.0) as f32 } else { 0.0 };
     let x = x0 + (x1 - x0) * k;
-    let hot = r.hovered() || r.dragged();
+    let hot = r.hovered() || r.dragged() || app.shot_hover.is_some(); // (SE_PLAYER_SHOT_SETUP=hover=…)
     let th = if hot { 5.0 } else { 3.0 };
-    ticks(&p, pal, x0, x1, y, dur);
-    let line = |a: f32, b: f32, c| p.rect_filled(Rect::from_min_max(pos2(a, y - th / 2.0), pos2(b, y + th / 2.0)), th / 2.0, c);
-    line(x0, x1, pal.text_dim.gamma_multiply(0.45));
-    line(x0, x, pal.accent);
-    let rad = if hot { 8.0 } else { 6.0 };
-    p.circle_filled(pos2(x, y), rad, pal.accent);
-    p.circle_stroke(pos2(x, y), rad, Stroke::new(1.5, pal.text));
+    // songs / Audio Only, hovered: the whole bar turns into the song's waveform (Waveform seek bar).
+    // The peaks are asked for whenever the bar shows, so they are usually in by the first hover.
+    let peaks = app.wave_seek().then(|| app.peaks(ui.ctx()));
+    let wave = Rect::from_min_max(pos2(x0, rect.top() + 1.0), pos2(x1, rect.bottom() - 1.0));
+    let waved = hot && match &peaks {
+        Some(Some(pk)) if !pk.is_empty() => {
+            waveform(&p, pal, pk, wave, x, dur);
+            true
+        }
+        Some(None) => {
+            shimmer(ui, wave, pal); // still reading the song
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+            true
+        }
+        _ => false, // off, a video, or no audio could be read: the plain bar
+    };
+    if waved {
+        p.line_segment([pos2(x, wave.top()), pos2(x, wave.bottom())], Stroke::new(2.0, pal.text));
+    } else {
+        ticks(&p, pal, x0, x1, y, dur);
+        let line = |a: f32, b: f32, c| p.rect_filled(Rect::from_min_max(pos2(a, y - th / 2.0), pos2(b, y + th / 2.0)), th / 2.0, c);
+        line(x0, x1, pal.text_dim.gamma_multiply(0.45));
+        line(x0, x, pal.accent);
+        let rad = if hot { 8.0 } else { 6.0 };
+        p.circle_filled(pos2(x, y), rad, pal.accent);
+        p.circle_stroke(pos2(x, y), rad, Stroke::new(1.5, pal.text));
+    }
     let at = |px: f32| (((px - x0) / (x1 - x0)).clamp(0.0, 1.0) as f64) * dur;
     let mut seek = None;
     if let Some(pos) = r.interact_pointer_pos().filter(|_| r.dragged() || r.clicked() || r.drag_started()) {
@@ -215,7 +235,11 @@ fn scrubber(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect, t: f64,
         let ht = at(h.x);
         let g = p.layout_no_wrap(clock(ht), FontId::proportional(12.0), pal.text);
         let ctx = ui.ctx().clone();
-        let pic = app.strip.as_mut().and_then(|s| {
+        if waved {
+            p.line_segment([pos2(h.x, wave.top()), pos2(h.x, wave.bottom())], Stroke::new(1.0, pal.text.gamma_multiply(0.6)));
+        }
+        // (on the waveform: just the time, no picture card)
+        let pic = app.strip.as_mut().filter(|_| !waved).and_then(|s| {
             if !s.done() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100)); // still filling
             }
@@ -233,7 +257,7 @@ fn scrubber(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect, t: f64,
             let img_r = Rect::from_min_size(card.min + vec2(4.0, 4.0), img);
             p.image(id, img_r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             p.galley(pos2(card.center().x - g.size().x / 2.0, img_r.bottom() + 4.0), g, pal.text);
-        } else if app.strip.as_ref().is_some_and(|s| !s.done()) {
+        } else if !waved && app.strip.as_ref().is_some_and(|s| !s.done()) {
             // the thumbnail is not made yet: its card, loading
             let aspect = app.info.as_ref().filter(|i| i.size.0 > 0).map_or(9.0 / 16.0, |i| i.size.1 as f32 / i.size.0 as f32);
             let img = vec2(176.0, 176.0 * aspect);
@@ -249,6 +273,24 @@ fn scrubber(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect, t: f64,
         }
     }
     (r, seek)
+}
+
+/// The song's waveform over `r`, 2 px columns scaled to its loudest peak: the played part (left of
+/// `played_x`) in the accent, the rest dimmed.
+fn waveform(p: &egui::Painter, pal: &Palette, pk: &crate::media::waveform::Peaks, r: Rect, played_x: f32, dur: f64) {
+    // ponytail: the loudest peak is found every frame the bar is hovered (~100 values per second of song)
+    let top = pk.max.iter().chain(&pk.min).fold(1e-3f32, |m, v| m.max(v.abs()));
+    let (cy, half) = (r.center().y, r.height() / 2.0);
+    let (played, rest) = (pal.accent, pal.text_dim.gamma_multiply(0.55));
+    let span = |x: f32| ((x - r.left()) / r.width()) as f64 * dur;
+    let mut x = r.left();
+    while x < r.right() {
+        let (lo, hi) = pk.range(span(x), span(x + 2.0));
+        let (hi, lo) = ((hi / top).max(0.04), (lo / top).min(-0.04));
+        let col = Rect::from_min_max(pos2(x, cy - hi * half), pos2((x + 1.5).min(r.right()), cy - lo * half));
+        p.rect_filled(col, 0.0, if x < played_x { played } else { rest });
+        x += 2.0;
+    }
 }
 
 /// Draw the frame: picture, subtitles, chrome, flyouts. Returns what the auto-hide needs repainted.
