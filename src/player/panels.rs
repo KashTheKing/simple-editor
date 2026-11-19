@@ -603,6 +603,8 @@ pub fn context_menu(app: &mut PlayerApp, ui: &mut egui::Ui, ctx: &egui::Context)
         });
     }
     ui.separator();
+    super::social::menu(app, ui);
+    ui.separator();
     if menu::check(ui, app.fullscreen, "Full screen", "F").clicked() {
         app.toggle_fullscreen(ctx);
     }

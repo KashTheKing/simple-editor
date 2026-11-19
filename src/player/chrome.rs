@@ -51,10 +51,11 @@ pub mod icon {
     pub const UPSCALE: char = '\u{E740}'; // FullScreen arrows: bigger
     pub const TAG: char = '\u{E8EC}'; // Tag
     pub const VISUALIZER: char = '\u{E9E9}'; // Equalizer
-    pub const ALL: [char; 33] = [
+    pub const PHONE: char = '\u{E8EA}'; // CellPhone: the Platform Emulator
+    pub const ALL: [char; 34] = [
         EDIT, SHUFFLE, PREVIOUS, NEXT, PLAY, PAUSE, BACK10, FORWARD30, REPEAT_ALL, LOOP, CAPTIONS, VOLUME[0], VOLUME[1],
         VOLUME[2], VOLUME[3], MUTE, FULLSCREEN, EXIT_FULLSCREEN, MINI, UNMINI, MORE, MINIMIZE, MAXIMIZE, RESTORE, CLOSE, MUSIC,
-        FOLDER, INFO, CHECK, CONVERT, UPSCALE, TAG, VISUALIZER,
+        FOLDER, INFO, CHECK, CONVERT, UPSCALE, TAG, VISUALIZER, PHONE,
     ];
 }
 
@@ -329,7 +330,10 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
 
     // ---- the picture (or the audio view; Audio Only: the visualizer, nothing decoded)
     let audio_only = app.engine.audio_only();
+    // a device guide or the Device Emulator draws the picture itself
+    let drawn = !mini && super::social::picture(app, ui, full, TOP_H, BOTTOM_H);
     let video_rect = match (&app.info, app.video.shown) {
+        _ if drawn => None,
         (Some(info), Some((tex, _, uv))) if info.has_video && !audio_only => {
             let r = app.zoom.place(full, info.size, ppp);
             ui.painter().with_clip_rect(full).image(tex, r, uv, Color32::WHITE);
@@ -338,6 +342,7 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
         _ => None,
     };
     match app.info.as_ref().map(|i| (i.has_video, i.size)) {
+        _ if drawn => {}
         Some(_) if audio_only => visualizer_view(app, ui, full),
         Some((true, size)) => {
             // the video processor scales to exactly the pixels the picture covers
@@ -362,6 +367,9 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
     if let Some(e) = &app.error {
         let msg = format!("Can't play this file\n{e}");
         ui.painter().text(full.center(), Align2::CENTER_CENTER, msg, FontId::proportional(15.0), Color32::from_gray(200));
+    }
+    if let Some(r) = video_rect.filter(|_| !mini) {
+        super::social::overlay(app, ui, r, full); // a safe-zone / UI-preview guide
     }
     subtitles(app, ui, video_rect.unwrap_or(full).intersect(full), app.hide.shown());
 
@@ -1113,6 +1121,10 @@ fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
     let auto = app.autoplay();
     if toggle_row(ui, pal, auto, icon::NEXT, "Autoplay").clicked() {
         app.set_autoplay(!auto);
+    }
+    let emu = app.social.emulator;
+    if toggle_row(ui, pal, emu, icon::PHONE, "Platform Emulator").clicked() {
+        app.social.emulator = !emu;
     }
     ui.separator();
     if app.info.as_ref().is_some_and(|i| !i.audio_streams.is_empty()) {

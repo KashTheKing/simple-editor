@@ -20,6 +20,7 @@ pub mod convert;
 pub mod engine;
 pub mod folder;
 pub mod panels;
+pub mod social;
 pub mod strip;
 pub mod tracks;
 pub mod video;
@@ -118,11 +119,13 @@ struct Prefs {
     loop_n: u32,
     /// The More flyout's Visualizer Settings are unfolded.
     viz_settings_open: bool,
+    /// The Device Emulator's device / platform / orientation.
+    emu: crate::ui::emulator::Prefs,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default(), res: Default::default(), song_viz: false, wave_seek: true, autoplay: false, loop_n: 1, viz_settings_open: false }
+        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default(), res: Default::default(), song_viz: false, wave_seek: true, autoplay: false, loop_n: 1, viz_settings_open: false, emu: Default::default() }
     }
 }
 
@@ -242,6 +245,8 @@ pub struct PlayerApp {
     wave: Option<crate::media::waveform::WaveformCache>,
     /// Autoplay backwards opened the previous file: start it from its end, reversed, once its length is in.
     start_reversed: bool,
+    /// Social guides and the Device Emulator (`social`).
+    pub(crate) social: social::Social,
 }
 
 impl PlayerApp {
@@ -307,6 +312,7 @@ impl PlayerApp {
             shot_fs: Vec::new(),
             wave: None,
             start_reversed: false,
+            social: Default::default(),
             reveal: Default::default(),
             frames: 0,
             cover: None,
@@ -1054,6 +1060,8 @@ impl PlayerApp {
             if self.flyout.is_some() || self.info_open {
                 self.flyout = None;
                 self.info_open = false;
+            } else if self.social.emulator {
+                self.social.emulator = false;
             } else if self.fullscreen {
                 self.toggle_fullscreen(ctx);
             } else if self.mini.is_some() {
@@ -1163,6 +1171,8 @@ impl PlayerApp {
                 _ if item == "cover_loading" => self.cover_rx = Some(std::sync::mpsc::channel().1),
                 Some(("res", h)) => self.res = h.parse().ok(),
                 _ if item == "max" => ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true)),
+                _ if item == "emulator" => self.social.emulator = true,
+                Some(("guide", id)) => self.social.show_guide(id),
                 Some(("fullscreen", at)) => self.shot_fs = at.split(':').filter_map(|f| f.parse().ok()).collect(),
                 Some(("menu", at)) => self.shot_menu = at.split_once(':').and_then(|(x, y)| Some(egui::pos2(x.parse().ok()?, y.parse().ok()?))),
                 _ => {}

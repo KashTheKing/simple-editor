@@ -16,6 +16,7 @@
 - **End of a file and Loop**: the end (or the start, in reverse) pauses there, or with Autoplay on plays the next file (in reverse the previous one, from its end); Loop cycles off, for ever and N times (a badge counts down, right-click sets N) and goes round in reverse too.
 - **Mini player button**: a new icon (a window with an arrow popping down into a small player), no longer like full screen or restore.
 - **More menu toggles**: Repeat folder, Autoplay, Audio Only and Visualizer show their icon and an on / off switch; the visualizer's Style, Reacts, Bands and Look sit in a Visualizer Settings section, folded away until opened and shown only while the visualizer is.
+- **Platform Emulator in the player**: right-click ▸ Platform Emulator picks a platform and shows its guides over the picture or opens the file inside the emulator's devices (also in the More menu; Esc closes it).
 
 ### Windows
 - **One title bar for every window**: the editor, popped-out panels, the Screen Recording window and the media player share the same title bar and minimise / maximise / close buttons. Not maximised, windows get rounded corners (unless the look is Sharp) and an outline. Moving a window no longer lags.
