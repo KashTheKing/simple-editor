@@ -18,8 +18,14 @@ use eframe::egui;
 /// The wizard's state while it is open (`App.onboarding`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Onboarding {
-    /// 0..=2, one card each.
+    /// 0..=3, one card each.
     pub step: u8,
+    /// Card 1: One window instead of pages (`Settings.one_window`, applied on Finish).
+    pub one_window: bool,
+    /// Monitors connected when the wizard opened: the Screens card shows only with 2 or more.
+    pub monitors: usize,
+    /// The Screens card's pick (`Settings.screen_mode`, applied on Finish).
+    pub screens: u8,
     /// Card 4's opt-in. Defaults to `Settings.context_menu` so a plain Finish reproduces the old
     /// behaviour bit-for-bit for a user who never touched the setting.
     pub install_context_menu: bool,
@@ -31,8 +37,37 @@ pub struct Onboarding {
 
 impl Onboarding {
     pub fn new(settings: &Settings) -> Self {
-        Self { step: 0, install_context_menu: settings.context_menu, template: None, ffmpeg: None }
+        // (tests: one monitor, whatever the machine has)
+        let monitors = if cfg!(test) { 1 } else { crate::ui::screens::monitors().len() };
+        Self {
+            step: 0,
+            one_window: settings.one_window,
+            monitors,
+            screens: settings.screen_mode.max(1),
+            install_context_menu: settings.context_menu,
+            template: None,
+            ffmpeg: None,
+        }
     }
+
+    /// The cards in order: Screens only with more than one monitor.
+    pub fn cards(&self) -> Vec<Card> {
+        let mut c = vec![Card::Workspace];
+        if self.monitors >= 2 {
+            c.push(Card::Screens);
+        }
+        c.extend([Card::Ffmpeg, Card::Keys, Card::Format]);
+        c
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Card {
+    Workspace,
+    Screens,
+    Ffmpeg,
+    Keys,
+    Format,
 }
 
 /// What the wizard asked the app to do this frame.
@@ -104,21 +139,34 @@ pub fn show(ctx: &egui::Context, st: &mut Onboarding, settings: &Settings, hotke
         .default_width(470.0)
         .show(ctx, |ui| {
             ui.set_width(470.0);
-            match st.step {
-                0 => ffmpeg_card(ui, st),
-                1 => {
+            let cards = st.cards();
+            let n = cards.len() as u8;
+            st.step = st.step.min(n - 1);
+            match cards[st.step as usize] {
+                Card::Workspace => workspace_card(ui, st),
+                Card::Screens => {
+                    ui.heading("Screens");
+                    ui.add_space(4.0);
+                    ui.label(format!("{} monitors connected", st.monitors));
+                    ui.add_space(6.0);
+                    if let Some(pick) = crate::ui::screens::choices(ui, st.monitors, st.screens) {
+                        st.screens = pick;
+                    }
+                }
+                Card::Ffmpeg => ffmpeg_card(ui, st),
+                Card::Keys => {
                     if keys_card(ui, hotkeys) {
                         out = Some(Outcome::ShowCheatSheet);
                     }
                 }
-                _ => template_card(ui, st, settings),
+                Card::Format => template_card(ui, st, settings),
             }
             ui.add_space(6.0);
             ui.separator();
             ui.horizontal(|ui| {
-                ui.weak(format!("{} / 3", st.step.min(2) + 1));
+                ui.weak(format!("{} / {n}", st.step + 1));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if st.step >= 2 {
+                    if st.step >= n - 1 {
                         if ui.button("Finish").clicked() {
                             out = Some(Outcome::Finish);
                         }
@@ -135,6 +183,60 @@ pub fn show(ctx: &egui::Context, st: &mut Onboarding, settings: &Settings, hotke
         out = Some(Outcome::Dismiss);
     }
     out
+}
+
+/// Pages or One window, each a small picture of the window to pick.
+fn workspace_card(ui: &mut egui::Ui, st: &mut Onboarding) {
+    ui.heading("Your workspace");
+    ui.add_space(4.0);
+    ui.columns(2, |cols| {
+        let cards = [
+            (false, "Pages", "Media, Plan, Edit, Animate, Color, Audio and Export tabs in the top bar, each with its own layout"),
+            (true, "One window", "One workspace, no page tabs: every panel is in Window and Ctrl+P, and stays where you dock it"),
+        ];
+        for (ui, (one, name, text)) in cols.iter_mut().zip(cards) {
+            let on = st.one_window == one;
+            let fill = if on { ui.visuals().selection.bg_fill.gamma_multiply(0.35) } else { ui.visuals().faint_bg_color };
+            let stroke = if on { ui.visuals().selection.stroke } else { ui.visuals().widgets.noninteractive.bg_stroke };
+            let r = egui::Frame::group(ui.style()).fill(fill).stroke(stroke).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let (pic, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 96.0), egui::Sense::hover());
+                workspace_picture(ui, pic, one);
+                ui.radio(on, name);
+                ui.weak(text);
+            });
+            let card = ui.interact(r.response.rect, ui.id().with(("workspace", one)), egui::Sense::click());
+            if card.on_hover_text("Window ▸ Layout switches between them any time").clicked() {
+                st.one_window = one;
+            }
+        }
+    });
+}
+
+/// A sketch of the window: the top bar (with page tabs for Pages), three panels over the timeline.
+fn workspace_picture(ui: &egui::Ui, r: egui::Rect, one: bool) {
+    let p = ui.painter();
+    let v = ui.visuals();
+    let (bg, panel, line, accent) = (v.extreme_bg_color, v.widgets.inactive.weak_bg_fill, v.weak_text_color(), v.selection.bg_fill);
+    p.rect_filled(r, 4.0, bg);
+    let bar = egui::Rect::from_min_size(r.min, egui::vec2(r.width(), 12.0));
+    for i in 0..4 {
+        p.rect_filled(egui::Rect::from_min_size(bar.min + egui::vec2(5.0 + i as f32 * 9.0, 4.0), egui::vec2(6.0, 4.0)), 1.0, line);
+    }
+    if !one {
+        for i in 0..5 {
+            let at = egui::pos2(bar.center().x - 30.0 + i as f32 * 12.5, bar.top() + 2.5);
+            p.rect_filled(egui::Rect::from_min_size(at, egui::vec2(10.0, 7.0)), 2.0, if i == 2 { accent } else { line });
+        }
+    }
+    let body = egui::Rect::from_min_max(egui::pos2(r.left() + 3.0, bar.bottom() + 2.0), r.max - egui::vec2(3.0, 3.0));
+    let top_h = body.height() * 0.58;
+    let w = body.width();
+    for (x0, x1) in [(0.0, 0.24), (0.25, 0.73), (0.74, 1.0)] {
+        let cell = egui::Rect::from_min_max(egui::pos2(body.left() + w * x0, body.top()), egui::pos2(body.left() + w * x1, body.top() + top_h));
+        p.rect_filled(cell, 2.0, panel);
+    }
+    p.rect_filled(egui::Rect::from_min_max(egui::pos2(body.left(), body.top() + top_h + 2.0), body.max), 2.0, panel);
 }
 
 fn ffmpeg_card(ui: &mut egui::Ui, st: &mut Onboarding) {
@@ -264,6 +366,17 @@ mod tests {
         assert!(!settings.context_menu);
     }
 
+    /// The Screens card is there only with two or more monitors, right after the workspace card.
+    #[test]
+    fn the_screens_card_shows_only_with_two_monitors() {
+        let mut st = fresh();
+        assert!(!st.cards().contains(&Card::Screens), "one monitor");
+        st.monitors = 2;
+        assert_eq!(st.cards()[..2], [Card::Workspace, Card::Screens]);
+        st.monitors = 3;
+        assert_eq!(st.cards().len(), 5);
+    }
+
     #[test]
     fn new_mirrors_current_settings() {
         let mut s = Settings::default();
@@ -281,7 +394,7 @@ mod tests {
         let settings = Settings::default();
         let hk = Hotkeys::defaults();
         let mut st = fresh();
-        for step in 0..3u8 {
+        for step in 0..st.cards().len() as u8 {
             st.step = step;
             for _ in 0..2 {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {
@@ -302,7 +415,7 @@ mod tests {
         let settings = Settings::default();
         let hk = Hotkeys::defaults();
         let mut st = fresh();
-        for step in 0..3u8 {
+        for step in 0..st.cards().len() as u8 {
             st.step = step;
             for _ in 0..30 {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {

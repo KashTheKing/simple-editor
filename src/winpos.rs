@@ -11,7 +11,11 @@ use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::time::{Duration, Instant};
 use std::sync::atomic::{AtomicBool, Ordering};
 use windows::Win32::Foundation::{HWND, POINT, RECT};
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CLOAK};
+use windows::core::BOOL;
+use windows::Win32::Foundation::LPARAM;
+use windows::Win32::Graphics::Dwm::{
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAK, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
+};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::UI::WindowsAndMessaging::{
     GetCursorPos, GetWindowRect, SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
@@ -45,7 +49,7 @@ pub fn is_dev_build(exe: &std::path::Path) -> bool {
 /// How long a window rect must sit still before it's worth a settings.json write.
 const DEBOUNCE: Duration = Duration::from_millis(500);
 
-fn hwnd_of(handle: &impl HasWindowHandle) -> Option<HWND> {
+pub fn hwnd_of(handle: &impl HasWindowHandle) -> Option<HWND> {
     match handle.window_handle().ok()?.as_raw() {
         RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut std::ffi::c_void)),
         _ => None,
@@ -150,6 +154,124 @@ fn cloak(handle: &impl HasWindowHandle, on: bool) -> bool {
     unsafe {
         DwmSetWindowAttribute(hwnd, DWMWA_CLOAK, &v as *const i32 as *const _, std::mem::size_of::<i32>() as u32).is_ok()
     }
+}
+
+/// Windows 11's window frame: rounded corners (DWM clips the client to them and keeps its shadow) and the
+/// outline's colour (`None`: no outline). Windows 10 has neither attribute: the calls fail, it stays as is.
+/// True when DWM draws the outline (Windows 11, round corners: it draws none round a square window).
+pub fn style_frame(hwnd: HWND, round: bool, border: Option<[u8; 3]>) -> bool {
+    const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
+    let corner = if round { DWMWCP_ROUND } else { DWMWCP_DONOTROUND };
+    // a COLORREF: 0x00BBGGRR
+    let color = border.map_or(DWMWA_COLOR_NONE, |[r, g, b]| u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16);
+    unsafe {
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner as *const _ as *const _, 4);
+        DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &color as *const u32 as *const _, 4).is_ok() && round
+    }
+}
+
+/// Moves on the OS's own fast path. Inside a move / size loop (a title-bar drag, `StartDrag`, Alt+Space
+/// Move) every mouse step is a `WM_WINDOWPOSCHANGED`, which winit turns into `Moved` and eframe into a
+/// whole UI frame - a debug build's 30+ ms frame per step is the lag of a dragged window. DWM moves the
+/// already-painted window by itself, so a pure move (`SWP_NOSIZE`) inside the loop is held back from
+/// winit and delivered once, when the loop ends; resizes pass through (they must repaint). Idempotent.
+pub fn smooth_moves(hwnd: HWND) {
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowLongPtrW, GWLP_WNDPROC};
+    // a window-procedure swap, not comctl32's SetWindowSubclass: this exe has no common-controls v6
+    // manifest, and v5 exports that only by ordinal (the exe would not start)
+    MOVES.with(|m| {
+        let mut m = m.borrow_mut();
+        let key = hwnd.0 as isize;
+        if m.contains_key(&key) {
+            return;
+        }
+        let prev = unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, move_proc as usize as isize) };
+        if prev != 0 {
+            m.insert(key, (prev, 0));
+        }
+    });
+}
+
+thread_local! {
+    /// Per window (all on the UI thread): its own window procedure, and IN_LOOP / HELD.
+    static MOVES: std::cell::RefCell<std::collections::HashMap<isize, (isize, usize)>> = Default::default();
+}
+const IN_LOOP: usize = 1;
+const HELD: usize = 2;
+
+unsafe extern "system" fn move_proc(
+    h: HWND,
+    msg: u32,
+    w: windows::Win32::Foundation::WPARAM,
+    l: LPARAM,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CallWindowProcW, DefWindowProcW, SWP_NOACTIVATE, SWP_NOSIZE, WINDOWPOS, WM_ENTERSIZEMOVE, WM_EXITSIZEMOVE,
+        WM_NCDESTROY, WM_WINDOWPOSCHANGED, WNDPROC,
+    };
+    let key = h.0 as isize;
+    // borrowed only to read / write, never across the call on (it re-enters this procedure)
+    let Some((prev, state)) = MOVES.with(|m| m.borrow().get(&key).copied()) else {
+        return unsafe { DefWindowProcW(h, msg, w, l) };
+    };
+    let set = |s: usize| MOVES.with(|m| drop(m.borrow_mut().insert(key, (prev, s))));
+    let prev: WNDPROC = unsafe { std::mem::transmute::<isize, WNDPROC>(prev) };
+    let call = |msg: u32, w, l| unsafe { CallWindowProcW(prev, h, msg, w, l) };
+    match msg {
+        WM_ENTERSIZEMOVE => set(IN_LOOP),
+        WM_WINDOWPOSCHANGED if state & IN_LOOP != 0 => {
+            let wp = unsafe { &*(l.0 as *const WINDOWPOS) };
+            if wp.flags.contains(SWP_NOSIZE) {
+                set(IN_LOOP | HELD);
+                return unsafe { DefWindowProcW(h, msg, w, l) }; // WM_MOVE for Windows, nothing for winit
+            }
+        }
+        WM_EXITSIZEMOVE => {
+            set(0);
+            let r = call(msg, w, l);
+            let mut rect = RECT::default();
+            if state & HELD != 0 && unsafe { GetWindowRect(h, &mut rect) }.is_ok() {
+                // the one move winit hears about: where the window ended up
+                let wp = WINDOWPOS {
+                    hwnd: h,
+                    x: rect.left,
+                    y: rect.top,
+                    cx: rect.right - rect.left,
+                    cy: rect.bottom - rect.top,
+                    flags: SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                    ..Default::default()
+                };
+                call(WM_WINDOWPOSCHANGED, Default::default(), LPARAM(&wp as *const _ as isize));
+            }
+            return r;
+        }
+        WM_NCDESTROY => MOVES.with(|m| drop(m.borrow_mut().remove(&key))),
+        _ => {}
+    }
+    call(msg, w, l)
+}
+
+/// This thread's top-level window titled `title` (eframe hands out no handle for a child viewport; they
+/// all live on the UI thread). ponytail: by title, so two windows with one title share the first's frame.
+pub fn thread_window(title: &str) -> Option<HWND> {
+    use windows::Win32::System::Threading::GetCurrentThreadId;
+    use windows::Win32::UI::WindowsAndMessaging::{EnumThreadWindows, GetWindowTextW};
+    struct Find<'a>(Vec<u16>, Option<HWND>, std::marker::PhantomData<&'a ()>);
+    unsafe extern "system" fn each(h: HWND, l: LPARAM) -> BOOL {
+        let f = unsafe { &mut *(l.0 as *mut Find) };
+        let mut buf = [0u16; 512];
+        let n = unsafe { GetWindowTextW(h, &mut buf) } as usize;
+        if buf[..n] == f.0[..] {
+            f.1 = Some(h);
+            return false.into();
+        }
+        true.into()
+    }
+    let mut f = Find(title.encode_utf16().collect(), None, std::marker::PhantomData);
+    unsafe {
+        let _ = EnumThreadWindows(GetCurrentThreadId(), Some(each), LPARAM(&mut f as *mut Find as isize));
+    }
+    f.1
 }
 
 /// Showing the window without a flash: it opens hidden (`with_visible(false)`), and `step` - called at

@@ -66,6 +66,7 @@ pub mod shader_ui;
 pub mod source_ui;
 pub mod subtitles_ui;
 pub mod timeline;
+pub mod titlebar; // the undecorated windows' title bar (player, editor)
 pub mod tools;
 pub mod tracking_ui;
 // ---- ws:transcript-captions ----

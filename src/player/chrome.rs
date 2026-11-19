@@ -12,7 +12,7 @@
 use super::{Flyout, PlayerApp, Zoom, SKIP_BACK, SKIP_FORWARD};
 use crate::player::folder::Repeat;
 use crate::theme::Palette;
-use crate::ui::autohide;
+use crate::ui::{autohide, titlebar};
 use crate::ui::tools::on_accent;
 use eframe::egui::{self, pos2, vec2, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, Ui};
 use std::path::Path;
@@ -38,10 +38,7 @@ pub mod icon {
     pub const MINI: char = '\u{E92C}';
     pub const UNMINI: char = '\u{E92D}';
     pub const MORE: char = '\u{E712}';
-    pub const MINIMIZE: char = '\u{E921}';
-    pub const MAXIMIZE: char = '\u{E922}';
-    pub const RESTORE: char = '\u{E923}';
-    pub const CLOSE: char = '\u{E8BB}';
+    pub use crate::ui::titlebar::{CLOSE, MAXIMIZE, MINIMIZE, RESTORE};
     pub const MUSIC: char = '\u{E8D6}';
     pub const FOLDER: char = '\u{E838}';
     pub const INFO: char = '\u{E946}';
@@ -322,7 +319,7 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
         }
     }
     if !(maximized || app.fullscreen || mini) {
-        resize_edges(&ctx, full);
+        titlebar::resize_edges(&ctx, full);
     }
     flyouts(app, &ctx, pal, full);
     convert_window(app, &ctx, pal);
@@ -333,40 +330,12 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
     out
 }
 
-/// Undecorated window: grab an edge to resize.
-fn resize_edges(ctx: &egui::Context, full: Rect) {
-    use egui::{CursorIcon as C, ResizeDirection as D};
-    let Some(p) = ctx.input(|i| i.pointer.hover_pos()) else { return };
-    let e = 5.0;
-    let (l, r, t, b) = (p.x < full.left() + e, p.x > full.right() - e, p.y < full.top() + e, p.y > full.bottom() - e);
-    let dir = match (l, r, t, b) {
-        (true, _, true, _) => (D::NorthWest, C::ResizeNwSe),
-        (_, true, true, _) => (D::NorthEast, C::ResizeNeSw),
-        (true, _, _, true) => (D::SouthWest, C::ResizeNeSw),
-        (_, true, _, true) => (D::SouthEast, C::ResizeNwSe),
-        (true, ..) => (D::West, C::ResizeHorizontal),
-        (_, true, ..) => (D::East, C::ResizeHorizontal),
-        (_, _, true, _) => (D::North, C::ResizeVertical),
-        (_, _, _, true) => (D::South, C::ResizeVertical),
-        _ => return,
-    };
-    ctx.set_cursor_icon(dir.1);
-    if ctx.input(|i| i.pointer.primary_pressed()) {
-        ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir.0));
-    }
-}
-
 fn top_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, top: Rect, maximized: bool) {
     let ctx = ui.ctx().clone();
     let shade = Rect::from_min_size(top.min, vec2(top.width(), TOP_H + 32.0));
     vgrad(ui.painter(), shade, pal.bg.gamma_multiply(0.6), Color32::TRANSPARENT);
-    // the empty bar drags the window, a double-click maximizes
-    let bar = ui.interact(top, ui.id().with("titlebar"), Sense::click_and_drag());
-    if bar.drag_started() && !app.fullscreen {
-        ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-    }
-    if bar.double_clicked() && !app.fullscreen {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+    if !app.fullscreen {
+        titlebar::drag_area(ui, top, maximized);
     }
     let b = Rect::from_min_size(top.min + vec2(4.0, 4.0), vec2(40.0, 32.0));
     if icon_button(ui, pal, b, icon::EDIT, 15.0, false, "Open in Editor (Esc)").clicked() {
@@ -374,45 +343,16 @@ fn top_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, top: Rect, maximized
     }
     let icon_at = pos2(b.right() + 10.0, top.center().y);
     if app.icon.is_none() {
-        app.icon = app_icon(&ctx);
+        app.icon = titlebar::app_icon(&ctx);
     }
     if let Some(i) = &app.icon {
-        let r = Rect::from_min_size(icon_at - vec2(0.0, 8.0), vec2(16.0, 16.0));
-        ui.painter().image(i.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        titlebar::paint_icon(ui, i, icon_at);
     }
     ui.painter().text(icon_at + vec2(26.0, 0.0), Align2::LEFT_CENTER, app.title(), FontId::proportional(12.0), pal.text);
     if app.fullscreen {
         return;
     }
-    let w = 46.0;
-    let close = Rect::from_min_size(pos2(top.right() - w, top.top()), vec2(w, TOP_H - 8.0));
-    let max = close.translate(vec2(-w, 0.0));
-    let min = max.translate(vec2(-w, 0.0));
-    if caption_button(ui, pal, min, icon::MINIMIZE, false, "Minimize").clicked() {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-    }
-    let (c, tip) = if maximized { (icon::RESTORE, "Restore down") } else { (icon::MAXIMIZE, "Maximize") };
-    if caption_button(ui, pal, max, c, false, tip).clicked() {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
-    }
-    if caption_button(ui, pal, close, icon::CLOSE, true, "Close").clicked() {
-        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-    }
-}
-
-/// Window buttons: square, the close one red under the pointer (Windows' convention).
-fn caption_button(ui: &mut Ui, pal: &Palette, rect: Rect, c: char, close: bool, tip: &str) -> Response {
-    let r = ui.interact(rect, ui.id().with(("caption", c)), Sense::click()).on_hover_text(tip);
-    let mut fg = pal.text;
-    if r.hovered() {
-        let fill = if close { Color32::from_rgb(0xC4, 0x2B, 0x1C) } else { ui.visuals().widgets.hovered.weak_bg_fill };
-        ui.painter().rect_filled(rect, 0.0, fill);
-        if close {
-            fg = Color32::WHITE;
-        }
-    }
-    glyph(ui.painter(), rect.center(), c, 10.0, fg);
-    r
+    titlebar::caption_buttons(ui, pal, top, maximized);
 }
 
 fn bottom_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, bottom: Rect) {
@@ -1137,18 +1077,6 @@ fn subtitles(app: &PlayerApp, ui: &mut Ui, video: Rect, chrome_up: bool) {
         p.galley(at + vec2(dx, dy), g.clone(), Color32::from_black_alpha(200));
     }
     p.galley(at, g, Color32::WHITE);
-}
-
-/// The 32 px picture of `assets/app.ico` (its entries are PNGs).
-fn app_icon(ctx: &egui::Context) -> Option<egui::TextureHandle> {
-    static ICO: &[u8] = include_bytes!("../../assets/app.ico");
-    let n = u16::from_le_bytes([ICO[4], ICO[5]]) as usize;
-    let entry = (0..n).map(|i| &ICO[6 + 16 * i..22 + 16 * i]).find(|e| e[0] == 32)?;
-    let size = u32::from_le_bytes([entry[8], entry[9], entry[10], entry[11]]) as usize;
-    let off = u32::from_le_bytes([entry[12], entry[13], entry[14], entry[15]]) as usize;
-    let f = crate::engine::html::decode_png(ICO.get(off..off + size)?).ok()?;
-    let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
-    Some(ctx.load_texture("player-app-icon", img, egui::TextureOptions::LINEAR))
 }
 
 /// An audio file's cover: the embedded picture, else cover / folder / front .jpg / .png beside it.

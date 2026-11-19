@@ -442,8 +442,8 @@ pub fn show(ctx: &egui::Context, st: &mut HtmlUi) -> EditorResponse {
         return resp;
     }
     // a real window of its own: resize it, maximise it, drag it to another monitor, F11 for full screen
-    let mut builder = egui::ViewportBuilder::default()
-        .with_title(format!("HTML Editor - {}", if st.name.is_empty() { "layer" } else { &st.name }))
+    let title = format!("HTML Editor - {}", if st.name.is_empty() { "layer" } else { &st.name });
+    let mut builder = crate::ui::titlebar::viewport(title.clone())
         .with_min_inner_size([640.0, 420.0]);
     if !st.placed {
         builder = builder.with_inner_size([1040.0, 660.0]);
@@ -452,6 +452,7 @@ pub fn show(ctx: &egui::Context, st: &mut HtmlUi) -> EditorResponse {
     let mut close = false;
     ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("html_editor_window"), builder, |ctx, _class| {
         close = ctx.input(|i| i.viewport().close_requested());
+        crate::ui::titlebar::window(ctx, &title);
         egui::CentralPanel::default().show(ctx, |ui| body(ui, st, &mut resp));
     });
     if close {

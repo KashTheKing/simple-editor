@@ -114,6 +114,39 @@ pub struct ScreensUi {
     pub asked: bool,
 }
 
+/// The arrangements as picture cards (1, 2 and - with three monitors - 3 screens), `current` selected.
+/// Also the welcome wizard's Screens step.
+pub fn choices(ui: &mut egui::Ui, monitors: usize, current: u8) -> Option<u8> {
+    let mut pick = None;
+    let accent = ui.visuals().selection.bg_fill;
+    ui.horizontal_top(|ui| {
+        for n in [2u8, 3, 1] {
+            if n == 3 && monitors < 3 {
+                continue;
+            }
+            ui.vertical(|ui| {
+                ui.set_width(150.0);
+                let ok = n as usize <= monitors.max(1);
+                let label = match n {
+                    1 => "Keep one screen".to_string(),
+                    n => format!("Use {n} screens"),
+                };
+                let r = ui.add_enabled_ui(ok, |ui| picture(ui, n, accent)).inner;
+                let b = ui.add_enabled(ok, egui::Button::new(label).selected(n == current));
+                if ok && (r.clicked() || b.clicked()) {
+                    pick = Some(n);
+                }
+                ui.weak(match n {
+                    1 => "Everything in one window",
+                    2 => "Timeline on its own screen",
+                    _ => "Timeline, preview, tools",
+                });
+            });
+        }
+    });
+    pick
+}
+
 /// One arrangement's picture: `monitors` screens side by side, each with its blocks.
 fn picture(ui: &mut egui::Ui, n: u8, accent: egui::Color32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(150.0, 64.0), egui::Sense::click());
@@ -171,32 +204,7 @@ pub fn window(ctx: &egui::Context, st: &mut ScreensUi, monitors: usize, current:
         .show(ctx, |ui| {
             ui.label(format!("{monitors} monitor{} connected", if monitors == 1 { "" } else { "s" }));
             ui.add_space(6.0);
-            let accent = ui.visuals().selection.bg_fill;
-            ui.horizontal_top(|ui| {
-                for n in [2u8, 3, 1] {
-                    if n == 3 && monitors < 3 {
-                        continue;
-                    }
-                    ui.vertical(|ui| {
-                        ui.set_width(160.0);
-                        let ok = n as usize <= monitors.max(1);
-                        let label = match n {
-                            1 => "Keep one screen".to_string(),
-                            n => format!("Use {n} screens"),
-                        };
-                        let r = ui.add_enabled_ui(ok, |ui| picture(ui, n, accent)).inner;
-                        let b = ui.add_enabled(ok, egui::Button::new(label).selected(n == current));
-                        if ok && (r.clicked() || b.clicked()) {
-                            pick = Some(n);
-                        }
-                        ui.weak(match n {
-                            1 => "Everything in one window",
-                            2 => "Timeline on its own screen",
-                            _ => "Timeline, preview, tools",
-                        });
-                    });
-                }
-            });
+            pick = choices(ui, monitors, current);
             ui.add_space(4.0);
             ui.weak("Each page keeps its own arrangement for each screen count. Window ▸ Screens… changes it later.");
         });

@@ -45,6 +45,9 @@ pub(super) const PAGE_ACTIONS: [Action; 9] = [
 
 pub(super) fn act(app: &mut App, a: Action) -> bool {
     if let Some(i) = PAGE_ACTIONS.iter().position(|&p| p == a) {
+        if app.settings.one_window {
+            return true; // no pages in One window: the page keys do nothing (Window ▸ Layout ▸ Pages)
+        }
         match app.settings.pages.get(i).cloned() {
             Some(page) => {
                 switch_page(app, &page);
@@ -231,7 +234,7 @@ pub(super) fn migrate_to_pages(settings: &mut Settings) -> bool {
         let at = settings.pages.iter().position(|p| p == "Edit").map_or(settings.pages.len(), |i| i + 1);
         settings.pages.insert(at, "Animate".into());
     }
-    if settings.pages.contains(&settings.page) {
+    if settings.pages.contains(&settings.page) || (settings.one_window && settings.page == ONE_WINDOW) {
         return false;
     }
     if settings.page.is_empty() && !settings.layout.is_empty() {
@@ -363,8 +366,50 @@ pub(super) fn swap_page(
     true
 }
 
-/// Switch to a page by name (see `find_page`); unknown names toast and return false.
+/// The One window workspace's tree is kept as a page of this name, outside `Settings.pages` (so it has no
+/// tab, and the pages keep their own trees while it is on).
+pub(super) const ONE_WINDOW: &str = "One window";
+
+/// Pages or One window. One window swaps to its own tree (`Layout::one_window_layout` the first time) and
+/// remembers the page it left; Pages comes back to that page.
+pub(super) fn set_one_window(app: &mut App, on: bool) {
+    let App { layout, settings, undo, redo, .. } = app;
+    if let Some(to) = one_window_swap(layout, settings, undo, redo, on) {
+        app.tools.tool = layout::page_tool(&to);
+        app.layout_json = app.settings.layout.clone();
+        app.settings.save();
+    }
+}
+
+/// `set_one_window` without the App: the page it switched to, `None` when already in that mode.
+fn one_window_swap(
+    layout: &mut Layout,
+    settings: &mut Settings,
+    undo: &mut Vec<UndoEntry>,
+    redo: &mut Vec<UndoEntry>,
+    on: bool,
+) -> Option<String> {
+    if settings.one_window == on {
+        return None;
+    }
+    settings.one_window = on;
+    let to = if on {
+        settings.pages_page = settings.page.clone();
+        ONE_WINDOW.to_string()
+    } else {
+        find_page(settings, &settings.pages_page).unwrap_or_else(|| settings.pages[0].clone())
+    };
+    swap_page(layout, settings, undo, redo, &to);
+    Some(to)
+}
+
+/// Switch to a page by name (see `find_page`); unknown names toast and return false. In One window there
+/// are no pages to switch to.
 pub(super) fn switch_page(app: &mut App, name: &str) -> bool {
+    if app.settings.one_window {
+        app.toast("One window has no pages (Window ▸ Layout ▸ Pages turns them back on)");
+        return false;
+    }
     let Some(page) = find_page(&app.settings, name) else {
         app.toast(format!("No page called '{name}' (try {})", app.settings.pages.join(", ")));
         return false;
@@ -680,6 +725,10 @@ fn finish_onboarding(app: &mut App, st: &Onboarding) {
         }
     });
     app.settings.save();
+    set_one_window(app, st.one_window);
+    if st.monitors >= 2 {
+        super::screens_ctl::set_mode(app, st.screens); // and screens_answered: no prompt after this
+    }
     if let Some(i) = st.template {
         apply_format(app, i);
     }
@@ -816,6 +865,42 @@ mod tests {
         assert!(!is_dynamic(&s));
         s.layout_mode = "anything-else".into();
         assert!(is_dynamic(&s), "only an explicit 'granular' switches auto-surfacing off");
+    }
+
+    /// Picked in the wizard (or Window ▸ Layout): One window has its own tree with every panel in it and no
+    /// page of its own in the switcher; Pages comes back to the page it left, with that page's edits.
+    #[test]
+    fn one_window_keeps_the_pages_and_reaches_every_panel() {
+        let mut st = Onboarding::new(&Settings::default());
+        st.one_window = true; // the wizard's One window card
+        let mut s = Settings { page: "Color".into(), ..Default::default() };
+        onboarding::finish(&st, &mut s, false, &mut || {});
+        let (mut undo, mut redo) = (Vec::new(), Vec::new());
+        let mut l = Layout::color_layout();
+        l.toggle(Pane::Scopes); // an edit on the Color page
+        let color = tree_value(&l);
+        assert_eq!(one_window_swap(&mut l, &mut s, &mut undo, &mut redo, st.one_window).as_deref(), Some(ONE_WINDOW));
+        assert!(s.one_window && s.page == ONE_WINDOW);
+        assert!(!s.pages.iter().any(|p| p == ONE_WINDOW), "no page tab for it");
+        for &p in Pane::ALL {
+            // Window ▸ <pane> / Ctrl+P: a hidden panel comes up in the one window
+            let mut shown = l.clone();
+            if !shown.is_visible(p) {
+                shown.toggle(p);
+            }
+            assert!(shown.is_visible(p), "{p:?} is reachable in One window");
+        }
+        for p in [Pane::Library, Pane::Preview, Pane::Inspector, Pane::Timeline] {
+            assert!(l.is_visible(p), "{p:?} on screen");
+        }
+        // back to Pages: the Color page with its edit
+        assert_eq!(one_window_swap(&mut l, &mut s, &mut undo, &mut redo, false).as_deref(), Some("Color"));
+        assert_eq!(tree_value(&l), color);
+        assert!(!s.one_window);
+        // a restart in One window stays there (the page is not "migrated" to a real one)
+        let mut again = Settings { one_window: true, page: ONE_WINDOW.into(), ..Default::default() };
+        assert!(!migrate_to_pages(&mut again));
+        assert_eq!(again.page, ONE_WINDOW);
     }
 
     // ---- ws:pages ----

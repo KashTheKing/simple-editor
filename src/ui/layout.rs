@@ -39,6 +39,7 @@ pub fn page_layout(name: &str) -> Option<fn() -> Layout> {
         "Color" => Layout::color_layout,
         "Audio" => Layout::audio_layout,
         "Export" => Layout::export_layout,
+        "One window" => Layout::one_window_layout,
         _ => return None,
     })
 }
@@ -546,6 +547,23 @@ impl Layout {
         // the Clips strip rides as a tab beside the Inspector
         let inspector = Self::tabs(t, &[Pane::Inspector, Pane::Clips], 0);
         let top = Self::linear(t, Horizontal, &[(left, shares[0]), (viewer, shares[1]), (inspector, shares[2])]);
+        let timeline = t.insert_pane(Pane::Timeline);
+        let root = Self::linear(t, Vertical, &[(top, 0.6), (timeline, 0.4)]);
+        Self::stack_unplaced(t, library);
+        Self::new(egui_tiles::Tree::new("layout", root, tiles))
+    }
+
+    /// One window (no pages): [Library | Gallery] · [Source | Preview] · [Inspector | Clips | Mixer | Color
+    /// Wheels | Curves | Scopes] over the Timeline; every other pane rides hidden behind the Library.
+    pub fn one_window_layout() -> Self {
+        use egui_tiles::LinearDir::{Horizontal, Vertical};
+        let mut tiles = egui_tiles::Tiles::default();
+        let t = &mut tiles;
+        let library = Self::tabs(t, &[Pane::Library, Pane::Presets], 0);
+        let viewer = Self::tabs(t, &[Pane::Source, Pane::Preview], 1);
+        let side = [Pane::Inspector, Pane::Clips, Pane::Mixer, Pane::Grade, Pane::Curves, Pane::Scopes];
+        let inspector = Self::tabs(t, &side, 0);
+        let top = Self::linear(t, Horizontal, &[(library, 0.22), (viewer, 0.5), (inspector, 0.28)]);
         let timeline = t.insert_pane(Pane::Timeline);
         let root = Self::linear(t, Vertical, &[(top, 0.6), (timeline, 0.4)]);
         Self::stack_unplaced(t, library);
@@ -1830,7 +1848,7 @@ pub fn show(
             (Some(seq), Pane::Timeline) => format!("Timeline - {seq}"),
             _ => pane.title().to_string(),
         };
-        let mut builder = egui::ViewportBuilder::default().with_title(title);
+        let mut builder = crate::ui::titlebar::viewport(title.clone());
         // where the user left it, on the frame the window opens only: a builder that changes while the
         // window is open is a move / resize command, and would fight the user's own drag.
         // ponytail: a rect on a monitor since unplugged opens off-screen - clamp to the monitors if that bites
@@ -1850,6 +1868,7 @@ pub fn show(
                 placed.push((pane, [outer.min.x, outer.min.y, inner.width(), inner.height()]));
             }
             on_viewport(ctx);
+            crate::ui::titlebar::window(ctx, &title);
             egui::CentralPanel::default().show(ctx, |ui| draw(ui, pane));
         });
     }
@@ -1926,8 +1945,8 @@ fn show_screen(
     let popped = [layout.popped.clone(), layout.on_screens()].concat();
     let sw = &mut layout.screens[i];
     let Some(place) = sw.place else { return false };
-    let mut builder = egui::ViewportBuilder::default()
-        .with_title(format!("Simple Editor - Screen {}", sw.screen))
+    let title = format!("Simple Editor - Screen {}", sw.screen);
+    let mut builder = crate::ui::titlebar::viewport(title.clone())
         .with_active(!crate::winpos::background());
     if !sw.opened {
         sw.opened = true;
@@ -1966,6 +1985,7 @@ fn show_screen(
             rect = Some([outer.min.x, outer.min.y, inner.width(), inner.height()]);
         }
         on_viewport(ctx);
+        crate::ui::titlebar::window(ctx, &title);
         egui::CentralPanel::default().show(ctx, |ui| {
             tree.simplify(&egui_tiles::Behavior::simplification_options(&beh));
             sync_tree_groups(tree);
