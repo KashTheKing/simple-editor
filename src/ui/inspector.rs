@@ -281,7 +281,7 @@ pub fn show(
 
 /// Selected transitions (timeline bands): one set of editors; each field you change is written to
 /// every selected transition, fields you leave alone keep their per-transition values.
-fn transition_section(ui: &mut egui::Ui, project: &mut Project, ids: &[Id], undo: &mut dyn FnMut(&Project)) -> bool {
+pub(crate) fn transition_section(ui: &mut egui::Ui, project: &mut Project, ids: &[Id], undo: &mut dyn FnMut(&Project)) -> bool {
     use crate::model::{Ease, TransitionKind};
     let list: Vec<crate::model::Transition> = ids
         .iter()

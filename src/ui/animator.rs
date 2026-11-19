@@ -28,6 +28,7 @@ use std::cell::Cell;
 thread_local! {
     static SEL: Cell<Option<(Id, usize)>> = const { Cell::new(None) };
     static SPAN: Cell<Option<Id>> = const { Cell::new(None) };
+    static TRANS: Cell<Option<Id>> = const { Cell::new(None) };
     static ONION: Cell<u8> = const { Cell::new(0) };
     static ONION_TEX: Cell<Option<(egui::TextureId, [u32; 2])>> = const { Cell::new(None) };
 }
@@ -53,6 +54,10 @@ pub fn selected_block() -> Option<(Id, usize)> {
 /// The transition span selected in the Animator's Timeline lane (the Inspector shows its controls).
 pub fn selected_span() -> Option<Id> {
     SPAN.with(|s| s.get())
+}
+/// The timeline transition picked in a clip's Transitions row (the Inspector shows its controls).
+pub fn selected_transition() -> Option<Id> {
+    TRANS.with(|s| s.get())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
@@ -148,6 +153,13 @@ pub struct AnimState {
     /// Where each span's bar was drawn last frame.
     #[cfg(test)]
     span_pos: Vec<(Id, Rect)>,
+    /// The timeline transition picked in a clip's Transitions row.
+    pub trans: Option<Id>,
+    /// The end of a transition's bar a drag holds (-1 start, 1 end, 0 the middle: no change).
+    trans_held: i8,
+    /// Where each transition's bar was drawn last frame, as (transition, lane's clip, rect).
+    #[cfg(test)]
+    trans_pos: Vec<(Id, Id, Rect)>,
 }
 
 /// What a click in the lanes asked for (applied after they are drawn, as one undo step).
@@ -321,6 +333,32 @@ fn lanes(project: &Project, selection: &[Id]) -> Vec<Id> {
     v.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     v.dedup_by_key(|x| x.2);
     v.into_iter().map(|x| x.2).collect()
+}
+
+/// The selected clips and the clips their transitions hand over from / to, in lane order: a transition's
+/// two sides lie one over the other in time, so its overlap shows.
+fn with_neighbours(project: &Project, ids: &[Id]) -> Vec<Id> {
+    let mut v = ids.to_vec();
+    for &id in ids {
+        for (ti, tr) in project.transitions_of(id) {
+            if let Some((l, r)) = project.tracks[ti].transition_clips(tr) {
+                v.extend([l, r].into_iter().flatten().map(|c| c.id));
+            }
+        }
+    }
+    lanes(project, &v)
+}
+
+/// The timeline transitions on clip `id`: each with the window it plays in and "left → right" names.
+fn clip_transitions(project: &Project, id: Id) -> Vec<(Transition, (f64, f64), String)> {
+    let mut v = Vec::new();
+    for (ti, tr) in project.transitions_of(id) {
+        let Some((l, r)) = project.tracks[ti].transition_clips(tr) else { continue };
+        let Some((c, h)) = tr.cut_half(l, r) else { continue };
+        let name = |c: Option<&Clip>| c.map_or("nothing".to_string(), |c| c.name.clone());
+        v.push((tr.clone(), (c - h, c + h), format!("{} → {}", name(l), name(r))));
+    }
+    v
 }
 
 fn ticks(t0: f64, t1: f64, px: f32) -> Vec<f64> {
@@ -673,13 +711,20 @@ pub fn show(
 ) -> AnimResp {
     let mut out = AnimResp::default();
     let ids = lanes(project, selection);
+    // the lanes: the selection and the clips its transitions join it to
+    let rows = with_neighbours(project, &ids);
     // a selected block that went away (undo, delete, another clip) is forgotten
-    st.sel = st.sel.filter(|&(id, i)| ids.contains(&id) && project.clip(id).is_some_and(|c| i < c.blocks.len()));
+    st.sel = st.sel.filter(|&(id, i)| rows.contains(&id) && project.clip(id).is_some_and(|c| i < c.blocks.len()));
     if st.sel.is_none() {
         st.multi.clear();
     }
+    // a picked transition that went away, or whose clips left the lanes, is forgotten
+    st.trans = st.trans.filter(|&t| rows.iter().any(|&c| project.transitions_of(c).iter().any(|x| x.1.id == t)));
+    TRANS.with(|s| s.set(st.trans));
+    #[cfg(test)]
+    st.trans_pos.clear();
     // selected keys belong to one clip: forgotten when it leaves the selection
-    if st.key_clip.is_none_or(|k| !ids.contains(&k)) {
+    if st.key_clip.is_none_or(|k| !rows.contains(&k)) {
         (st.keys, st.key_clip) = (Vec::new(), None);
     }
     #[cfg(test)]
@@ -713,20 +758,28 @@ pub fn show(
     match st.view {
         _ if compact => compact_list(ui, st, project, &ids, playhead, pal, undo, &mut out),
         // one timeline for all four views: the view only changes what a clip's row shows
-        _ => lanes_view(ui, st, project, &ids, playhead, presets, pal, undo, &mut out),
+        _ => lanes_view(ui, st, project, &ids, &rows, playhead, presets, pal, undo, &mut out),
+    }
+    // one kind of thing is picked at a time: a block or a span picked now drops the transition
+    if st.sel.is_some() || !st.spans.is_empty() {
+        st.trans = None;
     }
     // Delete / Backspace: the picked blocks and only them (selected keys or a speed point took the key first)
-    let any = st.sel.is_some() || !st.spans.is_empty();
+    let any = st.sel.is_some() || !st.spans.is_empty() || st.trans.is_some();
     if !playing && any && (st.here || ui.ui_contains_pointer()) && del_pressed(ui) {
         undo(project);
         remove_picked(project, st);
         for id in std::mem::take(&mut st.spans) {
             project.remove_span(id);
         }
+        if let Some(t) = st.trans.take() {
+            project.remove_transition(t);
+        }
         out.edited = true;
     }
     SEL.with(|s| s.set(st.sel));
     SPAN.with(|s| s.set(st.spans.first().copied()));
+    TRANS.with(|s| s.set(st.trans));
     out
 }
 
@@ -1069,6 +1122,8 @@ fn block_fit(project: &Project, ids: &[Id], fit: (f64, f64)) -> (f64, f64) {
         .iter()
         .filter_map(|&id| project.clip(id))
         .flat_map(|c| c.blocks.iter().map(move |b| (c.start + b.t, c.start + b.end())))
+        // (and the transitions they arrive / leave by)
+        .chain(ids.iter().flat_map(|&id| clip_transitions(project, id)).map(|x| x.1))
         .collect();
     if spans.is_empty() {
         return fit;
@@ -1235,6 +1290,7 @@ fn lanes_view(
     st: &mut AnimState,
     project: &mut Project,
     ids: &[Id],
+    rows: &[Id],
     playhead: &mut f64,
     presets: &[KeyBlock],
     pal: &Palette,
@@ -1251,7 +1307,7 @@ fn lanes_view(
     let range_of = |whole: bool, p: &Project| match (whole || ids.is_empty(), p.in_point, p.out_point) {
         (true, Some(a), Some(b)) if b > a => (a, b),
         (true, ..) => (0.0, p.duration().max(1.0)),
-        _ => range(p, ids),
+        _ => range(p, rows),
     };
     ui.horizontal(|ui| {
         if view == View::Blocks {
@@ -1303,10 +1359,10 @@ fn lanes_view(
         }
         fit = range_of(st.whole, project);
         st.range = fit;
-        if st.win_for != ids {
-            (st.win, st.win_for) = (None, ids.to_vec());
+        if st.win_for != rows {
+            (st.win, st.win_for) = (None, rows.to_vec());
         }
-        st.win = st.win.filter(|w| w.1 > fit.0 && w.0 < fit.1).or_else(|| Some(block_fit(project, ids, fit)));
+        st.win = st.win.filter(|w| w.1 > fit.0 && w.0 < fit.1).or_else(|| Some(block_fit(project, rows, fit)));
         st.win = st.win.map(|w| clamp_win(w, fit)); // zoomed all the way out = exactly the range
         // on the right: the range toggle, then the zoom
         if zoom_bar(ui, pal, &mut st.win, fit, *playhead, &mut st.whole) {
@@ -1336,7 +1392,7 @@ fn lanes_view(
     let head_w = head_w.clamp(80.0, (avail.width() * 0.5).max(80.0));
     let view_h = (avail.height() - SCROLL_H - 4.0).max(40.0);
     // Curves / Flow / Speed: a graph per clip; they share the height until one is dragged taller or shorter
-    let graph_h = st.graph_h.unwrap_or(((view_h - 26.0) / ids.len().max(1) as f32).floor()).clamp(GRAPH_MIN, 900.0);
+    let graph_h = st.graph_h.unwrap_or(((view_h - 26.0) / rows.len().max(1) as f32).floor()).clamp(GRAPH_MIN, 900.0);
     egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(view_h).show(ui, |ui| {
         let full = ui.available_rect_before_wrap();
         let body_x0 = full.left() + head_w;
@@ -1348,6 +1404,7 @@ fn lanes_view(
         let top = rr.bottom();
         let mut act: Option<Act> = flow_now.then(|| flow_act(picked(st), st.mode));
         let mut rects: Vec<(Rect, (Id, usize))> = Vec::new(); // every block bar drawn, for the selection box
+        let mut rects_tr: Vec<Rect> = Vec::new(); // every transition bar drawn (a drag on one is not a box)
         let mut heads: Vec<(Rect, Id, usize)> = Vec::new(); // every clip's label cell and how many blocks it has
         // Alt+wheel: taller / shorter lanes, like the timeline's tracks (taken before the list scrolls by it)
         let over = ui.rect_contains_pointer(full);
@@ -1539,7 +1596,7 @@ fn lanes_view(
                 });
             }
         }
-        for &id in ids {
+        for &id in rows {
             let Some(c) = project.clip(id).cloned() else { continue };
             // Curves / Flow / Speed: the clip's row is its graph on the same time axis, its controls in the
             // label column
@@ -1573,7 +1630,10 @@ fn lanes_view(
             let (pack, labels) = lane_rows(&c.blocks);
             let loose = c.loose_key_spans();
             let keys_row = labels.len();
-            let nrows = (labels.len() + (!loose.is_empty()) as usize).max(1);
+            // and a row of the timeline transitions it arrives / leaves by (its neighbour's lane shows them too)
+            let trs = clip_transitions(project, id);
+            let trans_row = labels.len() + (!loose.is_empty()) as usize;
+            let nrows = (trans_row + (!trs.is_empty()) as usize).max(1);
             let (row, _) = ui
                 .allocate_exact_size(vec2(full.width(), lane_h + (nrows - 1) as f32 * (lane_h - 8.0)), Sense::hover());
             let p = ui.painter_at(row.expand(1.0));
@@ -1603,7 +1663,11 @@ fn lanes_view(
             p.galley(pos2(head.right() - 8.0 - tag_g.size().x, hy - tag_g.size().y / 2.0), tag_g, look::DIM);
             // the other rows' names: the lane they are (the first row carries the clip's name)
             for r in 1..nrows {
-                let label = labels.get(r).copied().unwrap_or("Hand keys");
+                let label = if r == trans_row && !trs.is_empty() {
+                    "Transitions"
+                } else {
+                    labels.get(r).copied().unwrap_or("Hand keys")
+                };
                 let ry = row.top() + lane_h / 2.0 + r as f32 * (lane_h - 8.0);
                 let same = r < labels.len() && labels[r] == labels[r - 1];
                 if !same {
@@ -1714,6 +1778,107 @@ fn lanes_view(
             let mut edge = vec![span.left_top(), span.right_top(), span.right_bottom(), span.left_bottom()];
             edge.push(edge[0]);
             p.extend(egui::Shape::dashed_line(&edge, Stroke::new(1.0, Color32::from_white_alpha(18)), 4.0, 3.0));
+            // its timeline transitions: a bar over the window each plays in (a cut's straddles the cut, the
+            // neighbour's lane has the same bar). Click picks it (the Inspector shows its controls), an end
+            // drags its length, right-click changes its kind
+            let col = kind_color("Transition");
+            for (tr, (wa, wb), sides) in &trs {
+                let top = row.top() + 5.0 + trans_row as f32 * (lane_h - 8.0);
+                let r = Rect::from_min_max(pos2(x(*wa), top), pos2(x(*wb).max(x(*wa) + 6.0), top + lane_h - 10.0));
+                #[cfg(test)]
+                st.trans_pos.push((tr.id, id, r));
+                if !r.intersects(body) {
+                    continue;
+                }
+                let sel = st.trans == Some(tr.id);
+                p.rect(
+                    r,
+                    6.0,
+                    look::CARD.lerp_to_gamma(col, if sel { 0.45 } else { 0.24 }),
+                    Stroke::new(1.0, if sel { Color32::WHITE } else { col.gamma_multiply(0.75) }),
+                    egui::StrokeKind::Inside,
+                );
+                // the cut itself
+                if tr.edge == TransitionEdge::Cut {
+                    let cx = x((wa + wb) / 2.0);
+                    p.line_segment([pos2(cx, r.top() + 2.0), pos2(cx, r.bottom() - 2.0)], Stroke::new(1.0, Color32::from_white_alpha(90)));
+                }
+                p.with_clip_rect(r.shrink(1.0)).text(
+                    pos2(r.left() + 8.0, r.center().y),
+                    Align2::LEFT_CENTER,
+                    tr.name(),
+                    FontId::proportional(11.0),
+                    Color32::WHITE,
+                );
+                let hit = r.intersect(body);
+                rects_tr.push(hit);
+                let resp = ui.interact(hit, ui.id().with(("atrans", tr.id, id)), Sense::click_and_drag());
+                let edge_at = |hp: Pos2| -> i8 {
+                    if hp.x < r.left() + 6.0 {
+                        -1
+                    } else if hp.x > r.right() - 6.0 {
+                        1
+                    } else {
+                        0
+                    }
+                };
+                let edge = resp.hover_pos().or(resp.interact_pointer_pos()).map_or(0, edge_at);
+                let resp = resp
+                    .on_hover_cursor(if edge != 0 { CursorIcon::ResizeHorizontal } else { CursorIcon::Default })
+                    .on_hover_text(format!(
+                        "{} · {:.2} s · {sides}. Drag an end to change its length, right-click for its kind",
+                        tr.name(),
+                        wb - wa
+                    ));
+                if resp.clicked() || resp.drag_started() {
+                    (st.trans, st.sel, st.multi, st.spans) = (Some(tr.id), None, Vec::new(), Vec::new());
+                    st.here = true;
+                }
+                // (the end held is where the press was: the bar grows under the pointer while it drags)
+                if resp.drag_started() {
+                    st.trans_held = ui.input(|i| i.pointer.press_origin()).map_or(edge, edge_at);
+                    if st.trans_held != 0 {
+                        undo(project);
+                    }
+                }
+                // an end sets the length: a cut's window grows both ways from the cut, an In / Out one from
+                // its clip's edge
+                if let Some(pos) = resp.interact_pointer_pos().filter(|_| resp.dragged() && st.trans_held != 0) {
+                    let t = t0 + ((pos.x - body_x0) / bw) as f64 * (t1 - t0);
+                    let d = match tr.edge {
+                        TransitionEdge::Cut => 2.0 * (t - (wa + wb) / 2.0).abs(),
+                        TransitionEdge::In => t - wa,
+                        TransitionEdge::Out => wb - t,
+                    };
+                    if let Some(x) = project.transition_mut(tr.id) {
+                        x.duration = (d.clamp(0.1, 5.0) * 100.0).round() / 100.0;
+                        out.edited = true;
+                    }
+                }
+                menu::context(&resp, |ui| {
+                    let tid = tr.id;
+                    menu::sub(ui, Some(crate::ui::tools::Glyph::Transition), "Transition", |ui| {
+                        if let Some((kind, src)) = span_kinds(ui) {
+                            act = Some(Box::new(move |p, s, _| {
+                                if let Some(x) = p.transition_mut(tid) {
+                                    if kind == TransitionKind::Shader && x.shader != src {
+                                        x.params = crate::engine::shaderlib::parse_meta(&src).params.iter().map(|p| p.default).collect();
+                                        x.shader = src;
+                                    }
+                                    x.kind = kind;
+                                }
+                                s.trans = Some(tid);
+                            }));
+                        }
+                    });
+                    if menu::row(ui, Some(crate::ui::tools::Glyph::Cross), "Delete", "").clicked() {
+                        act = Some(Box::new(move |p, s, _| {
+                            p.remove_transition(tid);
+                            s.trans = None;
+                        }));
+                    }
+                });
+            }
             for (i, b) in c.blocks.iter().enumerate() {
                 let top = row.top() + 5.0 + pack[i] as f32 * (lane_h - 8.0);
                 let r =
@@ -2103,7 +2268,8 @@ fn lanes_view(
         match (press, cur, down) {
             (Some(o), Some(c), true) if view == View::Blocks => {
                 let in_head = o.x < body_x0 - 3.0 && heads.iter().any(|h| h.0.contains(o));
-                let on_bar = rects.iter().any(|r| r.0.contains(o)) || span_rects.iter().any(|r| r.0.contains(o));
+                let on_bar = rects.iter().any(|r| r.0.contains(o)) || span_rects.iter().any(|r| r.0.contains(o))
+                    || rects_tr.iter().any(|r| r.contains(o));
                 let free = in_head || lanes_rect.contains(o) && o.y > top && !on_bar;
                 if st.lasso.is_none() && free && (c - o).length() > 4.0 && ui.ctx().dragged_id().is_none() {
                     st.lasso = Some(o);
@@ -3560,7 +3726,24 @@ fn compact_list(
 pub fn block_section(ui: &mut Ui, project: &mut Project, pal: &Palette, undo: &mut dyn FnMut(&Project)) -> bool {
     // (both cards draw: the picked span's, then the picked block's)
     let span = span_section(ui, project, undo);
-    block_card(ui, project, pal, undo) || span
+    let trans = trans_card(ui, project, undo);
+    block_card(ui, project, pal, undo) || span || trans
+}
+
+/// The Inspector's card of the timeline transition picked in the Animator: the same controls (and undo) as a
+/// transition picked on the timeline.
+fn trans_card(ui: &mut Ui, project: &mut Project, undo: &mut dyn FnMut(&Project)) -> bool {
+    let Some(t) = selected_transition() else { return false };
+    if !project.tracks.iter().any(|tr| tr.transitions.iter().any(|x| x.id == t)) {
+        return false;
+    }
+    let mut edited = false;
+    egui::Frame::new().fill(look::CARD).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        edited = crate::ui::inspector::transition_section(ui, project, &[t], undo);
+    });
+    ui.add_space(6.0);
+    edited
 }
 
 /// The picked block's card.
@@ -4157,6 +4340,7 @@ mod tests {
         sel: Vec<Id>,
         ph: f64,
         width: f32,
+        undos: usize,
     }
     impl H {
         fn new(width: f32) -> H {
@@ -4167,7 +4351,7 @@ mod tests {
             p.apply_key_block(1, &f("Slide In Left"), Some(0.0), None);
             p.apply_key_block(1, &f("Zoom Punch"), Some(5.5), None);
             p.apply_key_block(2, &f("Camera Shake"), Some(0.0), None);
-            H { ctx: egui::Context::default(), st: AnimState::default(), p, sel: vec![1, 2], ph: 0.5, width }
+            H { ctx: egui::Context::default(), st: AnimState::default(), p, sel: vec![1, 2], ph: 0.5, width, undos: 0 }
         }
         fn frame(&mut self) -> AnimResp {
             self.frame_with(Vec::new(), false)
@@ -4182,11 +4366,11 @@ mod tests {
                 modifiers: egui::Modifiers { shift, ..Default::default() },
                 ..Default::default()
             };
-            let (st, p, sel, ph) = (&mut self.st, &mut self.p, &self.sel, &mut self.ph);
+            let (st, p, sel, ph, undos) = (&mut self.st, &mut self.p, &self.sel, &mut self.ph, &mut self.undos);
             let _ = self.ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let pal = Palette::new(true, Color32::from_rgb(0x33, 0x66, 0xFF));
-                    out = show(ui, st, p, sel, ph, false, &pal, &[], &mut |_| {});
+                    out = show(ui, st, p, sel, ph, false, &pal, &[], &mut |_| *undos += 1);
                 });
             });
             out
@@ -4429,6 +4613,78 @@ mod tests {
         let key = egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
         assert!(h.frame_with(vec![key], false).edited);
         assert!(h.p.spans.is_empty() && h.st.spans.is_empty());
+    }
+
+    /// Three clips on V1, a cross fade on the cut at 6 s and a shader transition on the one at 12 s; only the
+    /// middle clip selected (the user's report: its Animator lane showed nothing).
+    fn with_transitions() -> (H, Id, Id) {
+        let mut h = H::new(1100.0);
+        h.p.tracks[0].clips.push(Clip::new(3, ClipKind::Video, "Gameplay C", 12.0, 6.0));
+        let fade = h.p.add_transition(2, TransitionKind::CrossFade, 1.0).unwrap();
+        let cube = h.p.add_transition(3, TransitionKind::CrossFade, 0.8).unwrap();
+        let x = h.p.transition_mut(cube).unwrap();
+        (x.kind, x.shader) = (TransitionKind::Shader, "// @name Cube\n".into());
+        h.sel = vec![2];
+        (h.p.clip_mut(2).unwrap().blocks, h.ph) = (Vec::new(), 6.0);
+        (h, fade, cube)
+    }
+
+    #[test]
+    fn a_clip_with_transitions_shows_them_and_the_clips_they_join() {
+        let (mut h, fade, cube) = with_transitions();
+        h.frame();
+        h.frame();
+        // the selected clip's lane and both neighbours' lanes each carry the transitions they share
+        let mut on: Vec<(Id, Id)> = h.st.trans_pos.iter().map(|x| (x.0, x.1)).collect();
+        on.sort();
+        assert_eq!(on, [(fade, 1), (fade, 2), (cube, 2), (cube, 3)]);
+        assert_eq!(h.st.win_for, vec![1, 2, 3], "the neighbours are lanes");
+        // laid out in time: the fade's bar straddles the cut at 6 s, a second wide, the same on both lanes
+        let bar = |h: &H, t: Id, c: Id| h.st.trans_pos.iter().find(|x| x.0 == t && x.1 == c).unwrap().2;
+        let (a, b) = (bar(&h, fade, 1), bar(&h, fade, 2));
+        assert_eq!((a.left(), a.right()), (b.left(), b.right()));
+        let (t0, t1) = h.st.win.unwrap();
+        assert!(t0 <= 5.5 && t1 >= 6.5, "the opening window shows it: {t0} {t1}");
+        let w: Vec<(f64, f64)> = clip_transitions(&h.p, 2).iter().map(|x| x.1).collect();
+        let want = [(5.5, 6.5), (11.6, 12.4)];
+        assert!(w.len() == 2 && w.iter().zip(want).all(|(a, b)| (a.0 - b.0).abs() < 1e-9 && (a.1 - b.1).abs() < 1e-9), "{w:?}");
+        // a click picks it for the Inspector
+        let c = b.center();
+        for ev in [vec![egui::Event::PointerMoved(c)], vec![button(c, true)], vec![button(c, false)], vec![]] {
+            h.frame_with(ev, false);
+        }
+        assert_eq!((h.st.trans, selected_transition()), (Some(fade), Some(fade)));
+        assert_eq!(h.undos, 0, "picking is not an edit");
+    }
+
+    #[test]
+    fn dragging_a_transitions_end_in_the_animator_changes_its_length_in_one_undo_step() {
+        let (mut h, fade, _) = with_transitions();
+        h.frame();
+        h.frame();
+        let r = h.st.trans_pos.iter().find(|x| x.0 == fade && x.1 == 2).unwrap().2;
+        let pps = r.width(); // the bar is one second wide
+        let end = pos2(r.right() - 2.0, r.center().y);
+        let mut edited = false;
+        for ev in [
+            vec![egui::Event::PointerMoved(end)],
+            vec![button(end, true)],
+            vec![egui::Event::PointerMoved(end + vec2(pps * 0.25, 0.0))],
+            vec![egui::Event::PointerMoved(end + vec2(pps * 0.5, 0.0))],
+            vec![button(end + vec2(pps * 0.5, 0.0), false)],
+            vec![],
+        ] {
+            edited |= h.frame_with(ev, false).edited;
+        }
+        // the end went half a second right: the window grows both ways from the cut, 1 s -> 2 s
+        let d = h.p.tracks[0].transitions.iter().find(|x| x.id == fade).unwrap().duration;
+        assert!(edited && (d - 2.0).abs() < 0.05, "{d}");
+        assert_eq!(h.undos, 1, "one drag, one undo step");
+        assert_eq!(h.st.trans, Some(fade));
+        // Delete removes the picked transition
+        let key = egui::Event::Key { key: egui::Key::Delete, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        assert!(h.frame_with(vec![key], false).edited);
+        assert!(h.p.tracks[0].transitions.iter().all(|x| x.id != fade) && h.st.trans.is_none());
     }
 
     /// Curves, one clip, the pointer over key `k` of Position X: (harness, the key's screen position).
