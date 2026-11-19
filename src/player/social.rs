@@ -112,8 +112,8 @@ pub fn picture(app: &mut PlayerApp, ui: &mut egui::Ui, full: Rect, top: f32, bot
                 Asked::Play => app.toggle_play(),
                 Asked::Seek(s) => app.seek(s),
                 Asked::Saved => app.prefs_dirty = true,
-                // the editor's (captions of the project, a device picture, an export of the timeline)
-                Asked::Captions | Asked::Screenshot | Asked::Export => {}
+                // the editor's (captions of the project, a device picture, an export of the timeline, guides on its Preview)
+                Asked::Captions | Asked::Screenshot | Asked::Export | Asked::PreviewGuides => {}
             }
         }
         return true;
