@@ -48,6 +48,8 @@ windows = { version = "0.62", features = [
     "Win32_System_SystemInformation",
     # ws:html-layer: headless Edge trees die with the app (a crash or a test run included)
     "Win32_System_JobObjects",
+    # feat/recorder-gpu: a big-buffer pipe for the GPU recorder's NV12 frames
+    "Win32_System_Pipes",
     "Win32_System_Threading",
     # ws:assistant-pane: the Assistant's API key in Windows Credential Manager
     "Win32_Security",

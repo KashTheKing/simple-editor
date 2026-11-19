@@ -278,12 +278,10 @@ pub struct Capture {
     graceful: Arc<AtomicBool>,
     /// The screen recording's audio taps (system, mic, app), for the level meters.
     taps: Vec<(TapSource, Arc<TapState>)>,
-    /// An application source's WGC capture (it owns ffmpeg's stdin; stopping it ends the recording).
+    /// The GPU path's WGC capture (it owns ffmpeg's stdin; stopping it ends the recording).
     app: Option<crate::engine::wgc::AppCapture>,
     /// The live preview frames of a screen recording.
     preview: Option<Arc<FrameSlot>>,
-    /// A whole-monitor recording's preview producer (stops with the capture).
-    monitor_preview: Option<crate::engine::wgc::AppCapture>,
 }
 
 impl Capture {
@@ -301,10 +299,6 @@ impl Capture {
         if let Some(mut si) = self.stdin.take() {
             let _ = si.write_all(b"q\n");
             let _ = si.flush();
-        }
-        if let Some(m) = self.monitor_preview.take() {
-            m.stop();
-            std::thread::spawn(move || drop(m));
         }
         // an application recording ends when the frames stop (EOF on ffmpeg's stdin)
         if let Some(a) = self.app.take() {
@@ -438,7 +432,7 @@ fn spawn(out: &std::path::Path, args: Vec<String>, label: &'static str) -> Resul
         }
         return Err(format!("could not start the capture thread: {e}"));
     }
-    Ok(Capture { progress, child: shared, stdin, start, lead_us, graceful, taps: Vec::new(), app: None, preview: None, monitor_preview: None })
+    Ok(Capture { progress, child: shared, stdin, start, lead_us, graceful, taps: Vec::new(), app: None, preview: None })
 }
 
 /// Start a screen recording (see the module doc). The returned capture's progress finishes once the
@@ -460,26 +454,32 @@ pub fn start_screen(opts: ScreenCaptureOptions) -> Result<Capture, String> {
         ..Default::default()
     };
     let preview = opts.preview.then(|| FrameSlot::new(true));
-    // a whole monitor: its preview is a WGC monitor capture (GPU-downscaled), not a second ffmpeg output
-    let monitor = match (&opts.source, opts.preview) {
-        (CaptureSource::Region(x, y, w, h), true) => crate::engine::wgc::monitor_at([*x, *y, *w as i32, *h as i32]),
-        _ => None,
-    };
-    let monitor_preview = match (monitor, &preview) {
-        (Some(m), Some(slot)) => {
-            use crate::engine::wgc::{AppCapture, Target};
-            AppCapture::start_target(Target::Monitor(m), opts.cursor, crate::engine::screen_grab::PREVIEW_FPS, slot.clone()).ok()
+    // the GPU path: an application, or a screen / a region inside one, is a WGC capture converted to NV12
+    // on the GPU and fed to ffmpeg's stdin (its size decides ffmpeg's input); the preview rides on the
+    // same capture. gdigrab stays for the whole desktop, a window by title, a region across screens,
+    // and whenever WGC or the GPU conversion fails on this machine.
+    use crate::engine::wgc::{AppCapture, Target};
+    let target = match &opts.source {
+        CaptureSource::App { hwnd, .. } => Some((Target::Window(*hwnd), None)),
+        CaptureSource::Region(x, y, w, h) => {
+            crate::engine::wgc::monitor_holding([*x, *y, *w as i32, *h as i32]).map(|(m, crop)| (Target::Monitor(m), Some(crop)))
         }
         _ => None,
     };
-
-    // an application: WGC first (its size decides ffmpeg's input), ffmpeg reads it from stdin
-    let app = match &opts.source {
-        CaptureSource::App { hwnd, .. } => {
+    let app = match target {
+        Some((t, crop)) => {
             let slot = preview.clone().unwrap_or_else(|| FrameSlot::new(false));
-            Some(crate::engine::wgc::AppCapture::start(*hwnd, opts.cursor, opts.fps, slot)?)
+            match AppCapture::start_target(t, crop, Some(opts.scale), opts.cursor, opts.fps, slot) {
+                Ok(a) => Some(a),
+                // an application has no gdigrab fallback (GDI shows games black)
+                Err(e) if matches!(opts.source, CaptureSource::App { .. }) => return Err(e),
+                Err(e) => {
+                    eprintln!("screen recording: GPU capture failed, using gdigrab: {e}");
+                    None
+                }
+            }
         }
-        _ => None,
+        None => None,
     };
 
     // audio next: a tap is running (and stamping its first sample) before the first frame
@@ -510,10 +510,24 @@ pub fn start_screen(opts: ScreenCaptureOptions) -> Result<Capture, String> {
     write_parts(&json, &parts)?;
 
     let mut cmd = ffpipe::command(&exe);
-    let tap = ScreenCaptureOptions { preview: opts.preview && monitor_preview.is_none(), ..opts.clone() };
+    let tap = ScreenCaptureOptions { preview: opts.preview && app.is_none(), ..opts.clone() };
     cmd.args(video_args(&tap, &video, app.as_ref().map(|a| a.size)));
-    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = match cmd.spawn() {
+    // gdigrab: stdin carries `q`; the GPU path: stdin carries the frames (EOF stops it)
+    let mut frames_in = None;
+    match &app {
+        Some(_) => {
+            let (read, write) = crate::engine::wgc::frame_pipe()?;
+            cmd.stdin(Stdio::from(read));
+            frames_in = Some(write);
+        }
+        None => {
+            cmd.stdin(Stdio::piped());
+        }
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let spawned = cmd.spawn();
+    drop(cmd); // our copy of the pipe's read end
+    let mut child = match spawned {
         // tied to the app: a crash must not leave ffmpeg recording forever (it ignores stdin closing);
         // the MKV it leaves is finished by `unfinished` + `finalize` on the next start
         Ok(c) => {
@@ -526,16 +540,13 @@ pub fn start_screen(opts: ScreenCaptureOptions) -> Result<Capture, String> {
             return Err(format!("ffmpeg: {e}"));
         }
     };
-    // gdigrab: stdin carries `q`; an application: stdin carries the frames (EOF stops it)
-    let mut stdin = child.stdin.take();
-    if let Some(a) = &app {
-        if let Some(si) = stdin.take() {
-            a.attach_encoder(si);
-        }
+    let stdin = child.stdin.take();
+    if let (Some(a), Some(w)) = (&app, frames_in) {
+        a.attach_encoder(w);
     }
     let stdout = child.stdout.take();
     match (&preview, stdout) {
-        (Some(slot), Some(out)) if app.is_none() && monitor_preview.is_none() => {
+        (Some(slot), Some(out)) if app.is_none() => {
             crate::engine::screen_grab::spawn_reader(out, slot.clone())
         }
         _ => {}
@@ -624,7 +635,7 @@ pub fn start_screen(opts: ScreenCaptureOptions) -> Result<Capture, String> {
         }
         return Err(format!("could not start the capture thread: {e}"));
     }
-    Ok(Capture { progress, child: shared, stdin, start, lead_us, graceful, taps: tap_states, app, preview, monitor_preview })
+    Ok(Capture { progress, child: shared, stdin, start, lead_us, graceful, taps: tap_states, app, preview })
 }
 
 /// Copy the taps' formats and start times into `parts`; true once every start time is known.
@@ -816,7 +827,7 @@ fn gpu_encoder(choice: &str) -> Option<String> {
 }
 
 /// ffmpeg arguments for the video half of a screen recording into a crash-safe MKV. `app` is the
-/// application frames' size (raw BGRA on stdin) for an application source.
+/// GPU path's frame size (raw NV12 on stdin from `engine::wgc`), None for gdigrab.
 pub(crate) fn video_args(o: &ScreenCaptureOptions, video: &Path, app: Option<(u32, u32)>) -> Vec<String> {
     video_args_with(o, video, app, gpu_encoder(&o.encoder))
 }
@@ -831,33 +842,50 @@ pub(crate) fn video_args_with(o: &ScreenCaptureOptions, video: &Path, app: Optio
             s("-f"),
             s("rawvideo"),
             s("-pix_fmt"),
-            s("bgra"),
+            s("nv12"),
             s("-video_size"),
             format!("{w}x{h}"),
             s("-framerate"),
             o.fps.max(1).to_string(),
             s("-use_wallclock_as_timestamps"),
             s("1"),
+            // the video processor's output; tagged on the input (tagging the output makes ffmpeg insert a
+            // conversion that costs 9x the encode)
+            s("-color_range"),
+            s("tv"),
+            s("-colorspace"),
+            s("bt709"),
+            s("-color_primaries"),
+            s("bt709"),
+            s("-color_trc"),
+            s("bt709"),
             s("-i"),
             s("pipe:0"),
         ]),
         None => a.extend(gdigrab_input(&o.source, o.fps, o.cursor)),
     }
-    // a window's client area can be any size: trim to even for yuv420p; a scale below 100 % halves etc.
-    let scale = o.scale.clamp(10, 100);
-    let vf = if scale < 100 {
-        format!("scale=trunc(iw*{scale}/200)*2:trunc(ih*{scale}/200)*2")
-    } else {
-        s("crop=trunc(iw/2)*2:trunc(ih/2)*2")
-    };
-    a.extend([s("-map"), s("0:v"), s("-vf"), vf]);
+    a.extend([s("-map"), s("0:v")]);
+    // the GPU path's frames are already NV12 at the output size (BT.709, TV range): no filter, no
+    // conversion. gdigrab's: a window's client area can be any size, so trim to even for yuv420p; a
+    // scale below 100 % halves etc.
+    let gpu = app.is_some();
+    if !gpu {
+        let scale = o.scale.clamp(10, 100);
+        let vf = if scale < 100 {
+            format!("scale=trunc(iw*{scale}/200)*2:trunc(ih*{scale}/200)*2")
+        } else {
+            s("crop=trunc(iw/2)*2:trunc(ih/2)*2")
+        };
+        a.extend([s("-vf"), vf]);
+    }
+    let yuv = if gpu { "nv12" } else { "yuv420p" };
     match hw.as_deref() {
         // zerolatency-style settings everywhere: a frame is on disk right after it is grabbed
         // (x264's default delay on a many-core CPU held every frame of a 3.5 s test recording in memory)
-        Some(e) if e.ends_with("_nvenc") => a.extend([s("-c:v"), s(e), s("-preset"), s("p4"), s("-tune"), s("ll"), s("-zerolatency"), s("1"), s("-pix_fmt"), s("yuv420p")]),
+        Some(e) if e.ends_with("_nvenc") => a.extend([s("-c:v"), s(e), s("-preset"), s("p4"), s("-tune"), s("ll"), s("-zerolatency"), s("1"), s("-pix_fmt"), s(yuv)]),
         Some(e) if e.ends_with("_qsv") => a.extend([s("-c:v"), s(e), s("-preset"), s("veryfast"), s("-look_ahead"), s("0"), s("-pix_fmt"), s("nv12")]),
-        Some(e) => a.extend([s("-c:v"), s(e), s("-usage"), s("lowlatency"), s("-pix_fmt"), s("yuv420p")]),
-        None => a.extend([s("-c:v"), s("libx264"), s("-preset"), s("veryfast"), s("-tune"), s("zerolatency"), s("-pix_fmt"), s("yuv420p")]),
+        Some(e) => a.extend([s("-c:v"), s(e), s("-usage"), s("lowlatency"), s("-pix_fmt"), s(yuv)]),
+        None => a.extend([s("-c:v"), s("libx264"), s("-preset"), s("veryfast"), s("-tune"), s("zerolatency"), s("-pix_fmt"), s(yuv)]),
     }
     if o.bitrate_kbps > 0 {
         a.extend([s("-b:v"), format!("{}k", o.bitrate_kbps)]);
@@ -1189,8 +1217,9 @@ Error opening input file dummy.
         assert!(j.contains("-c:v h264_nvenc -preset p4 -tune ll -zerolatency 1") && !j.contains("libx264"), "{j}");
     }
 
-    /// Application / game capture: WGC frames arrive as raw BGRA on stdin, stamped with the wall clock
-    /// (A/V sync as with gdigrab), the cursor comes from WGC, and the preview comes from WGC too.
+    /// The GPU path (an application, a screen): WGC frames arrive as raw NV12 on stdin, already at the
+    /// output size and BT.709, stamped with the wall clock (A/V sync as with gdigrab); ffmpeg filters
+    /// and converts nothing; the cursor and the preview come from WGC.
     #[test]
     fn app_capture_args() {
         let o = ScreenCaptureOptions {
@@ -1201,10 +1230,11 @@ Error opening input file dummy.
         };
         let j = joined(&video_args_with(&o, Path::new("v.mkv"), Some((1920, 1080)), None));
         assert!(
-            j.contains("-f rawvideo -pix_fmt bgra -video_size 1920x1080 -framerate 60 -use_wallclock_as_timestamps 1 -i pipe:0"),
+            j.contains("-f rawvideo -pix_fmt nv12 -video_size 1920x1080 -framerate 60 -use_wallclock_as_timestamps 1 -color_range tv -colorspace bt709 -color_primaries bt709 -color_trc bt709 -i pipe:0"),
             "{j}"
         );
-        assert!(!j.contains("gdigrab"), "{j}");
+        assert!(!j.contains("gdigrab") && !j.contains("-vf") && !j.contains("yuv420p"), "{j}");
+        assert!(j.contains("-c:v libx264 -preset veryfast -tune zerolatency -pix_fmt nv12"), "{j}");
         assert!(j.ends_with("-f matroska v.mkv"), "no stdout preview output for an app (WGC previews it): {j}");
         assert_eq!(o.sources(), (true, false, None), "no tracks set: one All audio track = system audio");
         let o = ScreenCaptureOptions { tracks: default_tracks(), ..o };
@@ -1375,7 +1405,8 @@ Error opening input file dummy.
         let fps = (slot.generation() - g0) as f64 / 2.0;
         assert!(fps >= 20.0, "{fps} preview fps while recording");
         let (f, _) = slot.frame().unwrap();
-        assert_eq!(f.size, [crate::engine::screen_grab::PW, crate::engine::screen_grab::PH]);
+        // a region inside a screen previews through WGC: the GPU-halved crop (640x360 -> 320x180)
+        assert_eq!(f.size, [320, 180]);
         // pause: no frames are stored, the recording goes on
         slot.wanted.store(false, Ordering::Relaxed);
         std::thread::sleep(Duration::from_millis(200));
@@ -1586,5 +1617,66 @@ Error opening input file dummy.
     fn empty_inputs_are_refused() {
         assert!(start_voiceover(VoiceoverOptions::default()).is_err());
         assert!(start_screen(ScreenCaptureOptions::default()).is_err());
+    }
+
+    /// Measure a full-screen recording of the primary monitor: CPU of this process + ffmpeg (needs
+    /// `SE_BENCH_CPU` = cpu.ps1), recorded fps and preview fps. `SE_BENCH_ENC` = x264 / gpu.
+    /// `cargo test --lib record_bench -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn record_bench() {
+        use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+        let Some(dir) = test_dir("bench") else { return };
+        let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN) as u32, GetSystemMetrics(SM_CYSCREEN) as u32) };
+        let out = dir.join("bench.mp4");
+        let enc = std::env::var("SE_BENCH_ENC").unwrap_or_else(|_| "gpu".into());
+        let t = Instant::now();
+        let cap = start_screen(ScreenCaptureOptions {
+            out: out.clone(),
+            fps: 60,
+            source: CaptureSource::Region(0, 0, w, h),
+            audio: AudioMode::None,
+            encoder: enc.clone(),
+            preview: true,
+            ..Default::default()
+        })
+        .expect("start");
+        let p = cap.progress();
+        wait_recording(&p);
+        let slot = cap.preview().expect("preview");
+        std::thread::sleep(Duration::from_secs(2));
+        let g0 = slot.generation();
+        let t0 = Instant::now();
+        let cpu = std::env::var("SE_BENCH_CPU").ok().map(|script| {
+            let o = std::process::Command::new("powershell")
+                .args(["-NoProfile", "-File", &script, "-Root", &std::process::id().to_string(), "-Seconds", "8"])
+                .output()
+                .expect("powershell");
+            String::from_utf8_lossy(&o.stdout).trim().to_string()
+        });
+        if cpu.is_none() {
+            std::thread::sleep(Duration::from_secs(8));
+        }
+        let preview_fps = (slot.generation() - g0) as f64 / t0.elapsed().as_secs_f64();
+        let wall = t.elapsed().as_secs_f64();
+        cap.stop();
+        wait_done(&p);
+        assert!(p.error().is_none(), "{:?}", p.error());
+        let probe = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames:format=duration", "-of", "csv=p=0"])
+            .arg(&out)
+            .output()
+            .expect("ffprobe");
+        let txt = String::from_utf8_lossy(&probe.stdout).into_owned();
+        let nums: Vec<f64> = txt.split(|c: char| c.is_whitespace() || c == ',').filter_map(|x| x.parse().ok()).collect();
+        let (frames, dur) = (nums.first().copied().unwrap_or(0.0), nums.get(1).copied().unwrap_or(1.0));
+        println!(
+            "BENCH {enc} {w}x{h}@60: cpu [{}] | recorded {frames} frames / {dur:.2} s = {:.1} fps (wall {wall:.1} s) | preview {preview_fps:.1} fps",
+            cpu.unwrap_or_default(),
+            frames / dur
+        );
+        if std::env::var_os("SE_BENCH_KEEP").is_none() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 }

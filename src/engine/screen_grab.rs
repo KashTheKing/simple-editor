@@ -103,19 +103,19 @@ impl Preview {
     pub fn start(source: CaptureSource, cursor: bool) -> Option<Preview> {
         let slot = FrameSlot::new(true);
         let mut p = Preview { source: source.clone(), cursor, slot: slot.clone(), child: None, app: None };
-        // a whole monitor previews through WGC too: the GPU halves it, so a 1440p screen at 30 fps costs
-        // what a 480 px frame costs (a gdigrab preview of it took ~80 % of a core)
+        // a screen (or a region inside one) previews through WGC too: the GPU crops and halves it, so a
+        // 1440p screen at 30 fps costs what a 480 px frame costs (a gdigrab preview took ~80 % of a core)
+        use crate::engine::wgc::{AppCapture, Target};
         let monitor = match &source {
-            CaptureSource::Region(x, y, w, h) => crate::engine::wgc::monitor_at([*x, *y, *w as i32, *h as i32]),
+            CaptureSource::Region(x, y, w, h) => crate::engine::wgc::monitor_holding([*x, *y, *w as i32, *h as i32]),
             _ => None,
         };
         match (&source, monitor) {
-            (_, Some(m)) => {
-                use crate::engine::wgc::{AppCapture, Target};
-                p.app = AppCapture::start_target(Target::Monitor(m), cursor, PREVIEW_FPS, slot).ok();
+            (_, Some((m, crop))) => {
+                p.app = AppCapture::preview(Target::Monitor(m), Some(crop), cursor, PREVIEW_FPS, slot).ok();
             }
             (CaptureSource::App { hwnd, .. }, _) => {
-                p.app = crate::engine::wgc::AppCapture::start(*hwnd, cursor, PREVIEW_FPS, slot).ok();
+                p.app = AppCapture::preview(Target::Window(*hwnd), None, cursor, PREVIEW_FPS, slot).ok();
             }
             _ => {
                 let exe = ffpipe::ffmpeg_exe()?;
@@ -208,7 +208,7 @@ mod tests {
         assert!(j.contains("pad=480:270") && j.ends_with("-fps_mode passthrough -f rawvideo -flush_packets 1 pipe:1"), "{j}");
     }
 
-    /// Real gdigrab (skips without ffmpeg): the idle preview runs at about 30 fps; with `wanted` off it
+    /// A region inside a screen (WGC; gdigrab where WGC fails): the idle preview runs at about 30 fps; with `wanted` off it
     /// stores nothing at all, and it picks up again when someone looks.
     #[test]
     fn idle_preview_is_live_and_pauses() {
@@ -230,7 +230,8 @@ mod tests {
         std::thread::sleep(Duration::from_millis(500));
         assert!(p.slot.generation() > g1, "unpaused: frames again");
         let (f, _) = p.slot.frame().unwrap();
-        assert_eq!(f.size, [PW, PH]);
+        // a region inside a screen previews through WGC: the GPU-halved crop (640x360 -> 320x180)
+        assert_eq!(f.size, [320, 180]);
     }
     /// A small window in the top-left corner whose colour the bench flips (white <-> black).
     struct Flash {
@@ -357,7 +358,7 @@ mod tests {
         report("screen (ffmpeg gdigrab, 30 fps)", &p.slot, &flash);
         drop(p);
         let slot = FrameSlot::new(true);
-        let app = crate::engine::wgc::AppCapture::start(flash.hwnd.0 as isize, true, PREVIEW_FPS, slot.clone()).expect("wgc");
+        let app = crate::engine::wgc::AppCapture::preview(crate::engine::wgc::Target::Window(flash.hwnd.0 as isize), None, true, PREVIEW_FPS, slot.clone()).expect("wgc");
         std::thread::sleep(std::time::Duration::from_millis(500));
         report("application (WGC, 30 fps)", &slot, &flash);
         drop(app);
