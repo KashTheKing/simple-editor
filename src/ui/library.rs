@@ -195,6 +195,11 @@ pub struct LibraryResponse {
     // ---- ws:audio-visualizer ----
     /// Audio assets to place at the playhead, each with a linked visualizer layer.
     pub add_with_visualizer: Vec<Id>,
+    // ---- ws:player-metadata ----
+    /// Apply metadata preset (index into `Settings::metadata_presets`) to these assets' files.
+    pub metadata_preset: Option<(Vec<Id>, usize)>,
+    /// Open Settings ▸ Metadata.
+    pub metadata_settings: bool,
     /// Template names to place at the playhead.
     pub place_template: Vec<String>,
     /// The user asked to import media from a URL (the app opens the Import URL window).
@@ -3062,6 +3067,20 @@ impl Tree<'_, '_> {
             {
                 self.state.info = Some(Pick::Asset(a.id));
             }
+            // ---- ws:player-metadata ----
+            menu::sub(ui, None, "Apply metadata preset", |ui| {
+                for (n, p) in self.settings.metadata_presets.iter().enumerate() {
+                    if menu::row(ui, None, &p.name, "").clicked() {
+                        self.resp.metadata_preset = Some((ids.clone(), n));
+                    }
+                }
+                if !self.settings.metadata_presets.is_empty() {
+                    ui.separator();
+                }
+                if menu::row(ui, None, "Metadata presets…", "").clicked() {
+                    self.resp.metadata_settings = true;
+                }
+            });
             match label_menu(ui, a.label, labels, palette) {
                 Some(LabelPick::Set(l)) => {
                     for id in &ids {

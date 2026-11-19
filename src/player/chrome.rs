@@ -48,10 +48,12 @@ pub mod icon {
     pub const INFO: char = '\u{E946}';
     pub const CHECK: char = '\u{E73E}';
     pub const CONVERT: char = '\u{E8AB}'; // Switch
-    pub const ALL: [char; 30] = [
+    pub const UPSCALE: char = '\u{E740}'; // FullScreen arrows: bigger
+    pub const TAG: char = '\u{E8EC}'; // Tag
+    pub const ALL: [char; 32] = [
         EDIT, SHUFFLE, PREVIOUS, NEXT, PLAY, PAUSE, BACK10, FORWARD30, REPEAT_ALL, LOOP, CAPTIONS, VOLUME[0], VOLUME[1],
         VOLUME[2], VOLUME[3], MUTE, FULLSCREEN, EXIT_FULLSCREEN, MINI, UNMINI, MORE, MINIMIZE, MAXIMIZE, RESTORE, CLOSE, MUSIC,
-        FOLDER, INFO, CHECK, CONVERT,
+        FOLDER, INFO, CHECK, CONVERT, UPSCALE, TAG,
     ];
 }
 
@@ -231,6 +233,15 @@ fn scrubber(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect, t: f64,
             let img_r = Rect::from_min_size(card.min + vec2(4.0, 4.0), img);
             p.image(id, img_r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             p.galley(pos2(card.center().x - g.size().x / 2.0, img_r.bottom() + 4.0), g, pal.text);
+        } else if app.strip.as_ref().is_some_and(|s| !s.done()) {
+            // the thumbnail is not made yet: its card, loading
+            let aspect = app.info.as_ref().filter(|i| i.size.0 > 0).map_or(9.0 / 16.0, |i| i.size.1 as f32 / i.size.0 as f32);
+            let img = vec2(176.0, 176.0 * aspect);
+            let card = place(img + vec2(8.0, 8.0 + g.size().y + 6.0));
+            p.rect(card, radius(ui), pal.panel, Stroke::new(1.0, pal.border), egui::StrokeKind::Inside);
+            let img_r = Rect::from_min_size(card.min + vec2(4.0, 4.0), img);
+            shimmer(ui, img_r, pal);
+            p.galley(pos2(card.center().x - g.size().x / 2.0, img_r.bottom() + 4.0), g, pal.text);
         } else {
             let box_ = place(g.size() + vec2(12.0, 6.0));
             p.rect(box_, radius(ui), pal.panel, Stroke::new(1.0, pal.border), egui::StrokeKind::Inside);
@@ -274,12 +285,19 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
             // the video processor scales to exactly the pixels the picture covers
             let target = app.zoom.place(full, size, ppp);
             let px = |v: f32| ((v * ppp).round() as u32).clamp(16, 7680) & !1;
+            // a picked resolution caps it: the decoder (or GPU video processor) scales down to it, GL
+            // stretches that over the picture
+            let cap = super::capped(size, app.res);
             if app.zoom == Zoom::Original {
-                app.engine.set_output_size(size.0, size.1);
+                app.engine.set_output_size(cap.0, cap.1);
             } else {
-                app.engine.set_output_size(px(target.width()), px(target.height()));
+                let (w, h) = (px(target.width()), px(target.height()));
+                let (w, h) = if w > cap.0 || h > cap.1 { super::capped((w, h), Some(cap.1.min(h))) } else { (w, h) };
+                app.engine.set_output_size(w.min(cap.0), h);
             }
         }
+        // songs: the cover (loading: a placeholder), else - no cover, or Visualizer picked - the visualizer
+        Some((false, _)) if app.song_shows_visualizer() => visualizer_view(app, ui, full),
         Some((false, _)) => audio_view(app, ui, pal, full, mini),
         None => {}
     }
@@ -301,6 +319,24 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
     if mini && surface.drag_started() {
         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
+    // right-click: the menu (the editor's rows)
+    crate::ui::menu::context(&surface, |ui| super::panels::context_menu(app, ui, &ctx));
+    if let Some(at) = app.shot_menu {
+        // the same popup a right-click opens, held open for the picture
+        egui::Popup::new(egui::Id::new("player-shot-menu"), ctx.clone(), egui::PopupAnchor::Position(at), ui.layer_id())
+            .kind(egui::PopupKind::Menu)
+            .layout(egui::Layout::top_down_justified(egui::Align::Min))
+            .open(true)
+            .show(|ui| {
+                egui::containers::menu::menu_style(ui.style_mut());
+                super::panels::context_menu(app, ui, &ctx)
+            });
+    }
+    let menu_open = egui::Popup::is_any_open(&ctx) || app.shot_menu.is_some();
+    if menu_open && !app.symbols {
+        app.symbols = true; // a submenu's arrow: Segoe UI Symbol, read only now
+        crate::theme::add_symbols(&ctx);
+    }
 
     // ---- auto-hide
     let top = Rect::from_min_size(full.min, vec2(full.width(), TOP_H));
@@ -318,7 +354,15 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
         // paused, over the controls, or a sound file (nothing to uncover): the controls stay up
         keep: over_chrome || !app.engine.is_playing() || app.info.as_ref().is_some_and(|i| !i.has_video),
         // (`SE_PLAYER_SHOT` pictures the controls: they hold for it)
-        hold: app.flyout.is_some() || app.scrub.is_some() || app.info_open || app.shot.is_some() || app.renaming.is_some() || app.convert.is_some(),
+        hold: app.flyout.is_some()
+            || app.scrub.is_some()
+            || app.info_open
+            || app.shot.is_some()
+            || app.renaming.is_some()
+            || app.convert.is_some()
+            || app.upscale.is_some()
+            || app.meta.is_some()
+            || menu_open,
         // a click on the picture, not on a bar (the bars are drawn over `surface`)
         dismiss: clicked && !over_chrome,
     };
@@ -344,6 +388,8 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
     }
     flyouts(app, &ctx, pal, full);
     convert_window(app, &ctx, pal);
+    super::panels::upscale_window(app, &ctx, pal);
+    super::panels::metadata_window(app, &ctx, pal);
     toast(app, &ctx, pal, full, out.opacity > 0.0 && !mini);
     if app.info_open {
         info_window(app, &ctx, pal);
@@ -517,8 +563,10 @@ fn visualizer_view(app: &mut PlayerApp, ui: &mut Ui, full: Rect) {
     let mut f = [0f32; 1 + crate::engine::visualizer::BANDS];
     f[0] = peak;
     f[1..].copy_from_slice(&b);
-    app.orb.show_frame(f, app.engine.time());
-    app.orb.paint(ui.painter(), full, &app.viz.1);
+    // the look picked in ⋯ ▸ Visualizer: how far it moves, and the style's own params
+    app.orb.show_frame(app.vis_look.shape(f), app.engine.time());
+    let style = crate::engine::visualizer::last_used(&app.viz.0).name;
+    app.orb.paint_with(ui.painter(), full, &app.viz.1, app.vis_look.params.get(&style));
     if app.engine.is_playing() {
         ui.ctx().request_repaint();
     }
@@ -527,7 +575,11 @@ fn visualizer_view(app: &mut PlayerApp, ui: &mut Ui, full: Rect) {
 /// The message at the bottom (rename, convert); a converted file gets Open / Open Folder / Add to
 /// Project. A running conversion shows its progress and Cancel here too.
 fn toast(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette, full: Rect, chrome_up: bool) {
-    let running = app.convert_job.as_ref().map(|j| (j.progress.clone(), j.progress.fraction()));
+    let running = app
+        .convert_job
+        .as_ref()
+        .map(|j| ("Converting", j.progress.clone(), j.progress.fraction()))
+        .or_else(|| app.upscale_job.as_ref().map(|j| ("Upscaling", j.progress.clone(), j.progress.fraction())));
     if app.toast.is_none() && running.is_none() {
         return;
     }
@@ -538,9 +590,9 @@ fn toast(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette, full: Rect, ch
         .fixed_pos(pos2(full.center().x, bottom))
         .show(ctx, |ui| {
             flyout_frame(pal, ctx).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
-                if let Some((prog, k)) = &running {
+                if let Some((what, prog, k)) = &running {
                     ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("Converting").color(pal.text));
+                        ui.label(egui::RichText::new(*what).color(pal.text));
                         ui.add(egui::ProgressBar::new(*k).desired_width(180.0).fill(pal.accent));
                         if ui.button("Cancel").clicked() {
                             prog.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -769,7 +821,7 @@ fn mini_chrome(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, full: Rect) {
     scrub(app, &r, at);
 }
 
-fn flyout_frame(pal: &Palette, ctx: &egui::Context) -> egui::Frame {
+pub(super) fn flyout_frame(pal: &Palette, ctx: &egui::Context) -> egui::Frame {
     egui::Frame::NONE
         .fill(pal.panel)
         .corner_radius(ctx.style().visuals.window_corner_radius)
@@ -795,13 +847,13 @@ fn flyout_row(ui: &mut Ui, pal: &Palette, check: Option<bool>, c: Option<char>, 
     r
 }
 
-fn heading(ui: &mut Ui, pal: &Palette, s: &str) {
+pub(super) fn heading(ui: &mut Ui, pal: &Palette, s: &str) {
     ui.add_space(4.0);
     ui.label(egui::RichText::new(s).size(12.0).color(pal.text_dim));
 }
 
 /// A row of choice chips (playback speed, zoom); returns the index clicked.
-fn chips(ui: &mut Ui, pal: &Palette, labels: &[String], on: usize) -> Option<usize> {
+pub(super) fn chips(ui: &mut Ui, pal: &Palette, labels: &[String], on: usize) -> Option<usize> {
     let mut hit = None;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
@@ -841,12 +893,13 @@ fn flyouts(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette, full: Rect) 
         .show(ctx, |ui| {
             flyout_frame(pal, ctx).show(ui, |ui| {
                 ui.set_width(width - 12.0);
-                match f {
+                // taller than the room above the bar (More with the visualizer's controls): it scrolls
+                egui::ScrollArea::vertical().max_height((anchor.top() - full.top() - 28.0).max(120.0)).show(ui, |ui| match f {
                     Flyout::Speed => speed_flyout(app, ui, pal),
                     Flyout::Tracks => tracks_flyout(app, ui, pal),
                     Flyout::Volume => volume_flyout(app, ui, pal),
                     Flyout::More => more_flyout(app, ui, pal),
-                }
+                });
             });
         });
     // a press anywhere else closes it
@@ -926,12 +979,21 @@ fn tracks_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
 }
 
 fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
-    if app.info.as_ref().is_some_and(|i| i.has_video) && !app.engine.audio_only() {
+    let has_video = app.info.as_ref().is_some_and(|i| i.has_video);
+    if has_video && !app.engine.audio_only() {
         heading(ui, pal, "Zoom");
         let labels: Vec<String> = Zoom::ALL.iter().map(|z| z.label().to_string()).collect();
         let on = Zoom::ALL.iter().position(|z| *z == app.zoom).unwrap_or(0);
         if let Some(i) = chips(ui, pal, &labels, on) {
             app.zoom = Zoom::ALL[i];
+        }
+        heading(ui, pal, "Resolution");
+        let opts = app.res_options();
+        let mut labels = vec!["Auto".to_string()];
+        labels.extend(opts.iter().map(|h| format!("{h}p")));
+        let on = app.res.and_then(|r| opts.iter().position(|h| *h == r)).map_or(0, |i| i + 1);
+        if let Some(i) = chips(ui, pal, &labels, on) {
+            app.set_resolution(if i == 0 { None } else { Some(opts[i - 1]) });
         }
     }
     ui.add_space(6.0);
@@ -943,23 +1005,36 @@ fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
     }
     ui.separator();
     if app.info.as_ref().is_some_and(|i| !i.audio_streams.is_empty()) {
-        let ao = app.engine.audio_only();
-        if flyout_row(ui, pal, Some(ao), None, "Audio Only").clicked() {
-            app.set_audio_only(!ao);
-        }
-        if ao {
-            heading(ui, pal, "Visualizer");
-            let cur = crate::engine::visualizer::last_used(&app.viz.0).name;
-            for name in crate::engine::visualizer::style_names() {
-                if flyout_row(ui, pal, Some(name == cur), None, &name).clicked() {
-                    app.set_visualizer(&name);
-                }
+        let showing = if has_video {
+            let ao = app.engine.audio_only();
+            if flyout_row(ui, pal, Some(ao), None, "Audio Only").clicked() {
+                app.set_audio_only(!ao);
             }
+            ao
+        } else {
+            // songs show their cover; the visualizer when asked for (or when there is no cover)
+            let viz = app.song_viz;
+            if flyout_row(ui, pal, Some(viz), None, "Visualizer").clicked() {
+                app.set_song_visualizer(!viz);
+            }
+            app.song_shows_visualizer()
+        };
+        if showing {
+            super::panels::visualizer_controls(app, ui, pal);
         }
         ui.separator();
     }
     if flyout_row(ui, pal, None, Some(icon::CONVERT), "Convert…").clicked() {
         app.convert = Some(Default::default());
+        app.flyout = None;
+    }
+    if flyout_row(ui, pal, None, Some(icon::UPSCALE), "Upscale…").clicked() {
+        app.upscale = Some(Default::default());
+        app.flyout = None;
+    }
+    if flyout_row(ui, pal, None, Some(icon::TAG), "Properties / Metadata…").clicked() {
+        let ctx = ui.ctx().clone();
+        app.open_metadata(&ctx);
         app.flyout = None;
     }
     if flyout_row(ui, pal, None, Some(icon::INFO), "Media info").clicked() {
@@ -1017,46 +1092,98 @@ fn info_window(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette) {
     }
 }
 
-/// Audio files: the cover (or a note on an accent tile), the title, and a bar visualizer.
+/// Songs: the cover large and centred over a dark, blurred copy of itself, the title under it; while it
+/// loads, a shimmering placeholder (never a blank, then a pop).
 fn audio_view(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, full: Rect, mini: bool) {
     let p = ui.painter().clone();
-    vgrad(&p, full, pal.bg, lerp(pal.bg, Color32::BLACK, 0.6));
-    let side = (full.height() * if mini { 0.55 } else { 0.42 }).min(full.width() * 0.5).max(48.0);
-    let art = Rect::from_center_size(pos2(full.center().x, full.top() + full.height() * 0.38), vec2(side, side));
+    p.rect_filled(full, 0.0, Color32::BLACK);
+    let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+    let room = full.shrink2(vec2(24.0, if mini { 12.0 } else { TOP_H + 8.0 }));
+    let room = if mini { room } else { Rect::from_min_max(room.min, pos2(room.max.x, full.bottom() - BOTTOM_H - 40.0)) };
+    // (room for the title under it)
+    let side = (room.height() - if mini { 0.0 } else { 44.0 }).min(room.width()).max(48.0);
+    let room = room.translate(vec2(0.0, if mini { 0.0 } else { -22.0 }));
+    let art = Rect::from_center_size(room.center(), vec2(side, side));
     match &app.cover {
         Some(c) => {
+            if let Some(bg) = &app.cover_bg {
+                // fill the window (cropped to its aspect), darkened
+                let (s, w) = (bg.size_vec2(), full.size());
+                let k = (w.x / s.x).max(w.y / s.y);
+                p.image(bg.id(), Rect::from_center_size(full.center(), s * k), uv, Color32::from_gray(90));
+            }
             let s = c.size_vec2();
             let k = (side / s.x).min(side / s.y);
-            p.image(c.id(), Rect::from_center_size(art.center(), s * k), Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            let r = Rect::from_center_size(art.center(), s * k);
+            p.rect_filled(r.expand(1.0).translate(vec2(0.0, 6.0)), 6.0, Color32::from_black_alpha(110));
+            p.image(c.id(), r, uv, Color32::WHITE);
         }
-        None => {
-            vgrad(&p, art, pal.accent, lerp(pal.accent, Color32::BLACK, 0.45));
-            glyph(&p, art.center(), icon::MUSIC, side * 0.4, on_accent(pal.accent));
-        }
+        None => shimmer(ui, art, pal),
     }
     if mini {
         return;
     }
-    p.text(pos2(full.center().x, art.bottom() + 28.0), Align2::CENTER_CENTER, app.title(), FontId::proportional(22.0), pal.text);
-    // visualizer: log-spaced bands of the last output samples, falling back slowly
-    let tap = app.engine.tap();
-    let n = 48;
-    if app.bars.len() != n {
-        app.bars = vec![0.0; n];
+    let title = p.layout_no_wrap(app.title(), FontId::proportional(20.0), Color32::WHITE);
+    let at = pos2(full.center().x - title.size().x / 2.0, art.bottom() + 14.0);
+    if at.y + title.size().y < full.bottom() - BOTTOM_H {
+        p.galley(at, title, Color32::WHITE);
     }
-    let fresh = bands(&tap, n);
-    for (b, f) in app.bars.iter_mut().zip(fresh) {
-        *b = if app.engine.is_playing() { f.max(*b * 0.82) } else { *b * 0.82 };
+}
+
+/// A loading placeholder: a soft tile with a light band sweeping across it, and a small spinner.
+pub(super) fn shimmer(ui: &Ui, rect: Rect, pal: &Palette) {
+    let p = ui.painter();
+    let t = ui.input(|i| i.time) as f32;
+    p.rect_filled(rect, 8.0, pal.text.gamma_multiply(0.07));
+    let w = rect.width() * 0.35;
+    let x = rect.left() - w + (rect.width() + w) * ((t * 0.6) % 1.0);
+    let band = Rect::from_min_max(pos2(x.max(rect.left()), rect.top()), pos2((x + w).min(rect.right()), rect.bottom()));
+    if band.width() > 0.0 {
+        let mut m = egui::Mesh::default();
+        let (clear, lit) = (Color32::TRANSPARENT, pal.text.gamma_multiply(0.08));
+        let mid = band.center().x;
+        for (a, b, ca, cb) in [(band.left(), mid, clear, lit), (mid, band.right(), lit, clear)] {
+            let i = m.vertices.len() as u32;
+            m.colored_vertex(pos2(a, band.top()), ca);
+            m.colored_vertex(pos2(b, band.top()), cb);
+            m.colored_vertex(pos2(a, band.bottom()), ca);
+            m.colored_vertex(pos2(b, band.bottom()), cb);
+            m.add_triangle(i, i + 1, i + 2);
+            m.add_triangle(i + 1, i + 3, i + 2);
+        }
+        p.add(m);
     }
-    let base = full.bottom() - BOTTOM_H - 12.0;
-    let w = (full.width() * 0.6).min(720.0);
-    let bw = w / n as f32;
-    let x0 = full.center().x - w / 2.0;
-    for (i, b) in app.bars.iter().enumerate() {
-        let h = (b * 90.0).clamp(2.0, 90.0);
-        let r = Rect::from_min_max(pos2(x0 + i as f32 * bw + 1.0, base - h), pos2(x0 + (i + 1) as f32 * bw - 1.0, base));
-        p.rect_filled(r, 1.5, pal.accent.gamma_multiply(0.85));
+    let c = rect.center();
+    let r = (rect.width().min(rect.height()) * 0.06).clamp(6.0, 14.0);
+    let a0 = t * 4.0;
+    let pts: Vec<Pos2> = (0..=24).map(|k| a0 + k as f32 / 24.0 * 4.5).map(|a| c + vec2(a.cos(), a.sin()) * r).collect();
+    p.add(egui::Shape::line(pts, Stroke::new(2.0, pal.text_dim)));
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+}
+
+/// `img` shrunk to `w` wide (box average) - the cover's blurred backdrop.
+pub fn shrink(img: &egui::ColorImage, w: usize) -> egui::ColorImage {
+    let [sw, sh] = img.size;
+    let w = w.min(sw).max(1);
+    let h = (sh * w / sw.max(1)).max(1);
+    let mut px = Vec::with_capacity(w * h);
+    for y in 0..h {
+        for x in 0..w {
+            let (x0, x1, y0, y1) = (x * sw / w, ((x + 1) * sw / w).max(x * sw / w + 1), y * sh / h, ((y + 1) * sh / h).max(y * sh / h + 1));
+            let mut acc = [0u32; 4];
+            for yy in y0..y1.min(sh) {
+                for xx in x0..x1.min(sw) {
+                    let c = img.pixels[yy * sw + xx];
+                    for (a, v) in acc.iter_mut().zip(c.to_array()) {
+                        *a += v as u32;
+                    }
+                }
+            }
+            let n = ((y1.min(sh) - y0) * (x1.min(sw) - x0)).max(1) as u32;
+            px.push(Color32::from_rgba_premultiplied((acc[0] / n) as u8, (acc[1] / n) as u8, (acc[2] / n) as u8, (acc[3] / n) as u8));
+        }
     }
+    egui::ColorImage { size: [w, h], pixels: px, source_size: vec2(w as f32, h as f32) }
 }
 
 /// Magnitudes (0..1) of `n` log-spaced frequency bands of `x` (a small DFT: 512 samples x n bins).

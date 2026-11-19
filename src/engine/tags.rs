@@ -30,13 +30,16 @@ const fn f(key: &'static str, label: &'static str, audio: bool, video: bool, mul
 /// Every field, in Inspector order.
 pub const FIELDS: &[Field] = &[
     f("title", "Title", true, true, false),
-    f("artist", "Artist", true, false, false),
+    // a video's "Authors" in Explorer (ws:player-metadata)
+    f("artist", "Artist", true, true, false),
     f("album", "Album", true, false, false),
     f("album_artist", "Album artist", true, false, false),
     f("genre", "Genre", true, true, false),
     f("date", "Year", true, false, false),
     f("track", "Track", true, false, false),
     f("disc", "Disc", true, false, false),
+    f("composer", "Composer", true, false, false),
+    f("copyright", "Copyright", true, true, false),
     f("description", "Description", false, true, true),
     f("rating", "Rating", false, true, false),
     f("comment", "Comment", true, true, true),
@@ -83,11 +86,14 @@ pub enum CoverEdit {
 pub struct TagEdit {
     pub set: BTreeMap<String, String>,
     pub cover: CoverEdit,
+    /// Drop every tag the file holds first (ours and any other: encoder, chapters' titles ...); `set`
+    /// then writes only what it lists.
+    pub clear: bool,
 }
 
 impl TagEdit {
     pub fn is_empty(&self) -> bool {
-        self.set.is_empty() && self.cover == CoverEdit::Keep
+        self.set.is_empty() && self.cover == CoverEdit::Keep && !self.clear
     }
 }
 
@@ -96,7 +102,7 @@ fn canonical(key: &str) -> Option<&'static str> {
     let k = key.to_ascii_lowercase();
     Some(match k.as_str() {
         "title" => "title",
-        "artist" => "artist",
+        "artist" | "author" => "artist",
         "album" => "album",
         "album_artist" | "albumartist" | "album artist" => "album_artist",
         "genre" => "genre",
@@ -104,6 +110,8 @@ fn canonical(key: &str) -> Option<&'static str> {
         "track" | "tracknumber" => "track",
         "disc" | "discnumber" => "disc",
         "comment" => "comment",
+        "composer" => "composer",
+        "copyright" => "copyright",
         "description" | "desc" | "synopsis" => "description",
         "rating" => "rating",
         _ if k == "lyrics" || k.starts_with("lyrics-") || k == "unsyncedlyrics" || k == "uslt" => "lyrics",
@@ -203,7 +211,7 @@ impl Container {
         match (self, key) {
             (Container::Mp4, "rating") => false,
             (Container::Flac | Container::Ogg, "description") => false,
-            (Container::Wav, "lyrics" | "rating" | "description" | "album_artist" | "disc") => false,
+            (Container::Wav, "lyrics" | "rating" | "description" | "album_artist" | "disc" | "composer") => false,
             _ => true,
         }
     }
@@ -229,7 +237,13 @@ pub fn write_args(c: Container, cur: &MediaTags, edit: &TagEdit, cover_input: bo
     if new_cover && cover_input {
         a.extend([s("-map"), s("1:v:0")]);
     }
-    a.extend([s("-c"), s("copy"), s("-map_metadata"), s("0")]);
+    a.extend([s("-c"), s("copy")]);
+    if edit.clear {
+        // nothing carried over: file, stream and chapter tags, and no "encoder" written either
+        a.extend([s("-map_metadata"), s("-1"), s("-map_metadata:s"), s("-1"), s("-map_chapters"), s("-1"), s("-fflags"), s("+bitexact")]);
+    } else {
+        a.extend([s("-map_metadata"), s("0")]);
+    }
     if new_cover && cover_input {
         let n = cur.video_streams; // the cover's index among the output's video streams
         a.extend([format!("-disposition:v:{n}"), s("attached_pic")]);
@@ -451,6 +465,187 @@ pub fn merged(all: &[&MediaTags]) -> BTreeMap<&'static str, Option<String>> {
     out
 }
 
+// ---- ws:player-metadata ----
+/// Explorer's "Tags" column / Details ▸ Tags: `System.Keywords`, read and written through Windows' own
+/// property handlers (what Explorer itself uses - an ffmpeg `keywords` tag is not what it reads). The
+/// formats that hold them (`keywords_writable`): M4A / MP4 / M4V / MOV and WMA / WMV. Measured on Windows
+/// 11: MP3's handler says "writable" but refuses every commit (Explorer offers no Tags for MP3 either),
+/// FLAC's says "writable" and drops them silently, WAV / MKV / Ogg have no handler that writes them -
+/// so the handler's word is checked against this list, and a write is read back.
+mod keywords {
+    use std::path::Path;
+    use windows::core::{HSTRING, PCWSTR, PWSTR};
+    use windows::Win32::Foundation::PROPERTYKEY;
+    use windows::Win32::System::Com::StructuredStorage::{InitPropVariantFromStringVector, PropVariantClear, PropVariantToStringVectorAlloc};
+    use windows::Win32::System::Com::CoTaskMemFree;
+    use windows::Win32::UI::Shell::PropertiesSystem::{IPropertyStore, IPropertyStoreCapabilities, SHGetPropertyStoreFromParsingName, GPS_DEFAULT, GPS_READWRITE};
+
+    /// `PKEY_Keywords` (Windows SDK propkey.h).
+    const KEY: PROPERTYKEY = PROPERTYKEY { fmtid: windows::core::GUID::from_u128(0xf29f85e0_4ff9_1068_ab91_08002b27b3d9), pid: 5 };
+
+    /// Run `f` on a thread of its own in a single-threaded apartment: the shell's property handlers are
+    /// apartment-threaded (in the MTA a commit came back "Access Denied").
+    fn on_sta<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::spawn(move || {
+            use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+            let ok = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+            let out = f();
+            if ok {
+                unsafe { CoUninitialize() };
+            }
+            out
+        })
+        .join()
+        .expect("property thread")
+    }
+
+    fn store(path: &Path, write: bool) -> Result<IPropertyStore, String> {
+        let p = HSTRING::from(path.as_os_str());
+        unsafe { SHGetPropertyStoreFromParsingName(&p, None, if write { GPS_READWRITE } else { GPS_DEFAULT }) }
+            .map_err(|e| format!("{}: {}", path.display(), e.message()))
+    }
+
+    pub fn read(path: &Path) -> Result<Vec<String>, String> {
+        let path = path.to_path_buf();
+        on_sta(move || read_sta(&path))
+    }
+
+    fn read_sta(path: &Path) -> Result<Vec<String>, String> {
+        let st = store(path, false)?;
+        unsafe {
+            let mut v = st.GetValue(&KEY).map_err(|e| e.message())?;
+            let (mut arr, mut n): (*mut PWSTR, u32) = (std::ptr::null_mut(), 0);
+            let ok = PropVariantToStringVectorAlloc(&v, &mut arr, &mut n).is_ok();
+            let _ = PropVariantClear(&mut v);
+            let mut out = Vec::new();
+            if ok && !arr.is_null() {
+                for i in 0..n as usize {
+                    let w = *arr.add(i);
+                    out.push(w.to_string().unwrap_or_default());
+                    CoTaskMemFree(Some(w.0 as *const _));
+                }
+                CoTaskMemFree(Some(arr as *const _));
+            }
+            Ok(out)
+        }
+    }
+
+    /// The file's property handler can write `System.Keywords`.
+    pub fn writable(path: &Path) -> bool {
+        let path = path.to_path_buf();
+        on_sta(move || writable_sta(&path))
+    }
+
+    /// The extensions whose Windows handler keeps them.
+    pub const FORMATS: &[&str] = &["m4a", "mp4", "m4v", "mov", "wma", "wmv"];
+
+    fn writable_sta(path: &Path) -> bool {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !FORMATS.contains(&ext.as_str()) {
+            return false;
+        }
+        let Ok(st) = store(path, false) else { return false };
+        let Ok(caps) = windows::core::Interface::cast::<IPropertyStoreCapabilities>(&st) else { return false };
+        (unsafe { caps.IsPropertyWritable(&KEY) }) == windows::Win32::Foundation::S_OK // S_FALSE: not writable
+    }
+
+    /// Replace the tags (none: removes them). The handler writes the file itself (a safe save).
+    pub fn write(path: &Path, tags: &[String]) -> Result<(), String> {
+        let (path, tags) = (path.to_path_buf(), tags.to_vec());
+        on_sta(move || write_sta(&path, &tags))
+    }
+
+    fn write_sta(path: &Path, tags: &[String]) -> Result<(), String> {
+        let st = store(path, true)?;
+        let wide: Vec<HSTRING> = tags.iter().map(|t| HSTRING::from(t.as_str())).collect();
+        let ptrs: Vec<PCWSTR> = wide.iter().map(|h| PCWSTR(h.as_ptr())).collect();
+        unsafe {
+            let mut v = InitPropVariantFromStringVector(Some(&ptrs)).map_err(|e| e.message())?;
+            let r = st.SetValue(&KEY, &v).and_then(|_| st.Commit());
+            let _ = PropVariantClear(&mut v);
+            r.map_err(|e| format!("couldn't save the tags in {}: {}", path.display(), e.message()))?;
+        }
+        drop(st);
+        if read_sta(path)? != tags {
+            return Err(format!("Windows didn't keep the tags in {}", path.display()));
+        }
+        Ok(())
+    }
+}
+
+/// A saved set of tags applied in one click (Settings ▸ Metadata, the player's Metadata panel, the
+/// Library's right-click, the Export panel): only the fields it fills are written.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct MetaPreset {
+    pub name: String,
+    /// `FIELDS` key -> value; empty values are not part of the preset.
+    pub values: BTreeMap<String, String>,
+    /// Explorer's Tags, "a; b" (empty = left as they are).
+    pub keywords: String,
+}
+
+impl MetaPreset {
+    /// The tag write this preset is (its filled fields; nothing else touched).
+    pub fn edit(&self) -> TagEdit {
+        let set = self.values.iter().filter(|(k, v)| !v.trim().is_empty() && field(k).is_some()).map(|(k, v)| (k.clone(), v.clone())).collect();
+        TagEdit { set, ..Default::default() }
+    }
+
+    /// The fields `c` can hold of this preset's (a WAV keeps no composer, ...).
+    pub fn edit_for(&self, c: Container) -> TagEdit {
+        let mut e = self.edit();
+        e.set.retain(|k, _| c.keeps(k));
+        e
+    }
+
+    pub fn keyword_list(&self) -> Vec<String> {
+        split_keywords(&self.keywords)
+    }
+}
+
+/// Apply `preset` to the file at `path`: its fields (stream copy, temp file, atomic swap), then its
+/// Explorer Tags where the type can hold them. Says what it could not write.
+pub fn apply_preset(path: &Path, preset: &MetaPreset) -> Result<Vec<String>, String> {
+    let mut notes = Vec::new();
+    let edit = preset.edit_for(container(path));
+    if !edit.is_empty() {
+        write(path, &edit)?;
+    }
+    let kw = preset.keyword_list();
+    if !kw.is_empty() {
+        if keywords_writable(path) {
+            write_keywords(path, &kw)?;
+        } else {
+            notes.push(format!("{} files can't hold Explorer tags", path.extension().and_then(|e| e.to_str()).unwrap_or("These").to_uppercase()));
+        }
+    }
+    Ok(notes)
+}
+
+/// Explorer's Tags of `path` (empty when it has none or can't hold them).
+pub fn read_keywords(path: &Path) -> Vec<String> {
+    keywords::read(path).unwrap_or_default()
+}
+
+/// File types that can hold Explorer Tags ("m4a", ...).
+pub const KEYWORD_FORMATS: &[&str] = keywords::FORMATS;
+
+/// Can `path` hold Explorer Tags? (A type that keeps them, and its Windows property handler agrees.)
+pub fn keywords_writable(path: &Path) -> bool {
+    keywords::writable(path)
+}
+
+/// Set Explorer's Tags of `path`.
+pub fn write_keywords(path: &Path, tags: &[String]) -> Result<(), String> {
+    keywords::write(path, tags)
+}
+
+/// "a; b;c" -> ["a", "b", "c"] (Explorer's own separator).
+pub fn split_keywords(s: &str) -> Vec<String> {
+    s.split(';').map(str::trim).filter(|t| !t.is_empty()).map(String::from).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,6 +683,52 @@ mod tests {
         run_ffmpeg(&["-f".into(), "lavfi".into(), "-i".into(), "color=red:s=32x32:d=1".into(), "-frames:v".into(), "1".into(), p.clone().into()])
             .unwrap();
         p
+    }
+
+    /// Clear all: every tag goes (ours, the encoder's, a custom one) and the cover with it; the media stays.
+    #[test]
+    fn clear_all_removes_every_tag_and_the_cover() {
+        if !have_ffmpeg() {
+            return;
+        }
+        let d = tmpdir("clear");
+        let pic = picture(&d);
+        for name in ["a.mp3", "a.m4a", "a.mp4"] {
+            let p = make(&d, name);
+            let mut set = BTreeMap::new();
+            set.insert("title".to_string(), "T".to_string());
+            set.insert("copyright".to_string(), "C".to_string());
+            write(&p, &TagEdit { set, cover: CoverEdit::Set(pic.clone()), ..Default::default() }).unwrap();
+            let back = write(&p, &TagEdit { clear: true, cover: CoverEdit::Remove, ..Default::default() }).unwrap();
+            assert!(back.values.is_empty() && back.cover.is_none(), "{name}: {back:?}");
+            let raw = ffprobe_json(&p).unwrap();
+            let left = raw.pointer("/format/tags").and_then(Value::as_object).map(|o| o.keys().cloned().collect::<Vec<_>>()).unwrap_or_default();
+            // mp4's brand atoms are the container's header, not tags
+            assert!(left.iter().all(|k| matches!(k.as_str(), "major_brand" | "minor_version" | "compatible_brands")), "{name}: {left:?}");
+            assert_eq!(back.audio_streams, 1, "{name}: the sound is kept");
+        }
+    }
+
+    /// Explorer's Tags (System.Keywords) round-trip through Windows' own handlers in M4A / MP4; MP3, FLAC
+    /// and WAV count as unable (their handlers refuse or drop them).
+    #[test]
+    fn explorer_tags_round_trip_where_windows_can_hold_them() {
+        if !have_ffmpeg() {
+            return;
+        }
+        let d = tmpdir("kw");
+        for (name, can) in [("a.m4a", true), ("a.mp4", true), ("a.flac", false), ("a.mp3", false), ("a.wav", false)] {
+            let p = make(&d, name);
+            assert_eq!(keywords_writable(&p), can, "{name}");
+            if !can {
+                continue;
+            }
+            let tags = split_keywords("road trip; summer ;2026");
+            write_keywords(&p, &tags).unwrap();
+            assert_eq!(read_keywords(&p), tags, "{name}");
+            write_keywords(&p, &[]).unwrap();
+            assert!(read_keywords(&p).is_empty(), "{name}: cleared");
+        }
     }
 
     #[test]
@@ -585,7 +826,7 @@ mod tests {
         e.set.insert("rating".into(), "5".into());
         assert!(write_args(Container::Mp4, &cur, &e, true).is_err(), "mp4 has no rating");
         e.set.insert("rating".into(), String::new());
-        let a = write_args(Container::Mp4, &cur, &TagEdit { set: e.set.clone(), cover: CoverEdit::Keep }, false).unwrap().join(" ");
+        let a = write_args(Container::Mp4, &cur, &TagEdit { set: e.set.clone(), cover: CoverEdit::Keep, ..Default::default() }, false).unwrap().join(" ");
         assert!(a.starts_with("-map 0 -c copy"), "Keep maps everything: {a}");
         assert!(!a.contains("rating"), "clearing a tag the container can't hold is a no-op");
         assert!(write_args(Container::Wav, &cur, &TagEdit { cover: CoverEdit::Set("x".into()), ..Default::default() }, true).is_err());

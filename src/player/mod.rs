@@ -19,6 +19,7 @@ pub mod chrome;
 pub mod convert;
 pub mod engine;
 pub mod folder;
+pub mod panels;
 pub mod strip;
 pub mod tracks;
 pub mod video;
@@ -88,6 +89,10 @@ struct Look {
     ui_look: String,
     /// Audio Only's visualizer style, shared with the editor's (`Settings::visualizer_style`).
     visualizer_style: String,
+    /// How it reacts and looks (`Settings::visualizer_look`), shared the same way.
+    visualizer_look: crate::engine::visualizer::Look,
+    /// Settings ▸ Metadata's presets.
+    metadata_presets: Vec<crate::engine::tags::MetaPreset>,
 }
 
 /// Remembered between launches in `%APPDATA%\SimpleEditor\player.json` (a few bytes).
@@ -101,11 +106,26 @@ struct Prefs {
     /// Audio tracks ticked per file (lower-case path); a file not listed plays all of them.
     // ponytail: grows by one entry per file whose tracks were changed; prune if it ever gets big
     audio: std::collections::HashMap<String, Vec<usize>>,
+    /// Playback resolution (lines) per file; a file not listed plays at Auto.
+    res: std::collections::HashMap<String, u32>,
+    /// Songs show the visualizer instead of their cover.
+    song_viz: bool,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default() }
+        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default(), res: Default::default(), song_viz: false }
+    }
+}
+
+/// The playback resolutions offered (lines), largest first.
+pub const RESOLUTIONS: [u32; 7] = [2160, 1440, 1080, 720, 480, 360, 240];
+
+/// `size` (w, h) capped to `lines` tall (None or not smaller: as it is), even, aspect kept.
+pub fn capped(size: (u32, u32), lines: Option<u32>) -> (u32, u32) {
+    match lines {
+        Some(h) if h < size.1 && size.1 > 0 => (((size.0 as u64 * h as u64 / size.1 as u64) as u32).max(2) & !1, h & !1),
+        _ => size,
     }
 }
 
@@ -185,6 +205,29 @@ pub struct PlayerApp {
     /// `SE_PLAYER_SHOT_SETUP=hover=0.8`: the seek bar acts hovered at that fraction (a posted mouse
     /// move cannot hover the window).
     pub(crate) shot_hover: Option<f32>,
+    /// Settings ▸ Metadata's presets (read with the theme, saved back to settings.json).
+    pub(crate) presets: Vec<crate::engine::tags::MetaPreset>,
+    /// The visualizer's reaction and look; saved to settings.json once a drag ends (`vis_dirty`).
+    pub(crate) vis_look: crate::engine::visualizer::Look,
+    pub(crate) vis_dirty: bool,
+    /// Playback resolution for this file (lines); None = Auto (the picture's own size on screen).
+    pub(crate) res: Option<u32>,
+    /// Upscale…'s choices while it is open, and the upscale running.
+    pub(crate) upscale: Option<panels::UpscaleSpec>,
+    pub(crate) upscale_job: Option<convert::Job>,
+    /// Properties / Metadata while it is open, and a save in progress: (result, file, time, playing).
+    pub(crate) meta: Option<panels::Meta>,
+    pub(crate) meta_save: Option<(Receiver<Result<(), String>>, PathBuf, f64, bool)>,
+    /// Songs: the visualizer instead of the cover.
+    pub(crate) song_viz: bool,
+    /// The song's cover, small and blurred, behind it.
+    pub(crate) cover_bg: Option<egui::TextureHandle>,
+    /// A frame being saved (Screenshot frame).
+    shot_rx: Option<Receiver<Result<PathBuf, String>>>,
+    /// `SE_PLAYER_SHOT_SETUP=menu=x:y`: the right-click menu, open there (a posted click can't open it).
+    pub(crate) shot_menu: Option<egui::Pos2>,
+    /// Segoe UI Symbol was added (`theme::add_symbols`, the first time a menu opened).
+    pub(crate) symbols: bool,
 }
 
 impl PlayerApp {
@@ -201,6 +244,8 @@ impl PlayerApp {
             std::fs::read(prefs_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         engine.set_volume(prefs.volume);
         engine.set_muted(prefs.muted);
+        let res = prefs.res.get(&file_key(engine.path())).copied();
+        let song_viz = prefs.song_viz;
         if let Some(v) = prefs.audio.get(&file_key(engine.path())) {
             engine.set_audio_streams(Some(v.clone()));
         }
@@ -246,7 +291,7 @@ impl PlayerApp {
             cover_rx: None,
             bars: Vec::new(),
             icon: None,
-            look: look.palette,
+            look: look.palette.clone(),
             pending_click: None,
             ended: false,
             strip: None,
@@ -257,6 +302,19 @@ impl PlayerApp {
             orb: Default::default(),
             viz: (look.visualizer_style.clone(), String::new()),
             shot_hover: None,
+            presets: look.metadata_presets,
+            vis_look: look.visualizer_look,
+            vis_dirty: false,
+            res,
+            upscale: None,
+            upscale_job: None,
+            meta: None,
+            meta_save: None,
+            song_viz,
+            cover_bg: None,
+            shot_rx: None,
+            shot_menu: None,
+            symbols: false,
         }
     }
 
@@ -383,7 +441,182 @@ impl PlayerApp {
         self.ended = false;
         self.strip = None;
         self.renaming = None;
+        self.cover_bg = None;
+        self.res = self.prefs.res.get(&file_key(path)).copied();
+        if self.meta.is_some() {
+            self.meta = Some(panels::Meta::open(path, ctx));
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.title()));
+    }
+
+    /// Let go of the file (decoders, thumbnail jobs) so it can be rewritten: a stand-in engine that opens
+    /// nothing takes over. Returns where it was and whether it played.
+    fn release_file(&mut self) -> (f64, bool) {
+        let (t, play) = (self.engine.time(), self.engine.is_playing());
+        self.strip = None;
+        self.engine = Engine::start(Path::new(""), 0.0, false, false);
+        (t, play)
+    }
+
+    /// The playback resolutions this file offers (below its own height).
+    pub fn res_options(&self) -> Vec<u32> {
+        let h = self.info.as_ref().map_or(0, |i| i.size.1);
+        RESOLUTIONS.iter().copied().filter(|&r| r < h).collect()
+    }
+
+    /// Playback resolution (None = Auto); remembered per file.
+    pub fn set_resolution(&mut self, lines: Option<u32>) {
+        self.res = lines;
+        let key = file_key(self.path());
+        match lines {
+            Some(h) => self.prefs.res.insert(key, h),
+            None => self.prefs.res.remove(&key),
+        };
+        self.prefs_dirty = true;
+    }
+
+    /// Songs: the visualizer instead of the cover (remembered).
+    pub fn set_song_visualizer(&mut self, on: bool) {
+        self.song_viz = on;
+        self.prefs.song_viz = on;
+        self.prefs_dirty = true;
+    }
+
+    /// A song shows the visualizer: picked, or it has no cover (once that is known - while the cover
+    /// loads, its placeholder shows).
+    pub fn song_shows_visualizer(&self) -> bool {
+        self.song_viz || (self.cover.is_none() && self.cover_rx.is_none())
+    }
+
+    /// Properties / Metadata: open, reading the file's tags.
+    pub fn open_metadata(&mut self, ctx: &egui::Context) {
+        self.meta = Some(panels::Meta::open(self.path(), ctx));
+    }
+
+    /// Write the Metadata panel's edit (temp file + atomic swap) with the file let go first, then open
+    /// it again where it was.
+    pub fn save_meta(&mut self, ctx: &egui::Context, edit: crate::engine::tags::TagEdit, keywords: Option<Vec<String>>) {
+        let path = self.path().to_path_buf();
+        let (t, play) = self.release_file();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (p, c) = (path.clone(), ctx.clone());
+        std::thread::spawn(move || {
+            use crate::engine::tags;
+            let r = (|| {
+                if !edit.is_empty() {
+                    tags::write(&p, &edit)?;
+                }
+                if let Some(k) = keywords {
+                    tags::write_keywords(&p, &k)?;
+                }
+                Ok(())
+            })();
+            let _ = tx.send(r);
+            c.request_repaint();
+        });
+        self.meta_save = Some((rx, path, t, play));
+    }
+
+    fn poll_meta(&mut self, ctx: &egui::Context) {
+        let Some((rx, ..)) = &self.meta_save else { return };
+        let Ok(r) = rx.try_recv() else {
+            ctx.request_repaint_after(Duration::from_millis(100));
+            return;
+        };
+        let Some((_, path, t, play)) = self.meta_save.take() else { return };
+        self.open_at(ctx, &path, t, play);
+        if let Some(m) = self.meta.as_mut() {
+            m.status = match r {
+                Ok(()) => "Saved".into(),
+                Err(e) => format!("Couldn't save: {e}"),
+            };
+        }
+    }
+
+    /// Settings ▸ Metadata gets `p` (same name: replaced).
+    pub fn save_preset(&mut self, p: crate::engine::tags::MetaPreset) {
+        match self.presets.iter_mut().find(|q| q.name == p.name) {
+            Some(q) => *q = p,
+            None => self.presets.push(p),
+        }
+        save_setting(&crate::settings::Settings::path(), "metadata_presets", serde_json::to_value(&self.presets).unwrap_or_default());
+    }
+
+    /// Upscale with the editor's AI enhancer, in the background, beside the file.
+    pub fn start_upscale(&mut self, spec: panels::UpscaleSpec) {
+        let Some(info) = self.info.clone() else { return };
+        let still = crate::media::is_image_path(&info.path.to_string_lossy());
+        let out = panels::upscale_out(&info.path, spec, still);
+        let req = crate::engine::enhance::Request {
+            src: info.path.clone(),
+            still,
+            range: (0.0, info.duration.max(0.04)),
+            fps: info.fps,
+            scale: spec.scale,
+            model: spec.model,
+            out: out.clone(),
+        };
+        let progress = crate::engine::export::spawn_job("enhance", move |p| crate::engine::enhance::run(&req, p));
+        self.upscale_job = Some(convert::Job { progress, out });
+        self.upscale = None;
+    }
+
+    fn poll_upscale(&mut self) {
+        let Some(j) = &self.upscale_job else { return };
+        if !j.progress.is_done() {
+            return;
+        }
+        let (err, out) = (j.progress.error(), j.out.clone());
+        self.upscale_job = None;
+        match err {
+            None => {
+                let name = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.say(format!("Upscaled: {name}"), Some(out));
+            }
+            Some(e) if e == crate::engine::export::CANCELLED => self.say("Upscale cancelled", None),
+            Some(e) => self.say(format!("Upscale failed: {e}"), None),
+        }
+    }
+
+    /// Save the frame on screen as a PNG beside the file ("<name> 0-01-23.456.png", never over a file).
+    pub fn screenshot(&mut self) {
+        let (src, t) = (self.path().to_path_buf(), self.engine.time());
+        let s = t.max(0.0);
+        let stamp = format!("{}-{:02}-{:02}.{:03}", (s / 3600.0) as u64, (s / 60.0) as u64 % 60, s as u64 % 60, ((s.fract()) * 1000.0) as u64);
+        let stem = format!("{} {stamp}", self.title());
+        let dir = src.parent().map(Path::to_path_buf).unwrap_or_default();
+        let mut out = dir.join(format!("{stem}.png"));
+        let mut n = 2;
+        while out.exists() {
+            out = dir.join(format!("{stem} ({n}).png"));
+            n += 1;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::engine::tags::grab_frame(&src, t, &out).map(|_| out));
+        });
+        self.shot_rx = Some(rx);
+    }
+
+    fn poll_screenshot(&mut self) {
+        let Some(rx) = &self.shot_rx else { return };
+        let Ok(r) = rx.try_recv() else { return };
+        self.shot_rx = None;
+        match r {
+            Ok(p) => {
+                let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                self.say(format!("Saved {name}"), Some(p));
+            }
+            Err(e) => self.say(format!("Couldn't save the frame: {e}"), None),
+        }
+    }
+
+    /// The visualizer look goes to settings.json once nothing is being dragged.
+    fn save_look(&mut self, ctx: &egui::Context) {
+        if self.vis_dirty && !ctx.input(|i| i.pointer.any_down()) {
+            self.vis_dirty = false;
+            save_setting(&crate::settings::Settings::path(), "visualizer_look", serde_json::to_value(&self.vis_look).unwrap_or_default());
+        }
     }
 
     pub(crate) fn say(&mut self, text: impl Into<String>, about: Option<PathBuf>) {
@@ -592,7 +825,14 @@ impl PlayerApp {
 
     fn poll(&mut self, ctx: &egui::Context) {
         self.poll_convert();
-        if self.convert_job.is_some() {
+        self.poll_upscale();
+        self.poll_meta(ctx);
+        self.poll_screenshot();
+        self.save_look(ctx);
+        if self.shot_rx.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+        if self.convert_job.is_some() || self.upscale_job.is_some() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
         if self.toast.as_ref().is_some_and(|t| t.1 < self.now()) {
@@ -631,6 +871,8 @@ impl PlayerApp {
         }
         if let Some(rx) = &self.cover_rx {
             if let Ok(img) = rx.try_recv() {
+                // behind it: the same picture tiny, stretched (LINEAR) - a soft blur for nothing
+                self.cover_bg = img.as_ref().map(|i| ctx.load_texture("player-cover-bg", chrome::shrink(i, 24), egui::TextureOptions::LINEAR));
                 self.cover = img.map(|img| ctx.load_texture("player-cover", img, egui::TextureOptions::LINEAR));
                 self.cover_rx = None;
             }
@@ -802,7 +1044,7 @@ impl PlayerApp {
 
     /// `SE_PLAYER_SHOT_SETUP=at=20,reverse,loop,rate=2,flyout=tracks` (visual checks, with `SE_PLAYER_SHOT`):
     /// the state to picture, set once the window shows - the player has no MCP to set it with.
-    fn shot_setup(&mut self) {
+    fn shot_setup(&mut self, ctx: &egui::Context) {
         let Some(spec) = self.shot.as_ref().and(std::env::var("SE_PLAYER_SHOT_SETUP").ok()) else { return };
         for item in spec.split(',').map(str::trim) {
             match item.split_once('=') {
@@ -816,12 +1058,18 @@ impl PlayerApp {
                 Some(("flyout", "more")) => self.flyout = Some(Flyout::More),
                 Some(("flyout", "volume")) => self.flyout = Some(Flyout::Volume),
                 Some(("hover", k)) => self.shot_hover = k.parse().ok(),
+                _ if item == "meta" => self.open_metadata(ctx),
                 _ if item == "audio_only" => self.set_audio_only(true),
                 _ if item == "pause" => self.engine.set_playing(false),
                 _ if item == "convert" => self.convert = Some(Default::default()),
                 _ if item == "rename" => self.renaming = Some(self.title()),
                 _ if item == "reverse" => self.toggle_reverse(),
                 _ if item == "loop" => self.playlist.repeat = Repeat::One,
+                _ if item == "upscale" => self.upscale = Some(Default::default()),
+                _ if item == "visualizer" => self.song_viz = true,
+                _ if item == "cover_loading" => self.cover_rx = Some(std::sync::mpsc::channel().1),
+                Some(("res", h)) => self.res = h.parse().ok(),
+                Some(("menu", at)) => self.shot_menu = at.split_once(':').and_then(|(x, y)| Some(egui::pos2(x.parse().ok()?, y.parse().ok()?))),
                 _ => {}
             }
         }
@@ -880,7 +1128,7 @@ impl eframe::App for PlayerApp {
         if just {
             // the clock starts with the picture: no frames skipped, no sound before the window
             self.engine.set_playing(true);
-            self.shot_setup();
+            self.shot_setup(ctx);
             self.window_shown = true;
             self.shown_at_frame = self.frames;
             ctx.request_repaint(); // the next update is the first one after a present

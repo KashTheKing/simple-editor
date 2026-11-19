@@ -118,7 +118,9 @@ impl AutoHide {
         } else {
             None
         };
-        Output { opacity, repaint_in, hide_cursor: i.pointer_in && !want && !i.keep, dismissed }
+        // controls down over the video (idle, or a click put them away - paused too): no cursor either;
+        // never over the bar or a menu (those keep the controls up)
+        Output { opacity, repaint_in, hide_cursor: i.pointer_in && !want, dismissed }
     }
 }
 
@@ -159,6 +161,23 @@ mod tests {
         assert_eq!(o.opacity, 0.0);
         assert!(o.hide_cursor);
         assert_eq!(o.repaint_in, None);
+    }
+
+    /// A click that puts the controls away hides the cursor with them - paused too - and the next
+    /// move brings both back.
+    #[test]
+    fn a_dismissing_click_hides_the_cursor_even_paused() {
+        let mut h = AutoHide::default();
+        let paused = |now, moved, dismiss| Input { now, pointer_in: true, moved, keep: true, dismiss, ..Default::default() };
+        assert!(!h.step(paused(0.0, true, false)).hide_cursor);
+        let o = h.step(paused(1.0, true, true));
+        assert!(o.dismissed && o.hide_cursor, "{o:?}");
+        assert!(h.step(paused(5.0, false, false)).hide_cursor, "stays hidden while the pointer rests");
+        let o = h.step(paused(6.0, true, false));
+        assert!(!o.hide_cursor && h.shown(), "a move brings the cursor and the controls back");
+        // an open menu (hold) never hides it
+        let o = h.step(Input { now: 7.0, pointer_in: true, hold: true, dismiss: true, ..Default::default() });
+        assert!(!o.hide_cursor);
     }
 
     #[test]

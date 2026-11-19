@@ -359,3 +359,145 @@ fn thumbnails_while_playing_cost_no_frames() {
     }
     assert!(drops[0] <= drops[1] + 3, "the strip cost frames: {drops:?}");
 }
+
+// ---------------------------------------------------------------- the player batch
+
+/// A file made with ffmpeg in a fresh temp folder (None without ffmpeg).
+fn made(name: &str, args: &[&str]) -> Option<std::path::PathBuf> {
+    let ff = crate::media::ffpipe::ffmpeg_exe()?;
+    let dir = std::env::temp_dir().join(format!("se-player-batch-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).ok()?;
+    let out = dir.join(name);
+    let ok = crate::media::ffpipe::command(&ff).args(["-y", "-v", "error"]).args(args).arg(&out).status().ok()?.success();
+    ok.then_some(out)
+}
+
+fn until(ctx: &egui::Context, app: &mut PlayerApp, secs: u64, mut done: impl FnMut(&PlayerApp) -> bool) -> bool {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while !done(app) {
+        if Instant::now() > end {
+            return false;
+        }
+        run(ctx, app, vec![]);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
+}
+
+#[test]
+fn a_picked_resolution_caps_the_decode_size() {
+    assert_eq!(capped((1920, 1080), Some(720)), (1280, 720));
+    assert_eq!(capped((3840, 2160), Some(1080)), (1920, 1080));
+    assert_eq!(capped((1920, 1080), Some(2160)), (1920, 1080), "never above the source");
+    assert_eq!(capped((1920, 1080), None), (1920, 1080), "Auto");
+    let Some((ctx, mut app)) = player(1.0) else { return };
+    until_picture(&ctx, &mut app);
+    assert!(app.res_options().iter().all(|&h| h < 180), "only below the 180-line source: {:?}", app.res_options());
+    app.set_resolution(Some(120));
+    assert_eq!(app.prefs.res.get(&file_key(app.path())), Some(&120), "remembered per file");
+    let path = app.path().to_path_buf();
+    app.open_at(&ctx, &path, 0.5, false);
+    assert_eq!(app.res, Some(120), "and picked again when the file opens");
+    app.set_resolution(None);
+    assert!(app.prefs.res.is_empty());
+}
+
+/// Right-clicking the picture opens the menu, and the controls stay up while it is open.
+#[test]
+fn right_click_opens_the_menu_and_holds_the_controls() {
+    let Some((ctx, mut app)) = player(1.0) else { return };
+    until_picture(&ctx, &mut app);
+    let at = egui::pos2(300.0, 200.0);
+    let click = |pressed| Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed, modifiers: Modifiers::NONE };
+    run(&ctx, &mut app, vec![Event::PointerMoved(at), click(true)]);
+    run(&ctx, &mut app, vec![click(false)]);
+    run(&ctx, &mut app, vec![]);
+    assert!(egui::Popup::is_any_open(&ctx), "the right-click menu is open");
+    app.engine.set_playing(true);
+    std::thread::sleep(Duration::from_millis(((autohide::IDLE + 0.3) * 1000.0) as u64));
+    run(&ctx, &mut app, vec![]);
+    assert!(app.hide.shown(), "an open menu keeps the controls (and the cursor) up");
+}
+
+/// A song shows its cover (a placeholder while it loads), the visualizer only without one or when
+/// asked for.
+#[test]
+fn songs_show_their_cover_and_the_visualizer_only_without_one() {
+    let Some(pic) = made("cover.png", &["-f", "lavfi", "-i", "color=red:s=64x64:d=1", "-frames:v", "1"]) else { return };
+    let src = ["-f", "lavfi", "-i", "sine=f=440:d=3"];
+    let pic_s = pic.to_string_lossy().into_owned();
+    let mut with: Vec<&str> = src.to_vec();
+    with.extend(["-i", &pic_s, "-map", "0:a", "-map", "1:v", "-c:v", "png", "-disposition:v", "attached_pic"]);
+    let Some(song) = made("song.mp3", &with) else { return };
+    let Some(bare) = made("bare.mp3", &src) else { return };
+    let ctx = egui::Context::default();
+    let mut app = PlayerApp::new(&ctx, Engine::start(&song, 0.0, false, false));
+    assert!(until(&ctx, &mut app, 10, |a| a.cover_rx.is_some() || a.cover.is_some()), "the cover starts loading");
+    assert!(!app.song_shows_visualizer(), "loading: the placeholder, not a visualizer");
+    assert!(until(&ctx, &mut app, 10, |a| a.cover.is_some()), "the cover loads");
+    assert!(!app.song_shows_visualizer() && app.cover_bg.is_some(), "the cover, with its blurred backdrop");
+    app.set_song_visualizer(true);
+    assert!(app.song_shows_visualizer(), "Visualizer picked");
+    app.set_song_visualizer(false);
+    app.open(&ctx, &bare);
+    assert!(until(&ctx, &mut app, 10, |a| a.info.is_some() && a.cover_rx.is_none()), "read");
+    assert!(app.cover.is_none() && app.song_shows_visualizer(), "no cover: the visualizer");
+}
+
+/// Properties / Metadata writes the edit into the file (let go of first, temp file, atomic swap) and
+/// opens it again where it was; Explorer's tags go in too.
+#[test]
+fn the_metadata_panel_saves_into_the_file_and_reopens_it() {
+    let Some(f) = made("clip.m4a", &["-f", "lavfi", "-i", "sine=f=440:d=4", "-c:a", "aac", "-metadata", "title=Old"]) else { return };
+    let ctx = egui::Context::default();
+    let mut app = PlayerApp::new(&ctx, Engine::start(&f, 1.5, false, false));
+    assert!(until(&ctx, &mut app, 10, |a| a.info.is_some()));
+    app.open_metadata(&ctx);
+    assert!(until(&ctx, &mut app, 10, |a| a.meta.as_ref().is_some_and(|m| m.loaded.is_some())), "tags read");
+    let m = app.meta.as_mut().unwrap();
+    assert_eq!(m.draft["title"], "Old");
+    m.draft.insert("title".into(), "New".into());
+    m.draft.insert("copyright".into(), "Me".into());
+    m.keywords = "one; two".into();
+    let (edit, kw) = m.edit().unwrap();
+    app.save_meta(&ctx, edit, kw);
+    assert!(until(&ctx, &mut app, 20, |a| a.meta_save.is_none()), "saved");
+    assert_eq!(app.meta.as_ref().unwrap().status, "Saved");
+    let t = crate::engine::tags::read(&f).unwrap();
+    assert_eq!((t.get("title"), t.get("copyright")), ("New", "Me"));
+    assert_eq!(crate::engine::tags::read_keywords(&f), ["one", "two"]);
+    assert_eq!(app.path(), f.as_path(), "the same file open again");
+    assert!((app.engine.time() - 1.5).abs() < 0.2, "where it was: {}", app.engine.time());
+    assert!(!f.with_extension("m4a.bak").exists(), "no backup left behind");
+}
+
+/// Upscale… without the AI enhancer: the job says so (the window offers the install).
+#[test]
+fn an_upscale_without_the_enhancer_says_so() {
+    if crate::engine::enhance::available() {
+        return; // a real upscale takes minutes: covered by the editor's enhance tests
+    }
+    let Some((ctx, mut app)) = player(0.0) else { return };
+    until_picture(&ctx, &mut app);
+    app.start_upscale(Default::default());
+    assert!(until(&ctx, &mut app, 10, |a| a.upscale_job.is_none()));
+    let msg = app.toast.as_ref().map(|t| t.0.clone()).unwrap_or_default();
+    assert!(msg.contains("Upscale failed") && msg.contains("not installed"), "{msg}");
+}
+
+/// Screenshot frame: a PNG of the moment beside the file, never over one.
+#[test]
+fn screenshot_frame_saves_a_png_beside_the_file() {
+    let Some(f) = made("shot.mp4", &["-f", "lavfi", "-i", "testsrc2=s=160x90:r=30:d=3", "-pix_fmt", "yuv420p"]) else { return };
+    let ctx = egui::Context::default();
+    let mut app = PlayerApp::new(&ctx, Engine::start(&f, 1.0, false, false));
+    until_picture(&ctx, &mut app);
+    for _ in 0..2 {
+        app.screenshot();
+        assert!(until(&ctx, &mut app, 10, |a| a.shot_rx.is_none()));
+    }
+    let pngs: Vec<_> = std::fs::read_dir(f.parent().unwrap()).unwrap().filter_map(|e| e.ok()).filter(|e| e.path().extension().is_some_and(|x| x == "png")).collect();
+    assert_eq!(pngs.len(), 2, "two shots, two files");
+    assert!(app.toast.as_ref().is_some_and(|t| t.0.starts_with("Saved shot 0-00-01")), "{:?}", app.toast);
+}

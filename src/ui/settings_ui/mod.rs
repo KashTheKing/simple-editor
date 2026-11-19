@@ -27,6 +27,8 @@ mod performance;
 pub(crate) mod permissions;
 // ---- ws:social-guides ----
 mod social;
+// ---- ws:player-metadata ----
+pub(crate) mod metadata;
 
 use crate::hotkeys::{Action, Hotkeys};
 use crate::settings::Settings;
@@ -76,6 +78,9 @@ pub struct SettingsUi {
     // ---- ws:panels-multiscreen ----
     /// Layout ▸ Screens… was clicked: the app (windows.rs) opens the screens setup.
     pub open_screens: bool,
+    // ---- ws:player-metadata ----
+    /// Metadata tab: the preset being edited.
+    pub(super) meta_sel: Option<usize>,
     // ---- ws:mcp-permissions ----
     /// Permissions tab: the search text and the open groups.
     pub(super) perms_search: String,
@@ -173,6 +178,7 @@ pub fn show(
             ui.selectable_value(&mut state.tab, 6, "Assistant"); // ws:assistant-pane
             ui.selectable_value(&mut state.tab, 7, "Social"); // ws:social-guides
             ui.selectable_value(&mut state.tab, 8, "Permissions"); // ws:mcp-permissions
+            ui.selectable_value(&mut state.tab, 9, "Metadata"); // ws:player-metadata
         });
         ui.separator();
         // the tab row stays put; a tab taller than the window scrolls
@@ -187,6 +193,7 @@ pub fn show(
                 6 => assistant::assistant_tab(ui, settings), // ws:assistant-pane
                 7 => social::social_tab(ui, &mut state.social, settings), // ws:social-guides
                 8 => permissions::permissions_tab(ui, &mut state.perms_search, &mut state.perms_open, settings), // ws:mcp-permissions
+                9 => metadata::metadata_tab(ui, &mut state.meta_sel, settings), // ws:player-metadata
                 _ => appearance::appearance(ui, settings),
             })
             .inner;

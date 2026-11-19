@@ -325,6 +325,10 @@ pub struct Settings {
     /// The visualizer style last added or picked on the timeline (empty = Neon Orb): what Add Audio
     /// Visualizer / Library ▸ Add with Audio Visualizer use next.
     pub visualizer_style: String,
+    // ---- ws:player-visualizer-look ----
+    /// How the visualizer reacts and looks (intensity, sensitivity, band preset, the style's params):
+    /// set in the media player, used by Add Audio Visualizer too.
+    pub visualizer_look: crate::engine::visualizer::Look,
     /// Social-guide platform drawn over the preview (None = off): an id from `ui::social`'s guides.json.
     /// A view preference, not project data. Settings from before the data-driven guides stored a
     /// variant name ("TikTok", "YtShorts"...); `legacy_guide` maps those.
@@ -695,6 +699,9 @@ pub struct Settings {
     /// Ask "Match project to this video?" when an import differs from the project.
     #[serde(default = "default_true")]
     pub match_import: bool,
+    // ---- ws:player-metadata ----
+    /// Saved tag sets (Settings ▸ Metadata), applied in one click in the player, the Library and Export.
+    pub metadata_presets: Vec<crate::engine::tags::MetaPreset>,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -799,6 +806,7 @@ impl Default for Settings {
             audio_visualizer: true,
             audio_visualizer_style: String::new(),
             visualizer_style: String::new(),
+            visualizer_look: Default::default(), // ws:player-visualizer-look
             guide: None,
             project_templates: Vec::new(),
             ui_look: "cozy".into(),
@@ -988,6 +996,7 @@ impl Default for Settings {
             // ---- ws:device-emulator ----
             emulator: BTreeMap::new(),
             match_import: true, // ws:project-color-fps
+            metadata_presets: Vec::new(), // ws:player-metadata
         }
     }
 }

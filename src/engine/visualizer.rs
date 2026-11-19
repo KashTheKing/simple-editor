@@ -746,9 +746,109 @@ pub fn add_song(p: &mut Project, asset: Id, at: f64, style: &Style, backend: Bac
     }
 }
 
+// ---- ws:player-visualizer-look ----
+/// How a visualizer looks and reacts: picked in the media player (Audio Only ▸ Visualizer, before or
+/// while it plays) and kept in settings beside `visualizer_style` (`Settings::visualizer_look`); the
+/// editor's Add Audio Visualizer starts from it too (`Look::apply`).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Look {
+    /// How far the picture moves with the sound: scales the live levels (0.25 .. 3).
+    pub intensity: f32,
+    /// Sensitivity and the six band gains (a band preset sets both: `AudioMix::preset`).
+    pub mix: crate::model::AudioMix,
+    /// The style's own params (hue, glow, palette, speed ...), per style name; a param not set keeps
+    /// its header default.
+    pub params: std::collections::BTreeMap<String, std::collections::BTreeMap<String, f64>>,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Look { intensity: 1.0, mix: Default::default(), params: Default::default() }
+    }
+}
+
+impl Look {
+    /// The params of `src` that are its look - not the audio / beat inputs.
+    pub fn look_params(src: &str) -> Vec<crate::engine::shaderlib::ShaderParam> {
+        crate::engine::shaderlib::parse_meta(src)
+            .params
+            .into_iter()
+            .filter(|p| !AUDIO_PARAMS.contains(&p.id.as_str()) && !BEAT_PARAMS.contains(&p.id.as_str()))
+            .collect()
+    }
+
+    /// `style`'s value for param `id` (its header `default` when not set).
+    pub fn value(&self, style: &str, id: &str, default: f64) -> f64 {
+        self.params.get(style).and_then(|m| m.get(id)).copied().unwrap_or(default)
+    }
+
+    pub fn set(&mut self, style: &str, id: &str, v: f64) {
+        self.params.entry(style.to_string()).or_default().insert(id.to_string(), v);
+    }
+
+    /// A live `[level, band1..band6]` frame as this look hears it: x intensity x sensitivity, each band
+    /// x its gain, kept in 0..1.
+    pub fn shape(&self, f: Frame) -> Frame {
+        let k = self.intensity * self.mix.sensitivity;
+        let mut out = f;
+        out[0] = (f[0] * k).clamp(0.0, 1.0);
+        for b in 0..BANDS {
+            out[1 + b] = (f[1 + b] * k * self.mix.gains[b]).clamp(0.0, 1.0);
+        }
+        out
+    }
+
+    /// Onto visualizer layer `vis` (of `style`): its look params, and the mix (intensity folded into the
+    /// sensitivity) the song is baked with - then baked again.
+    pub fn apply(&self, p: &mut Project, vis: Id, style: &Style, backend: Backend) -> Result<(), String> {
+        if *self == Look::default() {
+            return Ok(());
+        }
+        let c = p.clip_mut(vis).ok_or("no such clip")?;
+        let e = c.effects.iter_mut().find(|e| style_of(e).is_some()).ok_or("the clip has no visualizer effect")?;
+        let meta = crate::engine::shaderlib::parse_meta(&e.shader);
+        let specs = e.specs();
+        for (pi, prm) in meta.params.iter().enumerate() {
+            while e.params.len() <= pi {
+                e.params.push(Animated::new(specs[e.params.len()].default));
+            }
+            if let Some(v) = self.params.get(&style.name).and_then(|m| m.get(&prm.id)) {
+                e.params[pi] = Animated::new(v.clamp(prm.min, prm.max));
+            }
+        }
+        let mut mix = self.mix.clone();
+        mix.sensitivity = (mix.sensitivity * self.intensity).clamp(0.25, 4.0);
+        e.audio_mix = Some(mix.clamped());
+        rebake_any(p, vis, backend).map(|_| ())
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// ws:player-visualizer-look: intensity x sensitivity x band gain shapes the live levels (kept in
+    /// 0..1), the look params are the style's own (not its audio inputs), and it round-trips through
+    /// settings.json.
+    #[test]
+    fn the_look_shapes_the_levels_and_lists_the_style_params() {
+        let mut l = Look::default();
+        let f: Frame = [0.5, 0.2, 0.2, 0.2, 0.2, 0.2, 0.9];
+        assert_eq!(l.shape(f), f, "the default look leaves the levels alone");
+        l.intensity = 2.0;
+        l.mix.gains[0] = 0.5;
+        let g = l.shape(f);
+        assert!((g[0] - 1.0).abs() < 1e-6 && (g[1] - 0.2).abs() < 1e-6 && g[6] == 1.0, "{g:?}");
+        let ids: Vec<String> = Look::look_params(BUILTIN[0].1).into_iter().map(|p| p.id).collect();
+        assert!(ids.contains(&"hue".to_string()) && !ids.contains(&"level".to_string()), "{ids:?}");
+        l.set("Neon Orb", "hue", 0.9);
+        assert_eq!(l.value("Neon Orb", "hue", 0.48), 0.9);
+        assert_eq!(l.value("Spectrum Bars", "speed", 1.0), 1.0, "another style keeps its defaults");
+        let s = crate::settings::Settings { visualizer_look: l.clone(), ..Default::default() };
+        let back: crate::settings::Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.visualizer_look, l);
+    }
 
     /// A test source: stereo `f(t)` at 48 kHz.
     struct Tone(fn(f64) -> f32, f64);

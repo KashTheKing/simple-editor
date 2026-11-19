@@ -47,6 +47,16 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
     if let Some(name) = resp.deleted_sequence {
         app.toast_undo(format!("Deleted sequence \"{name}\""), Action::Undo);
     }
+    // ---- ws:player-metadata ----
+    if let Some((ids, n)) = resp.metadata_preset.clone() {
+        if let Some(p) = app.settings.metadata_presets.get(n).cloned() {
+            super::music_ctl::apply_preset(app, &ids, p);
+        }
+    }
+    if resp.metadata_settings {
+        app.settings_ui.open = true;
+        app.settings_ui.tab = 9;
+    }
     // ---- ws:audio-visualizer ----
     if !resp.add_with_visualizer.is_empty() {
         let at = app.playhead;

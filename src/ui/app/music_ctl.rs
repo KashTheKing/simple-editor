@@ -484,7 +484,7 @@ fn save_tags(app: &mut App, ctx: &egui::Context) {
     if !t.dirty() {
         return;
     }
-    let edit = TagEdit { set: t.draft.clone(), cover: t.cover.clone() };
+    let edit = TagEdit { set: t.draft.clone(), cover: t.cover.clone(), ..Default::default() };
     t.saving = true;
     t.status = "Saving".into();
     let ids = t.ids.clone();
@@ -501,6 +501,46 @@ fn save_tags(app: &mut App, ctx: &egui::Context) {
                 }
             }
         }
+        Done::Saved { ids, result: Ok(out) }
+    });
+}
+
+// ---- ws:player-metadata ----
+/// Library ▸ Apply metadata preset: `preset` written into these assets' files in the background (stream
+/// copy, temp file, atomic swap - as Save in the Inspector), and its Explorer tags where the type holds
+/// them. The Inspector reads the files again when done.
+pub(super) fn apply_preset(app: &mut App, ids: &[Id], preset: tags::MetaPreset) {
+    let files: Vec<(Id, String)> = ids.iter().filter_map(|&id| app.project.asset(id).filter(|a| is_media(a)).map(|a| (id, a.path.clone()))).collect();
+    if files.is_empty() {
+        app.toast("Metadata presets apply to sound and video files");
+        return;
+    }
+    let Some(ctx) = app.music.ctx.clone() else { return };
+    let ids: Vec<Id> = files.iter().map(|f| f.0).collect();
+    spawn(&ctx, "tags-preset", move || {
+        let mut out = Vec::new();
+        let mut notes = std::collections::BTreeSet::new();
+        for (id, p) in &files {
+            let path = Path::new(p);
+            match tags::apply_preset(path, &preset) {
+                Ok(n) => {
+                    notes.extend(n);
+                    if let Ok(t) = tags::read(path) {
+                        out.push((*id, t));
+                    }
+                }
+                Err(e) => {
+                    let name = path.file_name().map_or_else(|| p.clone(), |n| n.to_string_lossy().into_owned());
+                    return Done::Saved { ids, result: Err(format!("{name}: {e}")) };
+                }
+            }
+        }
+        let n = out.len();
+        let mut msg = format!("\"{}\" applied to {n} file{}", preset.name, if n == 1 { "" } else { "s" });
+        for note in notes {
+            msg.push_str(&format!(" ({note})"));
+        }
+        send(Done::Note(msg), None);
         Done::Saved { ids, result: Ok(out) }
     });
 }

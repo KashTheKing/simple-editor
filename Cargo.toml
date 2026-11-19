@@ -32,6 +32,8 @@ windows = { version = "0.62", features = [
     "Win32_Media_MediaFoundation",
     "Win32_Media_Audio",
     "Win32_UI_Shell",
+    # ws:player-metadata: Explorer's "Tags" (System.Keywords) read and written through the property system
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Direct3D",

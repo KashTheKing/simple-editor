@@ -360,6 +360,16 @@ fn fonts() -> egui::FontDefinitions {
     f
 }
 
+/// Segoe UI Symbol as the last fallback of the text font, added to a running context: the player
+/// loads it the first time a menu opens (submenu arrows), not before its first frame.
+pub fn add_symbols(ctx: &egui::Context) {
+    let dir = std::path::PathBuf::from(std::env::var_os("WINDIR").unwrap_or_else(|| r"C:\Windows".into())).join("Fonts");
+    if let Some(bytes) = find_font(&dir, &["seguisym.ttf"]) {
+        let fam = egui::epaint::text::InsertFontFamily { family: egui::FontFamily::Proportional, priority: egui::epaint::text::FontPriority::Lowest };
+        ctx.add_font(egui::epaint::text::FontInsert::new("Segoe UI Symbol", egui::FontData::from_owned(bytes), vec![fam]));
+    }
+}
+
 /// The player's fonts: Segoe UI and the icon font only - no Consolas / Segoe UI Symbol to read before
 /// the first frame (the editor swaps in the full set when it is built).
 pub fn player_fonts() -> egui::FontDefinitions {
