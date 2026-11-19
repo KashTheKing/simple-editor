@@ -73,6 +73,21 @@ fn icon_font(px: f32) -> FontId {
 }
 
 fn glyph(p: &egui::Painter, at: Pos2, c: char, px: f32, col: Color32) {
+    if c == icon::MINI {
+        // drawn, not the font's (its arrows read as full screen / restore): the window, an arrow
+        // popping down-right out of it into the small player in its corner
+        let u = px / 16.0;
+        let s = Stroke::new(1.25 * u.max(1.0), col);
+        let win = Rect::from_center_size(at, vec2(16.0, 13.0) * u);
+        p.rect_stroke(win, 2.0 * u, s, egui::StrokeKind::Middle);
+        let pip = Rect::from_min_max(win.max - vec2(7.5, 5.5) * u, win.max - vec2(1.5, 1.5) * u);
+        p.rect_filled(pip, 1.0 * u, col);
+        let (from, to) = (win.min + vec2(3.0, 2.5) * u, pip.min - vec2(1.5, 1.5) * u);
+        p.line_segment([from, to], s);
+        p.line_segment([to, to - vec2(3.0, 0.0) * u], s);
+        p.line_segment([to, to - vec2(0.0, 3.0) * u], s);
+        return;
+    }
     if c == icon::FORWARD10 {
         // both glyphs put the arrow above ~0.44 of the size and the digits below (the ink has a gap
         // there), so the forward arrow and the back glyph's "10" join cleanly
