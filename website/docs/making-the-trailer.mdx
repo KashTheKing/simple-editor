@@ -1,0 +1,167 @@
+---
+title: How the 1.4.0 trailer was made
+description: A step-by-step walkthrough of the Simple Editor 1.4.0 trailer - beat grid, screen recordings, 3D screens with motion blur, HTML labels, a visualizer background and sound design - and the free project to download.
+---
+
+![The trailer project on the Edit page](/img/trailer/edit-page.jpg)
+
+The 1.4.0 trailer was cut entirely in Simple Editor: its own timeline, keyframes, the **3D Plane** and **Motion Blur**
+effects, an audio visualizer and HTML layers for every title. Nothing was done in another program. This page shows
+how each part was made, so you can make one like it for your own app, game or channel.
+
+:::tip Download the project
+**[Download the trailer project (.zip)](#download)** - open `Simple Editor 1.4.0 Trailer.sedit`, drop your own song
+on the **Music** track and press Play. Every section has a comment that explains it.
+:::
+
+## What you need
+
+- Screen recordings of the things you want to show, one short take each (5 to 15 seconds).
+- A song with a clear beat.
+- About an hour.
+
+## 1. Find the beat first
+
+Everything in the trailer lands on the music, so the song comes first.
+
+1. Put the song on an audio track and open the **Beat Aligner** (the tab beside the Timeline on the Audio page).
+2. Press **Detect**. The trailer's song was read as 199.99 BPM: twice its real speed. **½** turned it into **100 BPM**.
+3. Move **Offset** onto a strong downbeat. Here that was 2.128 s into the song, so the clip starts there and the
+   trailer's 0:00 is a downbeat.
+
+At 100 BPM a beat is 0.6 s and a bar of four beats is **2.4 s**. The song's sections change every two bars
+(4.8 s), and the band comes in on the downbeat 7 bars in. So the plan was:
+
+| Bars | Time | What |
+|---|---|---|
+| 1-2 | 0:00-0:04.8 | title card over the quiet intro |
+| 3-7 | 0:04.8-0:16.8 | the build: five features, one bar each |
+| 8 | 0:16.8 | **the drop**: the band comes in |
+| 8-21 | 0:16.8-0:50.4 | fourteen more features, one bar each |
+| 22-23 | 0:50.4-0:55.2 | a wall of four screens |
+| 24-25 | 0:55.2-1:00 | end card; the song ends on a phrase boundary |
+
+A marker on every bar (the **DROP** one in red) makes the grid visible on the timeline. **Project settings ▸ Max
+length** set to 1:00 draws the red end line, and the export stops there.
+
+## 2. Record the screens
+
+Each feature is one short take of the app in use, recorded at 1920×1080 with the
+**Screen Recording** panel (Window ▸ Screen Recording) (**Application / Game capture** records one window even when
+it is covered). The demo project in the takes uses footage made from scratch, so the trailer has no third-party clips.
+
+Keep takes short and do one thing per take: click **Detect**, drag a template in, switch platforms. A take that is
+a little longer than you need is fine; the next step speeds it up to fit.
+
+The cursor in the takes was drawn on afterwards with a click ripple in the accent colour, so every click reads even
+when the screen is small and moving.
+
+## 3. One shot per bar
+
+![The trailer timeline: background, screens, wall, labels, music and sound effects](/img/trailer/timeline.jpg)
+
+Each take goes on the **Screens** track exactly on a bar line. Then its **Speed** (Inspector ▸ Transform) is set so
+the part of the take you want fills the bar: a 4.4 s stretch in a 2.4 s bar plays at 183 %. Fast takes read as
+energy; nobody needs to see a click at normal speed in a trailer.
+
+Make the cuts land exactly on frames. At 60 fps a 2.4 s bar is exactly 144 frames, so every cut is clean.
+
+## 4. The 3D move
+
+![A screen's 3D Plane and Motion Blur in the Inspector](/img/trailer/inspector-3d-plane.jpg)
+
+Every screen has two effects: **3D Plane** (Effects ▸ Transform) and **Motion Blur**. The 3D Plane's **Yaw**,
+**Pitch**, **Roll** and **Distance** are keyframed in the same four phases on every shot:
+
+| When | Yaw | Distance | Ease to the next key |
+|---|---|---|---|
+| 0 s (the downbeat) | 42° | 7.6 | fast start, soft landing: `cubic-bezier(0.12, 0.9, 0.22, 1)` |
+| 0.3 s | 13° | 5.15 | linear drift |
+| beat 3 (1.2 s) | | 5.05 → 4.5 → 5.0 | a quick push in and back: the **punch** on the beat |
+| 0.22 s before the cut | -5° | 4.85 | slow start, fast exit: `cubic-bezier(0.75, 0, 0.95, 0.45)` |
+| the cut | -44° | 7.2 | |
+
+So a screen flies in fast and lands softly on the downbeat, drifts slowly while you read it, punches on the third
+beat and whips out just before the next cut. Each shot comes in from the other side (positive yaw, then negative),
+so the motion keeps flowing left, right, left. Pitch and roll move a little the same way so it never looks flat.
+
+Shape the eases on the Animate page's **Curves** tab: a steep start and a long flat landing for the fly-in, the
+opposite for the whip out.
+
+**Motion Blur** (Shutter angle 300°, 16 samples) smears the fast parts of the move and leaves the slow drift sharp.
+That smear is most of what makes it feel like velocity.
+
+## 5. The background
+
+The dark grid of dots behind the screens is the **Spectrum Bars** audio visualizer: Gallery ▸ Audio ▸ Visualizers,
+dropped on the bottom video track over the song. It reacts to the music by itself, so the background moves on every
+beat without a single keyframe.
+
+## 6. Labels and titles
+
+Every feature gets a pill at the top left: a small tag (NEW or 1.4), the name and one short line. They are
+[HTML layers](./html-layers) made from one file, `graphics/feature-label.html`, with fields for the text and the colour:
+
+```html
+<meta name="se:field" content="title | text | BEAT ALIGNER">
+<meta name="se:field" content="sub | text | Tempo, grid and every beat marked">
+<meta name="se:field" content="tag | text | NEW">
+<meta name="se:field" content="color | color | #2f7bff">
+<meta name="se:field" content="out | number | 1.6 | 0 | 20 | s">
+```
+
+The pill slides in with a little overshoot on the downbeat (a CSS `@keyframes` with
+`cubic-bezier(.2, 1.4, .35, 1)`) and slides out at the `out` time, just before the next cut. The colour says what
+part of the app it is: blue for editing, green for audio, amber for export, pink for templates, cyan for the
+emulator, purple for animation and the Assistant, orange for colour, red for recording.
+
+The font is **Montserrat Black**. The file sits beside the project and the page loads it with
+`@font-face { font-family: "MB"; src: url("Montserrat-Black.ttf") }`, so the titles look the same on any PC.
+
+The title and end cards are the same idea at full size (`graphics/title-card.html`): the name pops in, the version
+pill follows half a beat later, and the whole card blurs out on the bar line.
+
+## 7. The screen wall
+
+Two bars before the end card, four takes play at once in a 2×2 grid: each at 47 % scale, moved ±470 px across and
+±265 px up and down, each with its own 3D Plane. Their Distance keys are a quarter of a beat apart, so they land
+one after another. Select the four clips and **Nest** them (Ctrl+P, type Nest), and the wall becomes one clip on one track.
+
+## 8. Sound design
+
+![History: one labelled step per technique](/img/trailer/history.jpg)
+
+- A **whoosh on every cut**, placed so its loudest moment is on the cut, not its start. Four different whooshes
+  take turns so it never sounds like a loop.
+- A **riser** that peaks on the drop, and an **impact** on it.
+- A second impact under the end card.
+
+All sound effects are from Mixkit (free licence, no credit needed). The whooshes sit at about half volume under the
+music.
+
+## 9. Comments and history
+
+Every part of the project has a comment marker that says how it was made: open the **Markers** panel or hover a
+marker. Each technique was also done as one labelled undo step, so the **History** panel reads like a recipe
+("Trailer: Shot: Beat Aligner - 3D fly-in, punch on beat 3, whip out"). The project's `HISTORY.md` lists the same
+steps in order.
+
+## 10. Export
+
+Export ▸ **Max quality** at 1920×1080, 60 fps. The Max length of 1:00 stops the export on the last bar.
+
+## Download {#download}
+
+**[Simple Editor 1.4.0 Trailer project (.zip)](#)** *(link coming with the release)*
+
+Inside:
+
+- `Simple Editor 1.4.0 Trailer.sedit` - the project, with every clip, keyframe, effect, label and comment.
+- `media/` - the screen recordings, the sound effects and the font, all inside the folder so it opens on any PC.
+- `graphics/` - the HTML label and title card.
+- `HISTORY.md` - every step in order.
+- `trailer-build.py` - the same edit as a script that drives Simple Editor's MCP server (the same one the [Assistant](./assistant) uses), so you can
+  rebuild it with your own takes and song.
+
+The song is not included. The **Music** track has a comment where it goes: drop your own song there from 0:00, then
+open the Beat Aligner and move the shots if your song's tempo is not 100 BPM.

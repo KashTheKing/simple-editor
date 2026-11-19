@@ -29,5 +29,11 @@ module.exports = {
       collapsed: false,
       items: ['right-click', 'shortcuts', 'advanced', 'scripting', 'report-a-bug'],
     },
+    {
+      type: 'category',
+      label: 'Guides',
+      collapsed: false,
+      items: ['making-the-trailer'],
+    },
   ],
 };
