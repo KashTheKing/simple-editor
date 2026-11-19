@@ -10,7 +10,7 @@
 //! The chrome (`chrome`) wears the editor's theme - Settings ▸ Appearance's theme, palette, Look and
 //! accent, the one thing read from the editor's settings - on a media player's layout: a title strip
 //! with an Editor button, a bottom bar over the video with the scrub bar, the timecode, previous - back
-//! 10 s - play - forward 30 s - next between Reverse and Loop, then speed, tracks (audio tracks mixed,
+//! 10 s - play - forward 10 s - next between Reverse and Loop, then speed, tracks (audio tracks mixed,
 //! any combination), volume, full screen, mini player and More. Esc or the
 //! Editor button builds the editor in this process (`Root`), with the file on the timeline at the
 //! current time.
@@ -35,7 +35,7 @@ use tracks::Tracks;
 
 /// The skip buttons.
 pub const SKIP_BACK: f64 = 10.0;
-pub const SKIP_FORWARD: f64 = 30.0;
+pub const SKIP_FORWARD: f64 = 10.0;
 
 /// How the picture fills the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]

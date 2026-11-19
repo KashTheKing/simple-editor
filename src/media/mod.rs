@@ -163,6 +163,11 @@ pub trait VideoSource: Send {
     fn bytes(&self) -> usize {
         0
     }
+    /// Source time of the first frame decoded after the last seek: the keyframe it started from
+    /// (reverse playback decodes whole runs from there). None: not known.
+    fn seek_landed(&self) -> Option<f64> {
+        None
+    }
 }
 
 pub trait AudioSource: Send {

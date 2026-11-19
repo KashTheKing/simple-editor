@@ -388,6 +388,8 @@ struct MfVideo {
     rpts: i64,
     /// End of the last sample seen from the reader since the last seek.
     last_end: Option<i64>,
+    /// Time of the first sample after the last seek (the keyframe the decoder started from).
+    landed: Option<i64>,
     /// Where the stream ends (known once EOF was hit).
     eof_at: Option<i64>,
     /// MF time of the first frame = content t=0. MF keeps container time (mp4 initial empty edit, MKV
@@ -530,6 +532,7 @@ impl MfVideo {
             end: 0,
             rpts: 0,
             last_end: None,
+            landed: None,
             eof_at: None,
             origin: 0,
             mp4,
@@ -708,6 +711,9 @@ impl MfVideo {
             let Some(sample) = sample else { continue }; // stream tick / gap
             let dur = unsafe { sample.GetSampleDuration() }.unwrap_or(0);
             let end = ts + if dur > 0 { dur } else { self.frame_hns };
+            if self.last_end.is_none() {
+                self.landed = Some(ts);
+            }
             self.last_end = Some(end);
             if end <= tt {
                 continue;
@@ -929,6 +935,9 @@ impl VideoSource for MfVideo {
     }
     fn set_exact(&mut self, on: bool) {
         self.exact = on;
+    }
+    fn seek_landed(&self) -> Option<f64> {
+        self.landed.map(|ts| (ts - self.origin) as f64 / HNS)
     }
     /// Zero-copy sources only, and not once GL gave up on them (`d3d::GpuFrame::fail`), in exact
     /// mode, or with `d3d::MAX_LIVE` frames out: None sends the caller to `frame_shared`.
