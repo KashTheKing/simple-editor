@@ -92,6 +92,8 @@ fn main() {
             // hidden until the first frame is painted (App::update shows it) - otherwise the OS
             // flashes a blank white window at the restored position before we move/paint it
             .with_visible(false)
+            // the menu row is the title bar (`ui::titlebar`, as the player's)
+            .with_decorations(false)
             .with_min_inner_size([900.0, 560.0]),
         window_rect,
     );

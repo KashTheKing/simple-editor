@@ -51,7 +51,10 @@ fn first_run(app: &mut App) {
     let opened = app.project_path.is_some() || !app.project.is_empty() || !app.project.assets.is_empty();
     let forced = std::env::var("SE_FIRST_RUN").is_ok_and(|v| v == "1");
     if should_onboard(app.settings.onboarded, opened, app.screenshot.is_some(), forced) {
-        app.onboarding = Some(Onboarding::new(&app.settings));
+        let mut st = Onboarding::new(&app.settings);
+        // screenshot hook, like SE_LAYOUT: open on card N (0-based)
+        st.step = std::env::var("SE_FIRST_RUN_STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+        app.onboarding = Some(st);
         return;
     }
     // The guard App::new applied on every launch before this wave, verbatim (settings.context_menu,

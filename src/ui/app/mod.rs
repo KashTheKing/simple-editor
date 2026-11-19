@@ -1291,6 +1291,8 @@ impl eframe::App for App {
         // shown cloaked, maximised when it should be, and revealed once a frame at its final size is
         // on screen (`winpos::Reveal`): no white flash, no jump
         let just = self.reveal.step(ctx, _frame, !crate::winpos::background());
+        crate::ui::titlebar::set_palette(ctx, self.palette);
+        crate::ui::titlebar::corners(ctx, _frame);
         if !self.window_shown {
             self.window_shown = true;
             boot::run(self); // ws:forgiveness: offers crash recovery, if any
@@ -1606,8 +1608,11 @@ impl eframe::App for App {
                 .frame(egui::Frame::NONE.fill(egui::Color32::BLACK))
                 .show(ctx, |ui| self.draw_pane(ui, Pane::Preview));
         } else {
-            egui::TopBottomPanel::top("menu").show(ctx, |ui| {
-                actions.extend(self.menu_bar(ui));
+            let frame = egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin { left: 8, ..Default::default() });
+            egui::TopBottomPanel::top("menu").frame(frame).exact_height(crate::ui::titlebar::BUTTON.y).show(ctx, |ui| {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    actions.extend(self.menu_bar(ui));
+                });
             });
             self.ensure_bg_texture(ctx);
             let tab_bar = (self.bg_tex.is_some() && self.settings.panel_opacity < 255).then_some(self.palette.header);
@@ -1687,6 +1692,10 @@ impl eframe::App for App {
                     self.settings.save();
                 }
             });
+            // undecorated: the edges resize (last, so the resize cursor wins over the panes')
+            if !ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+                crate::ui::titlebar::resize_edges(ctx, ctx.content_rect());
+            }
         }
 
         // clipboard and Delete last: the curve and node editors claim those while the pointer is over

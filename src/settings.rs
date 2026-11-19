@@ -330,6 +330,10 @@ pub struct Settings {
     /// The first-run welcome window has been shown (or dismissed) once; consumed by
     /// ws:layout-modes-onboarding (wave 2).
     pub onboarded: bool,
+    /// One window instead of pages: a single workspace (`layout_ctl::ONE_WINDOW`, a page outside `pages`)
+    /// with no page tabs; `pages_page` is the page Pages mode comes back to.
+    pub one_window: bool,
+    pub pages_page: String,
     /// Autosave interval in seconds (0 = off); consumed by ws:forgiveness (wave 1).
     pub autosave_secs: u32,
     // ---- ws:size-diet ----
@@ -775,6 +779,8 @@ impl Default for Settings {
             // ---- ws:registries-schema-hooks ----
             layout_mode: "dynamic".into(),
             onboarded: false,
+            one_window: false,
+            pages_page: String::new(),
             autosave_secs: 30,
             // ---- ws:size-diet ----
             window_rect: None,

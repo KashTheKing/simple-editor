@@ -860,6 +860,8 @@ impl eframe::App for PlayerApp {
             self.engine.wait_first(Duration::from_millis(250));
         }
         self.frame(ctx, Some(frame));
+        crate::ui::titlebar::set_palette(ctx, crate::theme::palette_with(ctx, &self.look));
+        crate::ui::titlebar::corners(ctx, frame);
         let has_picture = self.video.shown.is_some() || self.info.as_ref().is_some_and(|i| !i.has_video) || self.error.is_some();
         // shown cloaked at once (maximised), revealed once a frame with the picture is on screen at
         // that size (`winpos::Reveal`) - or after 1.5 s, whatever it shows

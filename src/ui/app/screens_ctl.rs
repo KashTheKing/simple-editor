@@ -151,10 +151,15 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             for s in &mut app.layout.screens {
                 s.place = None;
             }
-            if let Some(n) = screens::prompt(now.len(), crate::winpos::quiet(), app.settings.screens_answered) {
-                if n != app.settings.screen_mode {
-                    app.screens.ui = screens::ScreensUi { open: true, asked: true };
-                }
+            // never a modal: the welcome wizard asks on a first run; later a toast offers the choice once
+            // per monitor count (shown = answered, as the setup window's Not now was)
+            let answered = app.settings.screens_answered;
+            let ask = screens::prompt(now.len(), crate::winpos::quiet(), answered).filter(|_| app.onboarding.is_none());
+            if let Some(n) = ask.filter(|&n| n != app.settings.screen_mode) {
+                app.settings.screens_answered = answered.max(now.len() as u8);
+                app.settings.save();
+                let msg = format!("{} monitors connected", now.len());
+                app.push_toast(super::feedback::Toast::new(msg).action(&format!("Use {n} screens…"), Action::ScreenSetup));
             }
         }
     }

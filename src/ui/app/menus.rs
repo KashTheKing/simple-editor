@@ -6,7 +6,7 @@
 
 use super::thumbs::*;
 use super::*;
-use crate::ui::menu;
+use crate::ui::{menu, titlebar};
 use std::sync::atomic::Ordering;
 
 /// Action rows (`None` = separator): `menu::action_menu`'s rows without its own scroll area, so a menu
@@ -132,9 +132,20 @@ impl App {
 
     /// The menu bar. Action rows queue through `ui::menu`; the few check rows that flip an Action
     /// return it here.
+    /// It is the window's title bar too (`ui::titlebar`): the empty bar drags the window, the window
+    /// buttons sit at its right.
     pub(super) fn menu_bar(&mut self, ui: &mut egui::Ui) -> Vec<Action> {
         let mut out = Vec::new();
+        let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+        let bar = egui::Rect::from_x_y_ranges(ui.ctx().content_rect().x_range(), ui.max_rect().y_range());
+        titlebar::drag_area(ui, bar, maximized);
+        let caption = titlebar::caption_buttons(ui, &self.palette, bar, maximized);
+        let caption_w = ui.max_rect().right() - caption.left();
         egui::MenuBar::new().ui(ui, |ui| {
+            if let Some(icon) = titlebar::app_icon(ui.ctx()) {
+                let (r, _) = ui.allocate_exact_size(egui::vec2(24.0, 16.0), egui::Sense::hover());
+                titlebar::paint_icon(ui, &icon, r.left_center());
+            }
             menu::button(ui, "File", |ui| menu::scroll(ui, |ui| self.file_menu(ui)));
             menu::button(ui, "Edit", |ui| menu::scroll(ui, |ui| self.edit_menu(ui)));
             menu::button(ui, "Clip", |ui| menu::scroll(ui, |ui| self.clip_menu(ui)));
@@ -142,8 +153,11 @@ impl App {
             menu::button(ui, "Playback", |ui| menu::scroll(ui, |ui| self.playback_menu(ui, &mut out)));
             menu::button(ui, "Window", |ui| menu::scroll(ui, |ui| self.window_menu(ui)));
             menu::button(ui, "Help", |ui| self.help_menu(ui));
-            layout_ctl::page_switcher(self, ui);
+            if !self.settings.one_window {
+                layout_ctl::page_switcher(self, ui);
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(caption_w + 4.0); // clear of the window buttons
                 // ---- ws:quick-export ---- (right-most; the Jobs indicator sits beside it while jobs run)
                 quick_export::button(self, ui);
                 // ---- ws:jobs-panel ----
@@ -440,6 +454,14 @@ impl App {
     /// Window ▸ Layout ▸: Lock panels, this page's reset / saved default, and the layout profiles (which
     /// load onto the page on screen).
     fn layout_menu(&mut self, ui: &mut egui::Ui) {
+        let one = self.settings.one_window;
+        if menu::check(ui, !one, "Pages", "").on_hover_text("Media, Plan, Edit, Animate, Color, Audio and Export tabs in the top bar, each with its own layout").clicked() {
+            layout_ctl::set_one_window(self, false);
+        }
+        if menu::check(ui, one, "One Window", "").on_hover_text("One workspace with no page tabs: every panel is in Window and Ctrl+P, and stays where you dock it").clicked() {
+            layout_ctl::set_one_window(self, true);
+        }
+        ui.separator();
         let lock = menu::check(ui, self.settings.panels_locked, "Lock Panels", "")
             .on_hover_text("Tabs only click. Unlocked, drag a tab to re-dock it; dividers resize either way.");
         if lock.clicked() {
