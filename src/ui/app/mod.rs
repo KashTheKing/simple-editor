@@ -539,7 +539,7 @@ pub struct App {
     path_armed: bool,
     // ---- ws:device-emulator ----
     emulator: crate::ui::emulator::EmuState,
-    /// The Device Emulator's own copy of the picture when the Preview pane is hidden (nobody else uploads it).
+    /// The Platform Emulator's own copy of the picture when the Preview pane is hidden (nobody else uploads it).
     emulator_tex: Option<egui::TextureHandle>,
     // ---- ws:project-color-fps ----
     /// "Match project to this video?" waiting for an answer (`project_match`).

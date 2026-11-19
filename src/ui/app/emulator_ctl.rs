@@ -1,5 +1,5 @@
 //! ---- ws:device-emulator ----
-//! The Device Emulator pane (`ui::emulator`) in the app: its per-project choice, the picture it shows (the
+//! The Platform Emulator pane (`ui::emulator`) in the app: its per-project choice, the picture it shows (the
 //! preview's own texture, or its own upload when the Preview pane is hidden), what its taps do (play, seek,
 //! the project's subtitles), the Screenshot button, and the `emulator.open` / `emulator.screenshot` tools.
 
@@ -17,21 +17,27 @@ fn key(app: &App) -> String {
     app.project_path.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
 }
 
-/// The open project's emulator choice.
+/// The open project's emulator choice: its orientation and gallery, with the platform and device the Preview's
+/// guide shares (`social::platform`, `guide_device`).
 pub(super) fn prefs(app: &App) -> Prefs {
-    app.settings.emulator.get(&key(app)).cloned().unwrap_or_default()
+    let mut p = app.settings.emulator.get(&key(app)).cloned().unwrap_or_default();
+    p.platform = social::platform(&app.settings).to_string();
+    p.device = app.settings.guide_device.clone();
+    p
 }
 
 fn save_prefs(app: &mut App, p: Prefs) {
+    app.settings.guide_device = p.device.clone();
+    social::Set::Pick(p.platform.clone()).apply(&mut app.settings);
     let k = key(app);
     app.settings.emulator.insert(k, p);
     app.settings.save();
 }
 
-/// Show the pane and bring it to the front.
+/// Show the pane and bring it to the front. Through `App::surface`: called from inside a pane (the Preview's
+/// right-click) while the layout is swapped out for drawing, a direct `layout.reveal` was lost.
 pub(super) fn open(app: &mut App) {
-    app.layout.reveal(Pane::Emulator);
-    app.layout_dirty = true;
+    app.surface(Pane::Emulator);
 }
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
@@ -93,6 +99,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             Asked::Seek(t) => app.seek(t),
             Asked::Captions => toggle_captions(app),
             Asked::Saved => save_prefs(app, prefs.clone()),
+            Asked::PreviewGuides => {
+                let show = app.settings.guide.is_none().then(|| prefs.platform.clone());
+                social::Set::Platform(show).apply(&mut app.settings);
+            }
             Asked::Screenshot => screenshot_to_file(app, &prefs),
             Asked::Export => {
                 if let Err(e) = export_device(app, &prefs) {
@@ -226,7 +236,7 @@ fn state_json(app: &App) -> Value {
 pub(crate) const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "emulator.export",
-        desc: "The Device Emulator's Export: render the timeline (or the In/Out range) as a video inside the device with the platform's UI round it (playing, its progress bar following time), with the project's audio, as a background export job. Defaults to the pane's own choice; device / platform / orientation override it for this export. Opens in the media player when done.",
+        desc: "The Platform Emulator's Export: render the timeline (or the In/Out range) as a video inside the device with the platform's UI round it (playing, its progress bar following time), with the project's audio, as a background export job. Defaults to the pane's own choice; device / platform / orientation override it for this export. Opens in the media player when done.",
         args: &[
             "device:string:false:default = the pane's device",
             "platform:string:false:default = the pane's platform",
@@ -242,7 +252,7 @@ pub(crate) const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "emulator.open",
-        desc: "Show the Device Emulator pane on a device and platform: the project's video inside a real phone / tablet / browser / TV with the platform's UI. Any argument left out keeps the current choice (kept per project). Returns the choice and the ids to pick from.",
+        desc: "Show the Platform Emulator pane on a device and platform: the project's video inside a real phone / tablet / browser / TV with the platform's UI. Any argument left out keeps the current choice (kept per project). Returns the choice and the ids to pick from.",
         args: &[
             "device:string:false:a device id (iphone, iphone_se_3rd_gen, iphone_16_pro_max, android, galaxy, tablet, desktop_1080, tv, ...; the result lists them all)",
             "platform:string:false:a guides.list platform id (yt_long, yt_shorts, tiktok, ig_reels, ...)",
@@ -275,7 +285,7 @@ pub(crate) const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "emulator.screenshot",
-        desc: "A picture of the Device Emulator: the frame at the playhead inside the device with the platform's UI. Defaults to the pane's own choice; device / platform / orientation / sheet / view override it for this picture only. menu = the player's settings menu open, buffering = the platform's buffering spinner. Captions follow the project's subtitles switch.",
+        desc: "A picture of the Platform Emulator: the frame at the playhead inside the device with the platform's UI. Defaults to the pane's own choice; device / platform / orientation / sheet / view override it for this picture only. menu = the player's settings menu open, buffering = the platform's buffering spinner. Captions follow the project's subtitles switch.",
         args: &[
             "device:string:false:default = the pane's device",
             "platform:string:false:default = the pane's platform",
@@ -312,6 +322,37 @@ pub(crate) const TOOLS: &[ToolDef] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app() -> App {
+        let scratch = std::env::temp_dir().join(format!("se-emu-test-{}", std::process::id()));
+        *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(scratch);
+        let app = App::build(&egui::Context::default(), None, None);
+        *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        app
+    }
+
+    /// Regression: the Preview's right-click opened the pane while the layout was swapped out for drawing (the
+    /// panes draw with an empty stand-in), so the change was thrown away and nothing opened. Opening from inside
+    /// a pane now waits for the real layout; outside one it shows at once. The pane's platform and device are
+    /// the Preview guide's.
+    #[test]
+    fn open_survives_the_layout_swap_and_prefs_are_shared() {
+        let mut app = app();
+        if app.layout.is_visible(Pane::Emulator) {
+            app.layout.toggle(Pane::Emulator);
+        }
+        let real = std::mem::replace(&mut app.layout, crate::ui::layout::Layout::new(egui_tiles::Tree::empty("layout")));
+        open(&mut app);
+        app.layout = real;
+        assert_eq!(app.deferred_surface, vec![Pane::Emulator], "waits for the real layout");
+        app.deferred_surface.clear();
+        open(&mut app);
+        assert!(app.layout.is_visible(Pane::Emulator), "shown");
+        app.settings.guide = Some("yt_long".into());
+        app.settings.guide_device = "galaxy".into();
+        let p = prefs(&app);
+        assert_eq!((p.platform.as_str(), p.device.as_str()), ("yt_long", "galaxy"));
+    }
 
     /// Every argument of both tools is checked: unknown ids, orientations, sheets and views are refused.
     #[test]

@@ -547,26 +547,51 @@ impl Map {
     }
 }
 
+/// The Platform Emulator's platform: the one pick the Preview's guide and the Platform Emulator pane share
+/// (`settings.guide` is that pick while the guide is shown on the Preview, None while it is hidden).
+pub fn platform(s: &crate::settings::Settings) -> &str {
+    s.guide.as_deref().unwrap_or(&s.platform)
+}
+
 /// What the viewer's menus ask the app to change.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Set {
+    /// Pick a platform and show its guide on the Preview (None = hide the guide, keep the pick).
     Platform(Option<String>),
+    /// Pick a platform, the guide shown or hidden as it was (the Platform Emulator pane's picker).
+    Pick(String),
     Mode(Mode),
-    Device(String),
     Worst(bool),
     View(ViewMode),
     Keep(bool),
     Render(bool),
     /// (network, profile id)
     Profile(String, String),
+    /// Show the Platform Emulator pane (no setting changes; the caller opens it).
+    Open,
 }
 
 impl Set {
+    /// Change `s` and save it.
     pub fn apply(self, s: &mut crate::settings::Settings) {
+        if self.change(s) {
+            s.save();
+        }
+    }
+    /// Change `s` (not saved); false when nothing is a setting (`Open`).
+    pub fn change(self, s: &mut crate::settings::Settings) -> bool {
         match self {
-            Set::Platform(p) => s.guide = p,
+            Set::Platform(p) => {
+                s.platform = p.clone().unwrap_or_else(|| platform(s).to_string());
+                s.guide = p;
+            }
+            Set::Pick(p) => {
+                if s.guide.is_some() {
+                    s.guide = Some(p.clone());
+                }
+                s.platform = p;
+            }
             Set::Mode(m) => s.guide_mode = m.id().into(),
-            Set::Device(d) => s.guide_device = d,
             Set::Worst(w) => s.guide_worst = w,
             Set::View(v) => s.guide_view = v.id().into(),
             Set::Keep(k) => s.guides_keep_aspect = k,
@@ -574,73 +599,73 @@ impl Set {
             Set::Profile(net, id) => {
                 s.social_active.insert(net, id);
             }
+            Set::Open => return false,
         }
-        s.save();
+        true
     }
 }
 
-/// The "Social Guides" menu: platform, mode, device, profile and the options. Shared by the viewer's
-/// right-click and the Window menu.
+/// The "Platform Emulator" menu (the Preview's right-click): the platforms (the one ticked is the pick the
+/// Preview's guide and the Platform Emulator pane share), Show Guides on Preview, Open Platform Emulator, and
+/// the guide's options.
 pub fn menu_rows(ui: &mut eframe::egui::Ui, s: &crate::settings::Settings) -> Option<Set> {
     use crate::ui::menu;
     let d = data();
     let mut out = None;
-    if menu::check(ui, s.guide.is_none(), "Off", "").clicked() {
-        out = Some(Set::Platform(None));
-    }
+    let cur = platform(s);
     for p in &d.platforms {
-        if menu::check(ui, s.guide.as_deref() == Some(p.id.as_str()), &p.n, "").clicked() {
+        if menu::check(ui, cur == p.id, &p.n, "").clicked() {
             out = Some(Set::Platform(Some(p.id.clone())));
         }
     }
     ui.separator();
-    for m in Mode::ALL {
-        if menu::check(ui, Mode::from_id(&s.guide_mode) == m, m.name(), "").clicked() {
-            out = Some(Set::Mode(m));
-        }
+    let shown = s.guide.is_some();
+    if menu::check(ui, shown, "Show Guides on Preview", "").on_hover_text("Draw the platform's safe zones, UI or device over the Preview").clicked() {
+        out = Some(Set::Platform((!shown).then(|| cur.to_string())));
     }
-    ui.separator();
-    menu::sub(ui, None, "Device", |ui| {
-        for dev in &d.devices {
-            if menu::check(ui, s.guide_device == dev.id, &dev.n, "").clicked() {
-                out = Some(Set::Device(dev.id.clone()));
+    if menu::row(ui, Some(crate::ui::tools::Glyph::Guides), "Open Platform Emulator", "").on_hover_text("The video inside real devices with the platform's app round it").clicked() {
+        out = Some(Set::Open);
+    }
+    menu::sub(ui, None, "Guide Options", |ui| {
+        for m in Mode::ALL {
+            if menu::check(ui, Mode::from_id(&s.guide_mode) == m, m.name(), "").clicked() {
+                out = Some(Set::Mode(m));
             }
+        }
+        if d.platform(cur).is_some_and(|p| p.pg == "watch") {
+            menu::sub(ui, None, "Player view (desktop)", |ui| {
+                for m in ViewMode::ALL {
+                    if menu::check(ui, ViewMode::from_id(&s.guide_view).unwrap_or_default() == m, m.name(), "").clicked() {
+                        out = Some(Set::View(m));
+                    }
+                }
+            });
+        }
+        if let Some(net) = d.platform(cur).map(|p| p.net.clone()) {
+            let profiles: Vec<_> = s.social_profiles.iter().filter(|p| p.net == net).collect();
+            menu::sub(ui, None, "Preview as", |ui| {
+                let active = s.active_profile(&net).map(|p| p.id.clone());
+                if profiles.is_empty() {
+                    ui.weak("No profile yet: Settings ▸ Social");
+                }
+                for p in profiles {
+                    if menu::check(ui, active.as_deref() == Some(p.id.as_str()), &p.label(), "").clicked() {
+                        out = Some(Set::Profile(net.clone(), p.id.clone()));
+                    }
+                }
+            });
+        }
+        ui.separator();
+        if menu::check(ui, s.guide_worst, "Worst case of all platforms", "").clicked() {
+            out = Some(Set::Worst(!s.guide_worst));
+        }
+        if menu::check(ui, s.guides_keep_aspect, "Maintain Aspect Ratio", "").clicked() {
+            out = Some(Set::Keep(!s.guides_keep_aspect));
+        }
+        if menu::check(ui, s.guide_render, "Draw in render.frame and contact sheets", "").clicked() {
+            out = Some(Set::Render(!s.guide_render));
         }
     });
-    if s.guide.as_deref().and_then(|g| d.platform(g)).is_some_and(|p| p.pg == "watch") {
-        menu::sub(ui, None, "Player view (desktop)", |ui| {
-            for m in ViewMode::ALL {
-                if menu::check(ui, ViewMode::from_id(&s.guide_view).unwrap_or_default() == m, m.name(), "").clicked() {
-                    out = Some(Set::View(m));
-                }
-            }
-        });
-    }
-    let net = s.guide.as_deref().and_then(|g| d.platform(g)).map(|p| p.net.clone());
-    if let Some(net) = net {
-        let profiles: Vec<_> = s.social_profiles.iter().filter(|p| p.net == net).collect();
-        menu::sub(ui, None, "Preview as", |ui| {
-            let active = s.active_profile(&net).map(|p| p.id.clone());
-            if profiles.is_empty() {
-                ui.weak("No profile yet: Settings ▸ Social");
-            }
-            for p in profiles {
-                if menu::check(ui, active.as_deref() == Some(p.id.as_str()), &p.label(), "").clicked() {
-                    out = Some(Set::Profile(net.clone(), p.id.clone()));
-                }
-            }
-        });
-    }
-    ui.separator();
-    if menu::check(ui, s.guide_worst, "Worst case of all platforms", "").clicked() {
-        out = Some(Set::Worst(!s.guide_worst));
-    }
-    if menu::check(ui, s.guides_keep_aspect, "Maintain Aspect Ratio", "").clicked() {
-        out = Some(Set::Keep(!s.guides_keep_aspect));
-    }
-    if menu::check(ui, s.guide_render, "Draw in render.frame and contact sheets", "").clicked() {
-        out = Some(Set::Render(!s.guide_render));
-    }
     out
 }
 

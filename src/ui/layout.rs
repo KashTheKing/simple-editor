@@ -314,6 +314,10 @@ impl Pane {
         if name.eq_ignore_ascii_case("Effects") || name.eq_ignore_ascii_case("Transitions") {
             return Some(Pane::Presets);
         }
+        // its name before 1.4.0
+        if name.eq_ignore_ascii_case("Device Emulator") {
+            return Some(Pane::Emulator);
+        }
         Pane::ALL.iter().copied().find(|p| p.title().eq_ignore_ascii_case(name))
     }
     pub fn title(self) -> &'static str {
@@ -350,7 +354,7 @@ impl Pane {
             Pane::Rendering => "Rendering",
             Pane::BeatAligner => "Beat Aligner",
             Pane::Playlists => "Playlists",
-            Pane::Emulator => "Device Emulator",
+            Pane::Emulator => "Platform Emulator",
             Pane::ScreenRecording => "Screen Recording",
         }
     }

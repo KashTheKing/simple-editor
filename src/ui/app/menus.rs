@@ -397,11 +397,6 @@ impl App {
             }
         });
         ui.separator();
-        menu::sub(ui, Some(tools::Glyph::Guides), "Social Guides", |ui| {
-            if let Some(set) = crate::ui::social::menu_rows(ui, &self.settings) {
-                set.apply(&mut self.settings);
-            }
-        });
         menu::sub(ui, None, "Layout", |ui| self.layout_menu(ui));
         // ---- ws:panels-multiscreen ----
         acts(ui, &[Some(Action::ScreenSetup)]);

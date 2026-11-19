@@ -145,7 +145,7 @@ pub(super) fn bool_settings(s: &Settings) -> Vec<(&'static str, &'static str, bo
         ("auto_close_gaps", "Close gaps automatically"),
         ("gpu", "GPU preview"),
         ("buffer_before_play", "Buffer before playing"),
-        ("export_guide", "Social guide in exports"),
+        ("export_guide", "Platform guide in exports"),
         ("mcp_enabled", "MCP server (live co-editing)"),
         ("assistant_guard", "Ask before an agent exports or opens"),
         ("voice_autosend", "Send voice requests automatically"),

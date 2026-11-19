@@ -1100,3 +1100,26 @@ fn full_width_scrims_reach_the_screen_edges() {
         }
     }
 }
+
+/// The Platform Emulator's one platform pick: the Preview's guide and the pane share it. Hiding the guide keeps
+/// the pick, the pane's picker changes it without showing or hiding the guide, and a pick from the Preview's
+/// menu shows it.
+#[test]
+fn the_preview_guide_and_the_pane_share_one_platform() {
+    let mut s = Settings::default();
+    assert_eq!((platform(&s), s.guide.as_deref()), ("tiktok", None));
+    assert!(Set::Platform(Some("yt_long".into())).change(&mut s));
+    assert_eq!((platform(&s), s.guide.as_deref()), ("yt_long", Some("yt_long")));
+    Set::Platform(None).change(&mut s);
+    assert_eq!((platform(&s), s.guide.as_deref()), ("yt_long", None), "hidden, the pick stays");
+    Set::Pick("ig_reels".into()).change(&mut s);
+    assert_eq!((platform(&s), s.guide.as_deref()), ("ig_reels", None), "the pane's pick does not show the guide");
+    Set::Platform(Some(platform(&s).to_string())).change(&mut s);
+    Set::Pick("yt_shorts".into()).change(&mut s);
+    assert_eq!((platform(&s), s.guide.as_deref()), ("yt_shorts", Some("yt_shorts")), "shown, the guide follows the pane");
+    // a guide saved before 1.4.0 (only `guide` set) is the pick
+    let old = Settings { guide: Some("x_video".into()), ..Settings::default() };
+    assert_eq!(platform(&old), "x_video");
+    assert!(!Set::Open.change(&mut s), "Open is no setting");
+}
+
