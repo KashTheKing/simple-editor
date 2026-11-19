@@ -1,12 +1,12 @@
 ---
 title: How the 1.4.0 trailer was made
-description: A step-by-step walkthrough of the Simple Editor 1.4.0 trailer - beat grid, screen recordings, 3D screens with motion blur, HTML labels, a visualizer background and sound design - and the free project to download.
+description: A step-by-step walkthrough of the Simple Editor 1.4.0 trailer - beat grid, screen recordings, 3D screens with motion blur, keyframed text labels, a visualizer background and sound design - and the free project to download.
 ---
 
 ![The trailer project on the Edit page](/img/trailer/edit-page.jpg)
 
 The 1.4.0 trailer was cut entirely in Simple Editor: its own timeline, keyframes, the **3D Plane** and **Motion Blur**
-effects, an audio visualizer and HTML layers for every title. Nothing was done in another program. This page shows
+effects, an audio visualizer and plain Text clips for every title. Nothing was done in another program. This page shows
 how each part was made, so you can make one like it for your own app, game or channel.
 
 :::tip Download the project
@@ -99,27 +99,25 @@ beat without a single keyframe.
 
 ## 6. Labels and titles
 
-Every feature gets a pill at the top left: a small tag (NEW or 1.4), the name and one short line. They are
-[HTML layers](./html-layers) made from one file, `graphics/feature-label.html`, with fields for the text and the colour:
+Every feature gets a pill at the top left: a small tag (NEW or 1.4), the name and one short line under it. Each
+pill is two ordinary **Text** clips:
 
-```html
-<meta name="se:field" content="title | text | BEAT ALIGNER">
-<meta name="se:field" content="sub | text | Tempo, grid and every beat marked">
-<meta name="se:field" content="tag | text | NEW">
-<meta name="se:field" content="color | color | #2f7bff">
-<meta name="se:field" content="out | number | 1.6 | 0 | 20 | s">
-```
+| Clip | Style |
+|---|---|
+| `NEW  \|  BEAT ALIGNER` | Montserrat (Black), 58 px, white, a **Box** behind it in the area's colour with 18 px padding, a soft shadow |
+| the line under it | Montserrat, 30 px, white, a darker shadow so it reads over any screen |
 
-The pill slides in with a little overshoot on the downbeat (a CSS `@keyframes` with
-`cubic-bezier(.2, 1.4, .35, 1)`) and slides out at the `out` time, just before the next cut. The colour says what
-part of the app it is: blue for editing, green for audio, amber for export, pink for templates, cyan for the
-emulator, purple for animation and the Assistant, orange for colour, red for recording.
+Both slide in from the left on the downbeat and out just before the next cut. That is one keyframed property,
+**Position X**: 900 px off to the left, then home in 0.32 s with the same fast-start ease as the screens, then away
+to the left in the last 0.3 s with the whip ease. A quick **Opacity** fade hides the ends. The line under the title
+starts 0.08 s later, so the two arrive one after the other.
 
-The font is **Montserrat Black**. The file sits beside the project and the page loads it with
-`@font-face { font-family: "MB"; src: url("Montserrat-Black.ttf") }`, so the titles look the same on any PC.
+The colour says what part of the app the feature is in: blue for editing, green for audio, amber for export, pink
+for templates, cyan for the emulator, purple for animation and the Assistant, orange for colour, red for recording.
 
-The title and end cards are the same idea at full size (`graphics/title-card.html`): the name pops in, the version
-pill follows half a beat later, and the whole card blurs out on the bar line.
+The title and end cards are three Text clips each: the name at 150 px, the version in a pink box half a beat later,
+and a spaced-out line a beat later. Their **Scale** goes from 25 % to 100 % with the fast-start ease, and on the
+last bar line up to 240 % while the **Opacity** drops to 0, so the card blows out towards you.
 
 ## 7. The screen wall
 
@@ -157,8 +155,9 @@ Export ▸ **Max quality** at 1920×1080, 60 fps. The Max length of 1:00 stops t
 Inside:
 
 - `Simple Editor 1.4.0 Trailer.sedit` - the project, with every clip, keyframe, effect, label and comment.
-- `media/` - the screen recordings, the sound effects and the font, all inside the folder so it opens on any PC.
-- `graphics/` - the HTML label and title card.
+- the screen recordings and the sound effects, inside the folder so it opens on any PC.
+- `Montserrat-Black.ttf` - the font of every title (SIL Open Font License). Install it (right-click ▸ Install)
+  before you open the project, or the titles fall back to Arial.
 - `HISTORY.md` - every step in order.
 - `trailer-build.py` - the same edit as a script that drives Simple Editor's MCP server (the same one the [Assistant](./assistant) uses), so you can
   rebuild it with your own takes and song.
