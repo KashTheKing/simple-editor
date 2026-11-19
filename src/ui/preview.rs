@@ -1,13 +1,15 @@
 //! Preview panel: the rendered frame (letterboxed, black bars), a selection outline for the selected
 //! visual clip (drag to move = edits clip.x / clip.y at the playhead time via `Animated::set_at`, calling
-//! `undo` once at drag start), a thin scrub line under the picture (taller on hover) and ONE transport
-//! row (`transport_row`, shared with the Source monitor): the click-to-type timecode on the left, go to
-//! start / step back / play-pause / step forward / go to end centred, Zoom ▾ and Fullscreen on the right
-//! (plus an amber "N dropped" while frames drop). Everything else - Stop, marks, playback resolution,
-//! proxies, movie mode, social guides, Scopes, background, canvas snap - is on the viewer's right-click
-//! (`viewer_menu`), led by rows for the clip under the pointer. The tool rail (`tools::rail`) floats
-//! over the viewer's left edge, and a shape / draw / mask tool's options in a strip along its top.
-//! In `fullscreen` mode only the video is drawn (no transport, no overlay): Esc / F11 leave it (app).
+//! `undo` once at drag start) and, under it, the media player's bar (`ui::media_bar`, shared with the
+//! Source monitor): a seek bar with ticks and hover thumbnails, the play controls, speed and Full screen,
+//! with Zoom ▾ (plus an amber "N dropped" while frames drop) on the right. A real edit (not one clip)
+//! also gets the editor's extras: frame steps and cuts, Mark In / Out, Add Marker, the markers on the
+//! seek bar and a click-to-type timecode. Everything else - Stop, playback resolution, proxies, movie
+//! mode, social guides, Scopes, background, canvas snap - is on the viewer's right-click (`viewer_menu`),
+//! led by rows for the clip under the pointer. The tool rail (`tools::rail`) floats over the viewer's
+//! left edge, and a shape / draw / mask tool's options in a strip along its top.
+//! In `fullscreen` mode the video fills the screen and the same bar comes up over it on a mouse move,
+//! as in the media player (it hides, with the cursor, while the pointer rests): Esc / F11 leave it (app).
 //!
 //! When `PreviewCtx.tool` is anything but `Tool::Select`, a click-drag over the video draws instead of
 //! moving the clip: a shape tool reports `new_shape`, the Draw tool records a timed `stroke`, and a mask
@@ -38,8 +40,8 @@ use crate::model::{
 };
 use crate::theme::Palette;
 use crate::ui::guides::{canvas_snap, paint_canvas_guides};
-use crate::ui::tools::{self, draw_glyph, glyph_text_button, Dir, Glyph, Tool, ToolsState};
-use crate::ui::{menu, parse_timecode, timecode};
+use crate::ui::tools::{self, draw_glyph, Glyph, Tool, ToolsState};
+use crate::ui::{media_bar, menu, parse_timecode, timecode};
 use eframe::egui::{
     self, pos2, vec2, Color32, CursorIcon, PointerButton, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, TextureOptions,
     Vec2,
@@ -416,6 +418,12 @@ pub struct PreviewCtx<'a> {
     pub use_proxies: bool,
     /// `Player::dropped_frames`, shown as a small transport badge when non-zero.
     pub dropped: u64,
+    /// The transport's rate (negative = reverse) and whether Loop is on, for the bar's speed / loop /
+    /// reverse buttons.
+    pub rate: f64,
+    pub looping: bool,
+    /// The hover card's pictures: the editor's thumbnail cache (None in tests).
+    pub thumbs: Option<&'a mut crate::media::thumbs::ThumbCache>,
     // ---- ws:pro-monitor ----
     /// The dual-frame trim view's decoded (outgoing, incoming) frames - `Some` only while
     /// `Settings.trim_view` is on AND an edit point is selected (`monitor::trim_frames`). Painted instead
@@ -471,27 +479,35 @@ pub struct PreviewResponse {
     // ---- ws:viewer-surface ----
     /// A right-click landed on this unselected clip: it becomes the selection.
     pub select: Option<Id>,
+    /// The bar's speed menu picked this speed (unsigned), its Reverse and Loop buttons were clicked.
+    pub set_rate: Option<f64>,
+    pub reverse: bool,
+    pub toggle_loop: bool,
 }
 
 pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) -> PreviewResponse {
     let mut r = PreviewResponse::default();
     if c.fullscreen {
         video(ui, state, &mut c, &mut r);
-        // transport overlay: summoned by mouse movement (pointer-only, so spacebar play/pause never
-        // reveals it), gone 2.5 s after the mouse stops - and at once when the pointer leaves the video
+        // the media player's full screen: the bar over the bottom of the picture, summoned by mouse
+        // movement (pointer-only, so Space never reveals it), gone 2.5 s after the mouse rests while
+        // playing - and at once when the pointer leaves; the cursor hides with it
         let full = ui.max_rect();
+        let bar_rect = Rect::from_min_max(pos2(full.left(), full.bottom() - media_bar::BAR_H), full.max);
         let (pointer, moved, clicked) = ui.input(|i| {
             let moved = i.events.iter().any(|e| matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. }));
             (i.pointer.hover_pos(), moved, i.pointer.primary_clicked())
         });
-        let on_bar = pointer.is_some_and(|p| state.fs_bar.is_some_and(|b| b.contains(p)));
+        let on_bar = pointer.is_some_and(|p| bar_rect.contains(p));
         let input = crate::ui::autohide::Input {
             now: state.hide_clock.elapsed().as_secs_f64(),
             pointer_in: pointer.is_some_and(|p| full.contains(p)),
             moved,
-            keep: on_bar,
-            hold: false,
-            // a click on the picture hides a shown transport at once
+            // paused, or over the bar: it stays up while the pointer is in
+            keep: on_bar || !c.playing,
+            // the speed menu is open
+            hold: egui::Popup::is_any_open(ui.ctx()),
+            // a click on the picture hides a shown bar at once
             dismiss: clicked && !on_bar,
         };
         let out = state.hide.step(input);
@@ -504,65 +520,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
         state.fs_bar = None;
         // drawn from the frame it is summoned on (its fade-in starts at opacity 0)
         if out.opacity > 0.0 || state.hide.shown() {
-            let shown = egui::Area::new(ui.id().with("fs_transport"))
-                .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -24.0))
-                .order(egui::Order::Foreground)
-                .show(ui.ctx(), |ui| {
-                    ui.set_opacity(out.opacity);
-                    egui::Frame::popup(ui.style()).fill(c.palette.panel.gamma_multiply(0.92)).show(ui, |ui| {
-                        ui.set_width(560.0);
-                        ui.vertical(|ui| {
-                            let (seek, _) =
-                                scrub_bar(ui, c.project.duration(), c.playhead, c.palette, ui.available_width());
-                            r.seek = seek.or(r.seek);
-                            transport(ui, state, &c, &mut r);
-                        });
-                    });
-                });
-            state.fs_bar = Some(shown.response.rect);
+            let mut bar_ui = ui.new_child(egui::UiBuilder::new().id_salt("fs_bar").max_rect(bar_rect));
+            bar_ui.set_opacity(out.opacity);
+            bar(&mut bar_ui, state, &mut c, &mut r, bar_rect);
+            state.fs_bar = Some(bar_rect);
         }
         return r;
     }
     ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-        transport(ui, state, &c, &mut r);
-        let (seek, _) = scrub_bar(ui, c.project.duration(), c.playhead, c.palette, ui.available_width());
-        r.seek = seek.or(r.seek);
+        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), media_bar::BAR_H), Sense::hover());
+        bar(ui, state, &mut c, &mut r, rect);
         video(ui, state, &mut c, &mut r);
     });
     if c.rail {
         overlays(ui, state, &mut c);
     }
     r
-}
-
-/// Progress / scrub strip under a picture, shared with the Source monitor (which paints its marks over
-/// the returned bar): a thin line at rest, the whole strip while hovered or dragged. A click or drag
-/// anywhere on the strip seeks; returns the seek target (seconds) and the bar as painted.
-pub(crate) fn scrub_bar(
-    ui: &mut egui::Ui,
-    duration: f64,
-    playhead: f64,
-    palette: &Palette,
-    width: f32,
-) -> (Option<f64>, Rect) {
-    let duration = duration.max(f64::MIN_POSITIVE);
-    let (strip, br) = ui.allocate_exact_size(vec2(width, 10.0), egui::Sense::click_and_drag());
-    let bar = if br.hovered() || br.dragged() {
-        strip.shrink2(vec2(0.0, 1.0))
-    } else {
-        Rect::from_min_size(strip.min, vec2(width, 3.0))
-    };
-    ui.painter().rect_filled(bar, 1.5, palette.border);
-    let frac = (playhead / duration).clamp(0.0, 1.0) as f32;
-    let filled = Rect::from_min_max(bar.min, pos2(bar.left() + bar.width() * frac, bar.bottom()));
-    ui.painter().rect_filled(filled, 1.5, palette.accent);
-    if (br.clicked() || br.dragged()) && strip.width() > 0.0 {
-        if let Some(p) = br.interact_pointer_pos() {
-            let f = ((p.x - strip.left()) / strip.width()) as f64;
-            return (Some(scrub_time(f, duration)), bar);
-        }
-    }
-    (None, bar)
 }
 
 /// Time a scrub-bar click/drag at fractional position `frac` (0..1 across the bar, unclamped so a drag
@@ -572,11 +545,6 @@ pub(crate) fn scrub_time(frac: f64, duration: f64) -> f64 {
 }
 
 // ---- ws:viewer-surface ----
-/// The transport's play buttons, in the order they sit: go to start, step back, play / pause, step
-/// forward, go to end (previous / next cut stay on Up / Down).
-const PLAY_ROW: [Action; 5] =
-    [Action::GoStart, Action::StepBack, Action::PlayPause, Action::StepForward, Action::GoEnd];
-
 /// A button's tooltip: the action's label and its live shortcut (menu snapshot).
 pub(crate) fn tip(a: Action) -> String {
     match menu::shortcut(a) {
@@ -585,73 +553,65 @@ pub(crate) fn tip(a: Action) -> String {
     }
 }
 
-/// One transport row, shared by the program and Source monitors: `left` hugs the left edge, `right` the
-/// right edge (laid out right to left), and the five play buttons sit centred in the row - pushed right
-/// of `left` when the row is narrow. Returns the clicked play button's Action and the buttons' rect.
-/// ponytail: below ~360 pt the play buttons overlap `right`; wrap the row if monitors get that small.
-pub(crate) fn transport_row(
-    ui: &mut egui::Ui,
-    playing: bool,
-    left: impl FnOnce(&mut egui::Ui),
-    right: impl FnOnce(&mut egui::Ui),
-) -> (Option<Action>, Rect) {
-    let h = 28.0;
-    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::hover());
-    let inner = row.shrink2(vec2(6.0, 0.0));
-    let side = |ui: &mut egui::Ui, salt: &str, layout: egui::Layout, add: &mut dyn FnMut(&mut egui::Ui)| {
-        let mut ui = ui.new_child(egui::UiBuilder::new().id_salt(salt).max_rect(inner).layout(layout));
-        ui.spacing_mut().item_spacing.x = 4.0;
-        add(&mut ui);
-        ui.min_rect()
+/// The program monitor's bar (`media_bar`, the media player's): the player controls, plus - for a real
+/// edit, not one clip - the editor's (frame steps, cuts, marks, markers, a typed timecode); Zoom ▾ and,
+/// only while frames drop, an amber "N dropped" on the right; a one-clip timeline names its file on the
+/// left, as the player does.
+fn bar(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &mut PreviewResponse, rect: Rect) {
+    let (pw, fit_px) = (c.project.width, state.fit_px);
+    let project: &Project = &*c.project;
+    let edit = !media_bar::is_single_clip(project);
+    let markers = if edit {
+        project
+            .markers
+            .iter()
+            .map(|m| (m.t, m.duration, crate::ui::label_color(m.label, c.palette)))
+            .collect()
+    } else {
+        Vec::new()
     };
-    let (mut left, mut right) = (Some(left), Some(right));
-    let l = side(ui, "transport-left", egui::Layout::left_to_right(egui::Align::Center), &mut |ui| {
-        if let Some(f) = left.take() {
-            f(ui);
-        }
-    });
-    let rr = side(ui, "transport-right", egui::Layout::right_to_left(egui::Align::Center), &mut |ui| {
-        if let Some(f) = right.take() {
-            f(ui);
-        }
-    });
-    let gap = 2.0;
-    let bw = 18.0 + ui.spacing().button_padding.x * 2.0; // `glyph_text_button` without text
-    let w = PLAY_ROW.len() as f32 * bw + (PLAY_ROW.len() - 1) as f32 * gap;
-    let cx = row.center().x.min(rr.left() - 12.0 - w / 2.0).max(l.right() + 12.0 + w / 2.0);
-    let group = Rect::from_center_size(pos2(cx, row.center().y), vec2(w, h));
-    let layout = egui::Layout::left_to_right(egui::Align::Center);
-    let mut ui = ui.new_child(egui::UiBuilder::new().id_salt("transport-play").max_rect(group).layout(layout));
-    ui.spacing_mut().item_spacing.x = gap;
-    let mut hit = None;
-    for a in PLAY_ROW {
-        let g = match a {
-            Action::GoStart => Glyph::Jump(Dir::Left),
-            Action::StepBack => Glyph::Tri(Dir::Left),
-            Action::PlayPause if playing => Glyph::Pause,
-            Action::PlayPause => Glyph::Play,
-            Action::StepForward => Glyph::Tri(Dir::Right),
-            _ => Glyph::Jump(Dir::Right),
-        };
-        if glyph_text_button(&mut ui, g, "").on_hover_text(tip(a)).clicked() {
-            hit = Some(a);
-        }
-    }
-    (hit, group)
-}
-
-/// The program monitor's transport: the timecode, the play buttons, Zoom ▾, Fullscreen and - only
-/// while frames drop - an amber "N dropped".
-fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r: &mut PreviewResponse) {
-    let (fps, pw, fit_px) = (c.project.fps, c.project.width, state.fit_px);
+    let name = (!edit)
+        .then(|| {
+            project.all_clips().find_map(|(_, cl)| project.asset(cl.asset)).map(|a| {
+                std::path::Path::new(&a.path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+            })
+        })
+        .flatten();
+    // the hover card's picture: the thumbnail cache only (a miss is queued on its worker, never decoded here)
+    let mut thumbs = c.thumbs.as_deref_mut();
+    let ctx = ui.ctx().clone();
+    let mut thumb = |t: f64| {
+        let (path, st) = media_bar::thumb_source(project, t)?;
+        thumbs.as_mut()?.texture(&ctx, &path, st, 90)
+    };
     let (tc_edit, view) = (&mut state.tc_edit, &mut state.view);
-    let (mut seek, mut full) = (None, false);
-    let (hit, group) = transport_row(
+    let (out, group) = media_bar::show(
         ui,
-        c.playing,
-        |ui| seek = timecode_label(ui, tc_edit, c.playhead, c.project.duration(), fps),
+        c.palette,
+        rect,
+        media_bar::Bar {
+            t: c.playhead,
+            dur: project.duration(),
+            fps: project.fps,
+            playing: c.playing,
+            rate: c.rate,
+            looping: c.looping,
+            edit,
+            marks: (project.in_point, project.out_point),
+            markers,
+            cuts: Vec::new(),
+            fullscreen: c.fullscreen,
+            fullscreen_button: true,
+            tc_edit: Some(tc_edit),
+            thumb: &mut thumb,
+        },
         |ui| {
-            full = glyph_text_button(ui, Glyph::Fullscreen, "").on_hover_text(tip(Action::Fullscreen)).clicked();
+            if let Some(n) = &name {
+                let text = egui::RichText::new(n).size(13.0).color(c.palette.text);
+                ui.add(egui::Label::new(text).truncate());
+            }
+        },
+        |ui| {
             zoom_button(ui, view, fit_px, pw);
             if c.dropped > 0 {
                 let text =
@@ -661,11 +621,14 @@ fn transport(ui: &mut egui::Ui, state: &mut PreviewState, c: &PreviewCtx<'_>, r:
         },
     );
     state.transport = group;
-    r.actions.extend(hit);
-    if full {
-        r.actions.push(Action::Fullscreen);
+    r.actions.extend(out.actions);
+    if let Some(s) = out.skip {
+        r.seek = Some((c.playhead + s).clamp(0.0, project.duration()));
     }
-    r.seek = seek.or(r.seek);
+    r.seek = out.seek.or(r.seek);
+    r.set_rate = out.rate;
+    r.reverse = out.reverse;
+    r.toggle_loop = out.toggle_loop;
 }
 
 /// Viewer zoom presets: `None` = Fit, else a percentage of the project's own pixels.
@@ -2100,14 +2063,18 @@ mod tests {
         /// ---- ws:play-gate ---- the Buffering pill (and its spinner) shown over the video.
         buffer_note: Option<String>,
         fullscreen: bool,
+        playing: bool,
     }
 
     impl H {
         fn new() -> Self {
             let mut project = Project::new();
             project.tracks[0].clips.push(Clip::new(7, ClipKind::Video, "v", 0.0, 4.0));
+            // the bar's icons are in the icon font: a bare context has no such family
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::test_fonts());
             Self {
-                ctx: egui::Context::default(),
+                ctx,
                 state: PreviewState::default(),
                 project,
                 selection: vec![7],
@@ -2124,6 +2091,7 @@ mod tests {
                 guide_chip: Vec::new(),
                 buffer_note: None,
                 fullscreen: false,
+                playing: false,
             }
         }
         fn frame(&mut self, events: Vec<Event>) -> PreviewResponse {
@@ -2155,6 +2123,7 @@ mod tests {
                 guide_chip,
                 buffer_note,
                 fullscreen,
+                playing,
                 ..
             } = self;
             let mut out = PreviewResponse::default();
@@ -2169,7 +2138,7 @@ mod tests {
                             project,
                             selection,
                             playhead: 1.0,
-                            playing: false,
+                            playing: *playing,
                             fullscreen: *fullscreen,
                             palette: &pal,
                             undo: &mut undo,
@@ -2189,6 +2158,9 @@ mod tests {
                             alt_texture: None,
                             use_proxies: *use_proxies,
                             dropped: 0,
+                            rate: 1.0,
+                            looping: false,
+                            thumbs: None,
                             trim_frames: trim_frames.clone(),
                             pick_mode: *pick_mode,
                             stats: stats.as_ref(),
@@ -2312,12 +2284,32 @@ mod tests {
     #[test]
     fn transport_is_centred_under_the_video() {
         let mut h = H::new();
-        h.frame(vec![]); // measures
-        h.frame(vec![]); // centres with the measurement
+        h.frame(vec![]);
+        h.frame(vec![]);
         let row = h.state.transport;
         assert!(row.width() > 100.0, "transport measured: {row:?}");
-        let dx = (row.center().x - h.panel.center().x).abs();
-        assert!(dx < 6.0, "transport centre {} vs panel centre {}", row.center().x, h.panel.center().x);
+        let c = h.panel.center().x;
+        assert!(row.left() < c && c < row.right(), "the play controls straddle the centre: {row:?}");
+    }
+
+    /// One clip (an opened file): the plain player controls. A second clip makes it an edit, and the bar
+    /// grows the editor's extras: frame steps in the middle, Mark In / Out and Add Marker on the left.
+    #[test]
+    fn the_bar_adds_the_editor_extras_only_for_an_edit() {
+        let mut h = H::new();
+        h.panel = Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 460.0));
+        h.frame(vec![]);
+        h.frame(vec![]);
+        let plain = h.state.transport;
+        // the left end of the controls row: Mark In, in an edit only
+        let mark_in = pos2(8.0 + 16.0, h.panel.bottom() - media_bar::BAR_H + 58.0);
+        assert!(!h.click(mark_in).actions.contains(&Action::MarkIn), "no Mark In for one clip");
+        h.project.tracks[0].clips.push(Clip::new(8, ClipKind::Video, "w", 4.0, 2.0));
+        h.frame(vec![]);
+        h.frame(vec![]);
+        let edit = h.state.transport;
+        assert!(edit.width() > plain.width() + 60.0, "frame steps join the middle: {plain:?} -> {edit:?}");
+        assert!(h.click(mark_in).actions.contains(&Action::MarkIn), "Mark In for an edit");
     }
 
     #[test]
@@ -2555,7 +2547,7 @@ mod tests {
         // the transport row is measured now, so the video rect (and its centre) is known
         h.frame(vec![]);
         // the first vertex sits on the shape centre, i.e. the centre of the video
-        let at = pos2(h.panel.center().x, h.state.transport.top() / 2.0);
+        let at = h.state.canvas_rect.center();
         let out = h.drag(at, at + vec2(40.0, 20.0));
         assert!(out.edited, "dragging a handle edits");
         let cl = h.project.clip(id).unwrap();
@@ -2846,12 +2838,18 @@ mod tests {
             h.frame(vec![]);
         }
         assert!(!h.ctx.has_requested_repaint(), "fullscreen, pointer gone, transport hidden: idle");
-        // resting over the video hides it after the idle time too
+        // paused, the bar stays up over the video (as in the media player)
         h.frame(vec![Event::PointerMoved(h.panel.center() + vec2(5.0, 0.0))]);
         assert!(h.state.hide.shown());
         h.state.hide_clock -= std::time::Duration::from_secs(5);
         h.frame(vec![]);
-        assert!(!h.state.hide.shown(), "idle over the video: hidden");
+        assert!(h.state.hide.shown(), "paused: the bar stays");
+        // playing, resting over the video hides it after the idle time
+        h.playing = true;
+        h.frame(vec![Event::PointerMoved(h.panel.center())]);
+        h.state.hide_clock -= std::time::Duration::from_secs(5);
+        h.frame(vec![]);
+        assert!(!h.state.hide.shown(), "idle over playing video: hidden");
     }
 
     /// Idle frames with the handles (and crop ring) on screen request no repaint - the "idle CPU 0%"
@@ -2896,29 +2894,11 @@ mod tests {
             h.frame(vec![]);
             h.frame(vec![]);
             let row = h.state.transport;
-            assert!(row.height() <= 28.0 && row.bottom() <= h.panel.bottom() + 0.5, "one row at {w}: {row:?}");
+            assert!(row.height() <= 40.0 && row.bottom() <= h.panel.bottom() + 0.5, "one row at {w}: {row:?}");
             let video = h.state.canvas_rect;
-            assert!(row.top() - video.bottom() <= 16.5, "only the scrub strip between: {video:?} / {row:?}");
+            assert!(row.top() - video.bottom() <= media_bar::BAR_H - 30.0, "only the seek row between: {video:?} / {row:?}");
+            assert!(row.left() >= 0.0 && row.right() <= w, "the controls fit at {w}: {row:?}");
         }
-    }
-
-    /// The scrub line is always there (the old bar only appeared on hover) and grows under the pointer.
-    #[test]
-    fn scrub_line_is_always_visible_and_taller_on_hover() {
-        let ctx = egui::Context::default();
-        let pal = Palette::new(true, Color32::WHITE);
-        let mut run = |events: Vec<Event>| {
-            let mut bar = Rect::NOTHING;
-            let _ = ctx.run(RawInput { events, ..Default::default() }, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| bar = scrub_bar(ui, 4.0, 1.0, &pal, 300.0).1);
-            });
-            bar
-        };
-        let rest = run(vec![]);
-        assert_eq!(rest.height(), 3.0, "a thin line at rest: {rest:?}");
-        run(vec![Event::PointerMoved(rest.center())]);
-        let hover = run(vec![Event::PointerMoved(rest.center())]);
-        assert!(hover.height() >= 8.0, "taller under the pointer: {hover:?}");
     }
 
     /// Zoom presets are percentages of the project's own pixels: 100 % on a 1920-wide project shown

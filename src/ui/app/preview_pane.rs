@@ -66,6 +66,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 // ---- ws:canvas-handles-monitor ----
                 alt_render,
                 export,
+                thumbs,
                 ..
             } = app;
             let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
@@ -102,6 +103,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                     alt_texture: export.is_none().then(|| alt_render.texture()).flatten(),
                     use_proxies: settings.use_proxies,
                     dropped: player.dropped_frames(),
+                    rate: if play_gate.buffering() { play_gate.rate() } else { player.rate() },
+                    looping: player.loop_range().is_some(),
+                    thumbs: Some(thumbs),
                     // ---- ws:pro-monitor ----
                     trim_frames: trim_frames.clone(),
                     pick_mode,
@@ -152,6 +156,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         if let Some(t) = resp.seek {
             app.seek(t);
         }
+        bar_transport(app, resp.set_rate, resp.reverse, resp.toggle_loop);
         app.pending_actions.extend(resp.actions);
         if let Some(q) = resp.set_quality {
             app.settings.preview_quality = q;
@@ -209,6 +214,32 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     }
     if app.settings.hud {
         crate::ui::hud::draw(ui, &app.hud, app.player.dropped_frames()); // ws:perf-baseline
+    }
+}
+
+/// The bar's speed menu, Reverse and Loop (`ui::media_bar`). A speed plays at it, keeping the direction;
+/// Reverse turns playback round (starting it backwards when stopped); Loop loops In to Out when both are
+/// marked, else the whole timeline.
+fn bar_transport(app: &mut App, speed: Option<f64>, reverse: bool, toggle_loop: bool) {
+    let rate = if app.transport_playing() { app.transport_rate() } else { 0.0 };
+    if let Some(s) = speed {
+        app.play_gated(if rate < 0.0 { -s } else { s });
+    }
+    if reverse {
+        let mag = if rate == 0.0 { 1.0 } else { rate.abs() };
+        app.play_gated(if rate < 0.0 { mag } else { -mag });
+    }
+    if toggle_loop {
+        let range = loop_range(app.project.in_point, app.project.out_point, app.project.duration());
+        app.player.set_loop(if app.player.loop_range().is_some() { None } else { range });
+    }
+}
+
+/// What the bar's Loop loops: In to Out when both are marked (and in order), else the whole timeline.
+pub(super) fn loop_range(a: Option<f64>, b: Option<f64>, dur: f64) -> Option<(f64, f64)> {
+    match (a, b) {
+        (Some(a), Some(b)) if b > a => Some((a, b)),
+        _ => (dur > 0.0).then_some((0.0, dur)),
     }
 }
 

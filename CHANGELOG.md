@@ -11,6 +11,8 @@
 - **Metadata**: edit a file's tags, Clear all, change a song's cover, add Windows (Explorer) tags (M4A, MP4, MOV, WMA and WMV hold them) and apply metadata presets (author, genre and the rest; Settings ▸ Metadata, the Library's right-click menu and Export ▸ Apply preset).
 - **Songs** open in Audio Only with their cover over a blurred copy of it; covers and thumbnails show a loading shimmer.
 - **Rename** a file by clicking its name at the bottom left; the editor's Library follows the renamed file. The cursor hides with the controls.
+- **The Preview and Source monitors use the media player's controls**: the seek bar with ticks and hover thumbnails, the round play button, back / forward 10 seconds, loop, reverse and speed, in your theme's colours. A timeline that is one clip shows just those; a real edit adds frame steps, previous / next cut, Mark In / Out, Add Marker, the markers on the seek bar and a typed timecode. Zoom, Insert and Overwrite stay on the right.
+- **Full screen Preview looks like the media player**: the bar comes up over the bottom of the picture when the mouse moves and hides, with the cursor, while it rests.
 
 ### Windows
 - **One title bar for every window**: the editor, popped-out panels, the Screen Recording window and the media player share the same title bar and minimise / maximise / close buttons. Not maximised, windows get rounded corners (unless the look is Sharp) and an outline. Moving a window no longer lags.
