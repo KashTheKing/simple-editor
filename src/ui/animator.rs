@@ -475,7 +475,7 @@ fn chip(ui: &mut Ui, on: bool, text: &str) -> egui::Response {
 fn primary(ui: &mut Ui, text: &str) -> egui::Response {
     let accent = ui.visuals().selection.stroke.color;
     ui.add(
-        egui::Button::new(egui::RichText::new(text).size(12.0).color(Color32::WHITE)).fill(accent).corner_radius(6.0),
+        egui::Button::new(egui::RichText::new(text).size(12.0).color(crate::ui::tools::on_accent(accent))).fill(accent).corner_radius(6.0),
     )
 }
 
@@ -487,7 +487,7 @@ pub(crate) fn segmented<T: PartialEq + Copy>(ui: &mut Ui, cur: &mut T, items: &[
         ui.spacing_mut().item_spacing.x = 2.0;
         for &(v, n) in items {
             let on = *cur == v;
-            let t = egui::RichText::new(n).size(12.0).color(if on { Color32::WHITE } else { look::MUTED });
+            let t = egui::RichText::new(n).size(12.0).color(if on { crate::ui::tools::on_accent(accent) } else { look::MUTED });
             if ui
                 .add(
                     egui::Button::new(t)
@@ -814,7 +814,7 @@ fn header(
         }
         // (spans belong to the main timeline: none while a nested sequence is open)
         let (mut span_pick, main) = (None, project.editing.is_none());
-        let r = menu::button(ui, egui::RichText::new("+ Animation").color(Color32::WHITE), |ui| {
+        let r = menu::button(ui, egui::RichText::new("+ Animation").color(crate::ui::tools::on_accent(accent)), |ui| {
             anim_menu(ui, presets, main.then_some(&mut span_pick))
         });
         ui.visuals_mut().widgets = saved;
