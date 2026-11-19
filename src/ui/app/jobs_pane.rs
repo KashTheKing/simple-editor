@@ -229,18 +229,16 @@ pub(super) fn indicator(app: &mut App, ui: &mut egui::Ui) {
 /// hit rect over both, with the hover fill `tools::icon_button` uses.
 fn count_button(ui: &mut egui::Ui, palette: &crate::theme::Palette, n: usize) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(n.to_string(), egui::FontId::proportional(13.0), palette.text);
-    let w = 6.0 + galley.size().x + 2.0 + 22.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, 22.0), egui::Sense::hover());
+    let w = 10.0 + galley.size().x + 2.0 + 28.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(w, crate::ui::titlebar::BUTTON.y), egui::Sense::hover());
     let r = ui.interact(rect, egui::Id::new("se-jobs-indicator"), egui::Sense::click());
     let p = ui.painter();
     if r.hovered() {
-        let cr = egui::CornerRadius::same(palette.rounding as u8);
-        p.rect_filled(rect, cr, palette.header);
-        p.rect_stroke(rect, cr, egui::Stroke::new(1.0, palette.border), egui::StrokeKind::Inside);
+        p.rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
     }
-    let text_at = egui::pos2(rect.left() + 6.0, rect.center().y - galley.size().y / 2.0);
+    let text_at = egui::pos2(rect.left() + 10.0, rect.center().y - galley.size().y / 2.0);
     p.galley(text_at, galley, palette.text);
-    let icon = egui::Rect::from_min_max(egui::pos2(rect.right() - 24.0, rect.top()), rect.right_bottom());
+    let icon = egui::Rect::from_min_max(egui::pos2(rect.right() - 28.0, rect.top()), rect.right_bottom());
     tools::draw_glyph(p, icon, tools::Glyph::Queue, palette.text);
     r.on_hover_text("Background jobs - show the Jobs pane")
 }

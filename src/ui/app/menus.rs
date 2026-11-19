@@ -143,7 +143,9 @@ impl App {
         titlebar::drag_area(ui, bar, maximized);
         let caption = titlebar::caption_buttons(ui, &self.palette, bar, maximized);
         let caption_w = ui.max_rect().right() - caption.left();
-        egui::MenuBar::new().ui(ui, |ui| {
+        // MenuBar lays its row out at the outer widget height first: the full bar's, so nothing starts below the top
+        ui.spacing_mut().interact_size.y = titlebar::BUTTON.y;
+        egui::MenuBar::new().style(titlebar::bar_style).ui(ui, |ui| {
             if let Some(icon) = titlebar::app_icon(ui.ctx()) {
                 let (r, _) = ui.allocate_exact_size(egui::vec2(24.0, 16.0), egui::Sense::hover());
                 titlebar::paint_icon(ui, &icon, r.left_center());
@@ -159,7 +161,7 @@ impl App {
                 layout_ctl::page_switcher(self, ui);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(caption_w + 4.0); // clear of the window buttons
+                ui.add_space(caption_w); // clear of the window buttons
                 // ---- ws:quick-export ---- (right-most; the Jobs indicator sits beside it while jobs run)
                 quick_export::button(self, ui);
                 // ---- ws:jobs-panel ----

@@ -422,7 +422,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 /// Top bar: the Performance button (beside Jobs and Quick Export).
 pub(super) fn button(app: &mut App, ui: &mut egui::Ui) {
     let id = egui::Id::new("se-perf-button");
-    if tools::icon_button(ui, &app.palette, id, tools::Glyph::Perf, "Performance", false).clicked() {
+    if crate::ui::titlebar::icon_button(ui, &app.palette, id, tools::Glyph::Perf, "Performance").clicked() {
         app.act(Action::PerfWindow);
     }
 }
@@ -540,7 +540,7 @@ mod tests {
     fn perf_button_triggers_the_action() {
         let pal = crate::theme::Palette::new(true, egui::Color32::LIGHT_BLUE);
         let id = egui::Id::new("se-perf-button");
-        let draw = |ui: &mut egui::Ui| tools::icon_button(ui, &pal, id, tools::Glyph::Perf, "Performance", false);
+        let draw = |ui: &mut egui::Ui| crate::ui::titlebar::icon_button(ui, &pal, id, tools::Glyph::Perf, "Performance");
         assert!(super::super::jobs_pane::tests::click_widget(draw, |r| r.center()));
         let src = include_str!("perf_ctl.rs");
         let body = |f: &str| {

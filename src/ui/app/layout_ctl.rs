@@ -574,12 +574,12 @@ fn name_dialog(app: &mut App, ctx: &egui::Context, id: egui::Id) {
 pub(super) fn page_switcher(app: &mut App, ui: &mut egui::Ui) {
     let pages = app.settings.pages.clone();
     let font = egui::TextStyle::Button.resolve(ui.style());
-    let pad = ui.spacing().button_padding.x * 2.0 + 16.0;
+    let pad = ui.spacing().button_padding.x * 2.0 + 12.0;
     let widths: Vec<f32> = pages
         .iter()
         .map(|p| ui.painter().layout_no_wrap(p.to_string(), font.clone(), egui::Color32::PLACEHOLDER).size().x + pad)
         .collect();
-    let gap = 2.0;
+    let gap = 0.0;
     let total = widths.iter().sum::<f32>() + gap * pages.len().saturating_sub(1) as f32;
     // centred in the whole bar (where the eye expects it), but never over the menus on a narrow window
     let bar = ui.max_rect();
@@ -589,7 +589,7 @@ pub(super) fn page_switcher(app: &mut App, ui: &mut egui::Ui) {
     let mut rects = Vec::with_capacity(pages.len());
     let mut drag: Option<(usize, bool)> = None; // (the page being dragged, released this frame)
     let accent = ui.visuals().selection.bg_fill;
-    ui.painter().rect_filled(rect.expand2(egui::vec2(3.0, 0.0)), 5.0, ui.visuals().extreme_bg_color);
+    ui.painter().rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
     ui.scope_builder(
         egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)),
         |ui| {

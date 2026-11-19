@@ -44,6 +44,35 @@ pub fn caption_buttons(ui: &mut Ui, pal: &Palette, bar: Rect, maximized: bool) -
     min.union(close)
 }
 
+/// The bar's own buttons (File, Edit, the page tabs...) span its full height, like the window buttons:
+/// square fills, a comfortable side padding, the text as before. A `MenuBar` style.
+pub fn bar_style(style: &mut egui::Style) {
+    egui::containers::menu::menu_style(style);
+    style.spacing.interact_size.y = BUTTON.y;
+    style.spacing.button_padding = vec2(10.0, 0.0);
+    style.spacing.item_spacing.x = 0.0;
+    let w = &mut style.visuals.widgets;
+    for v in [&mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
+        v.corner_radius = egui::CornerRadius::ZERO;
+        v.expansion = 0.0;
+    }
+}
+
+/// An icon button of the bar (Performance, Quick Export): full height, 40 px wide, the hover fill of the
+/// window buttons; the glyph at its usual size.
+pub fn icon_button(ui: &mut Ui, pal: &Palette, id: egui::Id, g: crate::ui::tools::Glyph, tip: &str) -> Response {
+    let (rect, _) = ui.allocate_exact_size(vec2(ICON_W, BUTTON.y), Sense::hover());
+    let r = ui.interact(rect, id, Sense::click());
+    if r.hovered() {
+        ui.painter().rect_filled(rect, 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    crate::ui::tools::draw_glyph(ui.painter(), rect, g, pal.text);
+    r.on_hover_text(tip)
+}
+
+/// The width of a bar icon button.
+pub const ICON_W: f32 = 40.0;
+
 /// Window buttons: square, the close one red under the pointer.
 fn caption_button(ui: &mut Ui, pal: &Palette, rect: Rect, c: char, close: bool, tip: &str) -> Response {
     let r = ui.interact(rect, ui.id().with(("caption", c)), Sense::click()).on_hover_text(tip);
@@ -229,6 +258,53 @@ mod tests {
         cmds.extend(frame(ctx, t + 0.01, vec![press(true)], maximized));
         cmds.extend(frame(ctx, t + 0.02, vec![press(false)], maximized));
         cmds
+    }
+
+    /// File / Edit, a page tab and the icon buttons fill the bar from its top edge to its bottom edge,
+    /// and a hovered one paints its fill over that whole height.
+    #[test]
+    fn bar_buttons_span_the_full_height() {
+        let ctx = egui::Context::default();
+        crate::theme::apply(&ctx, "dark", &Default::default(), "cozy");
+        let pal = pal();
+        let run = |hover: Option<egui::Pos2>| {
+            let mut rects = Vec::new();
+            let raw = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(pos2(0.0, 0.0), vec2(800.0, 600.0))),
+                events: hover.map(Event::PointerMoved).into_iter().collect(),
+                ..Default::default()
+            };
+            let out = ctx.run(raw, |ctx| {
+                let frame = egui::Frame::side_top_panel(&ctx.style()).inner_margin(egui::Margin { left: 8, ..Default::default() });
+                egui::TopBottomPanel::top("bar").frame(frame).exact_height(BUTTON.y).show(ctx, |ui| {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.spacing_mut().interact_size.y = BUTTON.y; // as `App::menu_bar`
+                        egui::MenuBar::new().style(bar_style).ui(ui, |ui| {
+                            rects.push(ui.button("File").rect);
+                            // a page tab: framed only while hovered (or the page on screen), drags to reorder
+                            let page = egui::Button::new("Plan").min_size(vec2(90.0, 0.0)).frame_when_inactive(false);
+                            rects.push(ui.add(page.sense(Sense::click_and_drag())).rect);
+                            let id = egui::Id::new("perf");
+                            rects.push(icon_button(ui, &pal, id, crate::ui::tools::Glyph::Perf, "Performance").rect);
+                        });
+                    });
+                });
+            });
+            (rects, out)
+        };
+        let (rects, _) = run(None);
+        for r in &rects {
+            assert_eq!((r.top(), r.bottom()), (0.0, BUTTON.y), "{r:?}");
+        }
+        for r in rects {
+            run(Some(r.center())); // the hover registers, the next frame paints it
+            let (_, out) = run(Some(r.center()));
+            let full = out.shapes.iter().any(|c| match &c.shape {
+                egui::Shape::Rect(s) => s.fill != Color32::TRANSPARENT && s.rect.contains_rect(r.shrink(0.5)),
+                _ => false,
+            });
+            assert!(full, "a hovered button fills its full-height rect {r:?}");
+        }
     }
 
     #[test]
