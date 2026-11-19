@@ -5,23 +5,30 @@ description: Pages, panels, tabs, the menu bar, and how to rearrange, undock and
 
 ![The Edit page](/img/tutorial/edit-page.png)
 
-The window has three parts: the **menu bar** at the top, with the **page buttons** in its middle, and
-the **panels** below it. Each panel sits in a group with tabs along its top.
+The window has two parts: the **top bar**, and the **panels** below it. Each panel sits in a group with
+tabs along its top.
+
+The top bar is also the window's title bar: the app icon and the menus on the left, the **page buttons** in
+the middle, then **Performance**, **Jobs** and **Quick Export** and the minimise / maximise / close buttons on
+the right. Drag it to move the window, double-click it to maximise. Every window of the app (popped-out panels,
+screen windows, Screen Recording, the [media player](media-player.mdx)) has the same bar. A window that isn't
+maximised has rounded corners and a thin outline (square with the **Sharp** look).
 
 ## Pages
 
 Pages are ready-made arrangements of panels for one kind of work, in the same order as Resolve's pages.
-Switch with the buttons in the middle of the menu bar, **Window ▸ Pages**, or <kbd>Alt+1</kbd>–<kbd>Alt+6</kbd>.
-The **Inspector** is in the top-right corner of every page.
+Switch with the buttons in the middle of the top bar, **Window ▸ Pages**, <kbd>Alt+1</kbd>–<kbd>Alt+6</kbd>, or
+<kbd>Ctrl+E</kbd> for Export.
 
 | Page | Key | What's on it |
 |---|---|---|
 | **Media** | <kbd>Alt+1</kbd> | Library · Source · Inspector, full height. Bringing in, sorting and watching media. |
 | **Plan** | <kbd>Alt+2</kbd> | Planner / Moodboard / Markers / Subtitles / Voiceover / Transcript / Clips · Source / Preview · Inspector on top; a small Library / Media Browser beside Timeline / Beat Aligner below. Planning and rough assembly. (It was called Cut.) |
 | **Edit** | <kbd>Alt+3</kbd> | Library (with the Gallery: Effects, Transitions, Looks…) · Source / Preview · Inspector / Clips, the Timeline below. The page the app opens on. |
-| **Color** | <kbd>Alt+4</kbd> | A big Preview beside Inspector / Nodes / Gallery, Clips / Timeline across the middle, then Color Wheels · Curves · Scopes. |
-| **Audio** | <kbd>Alt+5</kbd> | Library / Media Browser / Gallery · Preview · Voiceover / Transcript / Subtitles · Inspector on top; Timeline / Beat Aligner beside the Mixer below. |
-| **Export** | <kbd>Alt+6</kbd> | Export settings · Preview · Inspector over Jobs (the render queue), with the Timeline below. |
+| **Animate** | <kbd>Alt+4</kbd> | Gallery · Preview · Inspector over a thin Timeline and the [Animator](animator.mdx). |
+| **Color** | <kbd>Alt+5</kbd> | A big Preview beside Inspector / Nodes / Gallery, Clips / Timeline across the middle, then Color Wheels · Curves · Scopes. |
+| **Audio** | <kbd>Alt+6</kbd> | Library / Media Browser / Gallery · Preview · Voiceover / Transcript / Subtitles · Inspector on top; Timeline / Beat Aligner beside the Mixer below. |
+| **Export** | <kbd>Ctrl+E</kbd> | Export settings (with the project settings) · Preview · Jobs / Performance, with the Timeline below. |
 
 ![The Media page](/img/tutorial/page-media.png)
 
@@ -32,6 +39,13 @@ The **Inspector** is in the top-right corner of every page.
 ![The Audio page](/img/tutorial/page-audio.png)
 
 ![The Export page](/img/tutorial/page-export.png)
+
+### Pages or One window
+
+Prefer one arrangement for everything? **Window ▸ Layout ▸ One Window** drops the page buttons: one workspace
+with every panel, where each panel stays where you dock it and the rest are in the Window menu and
+<kbd>Ctrl+P</kbd>. **Window ▸ Layout ▸ Pages** brings the pages back, with their layouts as you left them. The
+first-run setup asks which you want.
 
 Every page remembers its own arrangement. Changing the Color page never touches the Edit page.
 
@@ -122,7 +136,21 @@ switched glows briefly instead.
 | **Timeline** | **Mark ▸** In and Out, lift and extract, **Trim ▸**, markers, **Auto ▸** (auto-cut, beats, fillers, ducking, loudness, auto colour), **Tracks ▸**, zoom, snapping |
 | **Playback** | Play, J / K / L, loops, stepping, jumping to cuts, proxies, playback resolution, fullscreen |
 | **Window** | Pages, every panel, **Layout ▸** (lock, save and reset layouts), maximise |
-| **Help** | This tutorial (**Tutorial & Docs**), the keyboard shortcut list, the command palette, what's new |
+| **Help** | This tutorial (**Tutorial & Docs**), the keyboard shortcut list, the command palette, what's new, **Report a Bug…** |
+
+## The top bar's buttons
+
+- **Performance** (the chart) opens the Performance panel, which shows how fast playback and the app are running.
+- **Jobs** shows exports, proxies and other background work; the number is how many are running.
+- **Quick Export** saves the timeline in one step: pick a file name and type (MP4, MOV, MKV, WebM, GIF, WAV,
+  MP3) and it exports with your current export settings, then opens the file in your media player (see
+  [Export](export.mdx#quick-export)).
+
+## Messages
+
+Short messages (toasts) appear at the bottom right and fade after a few seconds. Some have buttons: a deleted
+clip's **Undo**, and for a saved screenshot or a finished export **Open**, **Open Folder** and **Add to
+Project**.
 
 Every menu item shows its shortcut, and right-clicking one lets you give it a different icon.
 
@@ -160,11 +188,11 @@ on the [keyboard shortcuts](shortcuts.md) page.
 
 ![Settings, Hotkeys tab](/img/tutorial/settings-hotkeys.png)
 
-**File ▸ Settings…** (<kbd>Ctrl+Comma</kbd>) has six tabs:
+**File ▸ Settings…** (<kbd>Ctrl+Comma</kbd>) has ten tabs:
 
 - **General**: theme, where FFmpeg and yt-dlp are, autosave, the cache budget and **Cache folder**, the
-  **Web browser** links and the page-snapshot steps use, snapping, the "follow the selection" and
-  home-card switches, the Explorer right-click entry, fonts, and the MCP server for AI co-editing.
+  **Web browser** links and the page-snapshot steps use, snapping, the "follow the selection" switch, **Start screen** (the home card; its **Don't show again**
+  turns this off), **Ask to match the project to imported videos**, the Explorer right-click entry, fonts, and the MCP server for AI co-editing.
 
   **Cache folder** shows where renders, pre-renders, proxies, waveform peaks and downloaded models are kept,
   how much they use and the drive's free space. **Browse…** picks another folder (on a bigger or faster
@@ -181,6 +209,10 @@ on the [keyboard shortcuts](shortcuts.md) page.
 - **Hotkeys**: rebind any command. Click **Rebind**, press the keys (<kbd>Esc</kbd> cancels,
   <kbd>Backspace</kbd> unbinds). A **Keymap preset** switches to Premiere, Resolve or Avid style keys,
   and the keyboard map shows what's taken.
+- **Assistant**: the agent, model, API key, Guard and voice (see [Assistant](assistant.mdx)).
+- **Social**: the account the social-media guides show (handle, name, picture, caption, sample comments) ([Social guides](social-guides.mdx)).
+- **Permissions**: every MCP tool as Allow, Ask or Block ([Permissions](assistant.mdx#permissions)).
+- **Metadata**: metadata presets for exports and the media player ([Media player](media-player.mdx#metadata)).
 - **Appearance**: Cozy (rounded) or Sharp look, 25+ built-in themes, your own colours, clip colours, a
   background image, and icons. Themes can be exported and imported as `.sedit-theme` files.
   Built in: Premiere Pro, DaVinci Resolve and CapCut, each Dark and Light (their colours and feel only).

@@ -401,7 +401,7 @@ actions! {
     SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
     PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
     // ---- ws:music-burn ----
-    BurnDisc => "burn_disc", "Burn to Discâ€¦", None;
+    BurnDisc => "burn_disc", "Burn to Disc…", None;
     MakeVisualizerVideo => "make_visualizer_video", "Make Visualizer Video", None;
     NewPlaylist => "new_playlist", "New Playlist", None;
     // ---- ws:perf-window ----

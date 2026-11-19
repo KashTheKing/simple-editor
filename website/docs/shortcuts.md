@@ -7,7 +7,7 @@ description: Every default shortcut and mouse gesture in Simple Editor.
 
 ![The Keyboard Shortcuts window (F1)](/img/tutorial/cheatsheet.png)
 
-These are the default keys. Every one can be changed in **Settings ▸ Hotkeys**, which also has Premiere, Resolve and Avid presets. In the app, **F1** shows this list with your own keys and a search box, and **Ctrl+K** runs any command by name, including the ones without a key (shown as -).
+These are the default keys. Every one can be changed in **Settings ▸ Hotkeys**, which also has Premiere, Resolve and Avid presets. In the app, **F1** shows this list with your own keys and a search box, and **Ctrl+P** goes to any clip, media file, timeline, marker, page or panel by name; type **>** first to run any command (including the ones without a key, shown as -), **/** for the assistant.
 
 Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` is `;`, `Quote` is `'`, `Slash` is `/`, `Comma` is `,` and `Backtick` is the key left of 1.
 
@@ -24,15 +24,18 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Fast Lossless Cut… | <kbd>Ctrl+Alt+E</kbd> |
 | Export Premiere / Resolve XML… | <kbd>Ctrl+Shift+E</kbd> |
 | Import Media… | <kbd>Ctrl+I</kbd> |
-| Import Folder as Bin… | - |
 | Settings… | <kbd>Ctrl+Comma</kbd> |
 | Export Frame… | <kbd>Ctrl+Shift+F</kbd> |
 | Record Voiceover | <kbd>Ctrl+Alt+R</kbd> |
 | Quick Export | <kbd>Ctrl+M</kbd> |
+| Import Folder as Bin… | - |
 | Screen Recording… | - |
 | Import Timeline (Premiere / Resolve XML, EDL)… | - |
 | Restore Autosave… | - |
 | Export Markers… | - |
+| Export Avid EDL… | - |
+| Burn to Disc… | - |
+| Quick Export… | - |
 
 ## Edit
 
@@ -55,7 +58,7 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Select Forward from Playhead | <kbd>A</kbd> |
 | Select Backward from Playhead | <kbd>Shift+A</kbd> |
 | Select Clips Under Playhead | <kbd>Ctrl+Shift+D</kbd> |
-| Find… (over the Gallery: its search box) | <kbd>Ctrl+F</kbd> |
+| Find… | <kbd>Ctrl+F</kbd> |
 
 ## Playback
 
@@ -81,8 +84,11 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Previous Keyframe | <kbd>Alt+Left</kbd> |
 | Next Keyframe | <kbd>Alt+Right</kbd> |
 | Movie Mode (pre-render) | - |
+| Audio Only | - |
 | Fast Review | - |
 | Use Proxies | - |
+| Performance HUD | - |
+| Performance | - |
 
 ## Marking
 
@@ -95,6 +101,7 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Mark Clip (In/Out from clip under playhead) | <kbd>X</kbd> |
 | Go to In | <kbd>Shift+I</kbd> |
 | Go to Out | <kbd>Shift+O</kbd> |
+| Add Comment | - |
 
 ## Trimming
 
@@ -129,6 +136,9 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Overwrite at Playhead | <kbd>B</kbd> |
 | Lift In->Out | <kbd>Semicolon</kbd> |
 | Extract In->Out | <kbd>Quote</kbd> |
+| Toggle Auto Close Gaps | - |
+| Show Video Tracks | - |
+| Show Audio Tracks | - |
 | Add Video Track | - |
 | Add Audio Track | - |
 | Close Gap at Playhead | - |
@@ -137,7 +147,10 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Toggle Magnetic Track | - |
 | Render Selection (pre-render) | - |
 | Render in Place (bake to new asset) | - |
+| Convert to HTML Layer | - |
 | Toggle Overview Strip | - |
+| Waveforms: Simple | - |
+| Waveforms: Detailed | - |
 | Rename Track | - |
 
 ## Clip
@@ -166,11 +179,24 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Un-nest Sequence Clip | - |
 | Replace with Library Selection | - |
 | Auto Reframe (follow tracked point) | - |
+| Save to Gallery… | - |
 | Create Multicam from Selection | - |
 | Next Angle at Playhead | - |
 | Previous Angle at Playhead | - |
 | Multicam Angles… | - |
-| Save to Gallery… | - |
+| Stack Clip with Overlays | - |
+| Show Animations | - |
+| Browser: Fit Pages to the Window | - |
+| Browser: Next Page Here | - |
+| Record Mouse (Browser Cursor) | - |
+| Place Cursor Waypoints | - |
+| Press What Is under the Cursor | - |
+| AI Upscale ×2 (Game / Animation) | - |
+| AI Upscale ×2 (Real-World) | - |
+| AI Upscale ×4 (Game / Animation) | - |
+| AI Upscale ×4 (Real-World) | - |
+| Browser: Sharpen Zooms | - |
+| Browser: Make the Page Editable | - |
 
 ## Add
 
@@ -182,6 +208,19 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Add Mask to Selection | <kbd>Ctrl+Shift+M</kbd> |
 | Add Shape | - |
 | Add Container Clip at Playhead | - |
+| Add HTML Layer | - |
+| Add HTML Scene | - |
+| Add Chat Thread | - |
+| Add Forum Thread | - |
+| Add Video Comments | - |
+| Import HTML File… | - |
+| Web Page Snapshot… | - |
+| Edit HTML… | - |
+| Save to Library | - |
+| Add Browser Window | - |
+| Import Web Page… | - |
+| Make Visualizer Video | - |
+| New Playlist | - |
 
 ## Audio
 
@@ -193,6 +232,7 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Duck Music under Dialogue | - |
 | Normalize Selection | - |
 | Match Loudness across Selection | - |
+| Add Audio Visualizer | - |
 
 ## Color
 
@@ -243,16 +283,25 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Media page | <kbd>Alt+1</kbd> |
 | Plan page | <kbd>Alt+2</kbd> |
 | Edit page | <kbd>Alt+3</kbd> |
-| Color page | <kbd>Alt+4</kbd> |
-| Audio page | <kbd>Alt+5</kbd> |
-| Export page | <kbd>Alt+6</kbd> |
+| Animate page | <kbd>Alt+4</kbd> |
+| Color page | <kbd>Alt+5</kbd> |
+| Audio page | <kbd>Alt+6</kbd> |
 | Maximise Pane under Cursor | <kbd>Backtick</kbd> |
 | Show / Hide Tools | - |
 | Switch Panel Tabs to Follow the Selection | - |
+| Export page | - |
+| Page 8 | - |
+| Page 9 | - |
 | Pin / Unpin Pane under Cursor | - |
 | Show / Hide Source Monitor | - |
 | Show / Hide Scopes | - |
 | Show / Hide Jobs | - |
+| Assistant | - |
+| Add to Assistant | - |
+| Assistant Follows the Selection | - |
+| Push to Talk | - |
+| Reset Page Layout | - |
+| Screens… | - |
 
 ## Media
 
@@ -273,13 +322,22 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Marker Tool | <kbd>Shift+M</kbd> |
 | Cut Tool (Razor) | <kbd>C</kbd> |
 | Stretch Tool | <kbd>R</kbd> |
+| Rolling Edit Tool | <kbd>N</kbd> |
+| Slip Tool | <kbd>Y</kbd> |
+| Pen Tool | <kbd>P</kbd> |
+| Hand Tool | <kbd>H</kbd> |
+| Zoom Tool | <kbd>Z</kbd> |
 | Spacer Tool | - |
+| Track Select Forward Tool | - |
+| Track Select Backward Tool | - |
+| Ripple Edit Tool | - |
+| Slide Tool | - |
 
 ## General
 
 | Command | Keys |
 |---|---|
-| Command Palette | <kbd>Ctrl+K</kbd> |
+| Command Palette | <kbd>Ctrl+P</kbd> |
 | Keyboard Shortcuts overlay | <kbd>F1</kbd> |
 | What's New | - |
 | Show Welcome Again | - |

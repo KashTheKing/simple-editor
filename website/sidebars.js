@@ -5,11 +5,12 @@ module.exports = {
     'getting-started',
     'interface',
     'screens',
+    'media-player',
     {
       type: 'category',
       label: 'Editing',
       collapsed: false,
-      items: ['library', 'viewer', 'social-guides', 'device-emulator', 'timeline', 'inspector', 'effects', 'html-layers', 'chat-forum-threads', 'browser-layer', 'online-library', 'my-gallery', 'templates'],
+      items: ['library', 'project-settings', 'screen-recording', 'viewer', 'social-guides', 'device-emulator', 'timeline', 'inspector', 'animator', 'effects', 'html-layers', 'chat-forum-threads', 'browser-layer', 'online-library', 'my-gallery', 'templates'],
     },
     {
       type: 'category',

@@ -5,16 +5,18 @@ description: Export a video for YouTube, Shorts, TikTok or Instagram, queue seve
 
 ![The Export page](/img/tutorial/page-export.png)
 
-**File ▸ Export ▸ Export Video As…** (<kbd>Ctrl+E</kbd>) takes you to the **Export** page (<kbd>Alt+6</kbd>):
-the export settings on the left, the Preview in the middle, and the Inspector over the **Jobs** list (the
-render queue) on the right. Export needs FFmpeg.
+**File ▸ Export ▸ Export Video As…** (<kbd>Ctrl+E</kbd>) takes you to the **Export** page:
+the export settings on the left, the Preview in the middle, and the **Jobs** list (the render queue) with the
+**Performance** tab on the right. Export needs FFmpeg.
 
 ## Export a video
 
 ![The Export panel](/img/tutorial/export-panel.png)
 
-The panel reads top to bottom: pick a **preset**, check the **Video**, **Audio** and **Advanced** sections if
-you want to, then press **Export…** in the bar at the bottom.
+The panel reads top to bottom: pick a **preset**, check the project settings and the **Video**, **Audio** and
+**Advanced** sections if you want to, then press **Export…** in the bar at the bottom. The project settings
+(name, format, resolution, frame rate, colour, [Max length](project-settings.mdx#max-length), background) are
+at the top of the panel, so you can change them without leaving the page.
 
 1. Click a **preset card**. The selected card is outlined in your accent colour (and says *edited* once you
    change something it set).
@@ -25,15 +27,21 @@ you want to, then press **Export…** in the bar at the bottom.
      **Instagram 1:1**. The picture is fitted inside that size with black bars, never stretched.
    - **My presets**: your own (see below).
 2. Optional: open a section to change something (each remembers whether you left it open).
-3. Check the summary line at the bottom (size · frame rate · length · estimated file size), pick a
-   **Speed** (Fast, Balanced or Small file), the file name and the folder.
+3. Check the summary line at the bottom (size · frame rate · length · estimated file size, measured from short
+   samples of your timeline), pick a **Speed** (Fast, Balanced or Small file), the file name and the folder.
+   **Target size** (for example 50 MB) aims the file at a size instead of a quality, for sites with an upload
+   limit.
 4. Click **Export…**, confirm the name and the format, and save.
 
 The export runs in the background with a progress bar and time left in the **Rendering** panel (it comes up
 when an export starts; **Cancel** is there) and the **Jobs** list, so you can keep
 working. **Add to Queue** picks a file name now and renders it after whatever is already running; the
-**Jobs** list shows the order, and ▲ / ▼ change it. **Cancel** stops an export; cancelling the running
-one also empties the queue.
+**Jobs** list shows the order, and ▲ / ▼ change it. **Cancel** stops an export at once and deletes the
+unfinished file; cancelling the running one also empties the queue. When it is done, the message has **Open**,
+**Open Folder** and **Add to Project**.
+
+With a [Max length](project-settings.mdx#max-length) set and a timeline longer than it, the export stops at the
+limit; a line in the panel says how much is left out, with a button to include it.
 
 ### Your own presets
 
@@ -44,22 +52,32 @@ layout. Right-click any card for **Duplicate**; right-click one of yours for **R
 changed - duplicate one to make your own version. **Quick Export** (<kbd>Ctrl+M</kbd>) re-runs whichever card
 you exported with last, yours included.
 
-### Video (blue)
+Exports are small by default: the graphics-card encoder uses lookahead, B-frames and adaptive quality, and its
+quality scale matches x264's, so a file is about a third of what 1.3 made.
 
-**Resolution** (project size, 720p, 1080p, 1440p, 4K or custom), the **Frame rate** (always the project's),
+### Video
+
+**Resolution** (project size, 720p, 1080p, 1440p, 4K or custom), the **Frame rate** (Project, 24, 25, 30, 50,
+60 or Custom; the timeline is resampled to it),
 the **Format** (MP4, MOV, MKV, WebM, AVI, GIF, or MP3 / WAV / M4A / FLAC for sound only) and the **Quality**,
 with a warning when it is low. **Fast lossless cut** appears when the timeline is a plain cut of one video:
 instant, no quality loss, but cuts snap to the video's keyframes.
 
-### Audio (green)
+An HDR project (**Color** HDR10 or HLG) exports 10-bit HEVC, or AV1 for WebM; GIF, AVI and 8-bit encoders are
+refused with a message (see [Project settings](project-settings.mdx#color-sdr-or-hdr)).
+
+### Audio
 
 **Mix**, **Separate tracks in file** or **WAV stems** (see [Export audio tracks](export-audio-tracks)), and
 **Normalize loudness (−14 LUFS)**, on by default: evens out the loudness for YouTube and friends.
 
-### Advanced (amber, closed at first)
+### Advanced
+
+Closed at first.
 
 - **Export In/Out range only**: only the part between your In and Out marks.
-- **Write metadata**: title and other tags in the file.
+- **Write metadata**: title and other tags in the file. **Apply preset** fills them from a metadata preset
+  (Settings ▸ Metadata).
 - **Use project background**.
 - **Burn in captions**: draws the subtitles into the picture. Until you change it here it follows the preview's
   subtitle toggle (what exports always did); untick it to deliver captions as a separate .srt instead.
@@ -69,6 +87,17 @@ instant, no quality loss, but cuts snap to the video's keyframes.
   them), the encoder **Preset** and Smart render.
 
 Hover over any option for a short explanation.
+
+## Quick Export
+
+The **Quick Export** button at the top right of the window (also **File ▸ Export ▸ Quick Export…** and
+<kbd>Ctrl+P</kbd> `>Quick export`) asks for a file name and type (MP4, MOV, MKV, WebM, GIF, WAV or MP3), then
+exports in the background with the Export panel's current settings, or the project's own size, frame rate and
+quality, and opens the file in your media player when it is done. It remembers the folder and type per project.
+
+For a video you opened directly (one clip, maybe with text or captions on top) the dialog starts on that file.
+Saving over it asks **Replace &lt;name&gt;?** first, and the original is kept as `<name>.bak` until the new file
+is in place.
 
 ## Quick ways out
 
