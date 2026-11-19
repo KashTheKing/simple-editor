@@ -748,6 +748,17 @@ pub fn mmss(t: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// A length that can run to hours and days: "0:45", "1:30:00", "416d 15:00:00".
+pub fn length_text(t: f64) -> String {
+    let s = (t - 1e-6).ceil().max(0.0) as u64;
+    let (d, h, m, sec) = (s / 86_400, s / 3600 % 24, s / 60 % 60, s % 60);
+    match (d, s / 3600) {
+        (0, 0) => format!("{m}:{sec:02}"),
+        (0, h) => format!("{h}:{m:02}:{sec:02}"),
+        _ => format!("{d}d {h}:{m:02}:{sec:02}"),
+    }
+}
+
 /// Colour of a clip/asset/recent label index (0 or out of range = "no label" dim).
 pub fn label_color(idx: u8, palette: &Palette) -> egui::Color32 {
     if idx == 0 || idx as usize > LABEL_COLORS.len() {

@@ -715,17 +715,47 @@ pub(crate) fn fps_label(f: f64) -> String {
 
 // ---- ws:max-duration ----
 /// Quick picks for the Max length row: (seconds, where the limit comes from).
-pub(crate) const MAX_LENGTHS: &[(f64, &str)] =
-    &[(15.0, ""), (30.0, ""), (60.0, "Shorts, Reels"), (90.0, ""), (180.0, "TikTok, Shorts"), (600.0, "")];
+pub(crate) const MAX_LENGTHS: &[(f64, &str)] = &[
+    (15.0, ""),
+    (30.0, ""),
+    (60.0, "Shorts, Reels"),
+    (90.0, ""),
+    (180.0, "TikTok, Shorts"),
+    (600.0, ""),
+    (3600.0, ""),
+    (2.0 * 3600.0, ""),
+    (12.0 * 3600.0, "YouTube upload"),
+];
 
-/// "1:30" / "90" / "90 s" -> seconds.
+/// Seconds from "90", "1:30" (m:ss), "1:30:00" (h:mm:ss), "2d 1:00:00", or units: "90s", "45m", "9999h", "3d",
+/// "1h 30m". No upper limit.
 pub(crate) fn parse_length(s: &str) -> Option<f64> {
-    let s = s.trim().trim_end_matches('s').trim();
-    let v = match s.split_once(':') {
-        Some((m, sec)) => m.trim().parse::<f64>().ok()? * 60.0 + sec.trim().parse::<f64>().ok()?,
-        None => s.parse().ok()?,
-    };
-    (v > 0.0).then_some(v)
+    let mut s = s.trim().to_ascii_lowercase();
+    for u in ["d", "h", "m", "s"] {
+        s = s.replace(&format!(" {u}"), u); // "45 s" / "2 h" = "45s" / "2h"
+    }
+    let mut total = 0.0;
+    let mut any = false;
+    for part in s.split_whitespace() {
+        let v = if let Some(n) = part.strip_suffix('d') {
+            n.parse::<f64>().ok()? * 86_400.0
+        } else if let Some(n) = part.strip_suffix('h') {
+            n.parse::<f64>().ok()? * 3600.0
+        } else if let Some(n) = part.strip_suffix('m') {
+            n.parse::<f64>().ok()? * 60.0
+        } else {
+            // plain seconds or colon form, read from the right: s, m:s, h:m:s
+            let n = part.strip_suffix('s').unwrap_or(part);
+            let mut v = 0.0;
+            for (i, x) in n.rsplit(':').enumerate() {
+                v += x.parse::<f64>().ok()? * [1.0, 60.0, 3600.0].get(i).copied()?;
+            }
+            v
+        };
+        total += v;
+        any = true;
+    }
+    (any && total > 0.0 && total.is_finite()).then_some(total)
 }
 
 /// The project form's Max length row: [on/off] [m:ss field] [quick picks]. The timeline being edited's
@@ -744,9 +774,9 @@ fn max_length_row(ui: &mut egui::Ui, project: &mut Project, undo: &mut dyn FnMut
         let r = ui.add_enabled(
             on,
             DragValue::new(&mut v)
-                .range(1.0..=86_400.0)
+                .range(1.0..=f64::MAX)
                 .speed(1.0)
-                .custom_formatter(|v, _| crate::ui::mmss(v))
+                .custom_formatter(|v, _| crate::ui::length_text(v))
                 .custom_parser(parse_length),
         );
         mark(ui, "project_max", &r);
@@ -760,7 +790,7 @@ fn max_length_row(ui: &mut egui::Ui, project: &mut Project, undo: &mut dyn FnMut
         let r = egui::ComboBox::from_id_salt("project_max_pick").selected_text("").width(24.0).show_ui(ui, |ui| {
             ui.visuals_mut().button_frame = false;
             for &(t, hint) in MAX_LENGTHS {
-                if menu::check(ui, project.max_duration == Some(t), &crate::ui::mmss(t), hint).clicked() {
+                if menu::check(ui, project.max_duration == Some(t), &crate::ui::length_text(t), hint).clicked() {
                     set = Some(Some(t));
                 }
             }
@@ -2004,6 +2034,15 @@ mod tests {
         assert_eq!(parse_length("1:30"), Some(90.0));
         assert_eq!(parse_length(" 45 s"), Some(45.0));
         assert_eq!(parse_length("0"), None);
+        // hours and days, no upper limit
+        assert_eq!(parse_length("1:30:00"), Some(5400.0));
+        assert_eq!(parse_length("9999h"), Some(9999.0 * 3600.0));
+        assert_eq!(parse_length("1h 30m"), Some(5400.0));
+        assert_eq!(parse_length("2d 1:00:00"), Some(2.0 * 86_400.0 + 3600.0));
+        assert_eq!(parse_length("2 h"), Some(7200.0));
+        assert_eq!(crate::ui::length_text(45.0), "0:45");
+        assert_eq!(crate::ui::length_text(5400.0), "1:30:00");
+        assert_eq!(crate::ui::length_text(9999.0 * 3600.0), "416d 15:00:00");
     }
 
     /// Presets can share a size (YouTube and General Long Form are both 1920×1080 at 60): the Format

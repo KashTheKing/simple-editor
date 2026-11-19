@@ -10,7 +10,7 @@
 use crate::hotkeys::{Action, Hotkeys};
 use crate::settings::Settings;
 use crate::ui::guides::PRESETS;
-use crate::ui::tools::{glyph_text_button, Glyph};
+use crate::ui::tools::{glyph_text_button, glyph_text_button_w, Glyph};
 use eframe::egui;
 use std::path::Path;
 
@@ -23,6 +23,8 @@ pub enum HomeAction {
     New(Option<usize>),
     OpenRecent(String),
     Dismiss,
+    /// "Don't show again": switch `Settings.home_screen` off (Settings ▸ General turns it back on).
+    DontShowAgain,
 }
 
 /// The gate `show` applies: enabled in Settings, nothing to edit yet, not dismissed this session.
@@ -59,20 +61,22 @@ pub fn show(
                 });
                 ui.weak("Drop video, audio or images anywhere in the window - or start here.");
                 ui.add_space(6.0);
+                // every card button the same width: three to a row
+                let w = ((ui.available_width() - 2.0 * ui.spacing().item_spacing.x) / 3.0).floor() - 0.5;
                 ui.horizontal_wrapped(|ui| {
-                    if glyph_text_button(ui, Glyph::Folder, "Open…")
+                    if glyph_text_button_w(ui, Glyph::Folder, "Open…", w)
                         .on_hover_text(format!("A video or a .sedit project ({})", hotkeys.text(Action::OpenFile)))
                         .clicked()
                     {
                         out = Some(HomeAction::Open);
                     }
-                    if glyph_text_button(ui, Glyph::ImportArrow, "Import media…")
+                    if glyph_text_button_w(ui, Glyph::ImportArrow, "Import media…", w)
                         .on_hover_text(format!("Into the library ({})", hotkeys.text(Action::ImportMedia)))
                         .clicked()
                     {
                         out = Some(HomeAction::Import);
                     }
-                    if glyph_text_button(ui, Glyph::Clapperboard, "Blank project")
+                    if glyph_text_button_w(ui, Glyph::Clapperboard, "Blank project", w)
                         .on_hover_text("1920×1080 at 60 fps")
                         .clicked()
                     {
@@ -83,7 +87,7 @@ pub fn show(
                 ui.strong("Start from a format");
                 ui.horizontal_wrapped(|ui| {
                     for (i, p) in PRESETS.iter().enumerate() {
-                        if glyph_text_button(ui, p.glyph, p.name)
+                        if glyph_text_button_w(ui, p.glyph, p.name, w)
                             .on_hover_text(format!("{}×{} at {:.0} fps", p.w, p.h, p.fps))
                             .clicked()
                         {
@@ -109,6 +113,11 @@ pub fn show(
                     if ui.add(b).on_hover_text(r).clicked() {
                         out = Some(HomeAction::OpenRecent(r.clone()));
                     }
+                }
+                ui.add_space(6.0);
+                let mut dont = false;
+                if ui.checkbox(&mut dont, "Don't show again").on_hover_text("Turn it back on in Settings ▸ General").changed() {
+                    out = Some(HomeAction::DontShowAgain);
                 }
             });
         });

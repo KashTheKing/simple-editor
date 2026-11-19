@@ -726,6 +726,11 @@ fn home_window(app: &mut App, ctx: &egui::Context) {
         home::HomeAction::Import => app.pending_actions.push(Action::ImportMedia),
         home::HomeAction::New(i) => app.new_project(i),
         home::HomeAction::Dismiss => app.home_dismissed = true,
+        home::HomeAction::DontShowAgain => {
+            app.settings.home_screen = false;
+            app.settings.save();
+            app.push_toast(super::feedback::Toast::new("Start screen hidden").action("Settings", Action::Settings));
+        }
         home::HomeAction::OpenRecent(path) => {
             let path = PathBuf::from(path);
             app.confirm_discard_then(move |app| app.open_project(&path));

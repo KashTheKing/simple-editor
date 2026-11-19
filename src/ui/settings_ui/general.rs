@@ -128,7 +128,8 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
     });
     // ---- ws:layout-modes-onboarding ----
     changed |= ui
-        .checkbox(&mut s.home_screen, "Show the Open / Import / Templates cards over an empty project (home screen)")
+        .checkbox(&mut s.home_screen, "Start screen")
+        .on_hover_text("The Open / Import / formats / recent projects card over an empty project")
         .changed();
     changed |= ui.checkbox(&mut s.snap, "Snapping in the timeline").changed();
     let mut detailed = s.timeline_waveform == "detailed";

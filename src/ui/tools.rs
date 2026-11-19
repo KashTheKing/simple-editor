@@ -1365,12 +1365,20 @@ pub(crate) fn style_controls(ui: &mut egui::Ui, state: &mut ToolsState, palette:
 /// A button showing `icon` and then `text`. An empty `text` gives a bare icon button, centred.
 /// Signature frozen after ui-kit (wave-1 workstreams call it).
 pub(crate) fn glyph_text_button(ui: &mut egui::Ui, icon: Glyph, text: &str) -> egui::Response {
+    glyph_text_button_w(ui, icon, text, 0.0)
+}
+
+/// `glyph_text_button` at least `width` wide (icon and text stay left), so a row of them lines up.
+pub(crate) fn glyph_text_button_w(ui: &mut egui::Ui, icon: Glyph, text: &str, width: f32) -> egui::Response {
     let font = egui::TextStyle::Button.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER);
     let pad = ui.spacing().button_padding;
     let icon_w = 18.0;
     let gap = if text.is_empty() { 0.0 } else { 4.0 };
-    let size = egui::vec2(icon_w + gap + galley.size().x + pad.x * 2.0, galley.size().y.max(20.0) + pad.y * 2.0);
+    let size = egui::vec2(
+        (icon_w + gap + galley.size().x + pad.x * 2.0).max(width),
+        galley.size().y.max(20.0) + pad.y * 2.0,
+    );
     let (rect, r) = ui.allocate_exact_size(size, Sense::click());
     let v = ui.style().interact(&r);
     ui.painter().rect(rect, v.corner_radius, v.weak_bg_fill, v.bg_stroke, StrokeKind::Inside);

@@ -68,7 +68,7 @@ fn toolbar(
             // ---- ws:max-duration: the content runs past the Max length ----
             if let Some(o) = over {
                 ui.add_space(6.0);
-                let text = egui::RichText::new(format!("over by {}", crate::ui::mmss(o)))
+                let text = egui::RichText::new(format!("over by {}", crate::ui::length_text(o)))
                     .small()
                     .color(crate::ui::timeline::LIMIT);
                 ui.label(text).on_hover_text("Past the Max length: shaded on the timeline, left out of exports");
