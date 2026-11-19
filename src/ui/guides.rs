@@ -133,6 +133,14 @@ pub const PRESETS: &[Preset] = &[
     Preset { name: "4K UHD", glyph: Glyph::FilmStrip, w: 3840, h: 2160, fps: 60.0, guide: None },
 ];
 
+/// Short-form (9:16 portrait: Shorts, TikTok, Reels) projects start with this Max length.
+pub const SHORT_FORM_MAX: f64 = 60.0;
+
+/// Is `w`×`h` a 9:16 portrait (short-form) frame?
+pub fn is_short_form(w: u32, h: u32) -> bool {
+    h > w && (w as u64 * 16).abs_diff(h as u64 * 9) <= h as u64 / 100
+}
+
 /// Quality tiers applied to the current aspect: the shorter edge becomes this many pixels
 /// (1080x1920 at "720p" -> 720x1280). See `scale_to_tier`.
 pub const RES_TIERS: &[(&str, u32)] =

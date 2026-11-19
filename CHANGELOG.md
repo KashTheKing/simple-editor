@@ -26,6 +26,9 @@
 - **Audio Visualizer** in the Preview's right-click menu (with Audio Only) picks the visualizer style.
 - **Max length** goes up to hours and days, with no cap (type "9999h", "1h 30m" or "2d 1:00:00"), and 1 h, 2 h and 12 h picks.
 - Opening the Performance pane on a project with deeply nested sequences no longer freezes the editor.
+- **Short-form projects start with a 1:00 Max length** (a new 9:16 project, or switching to Shorts / TikTok / Reels with no limit set). **Set to Out** beside Max length takes the timeline's Out point.
+- **Copy from Other Project…** in project settings takes another project's format, frame rate, colour, Max length and background.
+- The Export file name starts as the project's name (and follows it until you type your own).
 
 
 ### Timeline

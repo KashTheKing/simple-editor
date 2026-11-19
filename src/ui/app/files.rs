@@ -102,6 +102,9 @@ impl App {
             let mut p = Project::new();
             if let Some(f) = preset.and_then(|i| crate::ui::guides::PRESETS.get(i)) {
                 (p.width, p.height, p.fps) = (f.w, f.h, f.fps);
+                if crate::ui::guides::is_short_form(f.w, f.h) {
+                    p.max_duration = Some(crate::ui::guides::SHORT_FORM_MAX);
+                }
                 if app.settings.guide.as_deref() != f.guide {
                     app.settings.guide = f.guide.map(str::to_string);
                     app.settings.save();

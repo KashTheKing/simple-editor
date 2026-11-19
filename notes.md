@@ -897,3 +897,6 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - launch.ps1 children die with the PowerShell tool's console; launch through `cmd /c` with CreateNoWindow.
   Never rewrite a scratch settings.json with PowerShell's ConvertTo-Json/Out-File (BOM): the app then
   loads defaults - capture_dir "" = the user's Videos folder.
+
+## 2026-11-19 UI rule: panel buttons toggle
+A button that opens a panel/pane/window (e.g. the top-right Performance button) toggles it: a second click closes it, and the button is highlighted (accent selected fill) while its panel is open, following the real state even when the panel is closed another way. Applies to every such button; use the shared toggle helper.

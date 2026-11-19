@@ -644,6 +644,33 @@ pub(crate) fn project_section(
         ui.end_row();
     });
 
+    let r = ui
+        .button("Copy from Other Project…")
+        .on_hover_text("Take the format, frame rate, colour, Max length and background from another project file");
+    mark(ui, "project_copy_from", &r);
+    if r.clicked() {
+        if let Some(path) = rfd::FileDialog::new().add_filter("Simple Editor project", &["sedit"]).pick_file() {
+            match Project::load(&path) {
+                Ok(o) => {
+                    undo(project);
+                    copy_project_settings(project, &o);
+                    edited = true;
+                }
+                Err(e) => {
+                    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("insp_copy_err"), e));
+                }
+            }
+        }
+    }
+    if let Some(e) = ui.ctx().data(|d| d.get_temp::<String>(egui::Id::new("insp_copy_err"))) {
+        ui.horizontal(|ui| {
+            ui.colored_label(ui.visuals().error_fg_color, format!("Couldn't read that project: {e}"));
+            if crate::ui::markers_ui::x_button(ui).clicked() {
+                ui.ctx().data_mut(|d| d.remove::<String>(egui::Id::new("insp_copy_err")));
+            }
+        });
+    }
+
     // "Save format as template…" (the title's right-click): one inline name row until saved / cancelled
     if let Some(name) = naming.as_mut() {
         ui.horizontal(|ui| {
@@ -669,6 +696,12 @@ pub(crate) fn project_section(
     if size.is_some() || fps_pick.is_some() {
         undo(project);
         if let Some((w, h)) = size {
+            // switching into short form with no limit yet: 1:00 (an existing limit is kept)
+            let into_short = crate::ui::guides::is_short_form(w, h)
+                && !crate::ui::guides::is_short_form(project.width, project.height);
+            if into_short && project.max_duration.is_none() {
+                project.max_duration = Some(crate::ui::guides::SHORT_FORM_MAX);
+            }
             (project.width, project.height) = (w, h);
         }
         if let Some(f) = fps_pick {
@@ -796,12 +829,27 @@ fn max_length_row(ui: &mut egui::Ui, project: &mut Project, undo: &mut dyn FnMut
             }
         });
         mark(ui, "project_max_pick", &r.response);
+        let out = project.out_point.filter(|o| *o >= 1.0);
+        let r = ui
+            .add_enabled(out.is_some(), egui::Button::new("Set to Out"))
+            .on_hover_text("Use the timeline's Out point as the Max length")
+            .on_disabled_hover_text("Set an Out point on the timeline first (O)");
+        mark(ui, "project_max_out", &r);
+        if r.clicked() {
+            set = out.map(Some);
+        }
     });
     if let Some(m) = set.filter(|m| *m != project.max_duration) {
         undo(project);
         project.max_duration = m;
     }
     project.max_duration != was
+}
+
+/// "Copy from Other Project…": the project-settings fields of `from` (not its name, media or timeline).
+fn copy_project_settings(to: &mut Project, from: &Project) {
+    (to.width, to.height, to.fps) = (from.width, from.height, crate::model::clean_fps(from.fps));
+    (to.color, to.max_duration, to.preview_bg) = (from.color, from.max_duration, from.preview_bg);
 }
 
 fn rescale_prompt_id() -> egui::Id {
@@ -2006,6 +2054,8 @@ mod tests {
         assert!(pick(&mut h, "project_format", "General Short Form"));
         assert_eq!((h.project.width, h.project.height, h.project.fps), (1080, 1920, 60.0));
         assert_eq!(h.undos, 2);
+        assert_eq!(h.project.max_duration, Some(60.0), "short form starts with a 1:00 Max length");
+        assert!(crate::ui::guides::is_short_form(720, 1280) && !crate::ui::guides::is_short_form(1080, 1350));
         pick(&mut h, "project_res", "Custom…");
         h.frame(vec![]);
         assert!(h.maybe_rect("project_width").is_some(), "Custom… reveals W × H");
@@ -2031,6 +2081,21 @@ mod tests {
         assert!(h.click(item));
         assert_eq!(h.project.max_duration, Some(180.0));
         assert_eq!(h.undos, 2);
+        // Set to Out: disabled without an Out point, then takes it as the limit
+        h.project.out_point = Some(42.0);
+        h.time += 1.0;
+        h.frame(vec![]);
+        let r = h.rect("project_max_out");
+        assert!(h.click(r.center()));
+        assert_eq!(h.project.max_duration, Some(42.0));
+        assert_eq!(h.undos, 3);
+        // Copy from Other Project: settings only
+        let mut other = Project::new();
+        (other.width, other.height, other.fps, other.max_duration) = (1080, 1920, 30.0, Some(15.0));
+        other.name = "other".into();
+        copy_project_settings(&mut h.project, &other);
+        assert_eq!((h.project.width, h.project.height, h.project.fps, h.project.max_duration), (1080, 1920, 30.0, Some(15.0)));
+        assert_ne!(h.project.name, "other");
         assert_eq!(parse_length("1:30"), Some(90.0));
         assert_eq!(parse_length(" 45 s"), Some(45.0));
         assert_eq!(parse_length("0"), None);

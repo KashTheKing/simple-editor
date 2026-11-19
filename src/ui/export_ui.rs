@@ -62,6 +62,9 @@ pub struct ExportUi {
     pub form: Option<PresetForm>,
     /// The output bar's file name (without extension); "" = the suggestion (`suggested_name`).
     pub out_name: String,
+    /// What the name field was last filled with automatically: while `out_name` still equals it the
+    /// field follows the suggestion (project name, preset); once typed over or cleared it is the user's.
+    pub out_name_auto: String,
     /// The output bar's folder; None = beside the source video. The save dialog's answer updates it.
     pub out_dir: Option<PathBuf>,
     /// The Frame rate row: output fps, 0 = the project's (set by a preset that names one).
@@ -1347,6 +1350,9 @@ fn output_bar(
             let btn_w = 110.0;
             let name_w = (ui.available_width() - ext_w - btn_w - 16.0).clamp(80.0, 300.0);
             let hint = suggested_name(state, project);
+            if state.out_name == state.out_name_auto && state.out_name != hint {
+                (state.out_name, state.out_name_auto) = (hint.clone(), hint.clone());
+            }
             ui.add(egui::TextEdit::singleline(&mut state.out_name).hint_text(hint).desired_width(name_w))
                 .on_hover_text("The file name. Empty: the suggestion shown.");
             bar_label(ui, &format!(".{}", if state.lossless { "same" } else { &ext }));
