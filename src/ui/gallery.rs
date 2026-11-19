@@ -1678,6 +1678,11 @@ fn visualizer_picture(p: &egui::Painter, tile: Rect, name: &str) {
         let mut o = o.borrow_mut();
         let orb = o.entry(style.name.clone()).or_default();
         orb.show_level(0.6, 1.5);
+        // a made-up waveform for the Waveform card (no song to read)
+        orb.set_wave(Some(crate::engine::visualizer::wave_window(1.5, |k| {
+            let k = k as f32;
+            0.25 + 0.6 * ((k * 0.11).sin() * (k * 0.023).sin()).abs()
+        })));
         orb.paint(p, tile.shrink(1.0), &style.src);
     });
 }
@@ -3716,7 +3721,7 @@ mod tests {
         assert!(GalleryTab::AUDIO.contains(&GalleryTab::Visualizers));
         assert_eq!(GalleryTab::from_name("visualizers"), Some(GalleryTab::Visualizers));
         let names = card_names(GalleryTab::Visualizers, &Settings::default());
-        for n in ["Neon Orb", "Spectrum Bars", "Voxel Blocks"] {
+        for n in ["Neon Orb", "Waveform", "Spectrum Bars", "Voxel Blocks"] {
             assert!(names.iter().any(|x| x == n), "{n} in {names:?}");
         }
         let mut g = Gx::new(GalleryTab::Visualizers);

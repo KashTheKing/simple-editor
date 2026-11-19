@@ -409,6 +409,11 @@ uniform float u_frames;
         // ws:audio-visualizer: the 3D camera (`visualizer::camera_at`)
         s.push_str("uniform vec3 u_cam_pos;\nuniform vec3 u_cam_target;\nuniform float u_fov;\nuniform float u_cam_roll;\n");
     }
+    if meta.params.iter().any(|p| p.id == crate::engine::visualizer::WAVE_PARAM) {
+        // the Waveform style's scrolling peaks (`visualizer::Wave`)
+        let n = crate::engine::visualizer::WAVE_N;
+        s.push_str(&format!("#define WAVE_N {n}\nuniform float u_wave[WAVE_N];\nuniform float u_wave_off;\n"));
+    }
     if toy {
         s.push_str(SHADERTOY);
     }

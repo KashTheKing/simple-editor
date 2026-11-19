@@ -24,6 +24,7 @@
 - **Saved screenshots and exports** get Open, Open Folder and Add to Project buttons on their toast.
 - **Help ▸ Report a Bug…** opens a GitHub issue with the "bug report" label.
 - **Audio Visualizer** in the Preview's right-click menu (with Audio Only) picks the visualizer style.
+- **Waveform visualizer**: a new built-in style, the song's own waveform scrolling right to left past a playhead in the middle, mirrored, in the accent blue on black. It works wherever visualizers do: Add Audio Visualizer, the Preview's Audio Only, the media player's Audio Only, Make visualizer video and exports, in reverse too.
 - **Max length** goes up to hours and days, with no cap (type "9999h", "1h 30m" or "2d 1:00:00"), and 1 h, 2 h and 12 h picks.
 - Opening the Performance pane on a project with deeply nested sequences no longer freezes the editor.
 - **Short-form projects start with a 1:00 Max length** (a new 9:16 project, or switching to Shorts / TikTok / Reels with no limit set). **Set to Out** beside Max length takes the timeline's Out point.

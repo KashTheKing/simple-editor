@@ -565,6 +565,18 @@ fn visualizer_view(app: &mut PlayerApp, ui: &mut Ui, full: Rect) {
     f[1..].copy_from_slice(&b);
     // the look picked in ⋯ ▸ Visualizer: how far it moves, and the style's own params
     app.orb.show_frame(app.vis_look.shape(f), app.engine.time());
+    if app.viz.1.contains("@param wave ") {
+        // the Waveform style scrolls the file's own waveform: its analysis, made once in the background
+        let stream = app.engine.audio_streams().and_then(|s| s.first().copied()).unwrap_or(0);
+        let ctx = ui.ctx().clone();
+        let song = crate::engine::visualizer::analysis_async(
+            &app.engine.path().to_string_lossy(),
+            stream,
+            crate::media::Backend::Auto,
+            move || ctx.request_repaint(),
+        );
+        app.orb.set_wave(song.map(|a| a.wave_at(app.engine.time())));
+    }
     let style = crate::engine::visualizer::last_used(&app.viz.0).name;
     app.orb.paint_with(ui.painter(), full, &app.viz.1, app.vis_look.params.get(&style));
     if app.engine.is_playing() {

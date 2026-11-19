@@ -33,6 +33,7 @@ a GLSL visualizer file: it is checked and joins your types), and a **Source**: t
 | Style | What it does |
 |---|---|
 | **Neon Orb** | a glowing, rippling orb in a dark void that swells and boils with the loudness |
+| **Waveform** | the song's own waveform scrolling right to left past a playhead in the middle, mirrored around the centre line, brighter with the loudness |
 | **Spectrum Bars** | a mirrored field of thin blue and green bars receding to a horizon, bass in the middle (the Source monitor's original visualizer) |
 | **Voxel Blocks** | a blocky pixel-art island: columns rise with the spectrum, a block drops in and stacks on every beat while the oldest ones break away, and the camera slowly orbits |
 | your own | any shader in your library that reads audio (below), marked *(custom)* |
@@ -106,6 +107,7 @@ declares any of these controls in its header. When a visualizer is made, they ar
 | `beat` | `// @param beat 0 0 1` | 0 on each beat the band mixer's beat bands hear, rising to 1 just before the next |
 | `beats` | `// @param beats 0 0 100000` | how many beats have passed: 0, then 1, 2, 3, ... |
 | `bpm` | `// @param bpm 120 0 300` | the song's tempo |
+| `wave` | `// @param wave 0 0 1` | the waveform: the shader also gets `float u_wave[WAVE_N]`, the song's peaks (0..1 of its loudest) one per 1/100 s with now at index `WAVE_N / 2 + u_wave_off` (what Waveform scrolls) |
 
 A 3D shader can take the visualizer camera too: add the header line `// @camera` and it gets
 
