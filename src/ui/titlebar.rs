@@ -94,6 +94,28 @@ pub fn outlined(maximized: bool, fullscreen: bool) -> bool {
     !(maximized || fullscreen)
 }
 
+/// Full screen on / off for the viewport `ctx` is in. Every window here is undecorated, and winit keeps
+/// an undecorated *maximized* window's client area at the monitor's work area even in full screen - the
+/// taskbar's strip stays uncovered, unpainted (white) and outlined. So a maximized window is restored
+/// first, and maximized again on the way out.
+pub fn set_fullscreen(ctx: &egui::Context, on: bool) {
+    use egui::ViewportCommand as V;
+    let id = egui::Id::new(("fullscreen-was-maximized", ctx.viewport_id()));
+    if on {
+        let max = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        ctx.data_mut(|d| d.insert_temp(id, max));
+        if max {
+            ctx.send_viewport_cmd(V::Maximized(false));
+        }
+        ctx.send_viewport_cmd(V::Fullscreen(true));
+    } else {
+        ctx.send_viewport_cmd(V::Fullscreen(false));
+        if ctx.data_mut(|d| d.remove_temp::<bool>(id)).unwrap_or(false) {
+            ctx.send_viewport_cmd(V::Maximized(true));
+        }
+    }
+}
+
 /// The palette every window's bar is drawn in: the editor / player set theirs each frame, a child
 /// window (a popped-out pane, a screen window) reads it.
 pub fn set_palette(ctx: &egui::Context, pal: Palette) {

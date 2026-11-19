@@ -228,6 +228,8 @@ pub struct PlayerApp {
     pub(crate) shot_menu: Option<egui::Pos2>,
     /// Segoe UI Symbol was added (`theme::add_symbols`, the first time a menu opened).
     pub(crate) symbols: bool,
+    /// `SE_PLAYER_SHOT_SETUP=fullscreen=20:200`: toggle full screen at these frames after the reveal.
+    shot_fs: Vec<u64>,
 }
 
 impl PlayerApp {
@@ -285,6 +287,7 @@ impl PlayerApp {
                 (PathBuf::from(p), s.parse().unwrap_or(1.0), false)
             }),
             shown_at_frame: 0,
+            shot_fs: Vec::new(),
             reveal: Default::default(),
             frames: 0,
             cover: None,
@@ -780,7 +783,7 @@ impl PlayerApp {
             self.toggle_mini(ctx);
         }
         self.fullscreen = !self.fullscreen;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+        crate::ui::titlebar::set_fullscreen(ctx, self.fullscreen);
     }
 
     /// Mini player: a small always-on-top window in the corner of the screen; again to restore.
@@ -790,7 +793,7 @@ impl PlayerApp {
             ctx.send_viewport_cmd(V::WindowLevel(egui::WindowLevel::Normal));
             if r.fullscreen {
                 self.fullscreen = true;
-                ctx.send_viewport_cmd(V::Fullscreen(true));
+                crate::ui::titlebar::set_fullscreen(ctx, true);
             } else if r.maximized {
                 ctx.send_viewport_cmd(V::Maximized(true));
             } else if let Some(rect) = r.rect {
@@ -807,7 +810,7 @@ impl PlayerApp {
         });
         if self.fullscreen {
             self.fullscreen = false;
-            ctx.send_viewport_cmd(V::Fullscreen(false));
+            crate::ui::titlebar::set_fullscreen(ctx, false);
         }
         ctx.send_viewport_cmd(V::Maximized(false));
         let aspect = self.info.as_ref().filter(|i| i.has_video && i.size.1 > 0).map_or(16.0 / 9.0, |i| i.size.0 as f32 / i.size.1 as f32);
@@ -1019,6 +1022,10 @@ impl PlayerApp {
     }
 
     fn shot_tick(&mut self, ctx: &egui::Context) {
+        if self.shot_fs.first().is_some_and(|f| self.window_shown && self.frames >= self.shown_at_frame + f) {
+            self.shot_fs.remove(0);
+            self.toggle_fullscreen(ctx);
+        }
         let Some((path, after, asked)) = self.shot.as_mut() else { return };
         if !self.window_shown {
             return;
@@ -1069,6 +1076,8 @@ impl PlayerApp {
                 _ if item == "visualizer" => self.song_viz = true,
                 _ if item == "cover_loading" => self.cover_rx = Some(std::sync::mpsc::channel().1),
                 Some(("res", h)) => self.res = h.parse().ok(),
+                _ if item == "max" => ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true)),
+                Some(("fullscreen", at)) => self.shot_fs = at.split(':').filter_map(|f| f.parse().ok()).collect(),
                 Some(("menu", at)) => self.shot_menu = at.split_once(':').and_then(|(x, y)| Some(egui::pos2(x.parse().ok()?, y.parse().ok()?))),
                 _ => {}
             }
@@ -1171,7 +1180,7 @@ impl Root {
         p.save_prefs();
         use egui::ViewportCommand as V;
         if p.fullscreen {
-            ctx.send_viewport_cmd(V::Fullscreen(false));
+            crate::ui::titlebar::set_fullscreen(ctx, false);
         }
         if p.mini.is_some() {
             ctx.send_viewport_cmd(V::WindowLevel(egui::WindowLevel::Normal));

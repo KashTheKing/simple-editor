@@ -468,7 +468,7 @@ impl App {
                 }
             }
             Fullscreen => {
-                // the caller sends ViewportCommand::Fullscreen (needs the ctx)
+                // the caller calls titlebar::set_fullscreen (needs the ctx)
                 self.fullscreen = !self.fullscreen;
                 self.player.seek(self.playhead); // re-render at the new canvas size
             }

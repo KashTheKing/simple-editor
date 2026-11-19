@@ -468,7 +468,7 @@ fn body(ui: &mut egui::Ui, st: &mut HtmlUi, resp: &mut EditorResponse) {
         let full = ctx.input(|i| i.viewport().fullscreen).unwrap_or(false);
         let key = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F11));
         if ui.button(if full { "Exit full screen" } else { "Full screen" }).on_hover_text("F11").clicked() || key {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+            crate::ui::titlebar::set_fullscreen(&ctx, !full);
         }
         ui.weak("Ctrl+Space: suggestions · Tab: accept · the window can be maximised or dragged to another monitor");
     });

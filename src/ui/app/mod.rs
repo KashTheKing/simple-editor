@@ -1725,7 +1725,7 @@ impl eframe::App for App {
             if a == Action::Fullscreen {
                 // the viewport command needs the ctx; keep act() ctx-free
                 self.act(a);
-                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+                crate::ui::titlebar::set_fullscreen(ctx, self.fullscreen);
             } else {
                 self.act(a);
             }
