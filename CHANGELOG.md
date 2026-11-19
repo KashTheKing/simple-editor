@@ -1,6 +1,32 @@
 # Changelog
 
-## Unreleased
+## 1.4.0
+
+### Media player
+- **A fast media player for opening files** (open a video or song from Explorer): the 1.3.0 layout in your theme's colours and accent, first frame in about half a second, big easy controls, and the picture no longer steps when the mouse moves over a paused video.
+- **Reverse, Loop and playback speed**: reverse plays backwards in real time at the chosen speed, sound included (so the visualizer moves), with its own icon. Back and forward skip 10 seconds.
+- **Audio tracks**: pick which audio tracks you hear (several at once, all on by default), turn them all off, or switch to Audio Only with a visualizer of your choice and its intensity.
+- **Seek bar**: ticks for every second and smaller ones between, and thumbnails on hover that load fast, from the end first.
+- **Right-click menu**: the controls, Resolution, Upscale… (the AI enhancer), Convert, Screenshot frame and Properties / Metadata.
+- **Metadata**: edit a file's tags, Clear all, change a song's cover, add Windows (Explorer) tags (M4A, MP4, MOV, WMA and WMV hold them) and apply metadata presets (author, genre and the rest; Settings ▸ Metadata, the Library's right-click menu and Export ▸ Apply preset).
+- **Songs** open in Audio Only with their cover over a blurred copy of it; covers and thumbnails show a loading shimmer.
+- **Rename** a file by clicking its name at the bottom left; the editor's Library follows the renamed file. The cursor hides with the controls.
+
+### Windows
+- **One title bar for every window**: the editor, popped-out panels, the Screen Recording window and the media player share the same title bar and minimise / maximise / close buttons. Not maximised, windows get rounded corners (unless the look is Sharp) and an outline. Moving a window no longer lags.
+- **Pages or One window**: the first-run setup (and Window ▸ Layout) lets you choose the page tabs along the top or a single window with everything in it.
+- **Start screen**: Don't show again (Settings ▸ General ▸ Start screen turns it back on); its buttons are all the same size and line up.
+
+### Assistant and MCP
+- **Tool permissions**: Settings lists every MCP tool and whether it is allowed, asks in the chat the first time a tool wants access, and the Assistant's composer has a model picker and a permission mode (Ask permissions, Accept edits, Bypass permissions). Debug and dev builds start with full access (`SE_MCP_FULL_ACCESS=0` turns it off).
+
+### Small things
+- **Saved screenshots and exports** get Open, Open Folder and Add to Project buttons on their toast.
+- **Help ▸ Report a Bug…** opens a GitHub issue with the "bug report" label.
+- **Audio Visualizer** in the Preview's right-click menu (with Audio Only) picks the visualizer style.
+- **Max length** goes up to hours and days, with no cap (type "9999h", "1h 30m" or "2d 1:00:00"), and 1 h, 2 h and 12 h picks.
+- Opening the Performance pane on a project with deeply nested sequences no longer freezes the editor.
+
 
 ### Timeline
 - **Max length.** Project settings (and an open sequence's) get a Max length row: on/off, an m:ss field and quick
@@ -52,7 +78,6 @@
   moments after it lands, and the Detailed view’s colours, ticks and spectrogram fill in when the full analysis is
   done. Both run in the background and pause while something plays.
 
-## 1.3.1
 
 ### Device Emulator
 - **New Device Emulator pane** (right-click the Preview ▸ Emulator, or Window ▸ Device Emulator): your video playing inside an iPhone 16 Pro (Dynamic Island), iPhone 14 (notch), Pixel 9 and Galaxy S24 (Android status bar, punch-hole camera, gesture or three-button bar), iPad Air, a desktop browser or a TV, with YouTube, Shorts, TikTok, Reels and the other apps round it. A Gallery of every device and platform (each playing), Landscape / Portrait, the platform's comments, captions, Screenshot; the choice is kept per project. Play, scrub, CC, the settings menu, the speaker and theatre / fullscreen work like the real players, and buffering shows each platform's own spinner. Tools: `emulator.open`, `emulator.screenshot`.
@@ -270,7 +295,6 @@
   LUTs; `render.contact_sheet` keeps tiles on the last frame instead of a black one past the end; transcript files
   are kept per editor process, so two open editors no longer overwrite each other's; `history.restore` and
   `tracking.run` descriptions say what they really do.
-## Unreleased
 
 ### Animation templates
 - **Built-in animation templates** in Gallery ▸ Templates, made from the Animator's blocks and transitions and sized to your project: Photo Slideshow, Beat Montage, Title Intro, Product Showcase, Before and After, Quote Card, Lower Third Opener, Vertical Short Opener, End Card, Photo Grid.
