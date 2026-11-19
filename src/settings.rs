@@ -275,6 +275,26 @@ pub struct Settings {
     /// Screen recording sound: "system" | "mic" | "both" | "none" (`AudioMode::key`; "" = system).
     pub capture_audio: String,
     pub capture_cursor: bool,
+    /// feat/recorder-2: the Screen Recording pane's live preview is on (right-click it to pause).
+    pub capture_preview: bool,
+    /// Output scale in percent of the captured size.
+    pub capture_scale: u32,
+    /// "x264" (CPU) or "gpu" (the fastest working hardware H.264 encoder).
+    pub capture_encoder: String,
+    /// The recording's audio streams, in order (`capture::default_tracks`).
+    pub capture_tracks: Vec<crate::engine::capture::TrackSpec>,
+    /// The Library bin finished recordings go into ("" = the top level).
+    pub capture_bin: String,
+    /// Import a finished recording into the library by itself.
+    pub capture_auto_import: bool,
+    /// File name pattern without extension: {time}, {source}.
+    pub capture_name: String,
+    /// Hide Simple Editor while recording (stop with the pill or the hotkey).
+    pub capture_hide: bool,
+    /// Global hotkey that stops a recording, e.g. "Ctrl+Shift+F9".
+    pub capture_stop_hotkey: String,
+    /// The Screen Recording pane's open sections.
+    pub capture_folds: BTreeMap<String, bool>,
     /// Start/stop screen recording automatically when the editor loses/gains focus.
     pub capture_on_blur: bool,
     pub capture_dir: String,
@@ -751,6 +771,16 @@ impl Default for Settings {
             capture_desktop_audio: true,
             capture_audio: String::new(),
             capture_cursor: true,
+            capture_preview: true,
+            capture_scale: 100,
+            capture_encoder: "x264".into(),
+            capture_tracks: crate::engine::capture::default_tracks(),
+            capture_bin: "Recordings".into(),
+            capture_auto_import: true,
+            capture_name: "screen-{time}".into(),
+            capture_hide: false,
+            capture_stop_hotkey: "Ctrl+Shift+F9".into(),
+            capture_folds: BTreeMap::new(),
             capture_on_blur: false,
             capture_dir: String::new(),
             voice_device: String::new(),

@@ -860,3 +860,40 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 - gdigrab reached ~27 fps at 2560x1440 while other sessions were compiling. Tests that record for real write to
   `SE_TEST_DIR` (else temp). Pre-existing on release/1.3.1: `library_index_matches_files` and
   `connecting_loads_the_index_once` fail in CRLF worktree checkouts; `clear_forgets_rewritten_file` is flaky.
+
+## Recorder 2 (2026-11-18, feat/recorder-2)
+- Preview: `screen_grab::FrameSlot` (newest frame + generation + `wanted`). Producers: the recording's own ffmpeg
+  (second output `fps=30,scale=480:270,pad,rgba -f rawvideo pipe:1`; progress moved to `-progress pipe:2`) for
+  regions / windows; `wgc::AppCapture` for applications and whole monitors (GPU mip-chain downscale, only the
+  small level read back, double-buffered staging so the thread never waits on the GPU). Idle: `Preview::start`
+  (preview-only ffmpeg or WGC). Nothing runs unless looked at: pane drawn, its viewport not minimised,
+  `Settings.capture_preview` (right-click toggle). No occlusion signal in egui 0.33, so a covered window keeps
+  previewing. A gdigrab idle preview of a 2560x1440 monitor at 30 fps cost ~80 % of a core in ffmpeg: that is
+  why monitors go through WGC.
+- App capture: WGC frames -> raw BGRA on ffmpeg stdin with `-use_wallclock_as_timestamps 1` (sync like
+  gdigrab); EOF stops it. Fixed output size = window size at start (resize crops / pads). App audio:
+  process loopback (`audio_tap/app_audio.rs`), hand-made static COM completion handler like `disc::imapi`.
+  The windows crate has `Drop for PROPVARIANT` (extensions/.../StructuredStorage.rs) = PropVariantClear: a
+  PROPVARIANT pointing at a stack blob must be ManuallyDrop, or CoTaskMemFree corrupts the heap
+  (STATUS_HEAP_CORRUPTION at the first recording with an App audio track).
+- Tracks: `TrackSpec{name, kind: Mix|System|Mic|App, on}`; `mux_args` reads each piece once, `asplit`s it for
+  several tracks, a silent source -> `anullsrc` stream (count and order always match), `-metadata:s:a:N title=`.
+- Hide on Record: `rec_pill` (Win32 popup + RegisterHotKey on one thread, WDA_EXCLUDEFROMCAPTURE, ShowWindowAsync
+  so it never waits on the UI thread). Bins: `jobs::put_in_bin`. `capture.screen` gained source 'app',
+  window 'pid:<n>', preview, dock.
+- Measured (debug exe, 2560x1440 screen 1, other sessions compiling; CPU = % of one core, app + ffmpeg tree):
+  before (fix/screen-record, 4 fps GDI preview): idle preview 15 %; recording alone 137 %, with preview 160 %.
+  after: idle screen preview (WGC monitor) 30 fps, 30 %; recording with preview 195-235 % vs 220 % paused
+  (ffmpeg varied with the video on screen; the preview's own share is the app's ~30 % vs 7 % paused);
+  app capture recording (1450x1008, 3 tracks) app 43 % + ffmpeg 47 %. A gdigrab 30 fps idle preview of
+  the monitor was 108 % (why monitors use WGC). Lag (`preview_bench`, capture -> frame stored, + up to one
+  33 ms UI frame): ffmpeg path 30 fps, median 93 ms (worst 102; 119 ms with the fps filter); WGC 30 fps,
+  median 65 ms (worst 66-82).
+- Live: app capture of a second scratch instance playing a 440 Hz video: video 1450x1008 (its window), 3
+  streams - All audio (tone -10 dB), Microphone (acoustic only, -31), App audio (the tone alone, -18).
+  Imported into the Recordings bin. Hide on Record: editor + popped pane minimised and affinity 17
+  (excluded) while recording, pill visible and excluded, WM_HOTKEY to the pill stopped the recording and
+  restored both. NOT shown: the cursor in a screenshot (the user's pointer was hidden; not moved).
+- launch.ps1 children die with the PowerShell tool's console; launch through `cmd /c` with CreateNoWindow.
+  Never rewrite a scratch settings.json with PowerShell's ConvertTo-Json/Out-File (BOM): the app then
+  loads defaults - capture_dir "" = the user's Videos folder.

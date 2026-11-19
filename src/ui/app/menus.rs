@@ -30,7 +30,7 @@ fn acts_if(ui: &mut egui::Ui, on: bool, items: &[Option<Action>]) {
 }
 
 /// Window menu: the everyday panels first, then the niche ones under More ▸ (hidden, not deleted).
-const MAIN_PANES: [Pane; 19] = [
+const MAIN_PANES: [Pane; 20] = [
     Pane::Library,
     Pane::MediaBrowser,
     Pane::Presets,
@@ -52,6 +52,8 @@ const MAIN_PANES: [Pane; 19] = [
     Pane::Voiceover,
     Pane::Transcript,
     Pane::Rendering,
+    // ---- feat/recorder-2 ----
+    Pane::ScreenRecording,
     // ---- ws:device-emulator ----
     Pane::Emulator,
 ];

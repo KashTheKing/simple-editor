@@ -2396,6 +2396,25 @@ mod tests {
         assert!(l.is_visible(Pane::Presets));
     }
 
+    /// feat/recorder-2: the Screen Recording pane - in no page by default - docks into a page's layout
+    /// (as a tab), pops out into its own window, docks back, and its spot survives a save.
+    #[test]
+    fn screen_recording_docks_and_pops_out() {
+        let mut l = Layout::default_layout();
+        assert!(!l.is_visible(Pane::ScreenRecording));
+        l.dock(Pane::ScreenRecording);
+        assert!(l.is_visible(Pane::ScreenRecording) && l.popped.is_empty(), "docked into the page");
+        let id = l.tree.tiles.find_pane(&Pane::ScreenRecording).expect("a tile in the page tree");
+        assert!(l.tree.tiles.is_visible(id));
+        l.popout(Pane::ScreenRecording);
+        assert_eq!(l.popped, vec![Pane::ScreenRecording], "its own window");
+        assert!(!l.tree.tiles.is_visible(id), "not drawn twice");
+        l.dock(Pane::ScreenRecording);
+        assert!(l.popped.is_empty() && l.tree.tiles.is_visible(id), "back in its tile");
+        let back = Layout::from_json(&l.to_json()).expect("roundtrip");
+        assert!(back.is_visible(Pane::ScreenRecording) && back.popped.is_empty());
+    }
+
     #[test]
     fn json_roundtrip() {
         let mut l = Layout::default_layout();

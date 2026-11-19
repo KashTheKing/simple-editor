@@ -1528,6 +1528,13 @@ impl eframe::App for App {
         if !self.pane_drawn(Pane::ScreenRecording) {
             self.capture_ui.sleep();
         }
+        // feat/recorder-2: the Stop pill / the stop hotkey (they restored the windows themselves)
+        if self.capture_ui.ctx.is_none() {
+            self.capture_ui.ctx = Some(ctx.clone());
+        }
+        if self.capture_ui.pill.as_ref().is_some_and(|p| p.stop_requested()) {
+            self.stop_screen_capture();
+        }
         self.capture_ui.finishing = self.pending_recordings.iter().any(|r| r.done.is_some() && r.at.is_none());
         if self.close_after_recording && self.screen_rec.is_none() && !self.capture_ui.finishing {
             self.close_after_recording = false;

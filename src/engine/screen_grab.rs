@@ -1,157 +1,149 @@
 //! The Screen Recording pane's live preview and window list.
 //!
-//! `Preview` grabs what the recorder records - a desktop rectangle, or a window's client area exactly
-//! like gdigrab's `title=` does - with one GDI `StretchBlt` (HALFTONE) straight into a small DIB, on
-//! its own thread, a few times a second. Nothing full-size is ever copied, encoded or uploaded, so it
-//! costs the recording and the editor next to nothing (~2-6 ms of GDI per grab, measured at 4K).
-//! The thread stops when the `Preview` is dropped (the pane hides it when it isn't on screen).
+//! The preview shows what the recorder records, cursor included, at 30 fps:
+//! * while recording, the recording's own ffmpeg writes a second output - the captured frames scaled to
+//!   `PW`x`PH` (fast bilinear, letterboxed) as raw RGBA on its stdout - so the preview IS the capture,
+//!   with no second screen grab;
+//! * before recording, a small ffmpeg with the same input does only that (`Preview::start`);
+//! * an application source comes from `engine::wgc` (GPU-downscaled frames).
+//! Frames land in a `FrameSlot`; the pane uploads the newest one into one reused texture. When nobody
+//! looks (`wanted` off: pane hidden, window minimised, or Pause preview), frames are drained and
+//! dropped without a copy, and the before-recording ffmpeg is not running at all.
 
 use crate::engine::capture::CaptureSource;
+use crate::media::ffpipe;
+use std::io::Read;
+use std::process::{Child, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::Instant;
 
-/// Longest side of a preview frame, in pixels.
-pub const PREVIEW_MAX: u32 = 360;
+/// Longest side of an application preview frame (WGC halves down to this).
+pub const PREVIEW_MAX: u32 = 480;
+/// Size of the ffmpeg preview frames.
+pub const PW: usize = 480;
+pub const PH: usize = 270;
+/// Preview rate.
+pub const PREVIEW_FPS: u32 = 30;
 
-/// A grabbed frame: RGBA, `size` = [w, h].
+/// A frame: RGBA, `size` = [w, h].
 #[derive(Clone)]
 pub struct Frame {
     pub size: [usize; 2],
     pub rgba: Vec<u8>,
 }
 
+/// The newest preview frame, shared between a producer thread and the pane.
 #[derive(Default)]
-struct Shared {
-    source: Mutex<Option<CaptureSource>>,
-    frame: Mutex<Option<Frame>>,
-    /// Bumped per new frame, so the UI only re-uploads its texture when something changed.
+pub struct FrameSlot {
+    frame: Mutex<Option<(Frame, Instant)>>,
     generation: AtomicU64,
-    stop: AtomicBool,
-    interval_ms: AtomicU64,
+    /// Someone is looking: producers skip copying (and WGC skips the readback) while this is off.
+    pub wanted: AtomicBool,
 }
 
+impl FrameSlot {
+    pub fn new(wanted: bool) -> Arc<FrameSlot> {
+        let s = Arc::new(FrameSlot::default());
+        s.wanted.store(wanted, Ordering::Relaxed);
+        s
+    }
+    pub fn put(&self, f: Frame) {
+        *self.frame.lock().unwrap_or_else(|e| e.into_inner()) = Some((f, Instant::now()));
+        self.generation.fetch_add(1, Ordering::Release);
+    }
+    /// Bumped per stored frame.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+    /// The newest frame and when it arrived.
+    pub fn frame(&self) -> Option<(Frame, Instant)> {
+        self.frame.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// ffmpeg output args for preview frames on stdout (after the inputs; `-map 0:v` picks the capture).
+/// Every captured frame goes straight through (no `fps` filter, timestamps passed through): a rate
+/// filter and constant-rate pacing held ~3 frames back (119 ms measured at 30 fps).
+pub fn preview_output_args() -> Vec<String> {
+    let vf = format!(
+        "scale={PW}:{PH}:force_original_aspect_ratio=decrease:flags=fast_bilinear,\
+         pad={PW}:{PH}:(ow-iw)/2:(oh-ih)/2,format=rgba"
+    );
+    ["-map", "0:v", "-vf", &vf, "-fps_mode", "passthrough", "-f", "rawvideo", "-flush_packets", "1", "pipe:1"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Read `PW`x`PH` RGBA frames from an ffmpeg stdout into `slot` until the pipe closes. Always drains
+/// (a full pipe would stall the recording); copies only while `slot.wanted`.
+pub fn spawn_reader(mut out: ChildStdout, slot: Arc<FrameSlot>) {
+    let _ = std::thread::Builder::new().name("preview-pipe".into()).spawn(move || {
+        let mut buf = vec![0u8; PW * PH * 4];
+        while out.read_exact(&mut buf).is_ok() {
+            if slot.wanted.load(Ordering::Relaxed) {
+                slot.put(Frame { size: [PW, PH], rgba: buf.clone() });
+            }
+        }
+    });
+}
+
+/// The before-recording preview: a preview-only ffmpeg (screen, window, region) or a WGC capture
+/// (application). Dropping it stops it.
 pub struct Preview {
-    shared: Arc<Shared>,
+    pub source: CaptureSource,
+    pub cursor: bool,
+    pub slot: Arc<FrameSlot>,
+    child: Option<Child>,
+    app: Option<crate::engine::wgc::AppCapture>,
 }
 
 impl Preview {
-    pub fn start(source: CaptureSource) -> Preview {
-        let shared = Arc::new(Shared::default());
-        *shared.source.lock().unwrap() = Some(source);
-        shared.interval_ms.store(330, Ordering::Relaxed);
-        let s = shared.clone();
-        let _ = std::thread::Builder::new().name("screen-preview".into()).spawn(move || {
-            while !s.stop.load(Ordering::Relaxed) {
-                let src = s.source.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                if let Some(f) = src.and_then(|src| grab(&src, PREVIEW_MAX)) {
-                    *s.frame.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
-                    s.generation.fetch_add(1, Ordering::Release);
-                }
-                std::thread::sleep(Duration::from_millis(s.interval_ms.load(Ordering::Relaxed)));
+    pub fn start(source: CaptureSource, cursor: bool) -> Option<Preview> {
+        let slot = FrameSlot::new(true);
+        let mut p = Preview { source: source.clone(), cursor, slot: slot.clone(), child: None, app: None };
+        // a whole monitor previews through WGC too: the GPU halves it, so a 1440p screen at 30 fps costs
+        // what a 480 px frame costs (a gdigrab preview of it took ~80 % of a core)
+        let monitor = match &source {
+            CaptureSource::Region(x, y, w, h) => crate::engine::wgc::monitor_at([*x, *y, *w as i32, *h as i32]),
+            _ => None,
+        };
+        match (&source, monitor) {
+            (_, Some(m)) => {
+                use crate::engine::wgc::{AppCapture, Target};
+                p.app = AppCapture::start_target(Target::Monitor(m), cursor, PREVIEW_FPS, slot).ok();
             }
-        });
-        Preview { shared }
-    }
-    pub fn set_source(&self, source: CaptureSource) {
-        *self.shared.source.lock().unwrap_or_else(|e| e.into_inner()) = Some(source);
-    }
-    /// Slower while recording: the preview must never compete with the encoder.
-    pub fn set_interval(&self, ms: u64) {
-        self.shared.interval_ms.store(ms.max(50), Ordering::Relaxed);
-    }
-    pub fn generation(&self) -> u64 {
-        self.shared.generation.load(Ordering::Acquire)
-    }
-    pub fn frame(&self) -> Option<Frame> {
-        self.shared.frame.lock().unwrap_or_else(|e| e.into_inner()).clone()
+            (CaptureSource::App { hwnd, .. }, _) => {
+                p.app = crate::engine::wgc::AppCapture::start(*hwnd, cursor, PREVIEW_FPS, slot).ok();
+            }
+            _ => {
+                let exe = ffpipe::ffmpeg_exe()?;
+                let mut args: Vec<String> = ["-hide_banner", "-nostats", "-loglevel", "error"].iter().map(|s| s.to_string()).collect();
+                args.extend(crate::engine::capture::gdigrab_input(&source, PREVIEW_FPS, cursor));
+                args.extend(preview_output_args());
+                let mut child = ffpipe::command(&exe)
+                    .args(&args)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .ok()?;
+                crate::engine::html::tie_to_us(&child);
+                spawn_reader(child.stdout.take()?, slot);
+                p.child = Some(child);
+            }
+        }
+        Some(p)
     }
 }
 
 impl Drop for Preview {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Relaxed);
-    }
-}
-
-/// `(w, h)` scaled so the longest side is at most `max`, keeping the aspect (never upscaled).
-pub(crate) fn fit(w: i32, h: i32, max: u32) -> (i32, i32) {
-    let (w, h) = (w.max(1), h.max(1));
-    let k = (max as f64 / w.max(h) as f64).min(1.0);
-    (((w as f64 * k).round() as i32).max(1), ((h as f64 * k).round() as i32).max(1))
-}
-
-/// One downscaled grab of `src`. None when the window is gone or minimised.
-pub fn grab(src: &CaptureSource, max: u32) -> Option<Frame> {
-    use windows::Win32::Foundation::{HWND, RECT};
-    use windows::Win32::Graphics::Gdi::*;
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetClientRect, GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-        SM_YVIRTUALSCREEN,
-    };
-    unsafe {
-        // (source window or the screen, source rect in that DC)
-        let (hwnd, x, y, w, h) = match src {
-            CaptureSource::Desktop => (
-                HWND::default(),
-                GetSystemMetrics(SM_XVIRTUALSCREEN),
-                GetSystemMetrics(SM_YVIRTUALSCREEN),
-                GetSystemMetrics(SM_CXVIRTUALSCREEN),
-                GetSystemMetrics(SM_CYVIRTUALSCREEN),
-            ),
-            CaptureSource::Region(x, y, w, h) => (HWND::default(), *x, *y, *w as i32, *h as i32),
-            CaptureSource::Window(title) => {
-                let hwnd = find_window(title)?;
-                let mut r = RECT::default();
-                GetClientRect(hwnd, &mut r).ok()?;
-                (hwnd, 0, 0, r.right - r.left, r.bottom - r.top)
-            }
-        };
-        if w <= 0 || h <= 0 {
-            return None;
+        if let Some(c) = self.child.as_mut() {
+            crate::engine::html::kill_tree(c);
+            let _ = c.wait();
         }
-        let (dw, dh) = fit(w, h, max);
-        let src_dc = GetDC(Some(hwnd));
-        if src_dc.is_invalid() {
-            return None;
-        }
-        let mem = CreateCompatibleDC(Some(src_dc));
-        let bmi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: dw,
-                biHeight: -dh, // top-down
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-        let out = match CreateDIBSection(Some(mem), &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
-            Ok(dib) if !bits.is_null() => {
-                let old = SelectObject(mem, dib.into());
-                SetStretchBltMode(mem, HALFTONE);
-                let ok = StretchBlt(mem, 0, 0, dw, dh, Some(src_dc), x, y, w, h, SRCCOPY).as_bool();
-                let px = (dw * dh) as usize;
-                let frame = ok.then(|| {
-                    let bgra = std::slice::from_raw_parts(bits as *const u8, px * 4);
-                    let mut rgba = Vec::with_capacity(px * 4);
-                    for p in bgra.chunks_exact(4) {
-                        rgba.extend_from_slice(&[p[2], p[1], p[0], 255]);
-                    }
-                    Frame { size: [dw as usize, dh as usize], rgba }
-                });
-                SelectObject(mem, old);
-                let _ = DeleteObject(dib.into());
-                frame
-            }
-            _ => None,
-        };
-        let _ = DeleteDC(mem);
-        ReleaseDC(Some(hwnd), src_dc);
-        out
     }
 }
 
@@ -168,21 +160,8 @@ pub fn windows() -> Vec<String> {
     out
 }
 
-/// The first recordable window with exactly this title (what gdigrab's `title=` picks too).
-fn find_window(title: &str) -> Option<windows::Win32::Foundation::HWND> {
-    let mut found = None;
-    for_each_window(|h, t| {
-        if t == title {
-            found = Some(h);
-            return true;
-        }
-        false
-    });
-    found
-}
-
 /// Calls `f(hwnd, title)` for each recordable window until it returns true.
-fn for_each_window(mut f: impl FnMut(windows::Win32::Foundation::HWND, &str) -> bool) {
+pub(crate) fn for_each_window(mut f: impl FnMut(windows::Win32::Foundation::HWND, &str) -> bool) {
     use windows::core::BOOL;
     use windows::Win32::Foundation::{HWND, LPARAM};
     use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
@@ -220,21 +199,167 @@ fn for_each_window(mut f: impl FnMut(windows::Win32::Foundation::HWND, &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
-    fn fit_keeps_aspect_and_never_upscales() {
-        assert_eq!(fit(3840, 2160, 360), (360, 203));
-        assert_eq!(fit(1080, 1920, 360), (203, 360));
-        assert_eq!(fit(200, 100, 360), (200, 100));
-        assert_eq!(fit(0, 0, 360), (1, 1));
+    fn preview_output_is_fixed_size_raw_rgba() {
+        let j = preview_output_args().join(" ");
+        assert!(j.starts_with("-map 0:v -vf scale=480:270:force_original_aspect_ratio=decrease"), "{j}");
+        assert!(j.contains("pad=480:270") && j.ends_with("-fps_mode passthrough -f rawvideo -flush_packets 1 pipe:1"), "{j}");
     }
 
-    /// Needs a desktop session: a grab of the top-left corner comes back small and opaque.
+    /// Real gdigrab (skips without ffmpeg): the idle preview runs at about 30 fps; with `wanted` off it
+    /// stores nothing at all, and it picks up again when someone looks.
     #[test]
-    fn grab_region_is_small() {
-        let Some(f) = grab(&CaptureSource::Region(0, 0, 1280, 720), PREVIEW_MAX) else { return };
-        assert_eq!(f.size, [360, 203]);
-        assert_eq!(f.rgba.len(), 360 * 203 * 4);
-        assert!(f.rgba.chunks(4).all(|p| p[3] == 255));
+    fn idle_preview_is_live_and_pauses() {
+        if ffpipe::ffmpeg_exe().is_none() {
+            return;
+        }
+        let Some(p) = Preview::start(CaptureSource::Region(0, 0, 640, 360), true) else { return };
+        std::thread::sleep(Duration::from_millis(1500)); // ffmpeg start-up
+        let g0 = p.slot.generation();
+        std::thread::sleep(Duration::from_millis(2000));
+        let fps = (p.slot.generation() - g0) as f64 / 2.0;
+        assert!(fps >= 20.0, "{fps} preview fps");
+        p.slot.wanted.store(false, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(200));
+        let g1 = p.slot.generation();
+        std::thread::sleep(Duration::from_millis(1000));
+        assert_eq!(p.slot.generation(), g1, "paused: no frame stored");
+        p.slot.wanted.store(true, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(p.slot.generation() > g1, "unpaused: frames again");
+        let (f, _) = p.slot.frame().unwrap();
+        assert_eq!(f.size, [PW, PH]);
+    }
+    /// A small window in the top-left corner whose colour the bench flips (white <-> black).
+    struct Flash {
+        hwnd: windows::Win32::Foundation::HWND,
+    }
+
+    impl Flash {
+        fn new() -> Flash {
+            use windows::Win32::UI::WindowsAndMessaging::*;
+            let hwnd = unsafe {
+                CreateWindowExW(
+                    WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+                    windows::core::w!("STATIC"),
+                    windows::core::w!(""),
+                    WS_POPUP | WS_VISIBLE,
+                    0,
+                    0,
+                    160,
+                    160,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap()
+            };
+            Flash { hwnd }
+        }
+        fn paint(&self, white: bool) {
+            use windows::Win32::Graphics::Gdi::*;
+            unsafe {
+                let dc = GetDC(Some(self.hwnd));
+                let brush = GetStockObject(if white { WHITE_BRUSH } else { BLACK_BRUSH });
+                let r = windows::Win32::Foundation::RECT { left: 0, top: 0, right: 160, bottom: 160 };
+                FillRect(dc, &r, HBRUSH(brush.0));
+                ReleaseDC(Some(self.hwnd), dc);
+                let _ = GdiFlush();
+            }
+        }
+        fn pump(&self) {
+            use windows::Win32::UI::WindowsAndMessaging::*;
+            unsafe {
+                let mut m = MSG::default();
+                while PeekMessageW(&mut m, None, 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&m);
+                    DispatchMessageW(&m);
+                }
+            }
+        }
+    }
+
+    impl Drop for Flash {
+        fn drop(&mut self) {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(self.hwnd);
+            }
+        }
+    }
+
+    /// Mean brightness of the frame's centre (the flash fills it).
+    fn centre_brightness(f: &Frame) -> f32 {
+        let [w, h] = f.size;
+        let (cx, cy) = (w / 2, h / 2);
+        let mut sum = 0u32;
+        for y in cy - 4..cy + 4 {
+            for x in cx - 4..cx + 4 {
+                let i = (y * w + x) * 4;
+                sum += f.rgba[i] as u32;
+            }
+        }
+        sum as f32 / 64.0
+    }
+
+    /// Flip the flash `n` times; per flip, the time until a stored frame shows the new colour.
+    fn lag_ms(slot: &FrameSlot, flash: &Flash, n: usize) -> Vec<f64> {
+        let mut out = Vec::new();
+        let mut white = false;
+        for _ in 0..n {
+            white = !white;
+            let t = Instant::now();
+            flash.paint(white);
+            let until = t + std::time::Duration::from_secs(2);
+            while Instant::now() < until {
+                flash.pump();
+                if let Some((f, at)) = slot.frame() {
+                    if at > t && (centre_brightness(&f) > 128.0) == white {
+                        out.push(at.duration_since(t).as_secs_f64() * 1000.0);
+                        break;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            flash.paint(white);
+        }
+        out
+    }
+
+    fn report(name: &str, slot: &FrameSlot, flash: &Flash) {
+        let g0 = slot.generation();
+        let t0 = Instant::now();
+        while t0.elapsed() < std::time::Duration::from_secs(3) {
+            flash.pump();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let fps = (slot.generation() - g0) as f64 / t0.elapsed().as_secs_f64();
+        let mut lags = lag_ms(slot, flash, 10);
+        lags.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let med = lags.get(lags.len() / 2).copied().unwrap_or(f64::NAN);
+        let worst = lags.last().copied().unwrap_or(f64::NAN);
+        println!("{name}: {fps:.1} fps, capture-to-frame lag median {med:.0} ms, worst {worst:.0} ms ({} of 10 flips seen)", lags.len());
+    }
+
+    /// `cargo test preview_bench -- --ignored --nocapture`: flashes a 160 px square in the top-left
+    /// corner for ~15 s and reports each preview path's fps and capture-to-frame lag (add up to one
+    /// 33 ms UI frame for the time on screen).
+    #[test]
+    #[ignore]
+    fn preview_bench() {
+        let flash = Flash::new();
+        flash.paint(false);
+        let p = Preview::start(CaptureSource::Region(0, 0, 160, 160), true).expect("ffmpeg preview");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        report("screen (ffmpeg gdigrab, 30 fps)", &p.slot, &flash);
+        drop(p);
+        let slot = FrameSlot::new(true);
+        let app = crate::engine::wgc::AppCapture::start(flash.hwnd.0 as isize, true, PREVIEW_FPS, slot.clone()).expect("wgc");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        report("application (WGC, 30 fps)", &slot, &flash);
+        drop(app);
     }
 }

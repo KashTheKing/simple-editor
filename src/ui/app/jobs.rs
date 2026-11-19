@@ -55,18 +55,41 @@ impl App {
         if let Some(dir) = out.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        // the meter taps let go of the devices before the recording opens them
+        // the meter taps and the idle preview let go of the devices / the screen before the recording
         self.capture_ui.meter_taps.clear();
+        self.capture_ui.meter_slots.clear();
         self.capture_ui.meter_key.clear();
+        self.capture_ui.preview = None;
+        // the stop hotkey always; with Hide on Record also the Stop pill, and our windows go away first
+        let hide = if self.settings.capture_hide { crate::engine::rec_pill::our_windows() } else { Vec::new() };
+        let wake = self.capture_ui.ctx.clone();
+        let hotkey = crate::engine::rec_pill::parse_hotkey(&self.settings.capture_stop_hotkey);
+        let hiding = !hide.is_empty();
+        let pill = guarded(move || {
+            crate::engine::rec_pill::Pill::start(move || if let Some(c) = &wake { c.request_repaint() }, hotkey, hide)
+        });
+        self.capture_ui.hotkey_error = pill.as_ref().and_then(|p| p.hotkey_error.clone());
+        if hiding {
+            // ponytail: one short wait on the UI thread (it is being hidden anyway) so the minimise
+            // animation is over before the first frame; a timer would need frames a minimised window may not get
+            std::thread::sleep(Duration::from_millis(400));
+        }
         match guarded(|| crate::engine::capture::start_screen(opts)) {
-            Some(Ok(c)) => self.screen_rec = Some((c, out)),
-            Some(Err(e)) => self.toast(format!("Screen recording failed: {e}")),
+            Some(Ok(c)) => {
+                self.screen_rec = Some((c, out));
+                self.capture_ui.pill = pill;
+            }
+            Some(Err(e)) => {
+                drop(pill); // brings the windows back
+                self.toast(format!("Screen recording failed: {e}"));
+            }
             None => self.toast("Screen recording is not available in this build"),
         }
     }
 
     pub(super) fn stop_screen_capture(&mut self) {
         let Some((c, out)) = self.screen_rec.take() else { return };
+        self.capture_ui.pill = None; // restores what Hide on Record hid
         let done = c.progress();
         if guarded(move || c.stop()).is_none() {
             return;
@@ -221,7 +244,18 @@ impl App {
     }
 
     fn place_recording(&mut self, out: PathBuf, at: Option<f64>) {
+        let name = out.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        if at.is_none() && !self.settings.capture_auto_import {
+            let dir = out.parent().map(PathBuf::from).unwrap_or_default();
+            self.toast_with_folder(format!("Recording saved: {name}"), dir);
+            return;
+        }
         let ids = self.import_files(&[out.clone()]);
+        if at.is_none() {
+            if put_in_bin(&mut self.project, &ids, &self.settings.capture_bin) {
+                self.after_edit();
+            }
+        }
         match at {
             Some(t) => {
                 self.push_undo();
@@ -483,6 +517,22 @@ pub(crate) fn take_clips(project: &Project, out: &std::path::Path) -> Vec<Id> {
     project.all_clips().filter(|(_, c)| c.asset == aid).map(|(_, c)| c.id).collect()
 }
 
+/// A finished screen recording's assets go into the chosen Library bin (made if it isn't there yet);
+/// "" leaves them at the top level. True when something moved.
+pub(crate) fn put_in_bin(project: &mut Project, ids: &[Id], bin: &str) -> bool {
+    let bin = bin.trim().trim_matches('/');
+    if bin.is_empty() || ids.is_empty() {
+        return false;
+    }
+    project.add_folder(bin);
+    for id in ids {
+        if let Some(a) = project.asset_mut(*id) {
+            a.folder = bin.to_string();
+        }
+    }
+    true
+}
+
 /// The per-frame decision for one pending recording, pure so it is testable without a live `App`.
 pub(crate) fn recording_step(exists: bool, now: Instant, deadline: Instant) -> RecordingStep {
     if exists {
@@ -497,6 +547,38 @@ pub(crate) fn recording_step(exists: bool, now: Instant, deadline: Instant) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The recording lands in the chosen bin, which is made when it's new ("Recordings" by default).
+    #[test]
+    fn recording_goes_into_the_chosen_bin() {
+        let mut p = Project::default();
+        let id = p.add_asset(crate::model::Asset {
+            id: 0,
+            path: "C:/rec/screen-1.mp4".into(),
+            kind: crate::model::ClipKind::Video,
+            duration: 10.0,
+            width: 1920,
+            height: 1080,
+            fps: 30.0,
+            audio_streams: Vec::new(),
+            codec: "h264".into(),
+            folder: String::new(),
+            tags: Vec::new(),
+            label: 0,
+            description: String::new(),
+            rel_path: None,
+            parent: None,
+            range: None,
+            effects: Vec::new(),
+            html: None,
+            proxy: None,
+        });
+        assert!(put_in_bin(&mut p, &[id], " Recordings/ "));
+        assert_eq!(p.asset(id).map(|a| a.folder.as_str()), Some("Recordings"));
+        assert!(p.folder_names().contains(&"Recordings".to_string()), "the bin exists in the Library");
+        assert!(!put_in_bin(&mut p, &[id], ""), "top level: nothing moves");
+        assert_eq!(crate::settings::Settings::default().capture_bin, "Recordings");
+    }
 
     #[test]
     fn recording_step_waits_imports_then_gives_up() {

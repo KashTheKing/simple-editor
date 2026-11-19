@@ -55,6 +55,13 @@ windows = { version = "0.62", features = [
     # ws:music-burn: Burn to Disc (IMAPI2 drives, file-system images, event sinks)
     "Win32_Storage_Imapi",
     "Win32_System_Ole",
+    # feat/recorder-2: application / game capture (Windows Graphics Capture) - WinRT bindings of the same crate
+    "Foundation",
+    "Graphics_Capture",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_System_WinRT",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
 ] }
 # already in the build (eframe -> egui-winit -> arboard, same features): read a picture / a file list off the
 # clipboard for the Assistant's paste

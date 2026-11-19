@@ -86,15 +86,27 @@ Didn't like it? **Retake** removes the last take and records again from the same
 timeline is listed under the buttons: click its time to jump there, or **×** to delete it. Recording needs
 FFmpeg.
 
-**File ▸ Record ▸ Screen Recording…** opens the Screen Recording panel in its own window (drag its tab
-into the main window to dock it like any other panel). At the top is a live preview of exactly what will be
-recorded. Pick the **Source** (a screen, all screens, one window or a typed region) and the **Audio**:
-**System audio only** (what your computer plays, no microphone), **Microphone only**, **Both** or **None**. No
-"Stereo Mix" or virtual cable is needed for system audio. The panel shows a level meter for the microphone and
-for system audio, the output folder (**Open** shows it in Explorer), frame rate, bitrate and the cursor. Your
-audio choice is remembered.
+**File ▸ Record ▸ Screen Recording…** (or **Window ▸ Screen Recording**) opens the Screen Recording panel
+in its own window; drag its tab into any page to dock it like any other panel. At the top is a live preview of
+exactly what will be recorded, cursor included, at 30 frames a second. Right-click it for **Pause preview** /
+**Show preview**; it also pauses by itself whenever you can't see it. Under the preview are the level meters and
+the big **Record** button, which becomes **Stop** with the time recorded.
 
-Press **Record**; the button becomes **Stop** with the time recorded. When you stop, the recording is finished,
-checked, and then added to the Library. Recordings are written so they can't be lost: if Simple Editor or the
-PC stops mid-recording, the pieces stay in the folder and are finished into the mp4 the next time Simple Editor
-starts.
+The settings sit in four sections that remember whether they are open:
+
+- **Sources**: **Screen** (one screen or all of them), **Window**, **Region**, or **Application / Game**. Application
+  capture records one program's own picture (Roblox, Roblox Studio, games and other GPU apps), even when other
+  windows cover it, and can record just that program's sound. **Audio** picks what **All audio** mixes: **System
+  audio only** (what your computer plays, no microphone), **Microphone only**, **Both** or **None** (no "Stereo Mix"
+  needed). **Audio tracks** lists the separate sound streams the file gets (by default All audio, Microphone and App
+  audio), each with a name, an on/off switch and a meter; on the timeline each stream is its own audio track.
+- **Quality**: frame rate, bitrate, scale and the encoder (CPU or graphics card).
+- **Misc**: show the cursor; **Hide on Record**, which hides Simple Editor while you record and puts a small Stop pill
+  at the top of the screen (it never shows in the recording); the **Stop hotkey** (Ctrl+Shift+F9 by default), which
+  works in any app; and starting a recording when the editor loses focus.
+- **Output**: the folder (**Open** shows it in Explorer), the **Library bin** the recording goes into (Recordings by
+  default, or a new one), the file name ({time}, {source}) and whether it is added to the library at all.
+
+When you stop, the recording is finished, checked, and then added to the Library. Recordings are written so they
+can't be lost: if Simple Editor or the PC stops mid-recording, the pieces stay in the folder and are finished into
+the mp4 the next time Simple Editor starts.

@@ -25,6 +25,9 @@ pub enum TapSource {
     System,
     /// A microphone by name ("" or not found = the default input device).
     Mic(String),
+    /// One application's sound (and its child processes'), by process id: Windows process loopback
+    /// (Windows 10 2004+). `app_audio::run`.
+    App(u32),
 }
 
 /// What the meter and the recorder read while the tap runs.
@@ -115,6 +118,9 @@ struct Pending {
 
 fn run(source: &TapSource, out: Option<PathBuf>, st: &TapState, stop: &Receiver<()>) -> Result<(), String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+    if let TapSource::App(pid) = source {
+        return app_audio::run(*pid, out, st, stop);
+    }
     let host = cpal::default_host();
     let (device, cfg) = match source {
         TapSource::System => {
@@ -122,6 +128,7 @@ fn run(source: &TapSource, out: Option<PathBuf>, st: &TapState, stop: &Receiver<
             let c = d.default_output_config().map_err(|e| format!("System audio: {e}"))?;
             (d, c)
         }
+        TapSource::App(_) => unreachable!("handled above"),
         TapSource::Mic(name) => {
             let name = name.trim();
             let chosen = (!name.is_empty())
@@ -231,6 +238,8 @@ pub(crate) fn gap_frames(at: f64, rate: u32, have: u64) -> u64 {
     }
 }
 
+mod app_audio;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,6 +251,19 @@ mod tests {
         // nothing played for 2 s: the next packet lands 2 s after the last 0.5 s of audio
         assert_eq!(gap_frames(2.5, 48_000, 24_000), 96_000);
         assert_eq!(gap_frames(1.0, 48_000, 60_000), 0, "never cut audio that ran ahead");
+    }
+
+    /// One application's sound (this test process, silent): activation, the stream and the file work.
+    #[test]
+    fn app_audio_tap_runs() {
+        let out = std::env::temp_dir().join(format!("se-app-tap-{}.f32", std::process::id()));
+        let tap = AudioTap::start(TapSource::App(std::process::id()), Some(out.clone()));
+        std::thread::sleep(Duration::from_millis(800));
+        let st = tap.state.clone();
+        tap.stop();
+        let _ = std::fs::remove_file(&out);
+        assert!(st.error().is_none(), "{:?}", st.error());
+        assert_eq!(st.rate.load(Ordering::SeqCst), 48_000);
     }
 
     /// Hardware check (`cargo test -- --ignored audio_tap_writes`): ~1 s of system audio to a raw file.

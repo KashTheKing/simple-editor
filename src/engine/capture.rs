@@ -24,6 +24,7 @@
 
 use crate::engine::audio_tap::{AudioTap, TapSource, TapState};
 use crate::engine::export::{self, Progress};
+use crate::engine::screen_grab::FrameSlot;
 use crate::media::ffpipe;
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, Write};
@@ -86,6 +87,57 @@ pub enum CaptureSource {
     Desktop,
     /// One window, by its title (gdigrab `title=`).
     Window(String),
+    /// An application / game window through Windows Graphics Capture (`engine::wgc`): its own picture,
+    /// covered or not. `pid` is whose sound an "App audio" track records.
+    App { hwnd: isize, title: String, pid: u32 },
+}
+
+/// Where an audio track's sound comes from.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrackKind {
+    /// Everything the Audio choice records (system and / or microphone), mixed.
+    #[default]
+    Mix,
+    System,
+    Mic,
+    /// Only the captured application's sound (Windows process loopback).
+    App,
+}
+
+impl TrackKind {
+    pub const ALL: [TrackKind; 4] = [TrackKind::Mix, TrackKind::System, TrackKind::Mic, TrackKind::App];
+    pub fn label(self) -> &'static str {
+        match self {
+            TrackKind::Mix => "All audio",
+            TrackKind::System => "System audio",
+            TrackKind::Mic => "Microphone",
+            TrackKind::App => "App audio",
+        }
+    }
+    pub fn key(self) -> &'static str {
+        match self {
+            TrackKind::Mix => "mix",
+            TrackKind::System => "system",
+            TrackKind::Mic => "mic",
+            TrackKind::App => "app",
+        }
+    }
+}
+
+/// One audio stream of the recording.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TrackSpec {
+    pub name: String,
+    pub kind: TrackKind,
+    pub on: bool,
+}
+
+/// The default setup: all audio mixed, the microphone, the app's own sound.
+pub fn default_tracks() -> Vec<TrackSpec> {
+    [TrackKind::Mix, TrackKind::Mic, TrackKind::App]
+        .into_iter()
+        .map(|kind| TrackSpec { name: kind.label().to_string(), kind, on: true })
+        .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -97,10 +149,19 @@ pub struct ScreenCaptureOptions {
     pub bitrate_kbps: u32,
     pub crf: u32,
     pub source: CaptureSource,
+    /// What the "All audio" track mixes.
     pub audio: AudioMode,
     /// Microphone name ("" = the default input).
     pub mic: String,
     pub cursor: bool,
+    /// The audio streams, in order; empty = one "All audio" stream (when `audio` isn't None).
+    pub tracks: Vec<TrackSpec>,
+    /// Output scale in percent of the source (100 = as captured).
+    pub scale: u32,
+    /// "x264" (CPU) or "gpu" (the fastest working hardware H.264 encoder, else x264).
+    pub encoder: String,
+    /// Also write preview frames (`screen_grab::preview_output_args`) for the live preview.
+    pub preview: bool,
 }
 
 impl Default for ScreenCaptureOptions {
@@ -114,7 +175,38 @@ impl Default for ScreenCaptureOptions {
             audio: AudioMode::System,
             mic: String::new(),
             cursor: true,
+            tracks: Vec::new(),
+            scale: 100,
+            encoder: "x264".into(),
+            preview: false,
         }
+    }
+}
+
+impl ScreenCaptureOptions {
+    /// The tracks that will be written: the switched-on ones (an App track only for an application
+    /// source, the mix only when it has something to mix), or the single default mix.
+    pub fn effective_tracks(&self) -> Vec<TrackSpec> {
+        let app = matches!(self.source, CaptureSource::App { .. });
+        let list = if self.tracks.is_empty() {
+            vec![TrackSpec { name: TrackKind::Mix.label().into(), kind: TrackKind::Mix, on: true }]
+        } else {
+            self.tracks.clone()
+        };
+        list.into_iter()
+            .filter(|t| t.on && (t.kind != TrackKind::App || app) && (t.kind != TrackKind::Mix || self.audio != AudioMode::None))
+            .collect()
+    }
+    /// Which sources must be tapped for `effective_tracks`: (system, mic, app pid).
+    pub fn sources(&self) -> (bool, bool, Option<u32>) {
+        let t = self.effective_tracks();
+        let has = |k| t.iter().any(|x| x.kind == k);
+        let mix = has(TrackKind::Mix);
+        let pid = match self.source {
+            CaptureSource::App { pid, .. } if has(TrackKind::App) => Some(pid),
+            _ => None,
+        };
+        (has(TrackKind::System) || (mix && self.audio.system()), has(TrackKind::Mic) || (mix && self.audio.mic()), pid)
     }
 }
 
@@ -152,6 +244,12 @@ pub struct RecParts {
     pub audio: AudioMode,
     pub system: Option<AudioPart>,
     pub mic: Option<AudioPart>,
+    /// The application's own sound (an application source with an App audio track).
+    #[serde(default)]
+    pub app: Option<AudioPart>,
+    /// The audio streams to write, in order (empty: one "All audio" stream, as before tracks existed).
+    #[serde(default)]
+    pub tracks: Vec<TrackSpec>,
 }
 
 /// The pieces' paths for an output `dir/name.mp4`.
@@ -159,6 +257,11 @@ pub fn part_paths(out: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
     let stem = out.with_extension("");
     let with = |ext: &str| PathBuf::from(format!("{}.{ext}", stem.display()));
     (with("rec.json"), with("rec.mkv"), with("system.f32"), with("mic.f32"))
+}
+
+/// The application-audio piece's path for an output `dir/name.mp4`.
+pub fn app_path(out: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.app.f32", out.with_extension("").display()))
 }
 
 /// A running capture. `stop()` finalises the file; dropping it stops too.
@@ -173,8 +276,14 @@ pub struct Capture {
     lead_us: Arc<AtomicU64>,
     /// Set by `stop`: the watcher then treats any exit status as success.
     graceful: Arc<AtomicBool>,
-    /// The screen recording's audio taps (system, mic), for the level meters.
+    /// The screen recording's audio taps (system, mic, app), for the level meters.
     taps: Vec<(TapSource, Arc<TapState>)>,
+    /// An application source's WGC capture (it owns ffmpeg's stdin; stopping it ends the recording).
+    app: Option<crate::engine::wgc::AppCapture>,
+    /// The live preview frames of a screen recording.
+    preview: Option<Arc<FrameSlot>>,
+    /// A whole-monitor recording's preview producer (stops with the capture).
+    monitor_preview: Option<crate::engine::wgc::AppCapture>,
 }
 
 impl Capture {
@@ -192,6 +301,15 @@ impl Capture {
         if let Some(mut si) = self.stdin.take() {
             let _ = si.write_all(b"q\n");
             let _ = si.flush();
+        }
+        if let Some(m) = self.monitor_preview.take() {
+            m.stop();
+            std::thread::spawn(move || drop(m));
+        }
+        // an application recording ends when the frames stop (EOF on ffmpeg's stdin)
+        if let Some(a) = self.app.take() {
+            a.stop();
+            std::thread::spawn(move || drop(a));
         }
         let child = self.child.clone();
         let _ = std::thread::Builder::new().name("capture-stop".into()).spawn(move || {
@@ -226,10 +344,18 @@ impl Capture {
     pub fn tap_error(&self) -> Option<String> {
         self.taps.iter().find_map(|(_, t)| t.error())
     }
-    /// Peak levels of the screen recording's audio: (system, mic), None for a source not recorded.
-    pub fn levels(&self) -> (Option<f32>, Option<f32>) {
+    /// Peak levels of the screen recording's audio: [system, mic, app], None for a source not recorded.
+    pub fn levels(&self) -> [Option<f32>; 3] {
         let get = |want: fn(&TapSource) -> bool| self.taps.iter().find(|(s, _)| want(s)).map(|(_, t)| t.peak());
-        (get(|s| *s == TapSource::System), get(|s| matches!(s, TapSource::Mic(_))))
+        [
+            get(|s| *s == TapSource::System),
+            get(|s| matches!(s, TapSource::Mic(_))),
+            get(|s| matches!(s, TapSource::App(_))),
+        ]
+    }
+    /// The running screen recording's preview frames.
+    pub fn preview(&self) -> Option<Arc<FrameSlot>> {
+        self.preview.clone()
     }
 }
 
@@ -237,7 +363,7 @@ impl Drop for Capture {
     /// Never a kill: closing the app mid-recording still finalises the MKV (ffmpeg gets `q`), and the
     /// next start's `unfinished` scan turns the pieces into the mp4.
     fn drop(&mut self) {
-        if self.stdin.is_some() {
+        if self.stdin.is_some() || self.app.is_some() {
             self.progress.cancel.store(true, Ordering::SeqCst);
             self.quit();
         }
@@ -312,7 +438,7 @@ fn spawn(out: &std::path::Path, args: Vec<String>, label: &'static str) -> Resul
         }
         return Err(format!("could not start the capture thread: {e}"));
     }
-    Ok(Capture { progress, child: shared, stdin, start, lead_us, graceful, taps: Vec::new() })
+    Ok(Capture { progress, child: shared, stdin, start, lead_us, graceful, taps: Vec::new(), app: None, preview: None, monitor_preview: None })
 }
 
 /// Start a screen recording (see the module doc). The returned capture's progress finishes once the
@@ -326,17 +452,49 @@ pub fn start_screen(opts: ScreenCaptureOptions) -> Result<Capture, String> {
     }
     let exe = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     let (json, video, sys_path, mic_path) = part_paths(&opts.out);
-    let mut parts = RecParts { out: opts.out.clone(), video: video.clone(), audio: opts.audio, ..Default::default() };
+    let mut parts = RecParts {
+        out: opts.out.clone(),
+        video: video.clone(),
+        audio: opts.audio,
+        tracks: opts.effective_tracks(),
+        ..Default::default()
+    };
+    let preview = opts.preview.then(|| FrameSlot::new(true));
+    // a whole monitor: its preview is a WGC monitor capture (GPU-downscaled), not a second ffmpeg output
+    let monitor = match (&opts.source, opts.preview) {
+        (CaptureSource::Region(x, y, w, h), true) => crate::engine::wgc::monitor_at([*x, *y, *w as i32, *h as i32]),
+        _ => None,
+    };
+    let monitor_preview = match (monitor, &preview) {
+        (Some(m), Some(slot)) => {
+            use crate::engine::wgc::{AppCapture, Target};
+            AppCapture::start_target(Target::Monitor(m), opts.cursor, crate::engine::screen_grab::PREVIEW_FPS, slot.clone()).ok()
+        }
+        _ => None,
+    };
 
-    // audio first: a tap is running (and stamping its first sample) before the first frame
+    // an application: WGC first (its size decides ffmpeg's input), ffmpeg reads it from stdin
+    let app = match &opts.source {
+        CaptureSource::App { hwnd, .. } => {
+            let slot = preview.clone().unwrap_or_else(|| FrameSlot::new(false));
+            Some(crate::engine::wgc::AppCapture::start(*hwnd, opts.cursor, opts.fps, slot)?)
+        }
+        _ => None,
+    };
+
+    // audio next: a tap is running (and stamping its first sample) before the first frame
+    let (want_sys, want_mic, app_pid) = opts.sources();
     let mut taps: Vec<AudioTap> = Vec::new();
     let mut tap_states = Vec::new();
     let mut tap_sources = Vec::new();
-    if opts.audio.system() {
+    if want_sys {
         tap_sources.push((TapSource::System, sys_path));
     }
-    if opts.audio.mic() {
+    if want_mic {
         tap_sources.push((TapSource::Mic(opts.mic.clone()), mic_path));
+    }
+    if let Some(pid) = app_pid {
+        tap_sources.push((TapSource::App(pid), app_path(&opts.out)));
     }
     for (src, path) in tap_sources {
         let tap = AudioTap::start(src.clone(), Some(path.clone()));
@@ -345,13 +503,15 @@ pub fn start_screen(opts: ScreenCaptureOptions) -> Result<Capture, String> {
         match src {
             TapSource::System => parts.system = Some(part),
             TapSource::Mic(_) => parts.mic = Some(part),
+            TapSource::App(_) => parts.app = Some(part),
         }
         taps.push(tap);
     }
     write_parts(&json, &parts)?;
 
     let mut cmd = ffpipe::command(&exe);
-    cmd.args(video_args(&opts, &video));
+    let tap = ScreenCaptureOptions { preview: opts.preview && monitor_preview.is_none(), ..opts.clone() };
+    cmd.args(video_args(&tap, &video, app.as_ref().map(|a| a.size)));
     cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
         // tied to the app: a crash must not leave ffmpeg recording forever (it ignores stdin closing);
@@ -366,14 +526,40 @@ pub fn start_screen(opts: ScreenCaptureOptions) -> Result<Capture, String> {
             return Err(format!("ffmpeg: {e}"));
         }
     };
-    let stdin = child.stdin.take();
+    // gdigrab: stdin carries `q`; an application: stdin carries the frames (EOF stops it)
+    let mut stdin = child.stdin.take();
+    if let Some(a) = &app {
+        if let Some(si) = stdin.take() {
+            a.attach_encoder(si);
+        }
+    }
     let stdout = child.stdout.take();
+    match (&preview, stdout) {
+        (Some(slot), Some(out)) if app.is_none() && monitor_preview.is_none() => {
+            crate::engine::screen_grab::spawn_reader(out, slot.clone())
+        }
+        _ => {}
+    }
+    let progress = Progress::new();
+    let lead_us = Arc::new(AtomicU64::new(u64::MAX));
+    let start = Instant::now();
     let video_t0 = Arc::new(AtomicU64::new(0));
+    // stderr carries ffmpeg's log (the `start:` line) and its progress (`-progress pipe:2`)
     let stderr = child.stderr.take().map(|e| {
-        let t0 = video_t0.clone();
+        let (t0, p, l) = (video_t0.clone(), progress.clone(), lead_us.clone());
         std::thread::spawn(move || {
             let mut tail: Vec<String> = Vec::new();
             for line in std::io::BufReader::new(e).lines().map_while(Result::ok) {
+                if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
+                    p.set(0.0, format!("Recording {:.1} s", (us / 1e6).max(0.0)));
+                    if let Some(lead) = lead_estimate(start.elapsed(), us) {
+                        l.fetch_min(lead, Ordering::Relaxed);
+                    }
+                    continue;
+                }
+                if line.contains('=') && !line.contains(' ') {
+                    continue; // the other progress keys
+                }
                 if t0.load(Ordering::Relaxed) == 0 {
                     if let Some(us) = start_line_us(&line) {
                         t0.store(us, Ordering::SeqCst);
@@ -387,32 +573,29 @@ pub fn start_screen(opts: ScreenCaptureOptions) -> Result<Capture, String> {
             tail.join("\n")
         })
     });
-    let progress = Progress::new();
     let graceful = Arc::new(AtomicBool::new(false));
     let shared = Arc::new(Mutex::new(Some(child)));
-    let (start, lead_us) = (Instant::now(), Arc::new(AtomicU64::new(u64::MAX)));
-    let tap_states: Vec<(TapSource, Arc<TapState>)> = tap_states;
-    let (p, g, c, l) = (progress.clone(), graceful.clone(), shared.clone(), lead_us.clone());
+
+    let (p, g, c) = (progress.clone(), graceful.clone(), shared.clone());
     let states: Vec<Arc<TapState>> = taps.iter().map(|t| t.state.clone()).collect();
     let watcher = std::thread::Builder::new().name("screen-capture".into()).spawn(move || {
         p.set(0.0, "Recording…");
         let mut noted = false;
-        if let Some(out) = stdout {
-            for line in std::io::BufReader::new(out).lines() {
-                let Ok(line) = line else { break };
-                if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.trim().parse::<f64>().ok()) {
-                    p.set(0.0, format!("Recording {:.1} s", (us / 1e6).max(0.0)));
-                    if let Some(lead) = lead_estimate(start.elapsed(), us) {
-                        l.fetch_min(lead, Ordering::Relaxed);
-                    }
-                    // once every start time is known, the sidecar is complete for crash recovery
-                    if !noted && fill_times(&mut parts, video_t0.load(Ordering::SeqCst), &states) {
-                        noted = write_parts(&json, &parts).is_ok();
-                    }
-                }
+        let status = loop {
+            let st = c.lock().ok().and_then(|mut g| g.as_mut().map(|ch| ch.try_wait()));
+            match st {
+                Some(Ok(None)) => {}
+                Some(Ok(Some(s))) => break Some(Ok(s)),
+                Some(Err(e)) => break Some(Err(e)),
+                None => break None,
             }
-        }
-        let status = c.lock().ok().and_then(|mut g| g.take()).map(|mut ch| ch.wait());
+            // once every start time is known, the sidecar is complete for crash recovery
+            if !noted && fill_times(&mut parts, video_t0.load(Ordering::SeqCst), &states) {
+                noted = write_parts(&json, &parts).is_ok();
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        };
+        c.lock().ok().and_then(|mut g| g.take());
         let log = stderr.and_then(|t| t.join().ok()).unwrap_or_default();
         for t in taps {
             t.stop();
@@ -441,7 +624,7 @@ pub fn start_screen(opts: ScreenCaptureOptions) -> Result<Capture, String> {
         }
         return Err(format!("could not start the capture thread: {e}"));
     }
-    Ok(Capture { progress, child: shared, stdin, start, lead_us, graceful, taps: tap_states })
+    Ok(Capture { progress, child: shared, stdin, start, lead_us, graceful, taps: tap_states, app, preview, monitor_preview })
 }
 
 /// Copy the taps' formats and start times into `parts`; true once every start time is known.
@@ -449,7 +632,7 @@ fn fill_times(parts: &mut RecParts, video_t0: u64, states: &[Arc<TapState>]) -> 
     parts.video_t0_us = video_t0;
     let mut all = video_t0 > 0;
     let mut it = states.iter();
-    for part in [parts.system.as_mut(), parts.mic.as_mut()].into_iter().flatten() {
+    for part in [parts.system.as_mut(), parts.mic.as_mut(), parts.app.as_mut()].into_iter().flatten() {
         let Some(st) = it.next() else { break };
         part.rate = st.rate.load(Ordering::SeqCst);
         part.channels = st.channels.load(Ordering::SeqCst);
@@ -468,7 +651,7 @@ fn write_parts(json: &Path, parts: &RecParts) -> Result<(), String> {
 
 fn cleanup(parts: &RecParts, json: &Path) {
     let _ = std::fs::remove_file(&parts.video);
-    for a in [&parts.system, &parts.mic].into_iter().flatten() {
+    for a in [&parts.system, &parts.mic, &parts.app].into_iter().flatten() {
         let _ = std::fs::remove_file(&a.path);
     }
     let _ = std::fs::remove_file(json);
@@ -509,11 +692,16 @@ pub fn finalize(json: &Path) -> Result<PathBuf, String> {
         return Err(format!("Nothing was recorded for {name}."));
     }
     let has = |a: &Option<AudioPart>| a.as_ref().filter(|a| a.t0_us > 0 && a.rate > 0 && size(&a.path) > 0).cloned();
+    let pieces: Vec<(&str, AudioPart)> = [("system", has(&parts.system)), ("mic", has(&parts.mic)), ("app", has(&parts.app))]
+        .into_iter()
+        .filter_map(|(k, a)| a.map(|a| (k, a)))
+        .collect();
+    let pieces: Vec<(&str, &AudioPart)> = pieces.iter().map(|(k, a)| (*k, a)).collect();
     let exe = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     let Some(recorded) = video_length(&parts.video) else {
         return Err(format!("{name}'s video can't be read. Its pieces are kept next to it."));
     };
-    let args = mux_args(&parts, has(&parts.system).as_ref(), has(&parts.mic).as_ref(), recorded);
+    let args = mux_args(&parts, &pieces, recorded);
     let kept = format!(
         "Its pieces are kept next to it ({}); Simple Editor tries again the next time it starts.",
         parts.video.file_name().unwrap_or_default().to_string_lossy()
@@ -585,7 +773,7 @@ pub fn unfinished(dir: &Path) -> Vec<PathBuf> {
         .filter(|p| {
             let parts: Option<RecParts> = std::fs::read_to_string(p).ok().and_then(|s| serde_json::from_str(&s).ok());
             parts.is_some_and(|r| {
-                old(&r.video) && [&r.system, &r.mic].into_iter().flatten().all(|a| old(&a.path))
+                old(&r.video) && [&r.system, &r.mic, &r.app].into_iter().flatten().all(|a| old(&a.path))
             })
         })
         .collect();
@@ -604,52 +792,134 @@ fn s(v: impl Into<String>) -> String {
     v.into()
 }
 
-/// ffmpeg arguments for the video half of a screen recording: gdigrab into a crash-safe MKV.
-pub(crate) fn video_args(o: &ScreenCaptureOptions, video: &Path) -> Vec<String> {
-    // info level: the input's `start:` line carries the wall clock of the first frame
-    let mut a: Vec<String> =
-        ["-y", "-hide_banner", "-nostats", "-loglevel", "info", "-progress", "pipe:1"].iter().map(|x| s(*x)).collect();
-    a.extend([s("-f"), s("gdigrab"), s("-framerate"), o.fps.max(1).to_string()]);
-    a.extend([s("-draw_mouse"), s(if o.cursor { "1" } else { "0" })]);
-    match &o.source {
+/// gdigrab input args for a desktop / region / window source (an application source has none: it
+/// comes from `engine::wgc` on stdin).
+pub(crate) fn gdigrab_input(src: &CaptureSource, fps: u32, cursor: bool) -> Vec<String> {
+    let mut a = vec![s("-f"), s("gdigrab"), s("-framerate"), fps.max(1).to_string()];
+    a.extend([s("-draw_mouse"), s(if cursor { "1" } else { "0" })]);
+    match src {
         CaptureSource::Region(x, y, w, h) => {
             // yuv420p needs even dimensions and gdigrab has no scaler
             let (w, h) = ((*w).max(2) & !1, (*h).max(2) & !1);
             a.extend([s("-offset_x"), x.to_string(), s("-offset_y"), y.to_string()]);
             a.extend([s("-video_size"), format!("{w}x{h}"), s("-i"), s("desktop")]);
         }
-        CaptureSource::Desktop => a.extend([s("-i"), s("desktop")]),
         CaptureSource::Window(t) => a.extend([s("-i"), format!("title={t}")]),
+        CaptureSource::Desktop | CaptureSource::App { .. } => a.extend([s("-i"), s("desktop")]),
     }
-    // a window's client area can be any size: trim to even for yuv420p
-    a.extend([s("-vf"), s("crop=trunc(iw/2)*2:trunc(ih/2)*2")]);
-    // zerolatency: no lookahead and no frame threads, so a frame is on disk right after it is grabbed
-    // (x264's default delay on a many-core CPU held every frame of a 3.5 s test recording in memory)
-    a.extend([s("-c:v"), s("libx264"), s("-preset"), s("veryfast"), s("-tune"), s("zerolatency"), s("-pix_fmt"), s("yuv420p")]);
-    if o.bitrate_kbps > 0 {
-        a.extend([s("-b:v"), format!("{}k", o.bitrate_kbps)]);
-    } else {
-        a.extend([s("-crf"), o.crf.clamp(0, 51).to_string()]);
-    }
-    // a keyframe every 2 s and 1 s clusters: a cut-off file loses about a second, never the recording
-    // and every packet goes to disk as it is muxed: a quiet screen makes so few bytes that ffmpeg's
-    // write buffer would otherwise hold seconds of it (a killed test recording was 0 bytes)
-    a.extend([s("-g"), (o.fps.max(1) * 2).to_string(), s("-cluster_time_limit"), s("1000"), s("-flush_packets"), s("1")]);
-    a.extend([s("-f"), s("matroska"), video.to_string_lossy().into_owned()]);
     a
 }
 
-/// ffmpeg arguments that mux a recording's pieces into its mp4. `system` / `mic` are the pieces that
-/// hold sound (None = not recorded, or silent the whole time); a mode that wants sound but got none
-/// still gets a silent track, so every recording made with audio has an audio stream.
-/// `length` is the video's length in seconds: the output is cut there (`-shortest` never ends a graph with
-/// an endless `apad` / `anullsrc` in it).
-pub(crate) fn mux_args(p: &RecParts, system: Option<&AudioPart>, mic: Option<&AudioPart>, length: f64) -> Vec<String> {
+/// The hardware encoder "gpu" resolves to on this machine (None = x264).
+fn gpu_encoder(choice: &str) -> Option<String> {
+    (choice == "gpu").then(|| crate::engine::encoders::best_for("mkv")).flatten()
+}
+
+/// ffmpeg arguments for the video half of a screen recording into a crash-safe MKV. `app` is the
+/// application frames' size (raw BGRA on stdin) for an application source.
+pub(crate) fn video_args(o: &ScreenCaptureOptions, video: &Path, app: Option<(u32, u32)>) -> Vec<String> {
+    video_args_with(o, video, app, gpu_encoder(&o.encoder))
+}
+
+pub(crate) fn video_args_with(o: &ScreenCaptureOptions, video: &Path, app: Option<(u32, u32)>, hw: Option<String>) -> Vec<String> {
+    // info level: the input's `start:` line carries the wall clock of the first frame; progress goes to
+    // stderr too, because stdout carries the preview frames
+    let mut a: Vec<String> =
+        ["-y", "-hide_banner", "-nostats", "-loglevel", "info", "-progress", "pipe:2"].iter().map(|x| s(*x)).collect();
+    match app {
+        Some((w, h)) => a.extend([
+            s("-f"),
+            s("rawvideo"),
+            s("-pix_fmt"),
+            s("bgra"),
+            s("-video_size"),
+            format!("{w}x{h}"),
+            s("-framerate"),
+            o.fps.max(1).to_string(),
+            s("-use_wallclock_as_timestamps"),
+            s("1"),
+            s("-i"),
+            s("pipe:0"),
+        ]),
+        None => a.extend(gdigrab_input(&o.source, o.fps, o.cursor)),
+    }
+    // a window's client area can be any size: trim to even for yuv420p; a scale below 100 % halves etc.
+    let scale = o.scale.clamp(10, 100);
+    let vf = if scale < 100 {
+        format!("scale=trunc(iw*{scale}/200)*2:trunc(ih*{scale}/200)*2")
+    } else {
+        s("crop=trunc(iw/2)*2:trunc(ih/2)*2")
+    };
+    a.extend([s("-map"), s("0:v"), s("-vf"), vf]);
+    match hw.as_deref() {
+        // zerolatency-style settings everywhere: a frame is on disk right after it is grabbed
+        // (x264's default delay on a many-core CPU held every frame of a 3.5 s test recording in memory)
+        Some(e) if e.ends_with("_nvenc") => a.extend([s("-c:v"), s(e), s("-preset"), s("p4"), s("-tune"), s("ll"), s("-zerolatency"), s("1"), s("-pix_fmt"), s("yuv420p")]),
+        Some(e) if e.ends_with("_qsv") => a.extend([s("-c:v"), s(e), s("-preset"), s("veryfast"), s("-look_ahead"), s("0"), s("-pix_fmt"), s("nv12")]),
+        Some(e) => a.extend([s("-c:v"), s(e), s("-usage"), s("lowlatency"), s("-pix_fmt"), s("yuv420p")]),
+        None => a.extend([s("-c:v"), s("libx264"), s("-preset"), s("veryfast"), s("-tune"), s("zerolatency"), s("-pix_fmt"), s("yuv420p")]),
+    }
+    if o.bitrate_kbps > 0 {
+        a.extend([s("-b:v"), format!("{}k", o.bitrate_kbps)]);
+    } else if hw.as_deref().is_some_and(|e| e.ends_with("_nvenc")) {
+        a.extend([s("-cq"), o.crf.clamp(0, 51).to_string()]);
+    } else {
+        a.extend([s("-crf"), o.crf.clamp(0, 51).to_string()]);
+    }
+    // a keyframe every 2 s and 1 s clusters, and every packet goes to disk as it is muxed: a cut-off
+    // file loses about a second, never the recording
+    a.extend([s("-g"), (o.fps.max(1) * 2).to_string(), s("-cluster_time_limit"), s("1000"), s("-flush_packets"), s("1")]);
+    a.extend([s("-f"), s("matroska"), video.to_string_lossy().into_owned()]);
+    if o.preview && app.is_none() {
+        a.extend(crate::engine::screen_grab::preview_output_args());
+    }
+    a
+}
+
+/// ffmpeg arguments that mux a recording's pieces into its mp4, one audio stream per track in
+/// `p.tracks` (an empty list = one "All audio" stream unless the audio choice is None). `have` holds
+/// the pieces that hold sound ("system" / "mic" / "app"); a track whose sources were all silent still
+/// gets a silent stream, so the stream count and order always match the setup. `length` is the video's
+/// length in seconds: the output is cut there (`-shortest` never ends a graph with an endless `apad`).
+pub(crate) fn mux_args(p: &RecParts, have: &[(&str, &AudioPart)], length: f64) -> Vec<String> {
     let mut a: Vec<String> = ["-y", "-hide_banner", "-loglevel", "error"].iter().map(|x| s(*x)).collect();
     a.extend([s("-i"), p.video.to_string_lossy().into_owned()]);
-    let mut chains = Vec::new();
-    for part in [system, mic].into_iter().flatten() {
-        let i = chains.len() + 1;
+    let tracks: Vec<TrackSpec> = if p.tracks.is_empty() {
+        if p.audio == AudioMode::None {
+            Vec::new()
+        } else {
+            vec![TrackSpec { name: TrackKind::Mix.label().into(), kind: TrackKind::Mix, on: true }]
+        }
+    } else {
+        p.tracks.clone()
+    };
+    // which pieces each track uses
+    let uses = |t: &TrackSpec| -> Vec<&str> {
+        let want: Vec<&str> = match t.kind {
+            TrackKind::Mix => [("system", p.audio.system()), ("mic", p.audio.mic())]
+                .into_iter()
+                .filter(|(_, on)| *on)
+                .map(|(k, _)| k)
+                .collect(),
+            TrackKind::System => vec!["system"],
+            TrackKind::Mic => vec!["mic"],
+            TrackKind::App => vec!["app"],
+        };
+        want.into_iter().filter(|k| have.iter().any(|(h, _)| h == k)).collect()
+    };
+    // each piece is one input, split for as many tracks as use it
+    let mut inputs: Vec<(&str, usize)> = Vec::new(); // (key, users)
+    for t in &tracks {
+        for k in uses(t) {
+            match inputs.iter_mut().find(|(x, _)| *x == k) {
+                Some((_, n)) => *n += 1,
+                None => inputs.push((k, 1)),
+            }
+        }
+    }
+    let mut graph: Vec<String> = Vec::new();
+    for (i, (key, users)) in inputs.iter().enumerate() {
+        let part = have.iter().find(|(h, _)| h == key).map(|(_, a)| *a).expect("listed");
         a.extend([s("-f"), s("f32le"), s("-ar"), part.rate.to_string(), s("-ac"), part.channels.max(1).to_string()]);
         a.extend([s("-i"), part.path.to_string_lossy().into_owned()]);
         // audio that started after the first frame waits; audio from before it is trimmed
@@ -659,22 +929,40 @@ pub(crate) fn mux_args(p: &RecParts, system: Option<&AudioPart>, mic: Option<&Au
             d if d < 0 => format!("atrim=start={:.6},asetpts=PTS-STARTPTS,", -d as f64 / 1e6),
             _ => String::new(),
         };
-        chains.push(format!("[{i}:a]{shift}aresample=48000,aformat=channel_layouts=stereo[a{i}]"));
+        let outs: String = (0..*users).map(|u| format!("[{key}{u}]")).collect();
+        let split = if *users > 1 { format!(",asplit={users}") } else { String::new() };
+        graph.push(format!("[{}:a]{shift}aresample=48000,aformat=channel_layouts=stereo{split}{outs}", i + 1));
     }
-    let wants_audio = p.audio != AudioMode::None;
-    if chains.is_empty() && wants_audio {
-        a.extend([s("-f"), s("lavfi"), s("-i"), s("anullsrc=r=48000:cl=stereo")]);
-        chains.push(s("[1:a]anull[a1]"));
+    let mut next = vec![0usize; inputs.len()];
+    let mut silent = 0usize;
+    for (ti, t) in tracks.iter().enumerate() {
+        let mut labels: Vec<String> = Vec::new();
+        for k in uses(t) {
+            let i = inputs.iter().position(|(x, _)| *x == k).expect("listed");
+            labels.push(format!("[{k}{}]", next[i]));
+            next[i] += 1;
+        }
+        let chain = match labels.len() {
+            0 => {
+                silent += 1;
+                format!("anullsrc=r=48000:cl=stereo,apad[t{ti}]")
+            }
+            1 => format!("{}apad[t{ti}]", labels[0]),
+            n => format!("{}amix=inputs={n}:duration=longest:normalize=0,apad[t{ti}]", labels.concat()),
+        };
+        graph.push(chain);
     }
-    let mut graph = chains.join(";");
-    match chains.len() {
-        0 => {}
-        1 => graph.push_str(";[a1]apad[aout]"),
-        _ => graph.push_str(";[a1][a2]amix=inputs=2:duration=longest:normalize=0,apad[aout]"),
-    }
+    let _ = silent;
     a.extend([s("-map"), s("0:v")]);
-    if !chains.is_empty() {
-        a.extend([s("-filter_complex"), graph, s("-map"), s("[aout]"), s("-c:a"), s("aac"), s("-b:a"), s("192k")]);
+    if !tracks.is_empty() {
+        a.extend([s("-filter_complex"), graph.join(";")]);
+        for ti in 0..tracks.len() {
+            a.extend([s("-map"), format!("[t{ti}]")]);
+        }
+        a.extend([s("-c:a"), s("aac"), s("-b:a"), s("192k")]);
+        for (ti, t) in tracks.iter().enumerate() {
+            a.extend([format!("-metadata:s:a:{ti}"), format!("title={}", t.name)]);
+        }
         // apad makes the audio endless; the video's end is the recording's end
         a.extend([s("-t"), format!("{length:.3}")]);
     }
@@ -874,58 +1162,121 @@ Error opening input file dummy.
     #[test]
     fn video_args_crash_safe_mkv() {
         let o = ScreenCaptureOptions { out: PathBuf::from(r"C:\rec\a.mp4"), ..Default::default() };
-        let j = joined(&video_args(&o, Path::new(r"C:\rec\a.rec.mkv")));
+        let va = |o: &ScreenCaptureOptions, v: &str| joined(&video_args_with(o, Path::new(v), None, None));
+        let j = va(&o, r"C:\rec\a.rec.mkv");
         assert!(j.contains("-f gdigrab -framerate 30 -draw_mouse 1 -i desktop"), "{j}");
         assert!(j.ends_with(r"-f matroska C:\rec\a.rec.mkv"), "video goes to the MKV, never straight to mp4: {j}");
         assert!(j.contains("-g 60 -cluster_time_limit 1000 -flush_packets 1"), "{j}");
-        assert!(j.contains("-loglevel info"), "the start: line is needed for A/V sync: {j}");
+        assert!(j.contains("-loglevel info -progress pipe:2"), "start: line + progress on stderr: {j}");
         assert!(!j.contains("dshow") && !j.contains("-c:a"), "ffmpeg records no audio itself: {j}");
         assert!(j.contains("-b:v 8000k") && !j.contains("-crf"), "{j}");
         assert!(j.contains("-tune zerolatency"), "frames reach the disk as they are grabbed: {j}");
-        let j = joined(&video_args(&ScreenCaptureOptions { bitrate_kbps: 0, crf: 23, cursor: false, ..o.clone() }, Path::new("v.mkv")));
+        let j = va(&ScreenCaptureOptions { bitrate_kbps: 0, crf: 23, cursor: false, ..o.clone() }, "v.mkv");
         assert!(j.contains("-crf 23") && j.contains("-draw_mouse 0"), "{j}");
-        let j = joined(&video_args(&ScreenCaptureOptions { source: CaptureSource::Region(-1920, 50, 641, 481), ..o.clone() }, Path::new("v.mkv")));
+        let j = va(&ScreenCaptureOptions { source: CaptureSource::Region(-1920, 50, 641, 481), ..o.clone() }, "v.mkv");
         assert!(j.contains("-offset_x -1920 -offset_y 50 -video_size 640x480 -i desktop"), "{j}");
-        let j = joined(&video_args(&ScreenCaptureOptions { source: CaptureSource::Window("Notepad".into()), ..o }, Path::new("v.mkv")));
+        let j = va(&ScreenCaptureOptions { source: CaptureSource::Window("Notepad".into()), ..o.clone() }, "v.mkv");
         assert!(j.contains("-i title=Notepad") && !j.contains("-offset_x"), "{j}");
+        // the live preview rides on the recording: a second, small raw output on stdout
+        let j = va(&ScreenCaptureOptions { preview: true, ..o.clone() }, "v.mkv");
+        assert!(j.contains(r"-f matroska v.mkv -map 0:v -vf scale=480:270"), "{j}");
+        assert!(j.ends_with("-f rawvideo -flush_packets 1 pipe:1"), "{j}");
+        // scale
+        let j = va(&ScreenCaptureOptions { scale: 50, ..o.clone() }, "v.mkv");
+        assert!(j.contains("-vf scale=trunc(iw*50/200)*2:trunc(ih*50/200)*2"), "{j}");
+        // a graphics-card encoder
+        let j = joined(&video_args_with(&o, Path::new("v.mkv"), None, Some("h264_nvenc".into())));
+        assert!(j.contains("-c:v h264_nvenc -preset p4 -tune ll -zerolatency 1") && !j.contains("libx264"), "{j}");
+    }
+
+    /// Application / game capture: WGC frames arrive as raw BGRA on stdin, stamped with the wall clock
+    /// (A/V sync as with gdigrab), the cursor comes from WGC, and the preview comes from WGC too.
+    #[test]
+    fn app_capture_args() {
+        let o = ScreenCaptureOptions {
+            source: CaptureSource::App { hwnd: 42, title: "Roblox".into(), pid: 7 },
+            preview: true,
+            fps: 60,
+            ..Default::default()
+        };
+        let j = joined(&video_args_with(&o, Path::new("v.mkv"), Some((1920, 1080)), None));
+        assert!(
+            j.contains("-f rawvideo -pix_fmt bgra -video_size 1920x1080 -framerate 60 -use_wallclock_as_timestamps 1 -i pipe:0"),
+            "{j}"
+        );
+        assert!(!j.contains("gdigrab"), "{j}");
+        assert!(j.ends_with("-f matroska v.mkv"), "no stdout preview output for an app (WGC previews it): {j}");
+        assert_eq!(o.sources(), (true, false, None), "no tracks set: one All audio track = system audio");
+        let o = ScreenCaptureOptions { tracks: default_tracks(), ..o };
+        assert_eq!(o.sources(), (true, true, Some(7)), "All audio + Microphone + App audio of the app's process");
+        let names: Vec<String> = o.effective_tracks().iter().map(|t| t.name.clone()).collect();
+        assert_eq!(names, ["All audio", "Microphone", "App audio"]);
+        // not an app source: the App track is left out
+        let o = ScreenCaptureOptions { source: CaptureSource::Desktop, ..o };
+        assert_eq!(o.effective_tracks().len(), 2);
+        assert_eq!(o.sources(), (true, true, None));
     }
 
     #[test]
     fn mux_args_per_audio_mode() {
         // None: video only, no audio codec
-        let j = joined(&mux_args(&parts(AudioMode::None), None, None, 12.5));
+        let j = joined(&mux_args(&parts(AudioMode::None), &[], 12.5));
         assert!(j.contains("-map 0:v -c:v copy -movflags +faststart C:\\rec\\a.mp4"), "{j}");
         assert!(!j.contains("-c:a") && !j.contains("f32le") && !j.contains("-t "), "{j}");
 
         // System only, started 250 ms after the first frame: delayed, padded, ends with the video
         let sys = part("system", 1_000_000_250_000);
-        let j = joined(&mux_args(&parts(AudioMode::System), Some(&sys), None, 12.5));
+        let j = joined(&mux_args(&parts(AudioMode::System), &[("system", &sys)], 12.5));
         assert!(j.contains(r"-f f32le -ar 44100 -ac 2 -i C:\rec\a.system.f32"), "{j}");
-        assert!(j.contains("[1:a]adelay=250:all=1,aresample=48000"), "{j}");
-        assert!(j.contains("[a1]apad[aout]") && !j.contains("amix"), "{j}");
-        assert!(j.contains("-map 0:v -filter_complex") && j.contains("-map [aout] -c:a aac"), "{j}");
-        assert!(j.contains("-c:a aac -b:a 192k -t 12.500") && !j.contains("-shortest"), "cut at the video's end: {j}");
+        assert!(j.contains("[1:a]adelay=250:all=1,aresample=48000,aformat=channel_layouts=stereo[system0]"), "{j}");
+        assert!(j.contains("[system0]apad[t0]") && !j.contains("amix"), "{j}");
+        assert!(j.contains("-map 0:v -filter_complex") && j.contains("-map [t0] -c:a aac"), "{j}");
+        assert!(j.contains("-metadata:s:a:0 title=All audio -t 12.500") && !j.contains("-shortest"), "cut at the video's end: {j}");
 
         // Microphone only, started 0.5 s BEFORE the first frame: the lead is trimmed off
         let mic = AudioPart { channels: 1, ..part("mic", 999_999_500_000) };
-        let j = joined(&mux_args(&parts(AudioMode::Mic), None, Some(&mic), 12.5));
+        let j = joined(&mux_args(&parts(AudioMode::Mic), &[("mic", &mic)], 12.5));
         assert!(j.contains(r"-ac 1 -i C:\rec\a.mic.f32"), "{j}");
         assert!(j.contains("[1:a]atrim=start=0.500000,asetpts=PTS-STARTPTS,aresample"), "{j}");
-        assert!(j.contains("channel_layouts=stereo[a1]"), "mono mic becomes stereo: {j}");
+        assert!(j.contains("channel_layouts=stereo[mic0]"), "mono mic becomes stereo: {j}");
 
         // Both: two inputs, mixed without halving either
-        let j = joined(&mux_args(&parts(AudioMode::Both), Some(&sys), Some(&mic), 12.5));
+        let j = joined(&mux_args(&parts(AudioMode::Both), &[("system", &sys), ("mic", &mic)], 12.5));
         assert_eq!(j.matches("-f f32le").count(), 2, "{j}");
-        assert!(j.contains("[a1][a2]amix=inputs=2:duration=longest:normalize=0,apad[aout]"), "{j}");
+        assert!(j.contains("[system0][mic0]amix=inputs=2:duration=longest:normalize=0,apad[t0]"), "{j}");
         assert!(j.contains("[2:a]atrim"), "the mic is input 2 when both are recorded: {j}");
 
         // System audio wanted but nothing played the whole time: a silent track, not a missing one
-        let j = joined(&mux_args(&parts(AudioMode::System), None, None, 12.5));
-        assert!(j.contains("-f lavfi -i anullsrc=r=48000:cl=stereo") && j.contains("-c:a aac"), "{j}");
+        let j = joined(&mux_args(&parts(AudioMode::System), &[], 12.5));
+        assert!(j.contains("anullsrc=r=48000:cl=stereo,apad[t0]") && j.contains("-c:a aac"), "{j}");
 
         // unknown video start (ffmpeg never printed it): audio starts with the video
-        let j = joined(&mux_args(&RecParts { video_t0_us: 0, ..parts(AudioMode::System) }, Some(&sys), None, 12.5));
+        let j = joined(&mux_args(&RecParts { video_t0_us: 0, ..parts(AudioMode::System) }, &[("system", &sys)], 12.5));
         assert!(j.contains("[1:a]aresample"), "{j}");
+    }
+
+    /// Multi-track: one stream per track, in the set-up order, named; a piece used by two tracks is
+    /// split, a track whose source stayed silent is a silent stream (the count never changes).
+    #[test]
+    fn mux_args_multi_track_map() {
+        let sys = part("system", 1_000_000_000_000);
+        let mic = AudioPart { channels: 1, ..part("mic", 1_000_000_000_000) };
+        let app = part("app", 1_000_000_000_000);
+        let p = RecParts { tracks: default_tracks(), ..parts(AudioMode::Both) };
+        let j = joined(&mux_args(&p, &[("system", &sys), ("mic", &mic), ("app", &app)], 10.0));
+        assert_eq!(j.matches("-f f32le").count(), 3, "each piece is read once: {j}");
+        assert!(j.contains("[2:a]aresample=48000,aformat=channel_layouts=stereo,asplit=2[mic0][mic1]"), "the mic feeds 2 tracks: {j}");
+        assert!(j.contains("[system0][mic0]amix=inputs=2:duration=longest:normalize=0,apad[t0]"), "track 1 = all audio: {j}");
+        assert!(j.contains("[mic1]apad[t1]") && j.contains("[app0]apad[t2]"), "{j}");
+        let maps: Vec<&str> = j.split(" -map ").skip(1).map(|m| m.split(' ').next().unwrap()).collect();
+        assert_eq!(maps, ["0:v", "[t0]", "[t1]", "[t2]"], "video then the tracks in order: {j}");
+        assert!(
+            j.contains("-metadata:s:a:0 title=All audio -metadata:s:a:1 title=Microphone -metadata:s:a:2 title=App audio"),
+            "{j}"
+        );
+        // the app never made a sound: its track is still there, silent
+        let j = joined(&mux_args(&p, &[("system", &sys), ("mic", &mic)], 10.0));
+        assert!(j.contains("anullsrc=r=48000:cl=stereo,apad[t2]") && j.matches("-map [t").count() == 3, "{j}");
     }
 
     #[test]
@@ -988,6 +1339,90 @@ Error opening input file dummy.
         (cap, out)
     }
 
+    fn recorded(p: &Progress) -> f64 {
+        p.status().strip_prefix("Recording ").and_then(|r| r.trim_end_matches(" s").parse().ok()).unwrap_or(0.0)
+    }
+
+    fn wait_recording(p: &Progress) {
+        for _ in 0..200 {
+            if recorded(p) > 0.0 {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// The live preview rides on the recording at ~30 fps; paused (nobody looking) it stores no frame at
+    /// all while the recording keeps going, and the file is complete.
+    #[test]
+    fn paused_preview_never_pauses_the_recording() {
+        let Some(dir) = test_dir("preview") else { return };
+        let out = dir.join("rec.mp4");
+        let cap = start_screen(ScreenCaptureOptions {
+            out: out.clone(),
+            fps: 30,
+            source: CaptureSource::Region(0, 0, 640, 360),
+            audio: AudioMode::None,
+            preview: true,
+            ..Default::default()
+        })
+        .expect("start");
+        let prog = cap.progress();
+        wait_recording(&prog);
+        let slot = cap.preview().expect("a preview slot");
+        let g0 = slot.generation();
+        std::thread::sleep(Duration::from_millis(2000));
+        let fps = (slot.generation() - g0) as f64 / 2.0;
+        assert!(fps >= 20.0, "{fps} preview fps while recording");
+        let (f, _) = slot.frame().unwrap();
+        assert_eq!(f.size, [crate::engine::screen_grab::PW, crate::engine::screen_grab::PH]);
+        // pause: no frames are stored, the recording goes on
+        slot.wanted.store(false, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(200));
+        let (g1, r1) = (slot.generation(), recorded(&prog));
+        std::thread::sleep(Duration::from_millis(2000));
+        assert_eq!(slot.generation(), g1, "paused: the preview stored no frame");
+        assert!(recorded(&prog) > r1 + 1.0, "the recording kept going: {} -> {}", r1, recorded(&prog));
+        let at_stop = recorded(&prog);
+        cap.stop();
+        wait_done(&prog);
+        assert_eq!(prog.error(), None);
+        let dur = verify(&out).expect("plays");
+        assert!(dur >= at_stop - 0.2, "{dur} s, {at_stop} s recorded");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A real recording with the default three tracks set up (System, Mic, and an App track that a
+    /// screen source leaves out): the mp4 has exactly the enabled streams, named, in order.
+    #[test]
+    fn multi_track_recording_has_the_streams() {
+        let Some(dir) = test_dir("tracks") else { return };
+        let out = dir.join("rec.mp4");
+        let tracks = vec![
+            TrackSpec { name: "Game".into(), kind: TrackKind::System, on: true },
+            TrackSpec { name: "Voice".into(), kind: TrackKind::Mic, on: true },
+            TrackSpec { name: "Off".into(), kind: TrackKind::Mix, on: false },
+        ];
+        let cap = start_screen(ScreenCaptureOptions {
+            out: out.clone(),
+            fps: 15,
+            source: CaptureSource::Region(0, 0, 320, 240),
+            audio: AudioMode::Both,
+            tracks,
+            ..Default::default()
+        })
+        .expect("start");
+        let prog = cap.progress();
+        wait_recording(&prog);
+        std::thread::sleep(Duration::from_millis(2500));
+        cap.stop();
+        wait_done(&prog);
+        assert_eq!(prog.error(), None);
+        let a = ffpipe::probe(&out.to_string_lossy()).unwrap();
+        assert_eq!(a.audio_streams.len(), 2, "two enabled tracks: {:?}", a.audio_streams);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Real gdigrab (needs ffmpeg and a desktop session; skips without ffmpeg): stop with `q`, and the
     /// mp4 has its moov atom, probes, and lasts as long as the recording ran. The pieces are gone.
     #[test]
@@ -997,15 +1432,7 @@ Error opening input file dummy.
         let prog = cap.progress();
         // what ffmpeg says it has recorded ("Recording 3.4 s"); a loaded test run can take seconds to open
         // gdigrab, so the wall clock is no measure
-        let recorded = |p: &Progress| -> f64 {
-            p.status().strip_prefix("Recording ").and_then(|r| r.trim_end_matches(" s").parse().ok()).unwrap_or(0.0)
-        };
-        for _ in 0..200 {
-            if recorded(&prog) > 0.0 {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        wait_recording(&prog);
         std::thread::sleep(Duration::from_millis(3000));
         let at_stop = recorded(&prog);
         assert!(at_stop > 2.0, "recording: {}", prog.status());
@@ -1074,6 +1501,84 @@ Error opening input file dummy.
         assert_eq!(finalize(&json), Ok(out.clone()));
         assert!(verify(&out).unwrap() > 1.0);
         assert!(!json.exists() && !video.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Application capture end to end (needs a desktop session): a window of this test process recorded
+    /// through WGC, with All audio + App audio (this process) tracks; the mp4 has the picture and two
+    /// named streams (the App audio stream once corrupted the heap: `app_audio`'s PROPVARIANT).
+    #[test]
+    fn app_recording_end_to_end() {
+        let Some(dir) = test_dir("app") else { return };
+        use windows::Win32::UI::WindowsAndMessaging::*;
+        let win = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                windows::core::w!("STATIC"),
+                windows::core::w!("se-app-capture-test"),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                100,
+                100,
+                400,
+                300,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        let out = dir.join("app.mp4");
+        let tracks = vec![
+            TrackSpec { name: "All audio".into(), kind: TrackKind::Mix, on: true },
+            TrackSpec { name: "App audio".into(), kind: TrackKind::App, on: true },
+        ];
+        let (n_tracks, preview) = (tracks.len(), true);
+        let opts = ScreenCaptureOptions {
+            out: out.clone(),
+            fps: 30,
+            source: CaptureSource::App { hwnd: win.0 as isize, title: "se-app-capture-test".into(), pid: std::process::id() },
+            audio: AudioMode::System,
+            tracks,
+            preview,
+            ..Default::default()
+        };
+        let cap = start_screen(opts).expect("start");
+        let prog = cap.progress();
+        let pump = || unsafe {
+            let mut m = MSG::default();
+            while PeekMessageW(&mut m, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&m);
+                DispatchMessageW(&m);
+            }
+        };
+        for _ in 0..300 {
+            pump();
+            if recorded(&prog) > 2.5 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(recorded(&prog) > 2.0, "{}", prog.status());
+        if preview {
+            let slot = cap.preview().expect("preview");
+            assert!(slot.generation() > 10, "the WGC preview ran while recording: {}", slot.generation());
+        }
+        cap.stop();
+        for _ in 0..300 {
+            pump();
+            if prog.is_done() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(prog.error(), None);
+        let a = ffpipe::probe(&out.to_string_lossy()).unwrap();
+        assert!(a.width > 0 && a.duration > 1.5, "{} x {}, {} s", a.width, a.height, a.duration);
+        assert_eq!(a.audio_streams.len(), n_tracks, "one stream per track");
+        unsafe {
+            let _ = DestroyWindow(win);
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

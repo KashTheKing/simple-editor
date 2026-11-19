@@ -40,6 +40,13 @@
 - **Choose the sound: System audio only, Microphone only, Both or None.** System audio is what your computer plays, recorded directly (no "Stereo Mix" needed). The choice is remembered (also in Settings ▸ Capture).
 - **Screen Recording is a panel in its own window now**, not a popup: a live preview of what is being recorded, the source (a screen, all screens, a window or a region), the audio choice, microphone and system-audio level meters, the output folder and big Record / Stop buttons with the time.
 
+- **A live preview, with the cursor.** The preview now shows the recording itself at 30 frames a second, cursor included (it was 4 a second and left the cursor out). It pauses when it isn't on screen or its window is minimised, and from its right-click menu; the recording never pauses with it.
+- **Application / Game capture**: record one program's own picture, Roblox and Roblox Studio included, even when it is covered, plus just that program's sound.
+- **Audio tracks**: each recording can have several sound streams (All audio, Microphone, App audio by default), each named, switchable and metered; they arrive as separate audio tracks.
+- **Hide on Record**: Simple Editor hides while you record; stop from the small pill at the top of the screen or with Ctrl+Shift+F9 (changeable), neither of which shows in the recording.
+- **Recordings go into a Library bin** (Recordings by default, or one you make), named by a pattern; adding them to the library can be switched off.
+- The Screen Recording panel is in the Window menu and docks into any page; its settings are in Sources, Quality, Misc and Output sections. Tool: `capture.screen` (open, start, stop, status; audio, source, window or app).
+
 ### Fixes: timeline waveforms
 - **Waveforms show up sooner**: a clip’s waveform is drawn from a quick first pass (peaks and loudness) a few
   moments after it lands, and the Detailed view’s colours, ticks and spectrogram fill in when the full analysis is

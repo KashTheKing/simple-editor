@@ -1,12 +1,16 @@
-//! ---- fix/screen-record ----
+//! ---- fix/screen-record, feat/recorder-2 ----
 //! PANE_DRAWERS glue for the Screen Recording pane (`ui::capture_ui::screen_pane`): starts / stops the
 //! recording through `start_screen_capture` / `stop_screen_capture` (jobs.rs), feeds the level meters
-//! (the recording's own audio taps, or meter-only taps for the chosen audio while idle) and keeps the
-//! live preview ticking - 4 frames a second idle, 2 while recording - only while the pane is on screen
-//! (`App::update` puts it to sleep otherwise).
+//! (the recording's own audio taps, or meter-only taps for the chosen audio while idle) and runs the
+//! live preview: the recording's own frames while it runs, else a preview-only producer
+//! (`screen_grab::Preview`). The preview runs only while it is looked at - the pane on screen
+//! (`App::update` puts it to sleep otherwise), its window not minimised, and not paused from its
+//! right-click menu - and then repaints at its 30 fps.
 
 use super::*;
 use crate::engine::audio_tap::{self, AudioTap, TapSource};
+use crate::engine::capture::{CaptureSource, TrackKind};
+use std::sync::atomic::Ordering as AtomicOrdering;
 
 pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if pane != Pane::ScreenRecording {
@@ -18,14 +22,23 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     app.capture_ui.live = true;
     let recording = app.screen_rec.is_some();
     feed_meters(app, recording);
+    let minimized = ui.ctx().input(|i| i.viewport().minimized.unwrap_or(false));
+    let showing = feed_preview(app, recording, minimized);
     let mics = app.capture_ui.mics.clone().unwrap_or_default();
     let monitors = app.screens.monitors.clone();
+    let bins = app.project.folder_names();
     let r = {
         let App { capture_ui, settings, palette, .. } = app;
-        capture_ui::screen_pane(ui, capture_ui, settings, &mics, &monitors, recording, palette)
+        let c = capture_ui::PaneCtx { mics: &mics, monitors: &monitors, bins: &bins, recording, palette };
+        capture_ui::screen_pane(ui, capture_ui, settings, &c)
     };
     if r.stop_screen {
         app.stop_screen_capture();
+    }
+    if let Some(name) = r.new_bin {
+        app.push_undo();
+        app.project.add_folder(&name);
+        app.after_edit();
     }
     if let Some(o) = r.screen {
         app.start_screen_capture(o);
@@ -34,8 +47,57 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         let dir = capture_ui::capture_dir(&app.settings);
         let _ = std::process::Command::new("explorer").arg(dir).spawn();
     }
-    ui.ctx().request_repaint_after(Duration::from_millis(if recording { 500 } else { 250 }));
+    let meters = !app.capture_ui.meter_taps.is_empty() || recording;
+    if showing {
+        ui.ctx().request_repaint_after(Duration::from_millis(1000 / crate::engine::screen_grab::PREVIEW_FPS as u64));
+    } else if meters {
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
+    }
     true
+}
+
+/// The preview's frames: the recording's own, else a preview-only producer for the picked source.
+/// Nothing runs while it isn't looked at. True when frames are coming.
+fn feed_preview(app: &mut App, recording: bool, minimized: bool) -> bool {
+    let wanted = app.settings.capture_preview && !minimized;
+    let st = &mut app.capture_ui;
+    if let Some((c, _)) = &app.screen_rec {
+        st.preview = None; // one capture at a time: the recording's frames replace the idle preview
+        st.slot = c.preview();
+    } else if !wanted || recording {
+        st.preview = None;
+        st.slot = None;
+    } else {
+        let src = capture_ui::source_of(st, &app.screens.monitors);
+        let pickable = match st.area.as_str() {
+            "window" => !st.window.is_empty(),
+            "app" => st.app.is_some(),
+            _ => true,
+        };
+        let cursor = app.settings.capture_cursor;
+        if !pickable {
+            st.preview = None;
+        } else if st.preview.as_ref().is_none_or(|p| p.source != src || p.cursor != cursor) {
+            st.preview = None; // stop the old one first: two grabs of one screen cost twice
+            st.preview = crate::engine::screen_grab::Preview::start(src, cursor);
+        }
+        st.slot = st.preview.as_ref().map(|p| p.slot.clone());
+    }
+    if let Some(s) = &st.slot {
+        s.wanted.store(wanted, AtomicOrdering::Relaxed);
+        let g = s.generation();
+        let now = std::time::Instant::now();
+        st.preview_rate = match st.preview_rate {
+            Some((t, g0, _)) if now.duration_since(t).as_secs_f32() >= 1.0 => {
+                Some((now, g, g.saturating_sub(g0) as f32 / now.duration_since(t).as_secs_f32()))
+            }
+            Some(r) => Some(r),
+            None => Some((now, g, 0.0)),
+        };
+    } else {
+        st.preview_rate = None;
+    }
+    wanted && st.slot.is_some()
 }
 
 /// Show the pane in its own window; the first time it gets a size that fits the preview and every row.
@@ -48,7 +110,7 @@ pub(super) fn open(app: &mut App) {
 }
 
 /// Levels for the pane's meters: the running recording's taps, else meter-only taps opened for the
-/// chosen audio mode and microphone (reopened when either changes).
+/// chosen audio, microphone and app (reopened when any of them changes).
 fn feed_meters(app: &mut App, recording: bool) {
     let st = &mut app.capture_ui;
     if let Some((c, _)) = &app.screen_rec {
@@ -57,25 +119,41 @@ fn feed_meters(app: &mut App, recording: bool) {
         return;
     }
     if recording || st.finishing {
-        st.levels = (None, None);
+        st.levels = [None; 3];
         return;
     }
     let mode = app.settings.capture_audio_mode();
-    let key = format!("{}:{}", mode.key(), app.settings.capture_mic);
+    let tracks = &app.settings.capture_tracks;
+    let has = |k: TrackKind| tracks.iter().any(|t| t.on && t.kind == k);
+    let mix = has(TrackKind::Mix);
+    let sys = has(TrackKind::System) || (mix && mode.system());
+    let mic = has(TrackKind::Mic) || (mix && mode.mic());
+    let app_pid = match capture_ui::source_of(st, &app.screens.monitors) {
+        CaptureSource::App { pid, .. } if has(TrackKind::App) => Some(pid),
+        _ => None,
+    };
+    let key = format!("{sys}:{mic}:{}:{app_pid:?}", app.settings.capture_mic);
     if st.meter_key != key {
         st.meter_taps.clear();
-        if mode.system() {
-            st.meter_taps.push(AudioTap::start(TapSource::System, None));
+        let mut taps = Vec::new();
+        if sys {
+            taps.push((0, AudioTap::start(TapSource::System, None)));
         }
-        if mode.mic() {
-            st.meter_taps.push(AudioTap::start(TapSource::Mic(app.settings.capture_mic.clone()), None));
+        if mic {
+            taps.push((1, AudioTap::start(TapSource::Mic(app.settings.capture_mic.clone()), None)));
         }
+        if let Some(pid) = app_pid {
+            taps.push((2, AudioTap::start(TapSource::App(pid), None)));
+        }
+        st.meter_slots = taps.iter().map(|(i, _)| *i).collect();
+        st.meter_taps = taps.into_iter().map(|(_, t)| t).collect();
         st.meter_key = key;
     }
-    let mut it = st.meter_taps.iter().map(|t| t.state.peak());
-    let sys = mode.system().then(|| it.next()).flatten();
-    let mic = mode.mic().then(|| it.next()).flatten();
-    st.levels = (sys, mic);
+    let mut levels = [None; 3];
+    for (slot, t) in st.meter_slots.iter().zip(&st.meter_taps) {
+        levels[*slot] = Some(t.state.peak());
+    }
+    st.levels = levels;
     st.audio_error = st.meter_taps.iter().find_map(|t| t.state.error());
 }
 
@@ -96,6 +174,8 @@ fn status_json(app: &App) -> Value {
         "state": state,
         "elapsed": app.capture_ui.elapsed,
         "audio": app.settings.capture_audio_mode().key(),
+        "preview_fps": app.capture_ui.preview_rate.map(|r| r.2),
+        "hidden": app.capture_ui.pill.as_ref().is_some_and(|_| app.settings.capture_hide),
         "file": app.screen_rec.as_ref().map(|(_, p)| p.to_string_lossy().into_owned()),
         "folder": capture_ui::capture_dir(&app.settings).to_string_lossy(),
     })
@@ -109,8 +189,10 @@ pub const TOOLS: &[ToolDef] = &[ToolDef {
     args: &[
         "action:string:true:'open' | 'start' | 'stop' | 'status'",
         "audio:string:false:'system' | 'mic' | 'both' | 'none'",
-        "source:string:false:'screen:<n>' (0 = main) | 'desktop' | 'window' | 'region'",
-        "window:string:false:window title, for source 'window'",
+        "source:string:false:'screen:<n>' (0 = main) | 'desktop' | 'window' | 'region' | 'app'",
+        "preview:boolean:false:show (true) or pause (false) the live preview, remembered",
+        "dock:boolean:false:with 'open': true docks the pane into the current page, false pops it out",
+        "window:string:false:window title for source 'window'; for 'app' part of the title, the program name (RobloxStudioBeta.exe) or pid:<process id>",
     ],
     kind: ToolKind::Ui,
     run: |app, args| {
@@ -119,18 +201,36 @@ pub const TOOLS: &[ToolDef] = &[ToolDef {
             app.settings.capture_audio = m.key().into();
             app.settings.save();
         }
+        if let Some(on) = args.get("preview").and_then(Value::as_bool) {
+            app.settings.capture_preview = on;
+            app.settings.save();
+        }
         if let Some(s) = arg_str(args, "source") {
             app.capture_ui.area = s.into();
         }
         if let Some(w) = arg_str(args, "window") {
-            app.capture_ui.window = w.into();
+            if app.capture_ui.area == "app" {
+                let want = w.to_ascii_lowercase();
+                let pid = w.strip_prefix("pid:").and_then(|p| p.trim().parse::<u32>().ok());
+                let found = crate::engine::wgc::app_windows().into_iter().find(|a| match pid {
+                    Some(pid) => a.pid == pid,
+                    None => a.title.to_ascii_lowercase().contains(&want) || a.exe.eq_ignore_ascii_case(w),
+                });
+                app.capture_ui.app = Some(found.ok_or_else(|| format!("no application window matches '{w}'"))?);
+            } else {
+                app.capture_ui.window = w.into();
+            }
         }
         match req(arg_str(args, "action"), "action")? {
-            "open" => {
-                if !app.layout.is_visible(Pane::ScreenRecording) {
-                    open(app);
+            "open" => match args.get("dock").and_then(Value::as_bool) {
+                Some(true) => {
+                    app.layout.dock(Pane::ScreenRecording);
+                    app.layout_dirty = true;
                 }
-            }
+                Some(false) => open(app),
+                None if !app.layout.is_visible(Pane::ScreenRecording) => open(app),
+                None => {}
+            },
             "start" => {
                 if app.screen_rec.is_some() {
                     return Err("already recording".into());
