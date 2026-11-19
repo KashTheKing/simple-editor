@@ -137,7 +137,7 @@ fn reverse_runs_the_clock_and_the_picture_backwards() {
     let pts = app.video.pts;
     assert!((t - 0.15..t + 0.25).contains(&pts), "the picture ({pts}) follows the clock ({t})");
     assert!(shown.windows(2).all(|w| w[1] <= w[0] + 1e-9), "stepped forwards while reversing: {shown:?}");
-    assert!(app.engine.dropped() <= 3, "{} frames dropped reversing", app.engine.dropped());
+    assert!(app.engine.dropped() <= 3, "{} frames dropped reversing: {shown:?}", app.engine.dropped());
     app.toggle_reverse();
     assert!(!app.engine.is_reverse());
     let t0 = app.engine.time();
@@ -226,21 +226,22 @@ fn esc_builds_the_editor_with_the_file_on_the_timeline_at_the_current_time() {
 }
 
 #[test]
-fn skip_back_10_and_forward_30_move_the_clock_and_the_picture_follows() {
+fn skip_back_10_and_forward_10_move_the_clock_and_the_picture_follows() {
     let Some((ctx, mut app)) = player(2.0) else { return };
     until_picture(&ctx, &mut app);
     let dur = app.engine.duration();
+    assert_eq!((SKIP_BACK, SKIP_FORWARD), (10.0, 10.0), "both skips are 10 s");
     app.skip(-SKIP_BACK);
     assert_eq!(app.engine.time(), 0.0, "back 10 s from 2 s: the start");
     app.skip(SKIP_FORWARD);
-    assert!((app.engine.time() - (dur - 0.001)).abs() < 1e-9, "forward 30 s in a 4 s file: its last frame");
+    assert!((app.engine.time() - (dur - 0.001)).abs() < 1e-9, "forward 10 s in a 4 s file: its last frame");
     // the decoder seeks there and the next picture is from the end of the file
     let end = Instant::now() + Duration::from_secs(5);
     while app.engine.next_due().is_none_or(|p| p < dur - 0.2) && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(app.engine.next_due().is_some_and(|p| p >= dur - 0.2), "next frame at {:?}", app.engine.next_due());
-    // the keys do the same: Left = back 10, Right = forward 30
+    // the keys do the same: Left = back 10, Right = forward 10
     app.seek(1.0);
     run(&ctx, &mut app, vec![key(Key::ArrowRight, Modifiers::NONE)]);
     assert!(app.engine.time() > 3.9);

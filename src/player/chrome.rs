@@ -1,7 +1,7 @@
 //! The player's look: the media-player layout of 1.3.0 (the picture edge to edge, a thin title bar,
 //! a full-width thin seek bar with elapsed / total at its ends, then one row: the file's name on the
 //! left, small line icons in the middle - shuffle, previous, back 10 s, the ringed play button,
-//! forward 30 s, next, loop, reverse - and speed, subtitles / audio, volume, full screen, mini player
+//! forward 10 s, next, loop, reverse - and speed, subtitles / audio, volume, full screen, mini player
 //! and ⋯ on the right), coloured from Simple Editor's theme (Settings ▸ Appearance's theme, palette,
 //! Look and accent, read by `PlayerApp::new`): the accent fills the progress, the knob, the play ring
 //! and every toggle that is on; text and icons are the theme's text / dim colours; the bars fade into
@@ -26,10 +26,14 @@ pub mod icon {
     pub const PLAY: char = '\u{E768}';
     pub const PAUSE: char = '\u{E769}';
     pub const BACK10: char = '\u{ED3C}';
+    /// SkipForward30, drawn with BACK10's "10" (`glyph`): the fonts have no forward-10 glyph.
     pub const FORWARD30: char = '\u{ED3D}';
+    /// Not a font glyph: `glyph` draws FORWARD30's arrow over BACK10's "10".
+    pub const FORWARD10: char = '\u{10FFFC}';
     pub const REPEAT_ALL: char = '\u{E8EE}';
     pub const LOOP: char = '\u{E8ED}'; // RepeatOne: this file over and over
-    pub const REVERSE: char = '\u{E7A7}'; // Undo arrow
+    /// Not a font glyph: `glyph` draws it as PLAY mirrored (a play triangle pointing back).
+    pub const REVERSE: char = '\u{10FFFD}';
     pub const CAPTIONS: char = '\u{E7F0}';
     pub const VOLUME: [char; 4] = ['\u{E992}', '\u{E993}', '\u{E994}', '\u{E995}'];
     pub const MUTE: char = '\u{E74F}';
@@ -47,8 +51,8 @@ pub mod icon {
     pub const INFO: char = '\u{E946}';
     pub const CHECK: char = '\u{E73E}';
     pub const CONVERT: char = '\u{E8AB}'; // Switch
-    pub const ALL: [char; 31] = [
-        EDIT, SHUFFLE, PREVIOUS, NEXT, PLAY, PAUSE, BACK10, FORWARD30, REPEAT_ALL, LOOP, REVERSE, CAPTIONS, VOLUME[0], VOLUME[1],
+    pub const ALL: [char; 30] = [
+        EDIT, SHUFFLE, PREVIOUS, NEXT, PLAY, PAUSE, BACK10, FORWARD30, REPEAT_ALL, LOOP, CAPTIONS, VOLUME[0], VOLUME[1],
         VOLUME[2], VOLUME[3], MUTE, FULLSCREEN, EXIT_FULLSCREEN, MINI, UNMINI, MORE, MINIMIZE, MAXIMIZE, RESTORE, CLOSE, MUSIC,
         FOLDER, INFO, CHECK, CONVERT,
     ];
@@ -70,6 +74,23 @@ fn icon_font(px: f32) -> FontId {
 }
 
 fn glyph(p: &egui::Painter, at: Pos2, c: char, px: f32, col: Color32) {
+    if c == icon::FORWARD10 {
+        // both glyphs put the arrow above ~0.44 of the size and the digits below (the ink has a gap
+        // there), so the forward arrow and the back glyph's "10" join cleanly
+        let g = p.layout_no_wrap(icon::FORWARD30.to_string(), icon_font(px), col);
+        let split = at.y - g.size().y * 0.5 + px * 0.435;
+        let r = p.clip_rect();
+        p.with_clip_rect(Rect::from_min_max(r.min, pos2(r.max.x, split).min(r.max))).text(at, Align2::CENTER_CENTER, icon::FORWARD30, icon_font(px), col);
+        p.with_clip_rect(Rect::from_min_max(pos2(r.min.x, split).max(r.min), r.max)).text(at, Align2::CENTER_CENTER, icon::BACK10, icon_font(px), col);
+        return;
+    }
+    if c == icon::REVERSE {
+        // PLAY turned half round about its centre: the (symmetric) triangle mirrored, pointing back
+        let g = p.layout_no_wrap(icon::PLAY.to_string(), icon_font(px), col);
+        let pos = at + g.size() * 0.5;
+        p.add(egui::epaint::TextShape::new(pos, g, col).with_angle(std::f32::consts::PI));
+        return;
+    }
     p.text(at, Align2::CENTER_CENTER, c, icon_font(px), col);
 }
 
@@ -460,7 +481,7 @@ fn bottom_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, bottom: Rect) {
     if play_button(ui, pal, pos2(cx, cy), 22.0, playing).clicked() {
         app.toggle_play();
     }
-    if icon_button(ui, pal, sq(cx + step * 1.35), icon::FORWARD30, 20.0, false, "Skip forward 30 seconds (Right)").clicked() {
+    if icon_button(ui, pal, sq(cx + step * 1.35), icon::FORWARD10, 20.0, false, "Skip forward 10 seconds (Right)").clicked() {
         app.skip(SKIP_FORWARD);
     }
     if icon_button(ui, pal, sq(cx + step * 2.4), icon::NEXT, 16.0, false, "Next (Ctrl+Right)").clicked() {
@@ -472,8 +493,7 @@ fn bottom_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, bottom: Rect) {
         app.set_loop(!looping);
     }
     let rev = app.engine.is_reverse();
-    let rtip = if rev { "Reverse: on" } else { "Reverse" };
-    if icon_button(ui, pal, sq(cx + step * 4.4), icon::REVERSE, 16.0, rev, rtip).clicked() {
+    if icon_button(ui, pal, sq(cx + step * 4.4), icon::REVERSE, 16.0, rev, "Reverse").clicked() {
         app.toggle_reverse();
     }
 
@@ -800,7 +820,7 @@ fn mini_chrome(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, full: Rect) {
     if play_button(ui, pal, c, 22.0, app.engine.is_playing()).clicked() {
         app.toggle_play();
     }
-    if icon_button(ui, pal, sq(56.0), icon::FORWARD30, 20.0, false, "Skip forward 30 seconds").clicked() {
+    if icon_button(ui, pal, sq(56.0), icon::FORWARD10, 20.0, false, "Skip forward 10 seconds").clicked() {
         app.skip(SKIP_FORWARD);
     }
     let bar = Rect::from_min_max(pos2(full.left() + 4.0, full.bottom() - 26.0), pos2(full.right() - 4.0, full.bottom() - 2.0));
