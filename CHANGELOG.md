@@ -11,6 +11,12 @@
 - **Metadata**: edit a file's tags, Clear all, change a song's cover, add Windows (Explorer) tags (M4A, MP4, MOV, WMA and WMV hold them) and apply metadata presets (author, genre and the rest; Settings ▸ Metadata, the Library's right-click menu and Export ▸ Apply preset).
 - **Songs** open in Audio Only with their cover over a blurred copy of it; covers and thumbnails show a loading shimmer.
 - **Rename** a file by clicking its name at the bottom left; the editor's Library follows the renamed file. The cursor hides with the controls.
+- **Full screen** covers the whole screen from a maximized window too (no white strip at the bottom) and goes back to how the window was; the editor's full screen too.
+- **Waveform seek bar**: on a song (or in Audio Only), hovering the seek bar turns it into the whole song's waveform, the played part in your accent; on or off from the right-click menu.
+- **End of a file and Loop**: the end (or the start, in reverse) pauses there, or with Autoplay on plays the next file (in reverse the previous one, from its end); Loop cycles off, for ever and N times (a badge counts down, right-click sets N) and goes round in reverse too.
+- **Mini player button**: a new icon (a window with an arrow popping down into a small player), no longer like full screen or restore.
+- **More menu toggles**: Repeat folder, Autoplay, Audio Only and Visualizer show their icon and an on / off switch; the visualizer's Style, Reacts, Bands and Look sit in a Visualizer Settings section, folded away until opened and shown only while the visualizer is.
+- **Platform Emulator in the player**: right-click ▸ Platform Emulator picks a platform and shows its guides over the picture or opens the file inside the emulator's devices (also in the More menu; Esc closes it).
 
 ### Windows
 - **One title bar for every window**: the editor, popped-out panels, the Screen Recording window and the media player share the same title bar and minimise / maximise / close buttons. Not maximised, windows get rounded corners (unless the look is Sharp) and an outline. Moving a window no longer lags.

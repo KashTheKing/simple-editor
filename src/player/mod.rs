@@ -20,6 +20,7 @@ pub mod convert;
 pub mod engine;
 pub mod folder;
 pub mod panels;
+pub mod social;
 pub mod strip;
 pub mod tracks;
 pub mod video;
@@ -27,7 +28,7 @@ pub mod video;
 use crate::ui::autohide::{self, AutoHide};
 use eframe::egui;
 use engine::{Engine, Info};
-use folder::{Playlist, Repeat};
+use folder::{End, Playlist, Repeat};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
@@ -110,11 +111,21 @@ struct Prefs {
     res: std::collections::HashMap<String, u32>,
     /// Songs show the visualizer instead of their cover.
     song_viz: bool,
+    /// Songs / Audio Only: the hovered seek bar is the song's waveform.
+    wave_seek: bool,
+    /// When a file ends, the next one in the folder plays.
+    autoplay: bool,
+    /// Loop N times: N.
+    loop_n: u32,
+    /// The More flyout's Visualizer Settings are unfolded.
+    viz_settings_open: bool,
+    /// The Device Emulator's device / platform / orientation.
+    emu: crate::ui::emulator::Prefs,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default(), res: Default::default(), song_viz: false }
+        Prefs { volume: 1.0, muted: false, shuffle: false, repeat: 0, audio: Default::default(), res: Default::default(), song_viz: false, wave_seek: true, autoplay: false, loop_n: 1, viz_settings_open: false, emu: Default::default() }
     }
 }
 
@@ -228,6 +239,14 @@ pub struct PlayerApp {
     pub(crate) shot_menu: Option<egui::Pos2>,
     /// Segoe UI Symbol was added (`theme::add_symbols`, the first time a menu opened).
     pub(crate) symbols: bool,
+    /// `SE_PLAYER_SHOT_SETUP=fullscreen=20:200`: toggle full screen at these frames after the reveal.
+    shot_fs: Vec<u64>,
+    /// The waveform seek bar's peaks (the editor's cache: background decode, kept on disk per file).
+    wave: Option<crate::media::waveform::WaveformCache>,
+    /// Autoplay backwards opened the previous file: start it from its end, reversed, once its length is in.
+    start_reversed: bool,
+    /// Social guides and the Device Emulator (`social`).
+    pub(crate) social: social::Social,
 }
 
 impl PlayerApp {
@@ -252,12 +271,17 @@ impl PlayerApp {
         let repeat = match prefs.repeat {
             1 => Repeat::All,
             2 => Repeat::One,
+            3 => Repeat::Count,
             _ => Repeat::Off,
         };
+        let mut playlist = Playlist::new(prefs.shuffle, repeat);
+        playlist.autoplay = prefs.autoplay;
+        playlist.loop_n = prefs.loop_n;
+        playlist.reset_loops();
         let c = ctx.clone();
         engine.set_wake(Arc::new(move || c.request_repaint()));
         PlayerApp {
-            playlist: Playlist::new(prefs.shuffle, repeat),
+            playlist,
             engine,
             info: None,
             error: None,
@@ -285,6 +309,10 @@ impl PlayerApp {
                 (PathBuf::from(p), s.parse().unwrap_or(1.0), false)
             }),
             shown_at_frame: 0,
+            shot_fs: Vec::new(),
+            wave: None,
+            start_reversed: false,
+            social: Default::default(),
             reveal: Default::default(),
             frames: 0,
             cover: None,
@@ -350,6 +378,7 @@ impl PlayerApp {
     pub fn toggle_play(&mut self) {
         if self.ended && !self.engine.is_playing() {
             self.ended = false;
+            self.playlist.reset_loops();
             // played out: again from the start (backwards: from the end)
             self.engine.seek(if self.engine.is_reverse() { self.engine.duration() } else { 0.0 });
         }
@@ -363,14 +392,49 @@ impl PlayerApp {
         self.engine.set_playing(true);
     }
 
+    /// Loop for ever or N times.
     pub fn looping(&self) -> bool {
-        self.playlist.repeat == Repeat::One
+        matches!(self.playlist.repeat, Repeat::One | Repeat::Count)
     }
 
-    /// Loop: the file repeats (both ways); remembered.
+    /// Loop (both ways), for ever; off: nothing repeats. Remembered.
     pub fn set_loop(&mut self, on: bool) {
-        self.playlist.repeat = if on { Repeat::One } else { Repeat::Off };
-        self.prefs.repeat = self.playlist.repeat as u8;
+        self.set_repeat(if on { Repeat::One } else { Repeat::Off });
+    }
+
+    /// The bar's Loop button: Off -> for ever -> N times -> Off.
+    pub fn click_loop(&mut self) {
+        self.set_repeat(self.playlist.repeat.loop_click());
+    }
+
+    fn set_repeat(&mut self, r: Repeat) {
+        self.playlist.repeat = r;
+        self.playlist.reset_loops();
+        self.prefs.repeat = r as u8;
+        self.prefs_dirty = true;
+    }
+
+    /// Loop N times: (N, rounds left) while it is the loop picked.
+    pub fn loop_count(&self) -> Option<(u32, u32)> {
+        (self.playlist.repeat == Repeat::Count).then_some((self.playlist.loop_n, self.playlist.loops_left))
+    }
+
+    /// Loop N times' N (1-999); counting starts again. Remembered.
+    pub fn set_loop_n(&mut self, n: u32) {
+        self.playlist.loop_n = n.clamp(1, 999);
+        self.playlist.reset_loops();
+        self.prefs.loop_n = self.playlist.loop_n;
+        self.prefs_dirty = true;
+    }
+
+    pub fn autoplay(&self) -> bool {
+        self.playlist.autoplay
+    }
+
+    /// When a file ends, play the next one in the folder (backwards: the previous one). Remembered.
+    pub fn set_autoplay(&mut self, on: bool) {
+        self.playlist.autoplay = on;
+        self.prefs.autoplay = on;
         self.prefs_dirty = true;
     }
 
@@ -416,6 +480,10 @@ impl PlayerApp {
 
     /// Open `path` at `t`, playing or paused (a rename reopens the file where it was).
     pub fn open_at(&mut self, ctx: &egui::Context, path: &Path, t: f64, play: bool) {
+        if path != self.path() {
+            self.playlist.reset_loops();
+        }
+        self.start_reversed = false;
         let (vol, muted, rate) = (self.engine.volume(), self.engine.muted(), self.engine.rate());
         let audio_only = self.engine.audio_only();
         self.engine = Engine::start(path, t, play, true);
@@ -484,6 +552,29 @@ impl PlayerApp {
 
     /// A song shows the visualizer: picked, or it has no cover (once that is known - while the cover
     /// loads, its placeholder shows).
+    /// The waveform seek bar applies: it is on, and this is a song or a video in Audio Only.
+    pub fn wave_seek(&self) -> bool {
+        self.prefs.wave_seek && self.info.as_ref().is_some_and(|i| !i.audio_streams.is_empty() && (!i.has_video || self.engine.audio_only()))
+    }
+
+    pub fn wave_seek_on(&self) -> bool {
+        self.prefs.wave_seek
+    }
+
+    pub fn set_wave_seek(&mut self, on: bool) {
+        self.prefs.wave_seek = on;
+        self.prefs_dirty = true;
+    }
+
+    /// The playing file's peaks (its first ticked audio track); None while they are computed (started
+    /// here, on a background thread), empty if the audio could not be read.
+    pub fn peaks(&mut self, ctx: &egui::Context) -> Option<Arc<crate::media::waveform::Peaks>> {
+        let stream = self.engine.audio_streams().and_then(|v| v.first().copied()).unwrap_or(0);
+        let path = self.path().to_string_lossy().into_owned();
+        let w = self.wave.get_or_insert_with(|| crate::media::waveform::WaveformCache::new(ctx.clone(), crate::media::Backend::Auto));
+        w.get(&path, stream)
+    }
+
     pub fn song_shows_visualizer(&self) -> bool {
         self.song_viz || (self.cover.is_none() && self.cover_rx.is_none())
     }
@@ -726,9 +817,7 @@ impl PlayerApp {
 
     /// Repeat the folder (on) or not.
     pub fn set_repeat_folder(&mut self, on: bool) {
-        self.playlist.repeat = if on { Repeat::All } else { Repeat::Off };
-        self.prefs.repeat = self.playlist.repeat as u8;
-        self.prefs_dirty = true;
+        self.set_repeat(if on { Repeat::All } else { Repeat::Off });
     }
 
     pub fn set_volume(&mut self, v: f32) {
@@ -780,7 +869,7 @@ impl PlayerApp {
             self.toggle_mini(ctx);
         }
         self.fullscreen = !self.fullscreen;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+        crate::ui::titlebar::set_fullscreen(ctx, self.fullscreen);
     }
 
     /// Mini player: a small always-on-top window in the corner of the screen; again to restore.
@@ -790,7 +879,7 @@ impl PlayerApp {
             ctx.send_viewport_cmd(V::WindowLevel(egui::WindowLevel::Normal));
             if r.fullscreen {
                 self.fullscreen = true;
-                ctx.send_viewport_cmd(V::Fullscreen(true));
+                crate::ui::titlebar::set_fullscreen(ctx, true);
             } else if r.maximized {
                 ctx.send_viewport_cmd(V::Maximized(true));
             } else if let Some(rect) = r.rect {
@@ -807,7 +896,7 @@ impl PlayerApp {
         });
         if self.fullscreen {
             self.fullscreen = false;
-            ctx.send_viewport_cmd(V::Fullscreen(false));
+            crate::ui::titlebar::set_fullscreen(ctx, false);
         }
         ctx.send_viewport_cmd(V::Maximized(false));
         let aspect = self.info.as_ref().filter(|i| i.has_video && i.size.1 > 0).map_or(16.0 / 9.0, |i| i.size.0 as f32 / i.size.1 as f32);
@@ -909,27 +998,29 @@ impl PlayerApp {
         Some(((next - t).abs() / self.engine.rate()).max(0.0))
     }
 
-    /// The file played out: repeat / next per the playlist, else stop on the last frame.
+    /// The file reached its end (backwards: its start): round again, the next / previous file, or pause
+    /// there - `Playlist::after_end`.
     fn handle_end(&mut self, ctx: &egui::Context) {
+        if self.start_reversed && self.engine.duration() > 0.0 {
+            // the previous file, from its end, backwards
+            self.start_reversed = false;
+            self.engine.set_reverse(true);
+            self.engine.seek(self.engine.duration());
+            self.engine.set_playing(true);
+            return;
+        }
         if !self.engine.is_playing() || !self.engine.at_end() || self.scrub.is_some() {
             return;
         }
-        if self.engine.is_reverse() {
-            // back at the start: Loop goes round from the end, else stop on the first frame
-            if self.looping() {
-                self.seek(self.engine.duration());
-            } else {
-                self.engine.set_playing(false);
-                self.ended = true;
-                self.hide.poke(self.now());
+        let (cur, reverse) = (self.path().to_path_buf(), self.engine.is_reverse());
+        match self.playlist.after_end(&cur, reverse) {
+            End::Again => self.engine.seek(if reverse { self.engine.duration() } else { 0.0 }),
+            End::Open(p) if reverse => {
+                self.open_at(ctx, &p, 0.0, false);
+                self.start_reversed = true;
             }
-            return;
-        }
-        let cur = self.path().to_path_buf();
-        match self.playlist.after_end(&cur) {
-            Some(p) if p == cur => self.seek(0.0),
-            Some(p) => self.open(ctx, &p),
-            None => {
+            End::Open(p) => self.open(ctx, &p),
+            End::Stop => {
                 self.engine.set_playing(false);
                 self.ended = true;
                 self.hide.poke(self.now());
@@ -969,6 +1060,8 @@ impl PlayerApp {
             if self.flyout.is_some() || self.info_open {
                 self.flyout = None;
                 self.info_open = false;
+            } else if self.social.emulator {
+                self.social.emulator = false;
             } else if self.fullscreen {
                 self.toggle_fullscreen(ctx);
             } else if self.mini.is_some() {
@@ -1019,6 +1112,10 @@ impl PlayerApp {
     }
 
     fn shot_tick(&mut self, ctx: &egui::Context) {
+        if self.shot_fs.first().is_some_and(|f| self.window_shown && self.frames >= self.shown_at_frame + f) {
+            self.shot_fs.remove(0);
+            self.toggle_fullscreen(ctx);
+        }
         let Some((path, after, asked)) = self.shot.as_mut() else { return };
         if !self.window_shown {
             return;
@@ -1065,10 +1162,18 @@ impl PlayerApp {
                 _ if item == "rename" => self.renaming = Some(self.title()),
                 _ if item == "reverse" => self.toggle_reverse(),
                 _ if item == "loop" => self.playlist.repeat = Repeat::One,
+                Some(("loop", n)) => {
+                    self.playlist.repeat = Repeat::Count;
+                    self.set_loop_n(n.parse().unwrap_or(1));
+                }
                 _ if item == "upscale" => self.upscale = Some(Default::default()),
                 _ if item == "visualizer" => self.song_viz = true,
                 _ if item == "cover_loading" => self.cover_rx = Some(std::sync::mpsc::channel().1),
                 Some(("res", h)) => self.res = h.parse().ok(),
+                _ if item == "max" => ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true)),
+                _ if item == "emulator" => self.social.emulator = true,
+                Some(("guide", id)) => self.social.show_guide(id),
+                Some(("fullscreen", at)) => self.shot_fs = at.split(':').filter_map(|f| f.parse().ok()).collect(),
                 Some(("menu", at)) => self.shot_menu = at.split_once(':').and_then(|(x, y)| Some(egui::pos2(x.parse().ok()?, y.parse().ok()?))),
                 _ => {}
             }
@@ -1171,7 +1276,7 @@ impl Root {
         p.save_prefs();
         use egui::ViewportCommand as V;
         if p.fullscreen {
-            ctx.send_viewport_cmd(V::Fullscreen(false));
+            crate::ui::titlebar::set_fullscreen(ctx, false);
         }
         if p.mini.is_some() {
             ctx.send_viewport_cmd(V::WindowLevel(egui::WindowLevel::Normal));

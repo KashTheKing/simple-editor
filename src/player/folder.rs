@@ -11,19 +11,32 @@ pub enum Repeat {
     Off,
     /// Wrap from the last file to the first.
     All,
-    /// Play the same file again.
+    /// Play the same file again, for ever.
     One,
+    /// Play the same file again `Playlist::loop_n` times, then on as Off.
+    Count,
 }
 
 impl Repeat {
-    /// Media Player's button cycles Off -> All -> One -> Off.
-    pub fn next(self) -> Repeat {
+    /// The bar's Loop button: Off (or Repeat folder) -> for ever -> N times -> Off.
+    pub fn loop_click(self) -> Repeat {
         match self {
-            Repeat::Off => Repeat::All,
-            Repeat::All => Repeat::One,
-            Repeat::One => Repeat::Off,
+            Repeat::One => Repeat::Count,
+            Repeat::Count => Repeat::Off,
+            Repeat::Off | Repeat::All => Repeat::One,
         }
     }
+}
+
+/// What to do when the playing file reaches its end (or, reversed, its start).
+#[derive(Debug, PartialEq, Eq)]
+pub enum End {
+    /// Round again: from the start (reversed: from the end).
+    Again,
+    /// Open this file (reversed: the previous one, from its end).
+    Open(PathBuf),
+    /// Pause there.
+    Stop,
 }
 
 /// A file the player opens: a video the decoders take, or a sound file.
@@ -44,6 +57,11 @@ pub struct Playlist {
     pos: usize,
     pub shuffle: bool,
     pub repeat: Repeat,
+    /// When a file ends (and nothing repeats), play the next one in the folder.
+    pub autoplay: bool,
+    /// Loop N times: N (at least 1), and the rounds still to go for the playing file.
+    pub loop_n: u32,
+    pub loops_left: u32,
     scanned: bool,
     seed: u64,
 }
@@ -51,7 +69,13 @@ pub struct Playlist {
 impl Playlist {
     pub fn new(shuffle: bool, repeat: Repeat) -> Playlist {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
-        Playlist { shuffle, repeat, seed: seed | 1, ..Default::default() }
+        Playlist { shuffle, repeat, seed: seed | 1, loop_n: 1, loops_left: 1, ..Default::default() }
+    }
+
+    /// Loop N times starts counting again (another file, Play after it stopped, N changed).
+    pub fn reset_loops(&mut self) {
+        self.loop_n = self.loop_n.max(1);
+        self.loops_left = self.loop_n;
     }
 
     /// Read `current`'s folder (once) and find `current` in it.
@@ -128,15 +152,26 @@ impl Playlist {
         Some(self.files[self.order[self.pos]].clone())
     }
 
-    /// What to do when the playing file ends: Some(path) to open next (the same path = play it again),
-    /// None = stop on the last frame.
-    pub fn after_end(&mut self, current: &Path) -> Option<PathBuf> {
+    /// The playing file reached its end (`reverse`: its start). Loop for ever goes round; Loop N times
+    /// goes round while rounds are left (counting one down); Repeat folder goes on to the next file
+    /// (reversed: the previous one), wrapping; Autoplay / shuffle go on without wrapping; else pause.
+    pub fn after_end(&mut self, current: &Path, reverse: bool) -> End {
+        let by = if reverse { -1 } else { 1 };
         match self.repeat {
-            Repeat::One => Some(current.to_path_buf()),
-            Repeat::All => self.next(current).or_else(|| Some(current.to_path_buf())),
-            Repeat::Off if self.shuffle => self.next(current),
-            Repeat::Off => None,
+            Repeat::One => return End::Again,
+            Repeat::Count if self.loops_left > 0 => {
+                self.loops_left -= 1;
+                return End::Again;
+            }
+            Repeat::All => return self.step(current, by, true).filter(|p| p != current).map_or(End::Again, End::Open),
+            _ => {}
         }
+        if self.autoplay || self.shuffle {
+            if let Some(p) = self.step(current, by, false) {
+                return End::Open(p);
+            }
+        }
+        End::Stop
     }
 }
 
@@ -173,11 +208,11 @@ mod tests {
         assert_eq!(pl.prev(&at("clip1.mp4")), Some(at("song.mp3")), "Previous wraps");
         pl.repeat = Repeat::All;
         assert_eq!(pl.next(&at("song.mp3")), Some(at("clip1.mp4")), "Repeat all wraps");
-        assert_eq!(pl.after_end(&at("clip1.mp4")), Some(at("clip2.mkv")));
+        assert_eq!(pl.after_end(&at("clip1.mp4"), false), End::Open(at("clip2.mkv")));
         pl.repeat = Repeat::One;
-        assert_eq!(pl.after_end(&at("clip2.mkv")), Some(at("clip2.mkv")));
+        assert_eq!(pl.after_end(&at("clip2.mkv"), false), End::Again);
         pl.repeat = Repeat::Off;
-        assert_eq!(pl.after_end(&at("clip2.mkv")), None);
+        assert_eq!(pl.after_end(&at("clip2.mkv"), false), End::Stop);
         drop(p);
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -196,7 +231,54 @@ mod tests {
             cur = n;
         }
         assert_eq!(seen.len(), 9);
-        assert_eq!(Repeat::Off.next().next().next(), Repeat::Off);
+        assert_eq!(Repeat::Off.loop_click().loop_click().loop_click(), Repeat::Off);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn end_and_start_pause_or_autoplay_and_loops_count_down_both_ways() {
+        let (dir, _) = folder(&["a.mp3", "b.mp3", "c.mp3"]);
+        let at = |n: &str| dir.join(n);
+        let mut pl = Playlist::new(false, Repeat::Off);
+        // the end (forwards) and the start (reversed) pause there
+        assert_eq!(pl.after_end(&at("b.mp3"), false), End::Stop);
+        assert_eq!(pl.after_end(&at("b.mp3"), true), End::Stop);
+        // Autoplay: the next file, reversed the previous one; never wrapping
+        pl.autoplay = true;
+        assert_eq!(pl.after_end(&at("b.mp3"), false), End::Open(at("c.mp3")));
+        assert_eq!(pl.after_end(&at("b.mp3"), true), End::Open(at("a.mp3")));
+        assert_eq!(pl.after_end(&at("c.mp3"), false), End::Stop, "the last file pauses");
+        assert_eq!(pl.after_end(&at("a.mp3"), true), End::Stop, "the first file, reversed, pauses");
+        // Loop for ever: round again both ways (reversed: from the end), whatever Autoplay says
+        assert_eq!(Repeat::Off.loop_click(), Repeat::One);
+        pl.repeat = Repeat::One;
+        for rev in [false, true, false, true] {
+            assert_eq!(pl.after_end(&at("b.mp3"), rev), End::Again);
+        }
+        // Loop N times: N rounds, counted down, then as Off (Autoplay on: the next file)
+        pl.repeat = Repeat::One.loop_click();
+        assert_eq!(pl.repeat, Repeat::Count);
+        pl.loop_n = 2;
+        pl.reset_loops();
+        assert_eq!(pl.after_end(&at("b.mp3"), false), End::Again);
+        assert_eq!(pl.loops_left, 1);
+        assert_eq!(pl.after_end(&at("b.mp3"), true), End::Again, "reversed at 0:00: round again from the end");
+        assert_eq!(pl.loops_left, 0);
+        assert_eq!(pl.after_end(&at("b.mp3"), true), End::Open(at("a.mp3")));
+        pl.autoplay = false;
+        assert_eq!(pl.after_end(&at("b.mp3"), false), End::Stop, "rounds used up, no Autoplay: pause");
+        pl.reset_loops();
+        assert_eq!(pl.after_end(&at("b.mp3"), false), End::Again, "counting again after a reset");
+        // N defaults to 1; 0 is never kept
+        let mut fresh = Playlist::new(false, Repeat::Count);
+        assert_eq!((fresh.loop_n, fresh.loops_left), (1, 1));
+        fresh.loop_n = 0;
+        fresh.reset_loops();
+        assert_eq!(fresh.loops_left, 1);
+        // Repeat folder: on to the next / previous file, wrapping
+        pl.repeat = Repeat::All;
+        assert_eq!(pl.after_end(&at("c.mp3"), false), End::Open(at("a.mp3")));
+        assert_eq!(pl.after_end(&at("a.mp3"), true), End::Open(at("c.mp3")));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

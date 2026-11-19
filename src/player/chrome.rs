@@ -50,10 +50,12 @@ pub mod icon {
     pub const CONVERT: char = '\u{E8AB}'; // Switch
     pub const UPSCALE: char = '\u{E740}'; // FullScreen arrows: bigger
     pub const TAG: char = '\u{E8EC}'; // Tag
-    pub const ALL: [char; 32] = [
+    pub const VISUALIZER: char = '\u{E9E9}'; // Equalizer
+    pub const PHONE: char = '\u{E8EA}'; // CellPhone: the Platform Emulator
+    pub const ALL: [char; 34] = [
         EDIT, SHUFFLE, PREVIOUS, NEXT, PLAY, PAUSE, BACK10, FORWARD30, REPEAT_ALL, LOOP, CAPTIONS, VOLUME[0], VOLUME[1],
         VOLUME[2], VOLUME[3], MUTE, FULLSCREEN, EXIT_FULLSCREEN, MINI, UNMINI, MORE, MINIMIZE, MAXIMIZE, RESTORE, CLOSE, MUSIC,
-        FOLDER, INFO, CHECK, CONVERT, UPSCALE, TAG,
+        FOLDER, INFO, CHECK, CONVERT, UPSCALE, TAG, VISUALIZER, PHONE,
     ];
 }
 
@@ -73,6 +75,21 @@ fn icon_font(px: f32) -> FontId {
 }
 
 fn glyph(p: &egui::Painter, at: Pos2, c: char, px: f32, col: Color32) {
+    if c == icon::MINI {
+        // drawn, not the font's (its arrows read as full screen / restore): the window, an arrow
+        // popping down-right out of it into the small player in its corner
+        let u = px / 16.0;
+        let s = Stroke::new(1.25 * u.max(1.0), col);
+        let win = Rect::from_center_size(at, vec2(16.0, 13.0) * u);
+        p.rect_stroke(win, 2.0 * u, s, egui::StrokeKind::Middle);
+        let pip = Rect::from_min_max(win.max - vec2(7.5, 5.5) * u, win.max - vec2(1.5, 1.5) * u);
+        p.rect_filled(pip, 1.0 * u, col);
+        let (from, to) = (win.min + vec2(3.0, 2.5) * u, pip.min - vec2(1.5, 1.5) * u);
+        p.line_segment([from, to], s);
+        p.line_segment([to, to - vec2(3.0, 0.0) * u], s);
+        p.line_segment([to, to - vec2(0.0, 3.0) * u], s);
+        return;
+    }
     if c == icon::FORWARD10 {
         // both glyphs put the arrow above ~0.44 of the size and the digits below (the ink has a gap
         // there), so the forward arrow and the back glyph's "10" join cleanly
@@ -196,15 +213,35 @@ fn scrubber(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect, t: f64,
     let y = rect.center().y;
     let k = if dur > 0.0 { (t / dur).clamp(0.0, 1.0) as f32 } else { 0.0 };
     let x = x0 + (x1 - x0) * k;
-    let hot = r.hovered() || r.dragged();
+    let hot = r.hovered() || r.dragged() || app.shot_hover.is_some(); // (SE_PLAYER_SHOT_SETUP=hover=…)
     let th = if hot { 5.0 } else { 3.0 };
-    ticks(&p, pal, x0, x1, y, dur);
-    let line = |a: f32, b: f32, c| p.rect_filled(Rect::from_min_max(pos2(a, y - th / 2.0), pos2(b, y + th / 2.0)), th / 2.0, c);
-    line(x0, x1, pal.text_dim.gamma_multiply(0.45));
-    line(x0, x, pal.accent);
-    let rad = if hot { 8.0 } else { 6.0 };
-    p.circle_filled(pos2(x, y), rad, pal.accent);
-    p.circle_stroke(pos2(x, y), rad, Stroke::new(1.5, pal.text));
+    // songs / Audio Only, hovered: the whole bar turns into the song's waveform (Waveform seek bar).
+    // The peaks are asked for whenever the bar shows, so they are usually in by the first hover.
+    let peaks = app.wave_seek().then(|| app.peaks(ui.ctx()));
+    let wave = Rect::from_min_max(pos2(x0, rect.top() + 1.0), pos2(x1, rect.bottom() - 1.0));
+    let waved = hot && match &peaks {
+        Some(Some(pk)) if !pk.is_empty() => {
+            waveform(&p, pal, pk, wave, x, dur);
+            true
+        }
+        Some(None) => {
+            shimmer(ui, wave, pal); // still reading the song
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
+            true
+        }
+        _ => false, // off, a video, or no audio could be read: the plain bar
+    };
+    if waved {
+        p.line_segment([pos2(x, wave.top()), pos2(x, wave.bottom())], Stroke::new(2.0, pal.text));
+    } else {
+        ticks(&p, pal, x0, x1, y, dur);
+        let line = |a: f32, b: f32, c| p.rect_filled(Rect::from_min_max(pos2(a, y - th / 2.0), pos2(b, y + th / 2.0)), th / 2.0, c);
+        line(x0, x1, pal.text_dim.gamma_multiply(0.45));
+        line(x0, x, pal.accent);
+        let rad = if hot { 8.0 } else { 6.0 };
+        p.circle_filled(pos2(x, y), rad, pal.accent);
+        p.circle_stroke(pos2(x, y), rad, Stroke::new(1.5, pal.text));
+    }
     let at = |px: f32| (((px - x0) / (x1 - x0)).clamp(0.0, 1.0) as f64) * dur;
     let mut seek = None;
     if let Some(pos) = r.interact_pointer_pos().filter(|_| r.dragged() || r.clicked() || r.drag_started()) {
@@ -215,7 +252,11 @@ fn scrubber(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect, t: f64,
         let ht = at(h.x);
         let g = p.layout_no_wrap(clock(ht), FontId::proportional(12.0), pal.text);
         let ctx = ui.ctx().clone();
-        let pic = app.strip.as_mut().and_then(|s| {
+        if waved {
+            p.line_segment([pos2(h.x, wave.top()), pos2(h.x, wave.bottom())], Stroke::new(1.0, pal.text.gamma_multiply(0.6)));
+        }
+        // (on the waveform: just the time, no picture card)
+        let pic = app.strip.as_mut().filter(|_| !waved).and_then(|s| {
             if !s.done() {
                 ctx.request_repaint_after(std::time::Duration::from_millis(100)); // still filling
             }
@@ -233,7 +274,7 @@ fn scrubber(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect, t: f64,
             let img_r = Rect::from_min_size(card.min + vec2(4.0, 4.0), img);
             p.image(id, img_r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
             p.galley(pos2(card.center().x - g.size().x / 2.0, img_r.bottom() + 4.0), g, pal.text);
-        } else if app.strip.as_ref().is_some_and(|s| !s.done()) {
+        } else if !waved && app.strip.as_ref().is_some_and(|s| !s.done()) {
             // the thumbnail is not made yet: its card, loading
             let aspect = app.info.as_ref().filter(|i| i.size.0 > 0).map_or(9.0 / 16.0, |i| i.size.1 as f32 / i.size.0 as f32);
             let img = vec2(176.0, 176.0 * aspect);
@@ -249,6 +290,24 @@ fn scrubber(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, rect: Rect, t: f64,
         }
     }
     (r, seek)
+}
+
+/// The song's waveform over `r`, 2 px columns scaled to its loudest peak: the played part (left of
+/// `played_x`) in the accent, the rest dimmed.
+fn waveform(p: &egui::Painter, pal: &Palette, pk: &crate::media::waveform::Peaks, r: Rect, played_x: f32, dur: f64) {
+    // ponytail: the loudest peak is found every frame the bar is hovered (~100 values per second of song)
+    let top = pk.max.iter().chain(&pk.min).fold(1e-3f32, |m, v| m.max(v.abs()));
+    let (cy, half) = (r.center().y, r.height() / 2.0);
+    let (played, rest) = (pal.accent, pal.text_dim.gamma_multiply(0.55));
+    let span = |x: f32| ((x - r.left()) / r.width()) as f64 * dur;
+    let mut x = r.left();
+    while x < r.right() {
+        let (lo, hi) = pk.range(span(x), span(x + 2.0));
+        let (hi, lo) = ((hi / top).max(0.04), (lo / top).min(-0.04));
+        let col = Rect::from_min_max(pos2(x, cy - hi * half), pos2((x + 1.5).min(r.right()), cy - lo * half));
+        p.rect_filled(col, 0.0, if x < played_x { played } else { rest });
+        x += 2.0;
+    }
 }
 
 /// Draw the frame: picture, subtitles, chrome, flyouts. Returns what the auto-hide needs repainted.
@@ -271,7 +330,10 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
 
     // ---- the picture (or the audio view; Audio Only: the visualizer, nothing decoded)
     let audio_only = app.engine.audio_only();
+    // a device guide or the Device Emulator draws the picture itself
+    let drawn = !mini && super::social::picture(app, ui, full, TOP_H, BOTTOM_H);
     let video_rect = match (&app.info, app.video.shown) {
+        _ if drawn => None,
         (Some(info), Some((tex, _, uv))) if info.has_video && !audio_only => {
             let r = app.zoom.place(full, info.size, ppp);
             ui.painter().with_clip_rect(full).image(tex, r, uv, Color32::WHITE);
@@ -280,6 +342,7 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
         _ => None,
     };
     match app.info.as_ref().map(|i| (i.has_video, i.size)) {
+        _ if drawn => {}
         Some(_) if audio_only => visualizer_view(app, ui, full),
         Some((true, size)) => {
             // the video processor scales to exactly the pixels the picture covers
@@ -304,6 +367,9 @@ fn body(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, now: f64) -> autohide::
     if let Some(e) = &app.error {
         let msg = format!("Can't play this file\n{e}");
         ui.painter().text(full.center(), Align2::CENTER_CENTER, msg, FontId::proportional(15.0), Color32::from_gray(200));
+    }
+    if let Some(r) = video_rect.filter(|_| !mini) {
+        super::social::overlay(app, ui, r, full); // a safe-zone / UI-preview guide
     }
     subtitles(app, ui, video_rect.unwrap_or(full).intersect(full), app.hide.shown());
 
@@ -473,11 +539,39 @@ fn bottom_bar(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette, bottom: Rect) {
     if icon_button(ui, pal, sq(cx + step * 2.4), icon::NEXT, 16.0, false, "Next (Ctrl+Right)").clicked() {
         app.next(&ctx);
     }
-    let looping = app.looping();
-    let ltip = if looping { "Loop: on" } else { "Loop: off" };
-    if icon_button(ui, pal, sq(cx + step * 3.4), icon::LOOP, 16.0, looping, ltip).clicked() {
-        app.set_loop(!looping);
+    // Loop: click cycles off -> for ever -> N times (a badge counts the rounds left) -> off;
+    // right-click sets N
+    let (looping, count) = (app.looping(), app.loop_count());
+    let ltip = match count {
+        Some((n, _)) => format!("Loop: {n} {} (right-click to change)", if n == 1 { "time" } else { "times" }),
+        None if looping => "Loop: for ever (right-click: how many times)".into(),
+        None => "Loop: off (right-click: how many times)".into(),
+    };
+    let lb = sq(cx + step * 3.4);
+    let lr = icon_button(ui, pal, lb, icon::LOOP, 16.0, looping, &ltip);
+    if lr.clicked() {
+        app.click_loop();
     }
+    if let Some((_, left)) = count {
+        let at = lb.center() + vec2(9.0, -9.0);
+        let g = ui.painter().layout_no_wrap(left.to_string(), FontId::proportional(10.0), on_accent(pal.accent));
+        let w = (g.size().x + 6.0).max(14.0);
+        ui.painter().rect_filled(Rect::from_center_size(at, vec2(w, 14.0)), 7.0, pal.accent);
+        ui.painter().galley(at - g.size() / 2.0, g, on_accent(pal.accent));
+    }
+    crate::ui::menu::context(&lr, |ui| {
+        ui.label("Loop how many times");
+        let mut n = app.playlist.loop_n;
+        if ui.add(egui::DragValue::new(&mut n).range(1..=999).suffix(" ×")).changed() {
+            app.set_loop_n(n);
+        }
+        if count.is_none() && ui.button("Loop this many times").clicked() {
+            while app.loop_count().is_none() {
+                app.click_loop();
+            }
+            ui.close();
+        }
+    });
     let rev = app.engine.is_reverse();
     if icon_button(ui, pal, sq(cx + step * 4.4), icon::REVERSE, 16.0, rev, "Reverse").clicked() {
         app.toggle_reverse();
@@ -859,6 +953,27 @@ fn flyout_row(ui: &mut Ui, pal: &Palette, check: Option<bool>, c: Option<char>, 
     r
 }
 
+/// An on / off row: its icon (always), the label and a switch on the right, in the accent when on.
+fn toggle_row(ui: &mut Ui, pal: &Palette, on: bool, c: char, label: &str) -> Response {
+    let (rect, r) = ui.allocate_exact_size(vec2(ui.available_width(), 36.0), Sense::click());
+    let p = ui.painter();
+    if r.hovered() {
+        p.rect_filled(rect, radius(ui), ui.visuals().widgets.hovered.weak_bg_fill);
+    }
+    let cy = rect.center().y;
+    glyph(p, pos2(rect.left() + 18.0, cy), c, 15.0, if on { pal.accent } else { pal.text });
+    p.text(pos2(rect.left() + 40.0, cy), Align2::LEFT_CENTER, label, FontId::proportional(14.0), pal.text);
+    let sw = Rect::from_center_size(pos2(rect.right() - 26.0, cy), vec2(34.0, 18.0));
+    if on {
+        p.rect_filled(sw, 9.0, pal.accent);
+        p.circle_filled(pos2(sw.right() - 9.0, cy), 6.0, on_accent(pal.accent));
+    } else {
+        p.rect_stroke(sw, 9.0, Stroke::new(1.0, pal.text_dim), egui::StrokeKind::Inside);
+        p.circle_filled(pos2(sw.left() + 9.0, cy), 5.0, pal.text_dim);
+    }
+    r
+}
+
 pub(super) fn heading(ui: &mut Ui, pal: &Palette, s: &str) {
     ui.add_space(4.0);
     ui.label(egui::RichText::new(s).size(12.0).color(pal.text_dim));
@@ -1012,27 +1127,44 @@ fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
     ui.separator();
     // the whole folder, round and round (Loop on the bar repeats the one file)
     let all = app.playlist.repeat == Repeat::All;
-    if flyout_row(ui, pal, Some(all), None, "Repeat folder").clicked() {
+    if toggle_row(ui, pal, all, icon::REPEAT_ALL, "Repeat folder").clicked() {
         app.set_repeat_folder(!all);
+    }
+    let auto = app.autoplay();
+    if toggle_row(ui, pal, auto, icon::NEXT, "Autoplay").clicked() {
+        app.set_autoplay(!auto);
+    }
+    let emu = app.social.emulator;
+    if toggle_row(ui, pal, emu, icon::PHONE, "Platform Emulator").clicked() {
+        app.social.emulator = !emu;
     }
     ui.separator();
     if app.info.as_ref().is_some_and(|i| !i.audio_streams.is_empty()) {
         let showing = if has_video {
             let ao = app.engine.audio_only();
-            if flyout_row(ui, pal, Some(ao), None, "Audio Only").clicked() {
+            if toggle_row(ui, pal, ao, icon::MUSIC, "Audio Only").clicked() {
                 app.set_audio_only(!ao);
             }
             ao
         } else {
             // songs show their cover; the visualizer when asked for (or when there is no cover)
             let viz = app.song_viz;
-            if flyout_row(ui, pal, Some(viz), None, "Visualizer").clicked() {
+            if toggle_row(ui, pal, viz, icon::VISUALIZER, "Visualizer").clicked() {
                 app.set_song_visualizer(!viz);
             }
             app.song_shows_visualizer()
         };
         if showing {
-            super::panels::visualizer_controls(app, ui, pal);
+            // folded away until asked for (remembered)
+            let open = app.prefs.viz_settings_open;
+            let h = egui::CollapsingHeader::new(egui::RichText::new("Visualizer Settings").color(pal.text))
+                .id_salt("player-viz-settings")
+                .default_open(open)
+                .show(ui, |ui| super::panels::visualizer_controls(app, ui, pal));
+            if h.header_response.clicked() {
+                app.prefs.viz_settings_open = !open;
+                app.prefs_dirty = true;
+            }
         }
         ui.separator();
     }

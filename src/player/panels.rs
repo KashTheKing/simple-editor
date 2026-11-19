@@ -503,6 +503,10 @@ pub fn context_menu(app: &mut PlayerApp, ui: &mut egui::Ui, ctx: &egui::Context)
     if menu::check(ui, looping, "Loop", "").clicked() {
         app.set_loop(!looping);
     }
+    let auto = app.autoplay();
+    if menu::check(ui, auto, "Autoplay", "").on_hover_text("When a file ends, play the next one in the folder").clicked() {
+        app.set_autoplay(!auto);
+    }
     if menu::row(ui, None, "Back 10 seconds", "Left").clicked() {
         app.skip(-SKIP_BACK);
     }
@@ -583,11 +587,23 @@ pub fn context_menu(app: &mut PlayerApp, ui: &mut egui::Ui, ctx: &egui::Context)
             app.set_song_visualizer(!viz);
         }
     }
-    menu::sub(ui, None, "Visualizer style", |ui| {
-        ui.set_width(300.0);
-        let pal = crate::theme::palette_with(ctx, &app.look);
-        visualizer_controls(app, ui, &pal);
-    });
+    if !streams.is_empty() {
+        let on = app.wave_seek_on();
+        let tip = "Songs and Audio Only: hovering the seek bar shows the whole song's waveform";
+        if menu::check(ui, on, "Waveform seek bar", "").on_hover_text(tip).clicked() {
+            app.set_wave_seek(!on);
+        }
+    }
+    let showing = if has_video { app.engine.audio_only() } else { app.song_shows_visualizer() };
+    if showing {
+        menu::sub(ui, None, "Visualizer Settings", |ui| {
+            ui.set_width(300.0);
+            let pal = crate::theme::palette_with(ctx, &app.look);
+            visualizer_controls(app, ui, &pal);
+        });
+    }
+    ui.separator();
+    super::social::menu(app, ui);
     ui.separator();
     if menu::check(ui, app.fullscreen, "Full screen", "F").clicked() {
         app.toggle_fullscreen(ctx);
