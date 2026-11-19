@@ -131,6 +131,13 @@ impl Project {
         if p.version < 3 {
             p.migrate_sequence_audio();
         }
+        // a Crop effect from before crop was built in becomes the clip's own crop where nothing changes
+        for t in p.tracks.iter_mut().chain(p.sequences.iter_mut().flat_map(|s| s.tracks.iter_mut())) {
+            t.clips.iter_mut().for_each(|c| _ = c.migrate_crop_effect());
+        }
+        if let Some(st) = &mut p.main_stash {
+            st.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).for_each(|c| _ = c.migrate_crop_effect());
+        }
         // an older (or missing/default) version is silently brought forward - every field it lacks
         // already resolved a default above; a NEWER version is left alone so `newer_than_app` can
         // still tell the caller (a hard downgrade would be the only real data-loss risk, and this
@@ -183,6 +190,77 @@ impl Project {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One video clip on V1 (a `Project::new` plus a hand-made clip; nothing is decoded here).
+    fn one_clip() -> Project {
+        let mut p = Project::new();
+        p.tracks[0].clips.push(crate::model::Clip::new(7, crate::model::ClipKind::Video, "v", 0.0, 4.0));
+        p
+    }
+
+    /// The built-in crop survives save and load, keys and all, and a clip that never crops writes no
+    /// crop fields (old builds read the file unchanged).
+    #[test]
+    fn built_in_crop_round_trips() {
+        let mut p = one_clip();
+        let plain = p.to_json();
+        assert!(!plain.contains("crop_"), "an uncropped clip writes no crop fields");
+        let c = &mut p.tracks[0].clips[0];
+        c.crop_left.value = 0.1;
+        c.crop_top.key_at(0.0, 0.0);
+        c.crop_top.key_at(2.0, 0.4);
+        let back = Project::from_json(&p.to_json()).unwrap();
+        let c = &back.tracks[0].clips[0];
+        assert_eq!(c.crop_left.value, 0.1);
+        assert_eq!(c.crop_top.keys.len(), 2, "keyframes kept");
+        let [l, r, t, b] = c.crop_at(1.0);
+        assert_eq!((l, r, b), (0.1, 0.0, 0.0));
+        assert!(t > 0.0 && t < 0.4, "keyed top in between: {t}");
+        assert_eq!(c.crop_at(2.0)[2], 0.4);
+        // driven like every other property: by name (Inspector / MCP / blocks) and in the key list
+        let mut c = c.clone();
+        assert!(crate::model::prop_mut(&mut c, "crop_bottom").is_some());
+        assert!(c.props_mut().iter().any(|(l, _)| *l == "Crop Bottom"));
+        assert!(c.key_times().contains(&2.0));
+        c.shift_keys(1.0);
+        assert_eq!(c.crop_top.keys[1].t, 3.0, "keys move with the clip's other keys");
+    }
+
+    /// An old project's Crop effect becomes the built-in crop when that is lossless, and stays an effect
+    /// (still rendering) when it is not.
+    #[test]
+    fn crop_effect_migrates_on_load() {
+        use crate::model::{Effect, EffectKind};
+        let crop = |v: [f64; 5]| {
+            let mut e = Effect::new(EffectKind::Crop);
+            for (i, x) in v.iter().enumerate() {
+                e.params[i].value = *x;
+            }
+            e
+        };
+        let mut p = one_clip();
+        p.tracks[0].clips[0].effects = vec![Effect::new(EffectKind::Blur), crop([0.1, 0.2, 0.0, 0.3, 0.0])];
+        p.tracks[0].clips[0].effects[1].params[0].key_at(1.0, 0.25);
+        // a second clip whose crop feathers: not lossless
+        let mut f = crate::model::Clip::new(8, crate::model::ClipKind::Video, "f", 4.0, 2.0);
+        f.effects = vec![crop([0.1, 0.0, 0.0, 0.0, 0.2])];
+        p.tracks[0].clips.push(f);
+        // a third with a Blur after its crop (the blur would bleed over the cut edge): not lossless
+        let mut g = crate::model::Clip::new(9, crate::model::ClipKind::Video, "g", 6.0, 2.0);
+        g.effects = vec![crop([0.1, 0.0, 0.0, 0.0, 0.0]), Effect::new(EffectKind::Blur)];
+        p.tracks[0].clips.push(g);
+        let back = Project::from_json(&p.to_json()).unwrap();
+        let c = &back.tracks[0].clips[0];
+        assert_eq!(c.effects.iter().map(|e| e.kind).collect::<Vec<_>>(), vec![EffectKind::Blur], "Crop folded in");
+        assert_eq!((c.crop_left.keys.len(), c.crop_right.value, c.crop_bottom.value), (1, 0.2, 0.3));
+        assert_eq!(c.crop_left.keys[0].v, 0.25, "its keys came along");
+        assert_eq!(back.tracks[0].clips[1].effects[0].kind, EffectKind::Crop, "feathered crop kept");
+        assert_eq!(back.tracks[0].clips[1].crop_at(0.0), [0.0; 4]);
+        assert_eq!(back.tracks[0].clips[2].effects.len(), 2, "crop under a blur kept");
+        // loading again changes nothing
+        let again = Project::from_json(&back.to_json()).unwrap();
+        assert_eq!(again.to_json(), back.to_json());
+    }
 
     /// A `.sedit` with no `ripple` field on any track (every project saved before this workstream)
     /// resolves through the same per-kind-index rule as a fresh construction, and its version is

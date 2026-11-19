@@ -332,6 +332,10 @@ impl App {
         if menu::check(ui, self.settings.snap, "Snapping", &menu::shortcut(ToggleSnap)).clicked() {
             out.push(ToggleSnap);
         }
+        let linked = menu::shortcut(ToggleLinkedSelection);
+        if menu::check(ui, self.settings.linked_selection, "Linked Selection", &linked).clicked() {
+            out.push(ToggleLinkedSelection);
+        }
         let gaps = menu::shortcut(ToggleAutoCloseGaps);
         if menu::check(ui, self.settings.auto_close_gaps, "Auto Close Gaps", &gaps).clicked() {
             out.push(ToggleAutoCloseGaps);

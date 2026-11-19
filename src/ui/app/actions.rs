@@ -250,6 +250,10 @@ impl App {
                 self.settings.snap = !self.settings.snap;
                 self.settings.save();
             }
+            ToggleLinkedSelection => {
+                self.settings.linked_selection = !self.settings.linked_selection;
+                self.settings.save();
+            }
             ToggleAutoCloseGaps => {
                 self.settings.auto_close_gaps = !self.settings.auto_close_gaps;
                 self.settings.save();
