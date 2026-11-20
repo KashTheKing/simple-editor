@@ -187,6 +187,7 @@ mod script_ctl; // ws:assistant-luau
 #[path = "windows.rs"]
 mod windows_dlg;
 mod project_match; // ws:project-color-fps
+mod footage_ctl; // ws:mixed-footage
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
 
@@ -558,6 +559,9 @@ pub struct App {
     // ---- ws:project-color-fps ----
     /// "Match project to this video?" waiting for an answer (`project_match`).
     match_offer: Option<project_match::MatchOffer>,
+    // ---- ws:mixed-footage ----
+    /// The proxy / S-Log / camera cards and their answers (`footage_ctl`).
+    footage: footage_ctl::State,
     // ---- ws:pro-schema ----
     /// The Assistant pane's prompt / pending requests / log (`ui::assistant_ui`).
     pub(crate) assistant: crate::ui::assistant_ui::AssistantState,
@@ -1174,6 +1178,7 @@ impl App {
             emulator: Default::default(), // ws:device-emulator
             emulator_tex: None,
             match_offer: None, // ws:project-color-fps
+            footage: Default::default(), // ws:mixed-footage
             tabs: Default::default(), // ws:timeline-tabs
             // ---- ws:pro-schema ----
             assistant: Default::default(),

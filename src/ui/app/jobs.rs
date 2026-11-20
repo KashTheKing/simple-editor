@@ -14,12 +14,14 @@ impl App {
             }
         });
         let mut any = false;
-        let mut first_video: Option<crate::model::Asset> = None;
+        let mut videos: Vec<crate::model::Asset> = Vec::new(); // ws:mixed-footage: the whole batch counts
         for p in landed {
             match p.asset {
                 Ok(a) => {
-                    if first_video.is_none() && a.kind == crate::model::ClipKind::Video {
-                        first_video = Some(a.clone());
+                    if a.kind == crate::model::ClipKind::Video {
+                        let mut v = a.clone();
+                        v.id = p.id;
+                        videos.push(v);
                     }
                     any |= crate::engine::import::adopt(&mut self.project, p.id, a);
                     self.settings.touch_recent(&p.path);
@@ -33,10 +35,9 @@ impl App {
         }
         if any {
             // ws:project-color-fps: a video whose format differs (or the first into an empty project)
-            // asks "Match project to this video?" - the first video of a batch decides
-            if let Some(a) = first_video {
-                self.offer_match(&a);
-            }
+            // asks "Match project to this video?" - ws:mixed-footage: every video of the batch counts
+            self.offer_match_batch(&videos);
+            self.footage_landed(&videos);
             self.settings.save();
             self.after_edit();
         }

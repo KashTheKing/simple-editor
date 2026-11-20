@@ -6,6 +6,7 @@
 pub mod d3d;
 pub mod bg;
 pub mod ffpipe;
+pub mod footage; // ws:mixed-footage
 pub mod mf;
 pub mod proxy;
 pub mod renames;

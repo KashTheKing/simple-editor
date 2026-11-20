@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Mixed footage
+- **Mixing cameras and frame rates just works**: importing a batch looks at every video, not only the first. A mix of formats gets one line, for example "Mixed footage: 1080p at 25 fps — your 50 fps clips can play as smooth half-speed slow motion", with the reasoning on hover; **Match** applies it as one undo step, and **1080p** / **4K** picks the delivery size. The frame rate is the one the others divide into evenly (25 for 25 + 50, 30 for 30 + 60, 24 for 24 + 48); a mix that doesn't divide (24 with 30, 25 with 29.97) gets the most common rate and a plain warning.
+- **Every-frame slow motion**: a clip whose rate is a whole multiple of the project's shows a rate badge (**50**) on the timeline; right-click ▸ Speed ▸ **Slow motion (every frame)**, or the Inspector's new **Preset** row (Normal, Every frame, Custom), plays each source frame once: 50p in 25p is exactly 50 %, no blending. At normal speed such clips show every Nth frame, never a blend.
+- **Frame rate** in the Inspector for odd rates (24p in 30p): Frame sampling (the default), Frame blending, or Optical flow, which renders in-between frames with ffmpeg in the background and swaps the clip onto the result (never on the playback path).
+- **Zoom** in the Inspector's Transform section: 100 % fits the whole frame, a mark shows 1:1, and **Max sharp** says how far a punch-in stays lossless (200 % for 4K in 1080p). A clip that has to be enlarged says **Upscaled**, with an **AI Upscale** button when the AI enhancer is installed.
+- **Heavy footage**: 4K long-GOP or 10-bit HEVC that would not get a proxy on its own asks "make proxies?" once; the answer is remembered.
+- **Two cameras**: the camera make and model are read from each file; clips from two or more cameras on the timeline offer **Match colours between cameras** (pick the reference camera, Colour Match does the rest, one undo step). S-Log3 footage offers the library's new S-Log3 to Rec.709 LUT on its sources.
+- New guide page: **Mixing cameras and frame rates**.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.
