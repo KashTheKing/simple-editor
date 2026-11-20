@@ -635,7 +635,7 @@ mod tests {
         let mut c = ctx(Permissions::default(), Permissions::default());
         c.dir = dir.clone();
         let mut p = Panel::new(c, dir.join("panels/hello.luau"));
-        let mut go = |p: &mut Panel| -> Vec<(String, Value)> {
+        let go = |p: &mut Panel| -> Vec<(String, Value)> {
             let mut made = Vec::new();
             {
                 let mut call = |n: &str, a: &Value| -> Result<Value, String> {
