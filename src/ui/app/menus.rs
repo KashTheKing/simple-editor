@@ -175,8 +175,6 @@ impl App {
             menu::button(ui, "Playback", |ui| menu::scroll(ui, |ui| self.playback_menu(ui, &mut out)));
             menu::button(ui, "Window", |ui| menu::scroll(ui, |ui| self.window_menu(ui)));
             menu::button(ui, "Help", |ui| self.help_menu(ui));
-            // ---- ws:home-page ----
-            home_ctl::button(self, ui);
             if !self.settings.one_window {
                 layout_ctl::page_switcher(self, ui);
             }

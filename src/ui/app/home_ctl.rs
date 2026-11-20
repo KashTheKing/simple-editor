@@ -164,18 +164,6 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
     true
 }
 
-/// The top bar's Home button: lit while Home is on screen.
-pub(super) fn button(app: &mut App, ui: &mut egui::Ui) {
-    if !app.settings.home_page {
-        return;
-    }
-    let open = showing(app);
-    let id = egui::Id::new("se-home-button");
-    if crate::ui::titlebar::panel_toggle_button(ui, &app.palette, id, tools::Glyph::Home, "Home", open).clicked() {
-        toggle(app);
-    }
-}
-
 /// Make the project a card asks for and go straight into the editor.
 fn create(app: &mut App, card: Card) {
     match card {
