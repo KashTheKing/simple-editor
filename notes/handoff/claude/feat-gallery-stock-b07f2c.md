@@ -56,5 +56,5 @@ made it compile and fixed what the tests and a review turned up.
 
 - Needs `curl.exe` (in Windows 10 1803+). Without it each search shows "curl.exe not found".
 - Thumbnails and previews use up to 3 worker threads; searches spawn one thread each. Nothing runs on the playback thread.
-- Size: about 2,000 lines of Rust and no new crates. The JSON fixtures are test-only (`include_str!` in `#[cfg(test)]`).
+- Size: about 2,800 lines of Rust (3,500 with tests) and no new crates. The JSON fixtures are test-only (`include_str!` in `#[cfg(test)]`).
 - `stock.add` only accepts ids from a search made in this app session (by design: no blind downloads).
