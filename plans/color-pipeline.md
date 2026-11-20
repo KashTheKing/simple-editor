@@ -103,8 +103,8 @@ renderer only; the CPU compositor (no GL, `--selftest`, GPU preview off) stays 8
 
 ### 5. UI and tools
 
-- Settings ▸ Performance ▸ **Processing mode**: a combo with the three labels; the tooltip explains each and
-  says the CPU compositor stays 8-bit.
+- Settings ▸ Performance ▸ **Processing mode**: three selectable buttons; each one's tooltip explains it, and the
+  row's tooltip says the CPU compositor stays 8-bit.
 - The perf HUD shows the mode (`8-bit` / `16f` / `16f lin`) next to the GPU timings.
 - MCP: `settings.set processing_mode` works through the generic settings tool; `editor.context` reports it.
 
@@ -118,6 +118,9 @@ renderer only; the CPU compositor (no GL, `--selftest`, GPU preview off) stays 8
   1080p60, and `Linear16` at 1080p60 bilinear. If a GPU fails that, the tooltip says so; the mode is the user's choice.
 
 ## Steps (one commit and push each)
+
+Status (2026-11-20): steps 1-4 are built. Step 5 is half built: `Frame::deep` and the RGBA16 upload exist, but no
+decoder produces deep frames yet. See `notes/handoff/claude-bold-galileo-67nrfo.md`.
 
 1. This document.
 2. `ProcessingMode` + the setting + the Settings row + `GpuRenderer::set_mode`, float targets (`Float16`).

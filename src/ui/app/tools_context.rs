@@ -229,7 +229,10 @@ fn view_of(app: &App) -> View<'_> {
 }
 
 pub(super) fn context_json(app: &App) -> Value {
-    context_of(&app.project, &view_of(app))
+    let mut c = context_of(&app.project, &view_of(app));
+    // ws:parity-color-pipeline: what the preview and GPU exports are composited with (null = CPU, 8-bit)
+    c["processing_mode"] = app.gpu.as_ref().map_or(Value::Null, |g| serde_json::to_value(g.mode()).unwrap_or_default());
+    c
 }
 
 /// `editor.context`: counts and lookups only (no project serialisation) - it runs at the start of
