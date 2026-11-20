@@ -300,6 +300,7 @@ impl App {
             overlay: None,
             fps: None,
             target_bytes: self.settings.export_target_bytes(),
+            alpha: false,
         }
     }
 

@@ -41,6 +41,10 @@
 ### Groups and audio sync
 - **Group clips** (Ctrl+G, Ctrl+Shift+G to ungroup; Clip menu and right-click): any clips on any tracks select, move, copy / paste and delete together, with a thin shared colour edge. Alt+click picks one clip. Saved with the project; MCP: `timeline.group`, `timeline.ungroup`.
 - **Clip ▸ Sync by Audio**: the selected clips slide so their sound lines up with the first one, in one undo step, with each offset and how well it matched; a weak match moves nothing. MCP: `timeline.sync_audio`.
+### Export
+- **Transparent background**: export with alpha as ProRes 4444, PNG or QuickTime Animation `.mov`, VP9 WebM, or PNG / TIFF sequences, with nothing drawn behind the clips (letterbox bars included) and clean soft edges. A new **Overlay (ProRes 4444)** preset card sets it up; other formats export on the background and say why.
+- **Image sequences**: PNG, JPEG or TIFF, one `<name>_00001.png` per frame in a folder, every frame or every Nth, whole timeline or In/Out, as an export job with progress and Cancel. Exporting again into the same folder replaces the old frames. MCP: `export.video` takes `alpha`, `format: "png_sequence" | "jpg_sequence" | "tiff_sequence"`, `every` and `in_out`.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

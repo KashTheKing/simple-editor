@@ -23,6 +23,8 @@ at the top of the panel, so you can change them without leaving the page.
    - **Project settings — Max quality**: exactly your project's size and frame rate, at the best quality.
    - **Fast preview**: the same size and frame rate, encoded as fast as your computer can (the graphics
      card's encoder when it has one), with a smaller file - for checking an edit.
+   - **Overlay (ProRes 4444)**: the project's size and frame rate as a `.mov` with a transparent background,
+     for titles, lower thirds and graphics you lay over footage in another editor.
    - The platform cards: **YouTube 1080p**, **YouTube 4K**, **Shorts / Reels / TikTok** (1080×1920) and
      **Instagram 1:1**. The picture is fitted inside that size with black bars, never stretched.
    - **My presets**: your own (see below).
@@ -48,7 +50,7 @@ limit; a line in the panel says how much is left out, with a button to include i
 Set things up the way you like, then click **+ Save current settings…** under *My presets*: give it a name and,
 if you like, a platform icon or a colour. It stores the size, format, quality, encoder, speed and audio
 layout. Right-click any card for **Duplicate**; right-click one of yours for **Rename / icon / colour…**,
-**Update with current settings** or **Delete**. The two built-in cards and the platform cards can't be
+**Update with current settings** or **Delete**. The built-in cards and the platform cards can't be
 changed - duplicate one to make your own version. **Quick Export** (<kbd>Ctrl+M</kbd>) re-runs whichever card
 you exported with last, yours included.
 
@@ -59,12 +61,36 @@ quality scale matches x264's, so a file is about a third of what 1.3 made.
 
 **Resolution** (project size, 720p, 1080p, 1440p, 4K or custom), the **Frame rate** (Project, 24, 25, 30, 50,
 60 or Custom; the timeline is resampled to it),
-the **Format** (MP4, MOV, MKV, WebM, AVI, GIF, or MP3 / WAV / M4A / FLAC for sound only) and the **Quality**,
+the **Format** (MP4, MOV, MKV, WebM, AVI, GIF, MP3 / WAV / M4A / FLAC for sound only, or a PNG, JPEG or TIFF
+sequence) and the **Quality**,
 with a warning when it is low. **Fast lossless cut** appears when the timeline is a plain cut of one video:
 instant, no quality loss, but cuts snap to the video's keyframes.
 
 An HDR project (**Color** HDR10 or HLG) exports 10-bit HEVC, or AV1 for WebM; GIF, AVI and 8-bit encoders are
 refused with a message (see [Project settings](project-settings.mdx#color-sdr-or-hdr)).
+
+### Transparent background
+
+Tick **Transparent background** (under the project settings, beside **Use project background**) to export
+with an alpha channel: nothing is drawn behind your clips, so wherever no clip covers the frame stays
+see-through, and soft edges keep their own colour. It works with:
+
+- **MOV**: ProRes 4444 by default; the **Codec** row also offers **PNG** and **Animation** (QuickTime
+  Animation), both lossless and larger.
+- **WebM**: VP9 with alpha, for the web.
+- **PNG** and **TIFF** sequences.
+
+Other formats grey the box out. If it is on anyway (a preset, or `export.video` over MCP), the export goes ahead
+on the background and the progress line says the format has no transparency.
+
+### Image sequences
+
+Pick **PNG sequence**, **JPEG sequence** or **TIFF sequence** as the **Format** to write one image per frame.
+**Export…** asks for a folder; the frames go into a folder named after the export inside it, as
+`<name>_00001.png`, `<name>_00002.png` and so on. **Frame step** keeps every Nth frame (2 = every second
+frame). **Export In/Out range only** (Advanced) limits it to your In and Out marks. A sequence runs as a job
+like any export, with progress and **Cancel**; a cancelled one leaves no frames behind. PNG and TIFF frames
+keep transparency when **Transparent background** is on.
 
 ### Audio
 

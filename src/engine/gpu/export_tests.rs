@@ -177,3 +177,36 @@ fn bench_vertical_clip_plays_without_drops() {
     );
     assert_eq!(dropped, 0, "the exported Short alone drops frames");
 }
+
+/// ws:gap-alpha-export: a transparent export frame on the real driver, read back as RGBA: clear
+/// corners, an opaque shape, soft edges that keep their colour (straight alpha, no dark fringe) - and
+/// the CPU compositor draws the same frame.
+#[test]
+fn a_transparent_export_frame_keeps_alpha_on_the_gpu() {
+    let Some(gl) = gl() else {
+        eprintln!("SKIPPED: no OpenGL driver for a hidden WGL context");
+        return;
+    };
+    let mut r = GpuRenderer::new(Arc::new(gl)).expect("renderer");
+    let mut p = crate::engine::export::tests::shape_over_nothing();
+    p.preview_bg = crate::model::BackgroundMode::Custom([0, 0, 0, 0]);
+    let (w, h) = (p.width, p.height);
+    let mut pool = DecoderPool::new(Backend::Ffmpeg);
+    let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());
+    let set =
+        crate::playback::decode_layers(&p, 0.5, w, h, &mut pool, &mut Vec::new(), &mut text, &mut shapes, &mut comp);
+    // the export sends the clear background as an override: the live project keeps its own
+    p.preview_bg = crate::model::BackgroundMode::Black;
+    r.bg_override = Some(crate::model::BackgroundMode::Custom([0, 0, 0, 0]));
+    let mut gpu = Frame::default();
+    assert!(r.render_export_sync(&p, 0.5, w, h, &set, false, &mut gpu));
+    crate::engine::export::tests::assert_overlay(&gpu.rgba, "gpu");
+
+    p.preview_bg = crate::model::BackgroundMode::Custom([0, 0, 0, 0]);
+    let mut cpu = Frame::default();
+    comp.render(&p, 0.5, w, h, &mut pool, &mut text, &mut cpu);
+    crate::engine::export::tests::assert_overlay(&cpu.rgba, "cpu");
+    let alpha = |f: &Frame| f.rgba.chunks_exact(4).map(|p| p[3] as i32).collect::<Vec<_>>();
+    let worst = alpha(&gpu).iter().zip(alpha(&cpu)).map(|(x, y)| (x - y).abs()).max().unwrap_or(0);
+    assert!(worst <= 16, "gpu and cpu coverage differ by {worst}");
+}

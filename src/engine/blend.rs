@@ -65,8 +65,9 @@ fn div255(x: u32) -> u32 {
     (x + 128 + ((x + 128) >> 8)) >> 8
 }
 
-/// Composite one row of straight-alpha RGBA pixels (`src`) onto one row of opaque canvas pixels (`dst`).
-/// Both slices are `4 * n` bytes; `opacity` is 0..1. Canvas alpha stays 255.
+/// Composite one row of straight-alpha RGBA pixels (`src`) onto one row of canvas pixels (`dst`).
+/// Both slices are `4 * n` bytes; `opacity` is 0..1. An opaque canvas stays opaque; a see-through one
+/// (transparent export) gets a proper straight-alpha "over" (`over_clear`).
 pub fn composite_row(dst: &mut [u8], src: &[u8], mode: BlendMode, opacity: f32) {
     let op = (opacity.clamp(0.0, 1.0) * 255.0 + 0.5) as u32;
     if op == 0 {
@@ -79,7 +80,9 @@ pub fn composite_row(dst: &mut [u8], src: &[u8], mode: BlendMode, opacity: f32) 
             if a == 0 {
                 continue;
             }
-            if a == 255 {
+            if d[3] < 255 {
+                over_clear(d, s, a as f32 / 255.0, mode);
+            } else if a == 255 {
                 d[..3].copy_from_slice(&s[..3]);
             } else {
                 let ia = 255 - a;
@@ -96,6 +99,10 @@ pub fn composite_row(dst: &mut [u8], src: &[u8], mode: BlendMode, opacity: f32) 
                 continue;
             }
             let a = s[3] as f32 / 255.0 * opf;
+            if d[3] < 255 {
+                over_clear(d, s, a, mode);
+                continue;
+            }
             for i in 0..3 {
                 let sv = s[i] as f32 / 255.0;
                 let dv = d[i] as f32 / 255.0;
@@ -105,6 +112,24 @@ pub fn composite_row(dst: &mut [u8], src: &[u8], mode: BlendMode, opacity: f32) 
             d[3] = 255;
         }
     }
+}
+
+/// ws:gap-alpha-export: straight-alpha "over" onto a canvas pixel that is not opaque (a transparent
+/// export's clear canvas) - the GPU composite's formula, so a soft edge keeps its own colour at partial
+/// alpha instead of being mixed toward the clear canvas's black (the dark fringe).
+fn over_clear(d: &mut [u8], s: &[u8], a: f32, mode: BlendMode) {
+    let da = d[3] as f32 / 255.0;
+    let ao = a + da * (1.0 - a);
+    if ao <= 0.0 {
+        return;
+    }
+    for i in 0..3 {
+        let (sv, dv) = (s[i] as f32 / 255.0, d[i] as f32 / 255.0);
+        let b = blend_channel(mode, sv, dv);
+        let c = ((1.0 - da) * a * sv + (1.0 - a) * da * dv + a * da * b) / ao;
+        d[i] = (c.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    }
+    d[3] = (ao * 255.0 + 0.5) as u8;
 }
 
 /// Composite `layer` (straight-alpha RGBA, same size as `dst`) onto `dst` (opaque canvas) with the
@@ -145,6 +170,29 @@ mod tests {
         assert!((blend_channel(BlendMode::Add, 0.7, 0.7) - 1.0).abs() < 1e-6);
         assert!((blend_channel(BlendMode::Difference, 0.2, 0.7) - 0.5).abs() < 1e-6);
         assert!((blend_channel(BlendMode::Normal, 0.3, 0.9) - 0.3).abs() < 1e-6);
+    }
+
+    /// ws:gap-alpha-export: a half-covered white edge over a clear canvas stays white at half alpha -
+    /// no dark fringe - and two layers stack to the right coverage.
+    #[test]
+    fn composite_onto_clear_canvas_has_no_dark_fringe() {
+        let mut dst = Frame::new(2, 1);
+        dst.fill([0, 0, 0, 0]);
+        let mut layer = Frame::new(2, 1);
+        layer.rgba.copy_from_slice(&[255, 255, 255, 128, 255, 0, 0, 0]);
+        composite_rect(&mut dst, &layer, BlendMode::Normal, 1.0, 0, 0, 2, 1);
+        assert_eq!(&dst.rgba[..4], &[255, 255, 255, 128]);
+        assert_eq!(&dst.rgba[4..], &[0, 0, 0, 0], "an untouched pixel stays clear");
+        // a second half-alpha white layer: 0.5 + 0.5 * 0.5 = 0.75 coverage, still white
+        composite_rect(&mut dst, &layer, BlendMode::Normal, 1.0, 0, 0, 1, 1);
+        assert_eq!(&dst.rgba[..4], &[255, 255, 255, 192]);
+        // a blend mode over a clear pixel draws the layer itself
+        let mut dst = Frame::new(1, 1);
+        dst.fill([0, 0, 0, 0]);
+        let mut red = Frame::new(1, 1);
+        red.fill([200, 10, 10, 255]);
+        composite_rect(&mut dst, &red, BlendMode::Multiply, 1.0, 0, 0, 1, 1);
+        assert_eq!(&dst.rgba[..], &[200, 10, 10, 255]);
     }
 
     #[test]

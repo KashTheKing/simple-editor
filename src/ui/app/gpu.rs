@@ -13,7 +13,9 @@ fn serve_export_request(
     req: crate::engine::export::GpuFrameRequest,
     inflight: &mut std::collections::VecDeque<ExportReply>,
 ) {
-    let crate::engine::export::GpuFrameRequest { layers, t, w, h, nv12, mut buf, reply } = req;
+    let crate::engine::export::GpuFrameRequest { layers, t, w, h, nv12, bg, mut buf, reply } = req;
+    // ws:gap-alpha-export: the canvas is drawn (and its readback queued) inside begin / sync below
+    g.bg_override = bg;
     // `inflight` mirrors the renderer's pending queue one for one
     if g.export_pending() >= crate::engine::gpu::READBACK_RING {
         if let Some((r, mut b)) = inflight.pop_front() {
@@ -33,6 +35,7 @@ fn serve_export_request(
         let ok = g.render_export_sync(project, t, w, h, &layers, nv12, &mut buf);
         let _ = reply.send(ok.then_some(buf));
     }
+    g.bg_override = None; // the preview draws on its own background again
 }
 
 impl App {

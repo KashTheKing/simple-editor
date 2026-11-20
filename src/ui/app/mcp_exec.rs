@@ -297,8 +297,23 @@ impl App {
                 return Err("an export is already running".into());
             }
             let out = PathBuf::from(req(arg_str(args, "path"), "path")?);
+            // ---- ws:gap-alpha-export: a sequence's path is its folder ----
+            let seq = match arg_str(args, "format") {
+                Some(f) => Some(export::sequence_ext(f).ok_or_else(|| {
+                    format!("format '{f}': png_sequence, jpg_sequence or tiff_sequence (a file's format comes from its extension)")
+                })?),
+                None => None,
+            };
+            let out_path = match seq {
+                Some(ext) => {
+                    let name = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "frames".into());
+                    out.join(format!("{name}_%05d.{ext}"))
+                }
+                None => out.clone(),
+            };
+            let every = arg_u64(args, "every").unwrap_or(1).max(1) as f64;
             let opts = ExportOptions {
-                out_path: out.clone(),
+                out_path,
                 encoder: arg_str(args, "encoder").unwrap_or(&self.settings.encoder).to_string(),
                 crf: arg_u64(args, "crf").map(|c| c as u32).unwrap_or(self.settings.crf),
                 preset: export::effective_preset(&self.settings.preset, &self.settings.export_speed),
@@ -317,8 +332,9 @@ impl App {
                 audio: export::AudioLayout::parse(arg_str(args, "audio").unwrap_or(&self.settings.export_audio)),
                 stem_by: export::StemBy::parse(arg_str(args, "stem_by").unwrap_or(&self.settings.export_stem_by)),
                 overlay: None,
-                fps: None,
+                fps: (every > 1.0).then(|| self.project.fps / every),
                 target_bytes: self.settings.export_target_bytes(),
+                alpha: arg_bool(args, "alpha").unwrap_or(false),
             };
             let mut project = self.export_project();
             // MCP exports have no background opt-in either - "use_project_bg": true opts in per call
@@ -326,6 +342,7 @@ impl App {
                 project.preview_bg = crate::model::BackgroundMode::Black;
             }
             let mut opts = opts;
+            opts.range = crate::ui::export_ui::export_range(&project, arg_bool(args, "in_out").unwrap_or(false));
             // ws:max-duration: stop at the timeline's Max length unless asked for the rest
             if !arg_bool(args, "overflow").unwrap_or(false) {
                 opts.range = project.limit_range(opts.range);
