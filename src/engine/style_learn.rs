@@ -2,8 +2,10 @@
 //! "Learn this style": measure a reference video and write a draft Editing Style (`engine::styles`).
 //!
 //! Every number comes from our own analysis of the file, opened read-only:
-//! - shots: `analysis::scene_cuts` (ffmpeg scene score) for hard cuts, plus dissolves found in a 10 fps,
-//!   64x36 picture stream (a frame that is the average of the frames either side) and dips to black;
+//! - shots: ffmpeg's scene score for hard cuts (a weak score is kept only when the small frames show a clean
+//!   step, so a cut between two similar colours is not lost and a camera move is not taken), plus dissolves
+//!   found in a 10 fps, 64x36 picture stream (a frame that is the average of the frames either side) and
+//!   dips to black;
 //! - pacing: shot lengths, their average / median, and the average per quarter;
 //! - cut on beat: onsets of the sound (`analysis::onsets` over 100-per-second peaks) within two frames
 //!   of a cut, counted only when the sound has a steady beat (`analysis::bpm`);
@@ -31,6 +33,9 @@ const W: usize = 64;
 const H: usize = 36;
 /// ffmpeg scene score above which a frame starts a new shot.
 pub const SCENE_THR: f32 = 0.3;
+/// Scores from here up to `SCENE_THR` are cut candidates that the small frames must confirm (`confirm_cuts`):
+/// yellow to white scores about 0.25, so the threshold alone misses cuts between similar colours.
+pub const SCENE_WEAK: f32 = 0.12;
 /// Mean luma under which a frame counts as black (0..1).
 const BLACK: f32 = 0.06;
 
@@ -193,15 +198,18 @@ pub fn colour_of(rgb: &[u8]) -> Colour {
     let (mut sum, mut sq, mut sat, mut warm) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
     for px in rgb.chunks_exact(3) {
         let [r, g, b] = [px[0] as f32 / 255.0, px[1] as f32 / 255.0, px[2] as f32 / 255.0];
-        let y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        sum += y;
-        sq += y * y;
+        sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
         let (mx, mn) = (r.max(g).max(b), r.min(g).min(b));
         sat += if mx > 0.0 { (mx - mn) / mx } else { 0.0 };
         warm += r - b;
     }
     let luma = sum / n;
-    Colour { luma, contrast: (sq / n - luma * luma).max(0.0).sqrt(), saturation: sat / n, warmth: warm / n }
+    // the spread from the mean in a second pass: E[y^2] - E[y]^2 cancels badly in f32 (a flat frame read 1e-3)
+    for px in rgb.chunks_exact(3) {
+        let y = (0.2126 * px[0] as f32 + 0.7152 * px[1] as f32 + 0.0722 * px[2] as f32) / 255.0 - luma;
+        sq += y * y;
+    }
+    Colour { luma, contrast: (sq / n).sqrt(), saturation: sat / n, warmth: warm / n }
 }
 
 fn avg_colour(cs: &[Colour]) -> Colour {
@@ -244,7 +252,16 @@ pub fn dissolves(frames: &[Vec<u8>], fps: f64, cuts: &[f64]) -> Vec<(f64, f64)> 
                 diff(&frames[k], &blend) < span * 0.18
             }) && (i..=b).all(|k| diff(&frames[k - 1], &frames[k]) < span * 0.7);
             if ok {
-                let (t0, t1) = (a as f64 / fps, b as f64 / fps);
+                // the longest-first search takes in a held frame at either end (a hold is close enough to
+                // the blend): trim frames that barely change from the run's ends, so the length is the mix
+                let (mut a2, mut b2) = (a, b);
+                while a2 + 1 < b2 && diff(&frames[a2], &frames[a2 + 1]) < span * 0.05 {
+                    a2 += 1;
+                }
+                while b2 > a2 + 1 && diff(&frames[b2 - 1], &frames[b2]) < span * 0.05 {
+                    b2 -= 1;
+                }
+                let (t0, t1) = (a2 as f64 / fps, b2 as f64 / fps);
                 if !cuts.iter().any(|&c| c > t0 && c < t1) {
                     found = Some(((t0 + t1) / 2.0, t1 - t0, b));
                 }
@@ -277,6 +294,53 @@ pub fn classify_cut(t: f64, lumas: &[f32], fps: f64) -> Boundary {
     } else {
         Boundary { t, join: Join::Cut, dur: 0.0 }
     }
+}
+
+/// `(time, score)` pairs from ffmpeg's `select=…,metadata=print:key=lavfi.scene_score` log: a `pts_time:` line,
+/// then its `lavfi.scene_score=` line. The first frame (nothing before it to compare) is dropped.
+pub fn parse_scene_scores(stderr: &str) -> Vec<(f64, f32)> {
+    let mut out = Vec::new();
+    let mut t: Option<f64> = None;
+    for line in stderr.lines() {
+        if let Some(i) = line.find("pts_time:") {
+            let rest = &line[i + "pts_time:".len()..];
+            let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-')).unwrap_or(rest.len());
+            t = rest[..end].parse::<f64>().ok();
+        } else if let Some(i) = line.find("lavfi.scene_score=") {
+            let v = line[i + "lavfi.scene_score=".len()..].trim().parse::<f32>().ok();
+            if let (Some(t), Some(v)) = (t.take(), v) {
+                if t > 0.05 {
+                    out.push((t, v));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The hard cuts among scene-score candidates: a score of `SCENE_THR` or more is a cut; a weaker one is a
+/// cut only when the small frames (`frames` at `fps`) jump across it at least four times more than they
+/// move in the 0.3 s either side (a pan, a zoom or a dissolve moves about as much on every frame).
+pub fn confirm_cuts(scores: &[(f64, f32)], frames: &[Vec<u8>], fps: f64) -> Vec<f64> {
+    let n = frames.len();
+    let step_at = |k: usize| if k >= 1 && k < n { diff(&frames[k - 1], &frames[k]) } else { 0.0 };
+    scores
+        .iter()
+        .filter(|&&(t, s)| {
+            if s >= SCENE_THR {
+                return true;
+            }
+            if s < SCENE_WEAK || n < 3 {
+                return false;
+            }
+            // the 10 fps frame that shows the new shot first is k or k+1: take the bigger jump
+            let k = ((t * fps).floor() as usize).min(n - 1);
+            let (k, step) = [k, k + 1].into_iter().map(|k| (k, step_at(k))).fold((k, 0.0), |a, b| if b.1 > a.1 { b } else { a });
+            let motion = (k.saturating_sub(3)..k).chain(k + 1..(k + 4).min(n)).map(step_at).fold(0.0f32, f32::max);
+            step >= 0.04 && step >= motion * 4.0
+        })
+        .map(|&(t, _)| t)
+        .collect()
 }
 
 /// `I: -14.2 LUFS` from ffmpeg's ebur128 summary (the last one printed).
@@ -324,6 +388,19 @@ fn frames(path: &Path, prog: &Progress) -> Result<Vec<Vec<u8>>, String> {
     }
     let _ = child.wait();
     Ok(frames)
+}
+
+/// Scene-change candidates of `path` scored `SCENE_WEAK` or more (read-only).
+fn scene_scores(path: &Path) -> Result<Vec<(f64, f32)>, String> {
+    let filter = format!("select='gt(scene,{SCENE_WEAK})',metadata=print:key=lavfi.scene_score");
+    let out = crate::media::bg::command(&ffmpeg()?)
+        .args(["-nostdin", "-i"])
+        .arg(path)
+        .args(["-an", "-vf", &filter, "-f", "null", "-"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("ffmpeg: {e}"))?;
+    Ok(parse_scene_scores(&String::from_utf8_lossy(&out.stderr)))
 }
 
 /// Mono f32 samples at `rate` (empty when the file has no sound).
@@ -400,12 +477,13 @@ pub fn measure(path: &Path, speech: bool, prog: &Progress) -> Result<Measure, St
         ..Default::default()
     };
     prog.set(0.05, "Finding the cuts…");
-    let cuts = analysis::scene_cuts(path, SCENE_THR)?;
+    let scores = scene_scores(path)?;
     if prog.is_cancelled() {
         return Err(export::CANCELLED.into());
     }
     prog.set(0.25, "Reading the picture…");
     let frames = frames(path, prog)?;
+    let cuts = confirm_cuts(&scores, &frames, FPS);
     let colours: Vec<Colour> = frames.iter().map(|f| colour_of(f)).collect();
     let lumas: Vec<f32> = colours.iter().map(|c| c.luma).collect();
     let mut bounds: Vec<Boundary> = cuts.iter().map(|&t| classify_cut(t, &lumas, FPS)).collect();
@@ -777,6 +855,25 @@ mod tests {
         let pat = |off: usize| -> Vec<u8> { (0..W * H).flat_map(|i| if (i % W + off) % 16 < 8 { [250, 250, 250] } else { [5, 5, 5] }).collect() };
         let pan: Vec<Vec<u8>> = (0..20).map(|k| pat(k * 2)).collect();
         assert!(dissolves(&pan, 10.0, &[]).is_empty());
+    }
+
+    /// A cut between two similar colours scores under `SCENE_THR` (yellow to white: 0.25): the frames confirm
+    /// it. The same weak score over a pan is no cut; a strong score is always one; under `SCENE_WEAK`, never.
+    #[test]
+    fn weak_scene_scores_need_a_clean_step() {
+        let log = "[Parsed_metadata_1 @ 0x1] frame:0 pts:0 pts_time:0\n[Parsed_metadata_1 @ 0x1] lavfi.scene_score=1.000000\n\
+                   [Parsed_metadata_1 @ 0x1] frame:1 pts:46080 pts_time:3\n[Parsed_metadata_1 @ 0x1] lavfi.scene_score=0.400000\n\
+                   [Parsed_metadata_1 @ 0x1] frame:2 pts:92672 pts_time:6.03333\n[Parsed_metadata_1 @ 0x1] lavfi.scene_score=0.250000\n";
+        assert_eq!(parse_scene_scores(log), vec![(3.0, 0.4), (6.03333, 0.25)]);
+        let solid = |r: u8, g: u8, bl: u8| -> Vec<u8> { (0..W * H).flat_map(|_| [r, g, bl]).collect() };
+        let mut fr: Vec<Vec<u8>> = (0..10).map(|_| solid(255, 255, 0)).collect();
+        fr.extend((0..10).map(|_| solid(255, 255, 255)));
+        assert_eq!(confirm_cuts(&[(1.0, 0.25)], &fr, 10.0), vec![1.0]);
+        assert!(confirm_cuts(&[(1.0, 0.1)], &fr, 10.0).is_empty());
+        let pat = |off: usize| -> Vec<u8> { (0..W * H).flat_map(|i| if (i % W + off) % 16 < 8 { [250, 250, 250] } else { [5, 5, 5] }).collect() };
+        let pan: Vec<Vec<u8>> = (0..20).map(|k| pat(k * 2)).collect();
+        assert!(confirm_cuts(&[(1.0, 0.25)], &pan, 10.0).is_empty());
+        assert_eq!(confirm_cuts(&[(1.0, 0.5)], &pan, 10.0), vec![1.0]);
     }
 
     #[test]
