@@ -329,6 +329,13 @@ pub fn bisect(
         } else if fails((segs[mid].0, segs[hi - 1].1))? {
             lo = mid;
         } else {
+            // the failure needs both halves (e.g. a transition across the cut): trim each end while it still fails
+            while lo + 1 < hi && fails((segs[lo + 1].0, segs[hi - 1].1))? {
+                lo += 1;
+            }
+            while hi > lo + 1 && fails((segs[lo].0, segs[hi - 2].1))? {
+                hi -= 1;
+            }
             break;
         }
     }
