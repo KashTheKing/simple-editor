@@ -65,6 +65,11 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         ui.horizontal(denoise_row);
         ui.end_row();
 
+        // ---- ws:addon-faster-whisper ----
+        ui.label("Transcription");
+        changed |= transcription_row(ui, s);
+        ui.end_row();
+
         ui.label("Downloads folder");
         ui.horizontal(|ui| {
             changed |= ui
@@ -314,6 +319,62 @@ fn denoise_row(ui: &mut egui::Ui) {
             ui.colored_label(ui.visuals().error_fg_color, "Install failed").on_hover_text(e);
         }
     }
+}
+
+// ---- ws:addon-faster-whisper ----
+/// The Transcription engine (whisper.cpp built in, faster-whisper the add-on), faster-whisper's Precise
+/// word timing, and the add-on itself: Install with its size, the running install, or its size and Remove.
+fn transcription_row(ui: &mut egui::Ui, s: &mut Settings) -> bool {
+    use crate::engine::fast_whisper::{self, Engine};
+    let mut changed = false;
+    let installed = fast_whisper::available();
+    ui.vertical(|ui| {
+        ui.horizontal(|ui| {
+            let (resolved, _) = fast_whisper::resolve(None, &s.transcribe_engine, installed);
+            let mut pick = Engine::parse(&s.transcribe_engine).unwrap_or(resolved);
+            let before = pick;
+            egui::ComboBox::from_id_salt("settings_transcribe_engine").selected_text(pick.id()).show_ui(ui, |ui| {
+                for e in Engine::ALL {
+                    ui.selectable_value(&mut pick, e, e.id()).on_hover_text(e.tip());
+                }
+            });
+            if pick != before {
+                s.transcribe_engine = pick.id().to_string();
+                changed = true;
+            }
+            ui.add_enabled_ui(installed, |ui| {
+                changed |= ui
+                    .checkbox(&mut s.transcribe_align, "Precise word timing")
+                    .on_hover_text("faster-whisper: pins every word to the audio with a second model (English), so captions and word cuts land exactly on the speech")
+                    .changed();
+            });
+        });
+        ui.horizontal(|ui| {
+            if installed && fast_whisper::installing().is_none() {
+                let v = fast_whisper::version().map(|v| format!(" {v}")).unwrap_or_default();
+                ui.weak(format!("faster-whisper{v} installed, {:.0} MB", fast_whisper::disk_size() as f64 / 1e6));
+                let id = egui::Id::new("faster_whisper_remove_error");
+                if ui.button("Remove").on_hover_text("Removes the add-on and its models; transcripts already made stay").clicked() {
+                    let r = fast_whisper::uninstall().err();
+                    ui.data_mut(|d| d.insert_temp(id, r));
+                }
+                if let Some(e) = ui.data(|d| d.get_temp::<Option<String>>(id)).flatten() {
+                    ui.colored_label(ui.visuals().error_fg_color, e);
+                }
+            } else {
+                // the model Settings names (never `default_model()`: it reads settings.json, per frame here)
+                let models = &crate::engine::transcribe::MODELS;
+                let want = s.transcribe_model.trim();
+                let file = models
+                    .iter()
+                    .find(|(n, f, _)| !want.is_empty() && (*f == want || n.starts_with(want)))
+                    .unwrap_or(&models[1])
+                    .1;
+                crate::ui::subtitles_ui::addon_offer(ui, file);
+            }
+        });
+    });
+    changed
 }
 
 // ---- ws:neutral-web ----

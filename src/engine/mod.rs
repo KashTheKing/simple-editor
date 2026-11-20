@@ -45,6 +45,7 @@ pub mod html;
 pub mod blitz; // ws:html-layer: the fast renderer (se-html helper)
 pub mod enhance; // the AI enhancer add-on (Real-ESRGAN, downloaded on demand)
 pub mod deepfilter; // speech denoise add-on (DeepFilterNet CLI, downloaded on demand)
+pub mod fast_whisper; // ws:addon-faster-whisper: the faster-whisper transcription add-on
 pub mod html_lint;
 #[cfg(test)]
 mod blitz_tests;

@@ -13,6 +13,7 @@
 
 use super::feedback::{Toast, ToastKind};
 use super::*;
+use crate::engine::fast_whisper::{self, Engine};
 use crate::engine::tracking::TrackJob;
 use crate::engine::transcribe::{self, Options};
 use crate::engine::tts;
@@ -27,6 +28,8 @@ struct TranscribeRun {
     outer: Arc<Progress>,
     gen_cues: bool,
     label: String,
+    /// ws:addon-faster-whisper: why the engine asked for did not run (it was not installed).
+    note: Option<&'static str>,
 }
 
 /// `tracking.run`: `TrackJob` polled on a worker (see `App::start_tracking`); the points land in
@@ -63,18 +66,32 @@ pub(super) struct TranscriptState {
     /// Last finished whisper run per clip: None = ok, Some(error). What `transcribe.status` reports
     /// once a run has left `runs` (an `async:true` caller has no other way to see a failure).
     finished: Vec<(Id, Option<String>)>,
+    /// ws:addon-faster-whisper: what the last finished run per clip used (engine, words pinned, fallback).
+    run_info: Vec<(Id, Value)>,
 }
 
 /// `transcribe.status`: "running" (+ fraction/status), "done", "failed" (+ error) or "none".
 pub(super) fn status_json(app: &App, clip: Id) -> Value {
-    if let Some(r) = app.transcript.runs.iter().find(|r| r.clip == clip) {
-        return json!({"clip_id": clip, "state": "running", "fraction": r.job.progress.fraction(), "status": r.job.progress.status()});
+    let mut v = if let Some(r) = app.transcript.runs.iter().find(|r| r.clip == clip) {
+        json!({"clip_id": clip, "state": "running", "fraction": r.job.progress.fraction(), "status": r.job.progress.status(), "engine": r.job.engine.id(), "fallback": r.note})
+    } else {
+        match app.transcript.finished.iter().find(|f| f.0 == clip) {
+            Some((_, None)) => json!({"clip_id": clip, "state": "done"}),
+            Some((_, Some(e))) => json!({"clip_id": clip, "state": "failed", "error": e}),
+            None => json!({"clip_id": clip, "state": "none"}),
+        }
+    };
+    // ws:addon-faster-whisper: the last run's engine and the add-on itself
+    if v["state"] != "running" {
+        if let Some((_, info)) = app.transcript.run_info.iter().find(|f| f.0 == clip) {
+            v["run"] = info.clone();
+        }
     }
-    match app.transcript.finished.iter().find(|f| f.0 == clip) {
-        Some((_, None)) => json!({"clip_id": clip, "state": "done"}),
-        Some((_, Some(e))) => json!({"clip_id": clip, "state": "failed", "error": e}),
-        None => json!({"clip_id": clip, "state": "none"}),
-    }
+    let (engine, align, _) = app.pick_engine(None, None);
+    v["engine_default"] = json!(engine.id());
+    v["align_default"] = json!(align);
+    v["addon"] = fast_whisper::status_json();
+    v
 }
 
 fn record_finished(app: &mut App, clip: Id, err: Option<String>) {
@@ -120,7 +137,8 @@ fn progress_toast(app: &mut App, msg: impl Into<String>, p: &Arc<Progress>) {
 /// Transcribe `clip` now, or - with no model yet - offer the download first (a non-blocking confirm
 /// naming the exact size; the clip is transcribed as soon as the model lands). Never silently fetches.
 fn transcribe_or_offer(app: &mut App, clip: Id) {
-    if transcribe::exe().is_none() {
+    let (engine, _, _) = app.pick_engine(None, None);
+    if engine == Engine::WhisperCpp && transcribe::exe().is_none() {
         app.toast(transcribe::install_hint());
         return;
     }
@@ -129,7 +147,26 @@ fn transcribe_or_offer(app: &mut App, clip: Id) {
         return;
     }
     let (name, file, mb) = app.subtitles_ui.transcribe.model();
-    if !transcribe::have_model(file) {
+    // ws:addon-faster-whisper: faster-whisper has its own copy of each model
+    if engine == Engine::Faster && !fast_whisper::have_model(file) {
+        if app.transcript.download.as_ref().is_some_and(|(p, _)| !p.is_done()) {
+            app.toast("The faster-whisper model is still downloading - the clip is transcribed when it lands");
+            return;
+        }
+        let mb = fast_whisper::model_mb(file);
+        confirm::ask_app(
+            "Get captions",
+            format!(
+                "Transcribing needs the faster-whisper model {} - download {mb} MB once from huggingface.co into {}?\n\
+                 The clip is transcribed as soon as it lands.",
+                short_model(name),
+                transcribe::models_dir().display()
+            ),
+            move |app| app.transcript.download = Some((fast_whisper::download_model(file), Some(clip))),
+        );
+        return;
+    }
+    if engine == Engine::WhisperCpp && !transcribe::have_model(file) {
         if app.transcript.download.as_ref().is_some_and(|(p, _)| !p.is_done()) {
             app.toast("The whisper model is still downloading - the clip is transcribed when it lands");
             return;
@@ -146,7 +183,7 @@ fn transcribe_or_offer(app: &mut App, clip: Id) {
         );
         return;
     }
-    if let Err(e) = app.transcribe_clip(clip, None, None, true, false) {
+    if let Err(e) = app.transcribe_clip(clip, None, None, true, false, None, None) {
         app.toast(e);
     }
 }
@@ -301,8 +338,11 @@ impl App {
         language: Option<&str>,
         gen_cues: bool,
         islands: bool,
+        engine: Option<Engine>,
+        align: Option<bool>,
     ) -> Result<Arc<Progress>, String> {
-        if transcribe::exe().is_none() {
+        let (engine, align, note) = self.pick_engine(engine, align);
+        if engine == Engine::WhisperCpp && transcribe::exe().is_none() {
             return Err(transcribe::install_hint());
         }
         let t = transcribe::target_for(&self.project, clip)?;
@@ -317,7 +357,13 @@ impl App {
                 })?,
             None => self.subtitles_ui.transcribe.model().1,
         };
-        if !transcribe::have_model(file) {
+        if engine == Engine::Faster && !fast_whisper::have_model(file) {
+            return Err(format!(
+                "faster-whisper model {} is not downloaded (transcribe.install with engine=faster-whisper, or the Transcript pane's Get captions)",
+                fast_whisper::model_key(file)
+            ));
+        }
+        if engine == Engine::WhisperCpp && !transcribe::have_model(file) {
             return Err(format!("model {file} is not downloaded (transcribe.install, or Subtitles ▸ Get captions)"));
         }
         if self.transcript.runs.iter().any(|r| r.clip == clip) {
@@ -354,6 +400,8 @@ impl App {
             words: true,
             prompt: st.prompt.clone(),
             islands,
+            engine,
+            align,
         });
         let outer = Progress::new();
         let label = format!("Transcribing {}…", transcript_ui::clip_label(&self.project, clip));
@@ -364,8 +412,17 @@ impl App {
             outer: outer.clone(),
             gen_cues,
             label,
+            note,
         });
         Ok(outer)
+    }
+
+    /// ws:addon-faster-whisper: the engine and "Precise word timing" a run uses - `asked` / `align`
+    /// (tool arguments) over `Settings.transcribe_engine` / `transcribe_align`, faster-whisper falling
+    /// back to whisper.cpp when the add-on is not installed (the note says so).
+    pub(super) fn pick_engine(&self, asked: Option<Engine>, align: Option<bool>) -> (Engine, bool, Option<&'static str>) {
+        let (engine, note) = fast_whisper::resolve(asked, &self.settings.transcribe_engine, fast_whisper::available());
+        (engine, engine == Engine::Faster && align.unwrap_or(self.settings.transcribe_align), note)
     }
 
     /// `tracking.run`: NCC point-track `clip` on a worker (`TrackJob` polled there, its progress
@@ -428,6 +485,11 @@ impl App {
 }
 
 fn finish_transcribe(app: &mut App, run: TranscribeRun) {
+    // ws:addon-faster-whisper: what ran, for transcribe.status
+    let info = run.job.info();
+    let detail = json!({"engine": run.job.engine.id(), "aligned": info.aligned, "language": info.language, "device": info.device, "secs": (info.secs * 100.0).round() / 100.0, "fallback": run.note});
+    app.transcript.run_info.retain(|f| f.0 != run.clip);
+    app.transcript.run_info.push((run.clip, detail));
     if let Some(e) = run.job.progress.error() {
         app.push_toast(Toast::new(format!("Transcribe failed: {e}")).kind(ToastKind::Error));
         record_finished(app, run.clip, Some(e.clone()));
@@ -462,7 +524,12 @@ fn finish_transcribe(app: &mut App, run: TranscribeRun) {
     app.after_edit();
     let name = transcript_ui::clip_label(&app.project, run.clip);
     let cues = if generated.is_empty() { String::new() } else { format!(", {} caption(s)", generated.len()) };
-    app.push_toast(Toast::new(format!("Transcribed {name}: {} words{cues}", words.len())).kind(ToastKind::Success));
+    let how = match (run.job.engine, info.aligned) {
+        (Engine::Faster, 0) => " (faster-whisper)".to_string(),
+        (Engine::Faster, n) => format!(" (faster-whisper, {n} pinned to the audio)"),
+        (Engine::WhisperCpp, _) => String::new(),
+    };
+    app.push_toast(Toast::new(format!("Transcribed {name}: {} words{cues}{how}", words.len())).kind(ToastKind::Success));
     run.outer.finish(None);
 }
 
@@ -547,6 +614,27 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             st.fillers.clone_from(&app.settings.filler_words);
             st.filler_pad_ms = app.settings.filler_pad_ms;
         }
+    }
+    // ws:addon-faster-whisper: Settings.transcribe_engine / transcribe_align <-> the Transcribe section
+    {
+        let st = &mut app.subtitles_ui.transcribe;
+        let mut save = false;
+        if let Some(e) = st.engine_pick.take() {
+            app.settings.transcribe_engine = e.id().to_string();
+            save = true;
+        }
+        if let Some(a) = st.align_pick.take() {
+            app.settings.transcribe_align = a;
+            save = true;
+        }
+        if save {
+            app.settings.save();
+        }
+        let (engine, _, _) = app.pick_engine(None, None);
+        let st = &mut app.subtitles_ui.transcribe;
+        st.engine = engine;
+        st.engine_setting = Engine::parse(&app.settings.transcribe_engine);
+        st.align = app.settings.transcribe_align;
     }
     // the Transcript section's "Transcribe selected clip" and the Transcribe section's button
     let wants = [app.subtitles_ui.transcript.want_transcribe.take(), app.subtitles_ui.transcribe.want.take()];
@@ -641,6 +729,60 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- ws:addon-faster-whisper ----
+    fn scratch_app() -> App {
+        let scratch = std::env::temp_dir().join(format!("se-fw-ctl-test-{}", std::process::id()));
+        *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(scratch);
+        let app = App::build(&egui::Context::default(), None, None);
+        *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        app
+    }
+
+    /// The faster-whisper engine asked for (by the setting or a tool argument) without the add-on runs
+    /// whisper.cpp instead, says so, and never turns Precise word timing on for it; transcribe.status
+    /// always reports the add-on.
+    #[test]
+    fn faster_whisper_falls_back_to_whisper_cpp_when_not_installed() {
+        let mut app = scratch_app();
+        let installed = fast_whisper::available();
+        app.settings.transcribe_engine = "faster-whisper".into();
+        app.settings.transcribe_align = true;
+        let (engine, align, note) = app.pick_engine(None, None);
+        if installed {
+            assert_eq!((engine, align, note), (Engine::Faster, true, None));
+        } else {
+            assert_eq!((engine, align), (Engine::WhisperCpp, false));
+            assert!(note.is_some_and(|n| n.contains("whisper.cpp ran")), "{note:?}");
+        }
+        // a tool argument wins over the setting
+        let (engine, align, note) = app.pick_engine(Some(Engine::WhisperCpp), Some(true));
+        assert_eq!((engine, align, note), (Engine::WhisperCpp, false, None));
+        app.settings.transcribe_align = false;
+        if installed {
+            assert_eq!(app.pick_engine(None, None).1, false);
+            assert_eq!(app.pick_engine(None, Some(true)).1, true);
+        }
+        let v = status_json(&app, 12345);
+        assert_eq!(v["state"], "none");
+        assert_eq!(v["addon"]["name"], "faster-whisper");
+        assert_eq!(v["addon"]["installed"], installed);
+        assert_eq!(v["engine_default"], if installed { "faster-whisper" } else { "whisper.cpp" });
+    }
+
+    /// `transcribe.run` / `media.transcribe` refuse an engine they do not know, before anything starts.
+    #[test]
+    fn transcribe_tools_take_engine_and_align() {
+        let mut app = scratch_app();
+        for name in ["transcribe.run", "media.transcribe"] {
+            let def = super::super::tools_transcript::TOOLS.iter().find(|t| t.name == name).unwrap();
+            assert!(def.args.iter().any(|a| a.starts_with("engine:")) && def.args.iter().any(|a| a.starts_with("align:")), "{name}");
+        }
+        let clip = 1; // the engine is checked before the clip is looked up
+        let def = super::super::tools_transcript::TOOLS.iter().find(|t| t.name == "transcribe.run").unwrap();
+        let r = (def.run)(&mut app, &json!({"clip_id": clip, "engine": "nope"}));
+        assert!(r.is_err_and(|e| e.contains("unknown engine")));
+    }
 
     #[test]
     fn write_transcript_picks_the_format_by_extension_or_name() {

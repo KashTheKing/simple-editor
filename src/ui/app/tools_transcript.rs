@@ -9,6 +9,7 @@
 use super::tools_args::Args;
 use super::tools_helpers::*;
 use super::*;
+use crate::engine::fast_whisper::{self, Engine};
 use crate::engine::transcribe;
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 use crate::model::ops::subtitles::transcript_hits;
@@ -134,12 +135,22 @@ fn anim_from(kind: &str, color: Option<[u8; 4]>) -> Result<SubtitleAnim, String>
 /// transcribe.status.
 fn transcribe_job(app: &mut App, clip: Id, a: &Args, gen_cues: bool) -> Result<ToolOutcome, String> {
     let islands = a.bool("islands").unwrap_or(false);
-    let prog = app.transcribe_clip(clip, a.str("model"), a.str("language"), gen_cues, islands)?;
+    // ws:addon-faster-whisper: engine / align over the Settings defaults
+    let engine = match a.str("engine").map(str::trim).filter(|e| !e.is_empty()) {
+        Some(e) => Some(Engine::parse(e).ok_or_else(|| format!("unknown engine '{e}' (whisper.cpp | faster-whisper)"))?),
+        None => None,
+    };
+    let align = a.bool("align");
+    let (used, aligned, note) = app.pick_engine(engine, align);
+    let prog = app.transcribe_clip(clip, a.str("model"), a.str("language"), gen_cues, islands, engine, align)?;
     if a.bool("async").unwrap_or(false) {
         return Ok(ToolOutcome::Done(json!({
             "ok": true,
             "started": true,
             "clip_id": clip,
+            "engine": used.id(),
+            "align": aligned,
+            "fallback": note,
             "poll": "transcribe.status {clip_id} until state is done or failed, then media.transcript",
         })));
     }
@@ -148,6 +159,9 @@ fn transcribe_job(app: &mut App, clip: Id, a: &Args, gen_cues: bool) -> Result<T
 
 const ISLANDS_ARG: &str = "islands:boolean:false:default false - split at long silences (autocut.detect's detector) and transcribe each speech island alone, so word times don't drift on long takes";
 const ASYNC_ARG: &str = "async:boolean:false:default false - reply at once with {started, clip_id}; poll transcribe.status";
+// ---- ws:addon-faster-whisper ----
+const ENGINE_ARG: &str = "engine:string:false:whisper.cpp | faster-whisper (the add-on; falls back to whisper.cpp when not installed). Default Settings.transcribe_engine (faster-whisper once installed)";
+const ALIGN_ARG: &str = "align:boolean:false:faster-whisper only - pin word times to the audio with the wav2vec2 aligner (English). Default Settings.transcribe_align (on)";
 
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
@@ -294,7 +308,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "transcribe.run",
-        desc: "Transcribe a clip's audio with whisper (background job; word timings always on). On completion the words are in Project.transcripts (media.transcript) and, with cues=true (default), captions are generated. islands=true transcribes each speech island separately (accurate cut points on long takes with pauses; needs the clip's waveform). async=true replies at once - poll transcribe.status {clip_id} until state is done/failed.",
+        desc: "Transcribe a clip's audio with whisper.cpp or the faster-whisper add-on (engine; align pins word times to the audio) (background job; word timings always on). On completion the words are in Project.transcripts (media.transcript) and, with cues=true (default), captions are generated. islands=true transcribes each speech island separately (accurate cut points on long takes with pauses; needs the clip's waveform). async=true replies at once - poll transcribe.status {clip_id} until state is done/failed.",
         args: &[
             "clip_id:integer:true:",
             "model:string:false:tiny.en|base.en|small.en|base (default: the Subtitles pane's pick)",
@@ -302,6 +316,8 @@ pub const TOOLS: &[ToolDef] = &[
             "cues:boolean:false:default true - also generate subtitle cues",
             ISLANDS_ARG,
             ASYNC_ARG,
+            ENGINE_ARG,
+            ALIGN_ARG,
         ],
         kind: ToolKind::Job,
         run: |app, args| {
@@ -313,7 +329,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "transcribe.status",
-        desc: "State of the clip's latest whisper run (for transcribe.run / media.transcribe with async=true): {state: running (+fraction, status) | done | failed (+error) | none}. When done, read the words with media.transcript.",
+        desc: "State of the clip's latest whisper run (for transcribe.run / media.transcribe with async=true): {state: running (+fraction, status, engine) | done | failed (+error) | none, run: {engine, aligned, secs, fallback} of the last finished run, engine_default, align_default, addon: the faster-whisper add-on {installed, version, aligner, models, installing, disk_mb}}. When done, read the words with media.transcript.",
         args: &["clip_id:integer:true:"],
         kind: ToolKind::Read,
         run: |app, args| {
@@ -323,8 +339,12 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "transcribe.install",
-        desc: "Download a whisper model into the cache (job; 75–466 MB, see the model names). Already downloaded = done at once.",
-        args: &["model:string:false:tiny.en|base.en|small.en|base, default Settings.transcribe_model"],
+        desc: "Download a whisper model into the cache (job; 75–466 MB, see the model names). Already downloaded = done at once. engine=faster-whisper installs the faster-whisper add-on first when it is missing (about 445 MB with the aligner, plus the model) and downloads its copy of the model; remove=true (with engine=faster-whisper) uninstalls the add-on and its models.",
+        args: &[
+            "model:string:false:tiny.en|base.en|small.en|base, default Settings.transcribe_model",
+            "engine:string:false:whisper.cpp (default) | faster-whisper",
+            "remove:boolean:false:with engine=faster-whisper: remove the add-on",
+        ],
         kind: ToolKind::Job,
         run: |app, args| {
             let a = Args(args);
@@ -335,6 +355,18 @@ pub const TOOLS: &[ToolDef] = &[
                     .ok_or_else(|| format!("unknown model '{m}'"))?,
                 None => app.subtitles_ui.transcribe.model(),
             };
+            // ws:addon-faster-whisper
+            if a.str("engine").and_then(Engine::parse) == Some(Engine::Faster) {
+                if a.bool("remove").unwrap_or(false) {
+                    fast_whisper::uninstall()?;
+                    return Ok(ToolOutcome::Done(json!({"ok": true, "addon": fast_whisper::status_json()})));
+                }
+                let dir = fast_whisper::model_dir(fast_whisper::model_key(file));
+                if !fast_whisper::available() {
+                    return Ok(ToolOutcome::Job(fast_whisper::start_install(file), dir));
+                }
+                return Ok(ToolOutcome::Job(fast_whisper::download_model(file), dir));
+            }
             Ok(ToolOutcome::Job(transcribe::download_model(file), transcribe::model_path(file)))
         },
     },
@@ -409,6 +441,8 @@ pub const TOOLS: &[ToolDef] = &[
             "model:string:false:tiny.en|base.en|small.en|base",
             ISLANDS_ARG,
             ASYNC_ARG,
+            ENGINE_ARG,
+            ALIGN_ARG,
         ],
         kind: ToolKind::Job,
         run: |app, args| {

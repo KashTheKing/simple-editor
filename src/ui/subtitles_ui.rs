@@ -36,6 +36,7 @@
 //! size before any network call and never runs at startup.
 
 use crate::engine::export::Progress;
+use crate::engine::fast_whisper::{self, Engine};
 use crate::engine::transcribe::{self, Segment};
 use crate::hotkeys::Action;
 use crate::model::{Id, Project};
@@ -90,6 +91,16 @@ pub struct TranscribeState {
     download: Option<Arc<Progress>>,
     /// whisper binary, looked up once (the lookup stats PATH) - "Re-check" after installing it.
     exe: Option<Option<PathBuf>>,
+    // ---- ws:addon-faster-whisper ----
+    /// The engine the next run uses and the Engine setting itself (None = not set: faster-whisper once
+    /// installed) - both kept in step with Settings by `transcript_ctl::tick` (this section has no Settings).
+    pub engine: Engine,
+    pub engine_setting: Option<Engine>,
+    /// Settings.transcribe_align, mirrored the same way.
+    pub align: bool,
+    /// The user changed the engine / Precise word timing here: `tick` writes it to Settings.
+    pub engine_pick: Option<Engine>,
+    pub align_pick: Option<bool>,
 }
 
 impl Default for TranscribeState {
@@ -115,6 +126,11 @@ impl Default for TranscribeState {
             marks: Vec::new(),
             download: None,
             exe: None,
+            engine: Engine::WhisperCpp,
+            engine_setting: None,
+            align: true,
+            engine_pick: None,
+            align_pick: None,
         }
     }
 }
@@ -759,6 +775,71 @@ fn generate(st: &mut TranscribeState, project: &mut Project) -> String {
     format!("{} cues from {} segments", st.generated.len(), st.segments.len())
 }
 
+// ---- ws:addon-faster-whisper ----
+/// The "Engine" row (whisper.cpp / faster-whisper) and, under it, faster-whisper's Install offer while it
+/// is not installed, or its "Precise word timing" toggle once it is. `file` = the picked model, which an
+/// install fetches too.
+fn engine_rows(ui: &mut egui::Ui, st: &mut TranscribeState, file: &str) {
+    let shown = st.engine_setting.unwrap_or(st.engine);
+    ui.horizontal(|ui| {
+        ui.label("Engine");
+        let mut pick = shown;
+        egui::ComboBox::from_id_salt("transcribe_engine").selected_text(pick.id()).show_ui(ui, |ui| {
+            for e in Engine::ALL {
+                ui.selectable_value(&mut pick, e, e.id()).on_hover_text(e.tip());
+            }
+        });
+        if pick != shown {
+            st.engine_pick = Some(pick);
+            st.engine_setting = Some(pick);
+        }
+        if fast_whisper::available() && st.engine == Engine::Faster {
+            let mut a = st.align;
+            if ui
+                .checkbox(&mut a, "Precise word timing")
+                .on_hover_text("Pins every word to the audio with a second model (English), so captions and word cuts land exactly on the speech")
+                .changed()
+            {
+                st.align = a;
+                st.align_pick = Some(a);
+            }
+        }
+    });
+    if !fast_whisper::available() {
+        addon_offer(ui, file);
+    }
+}
+
+/// faster-whisper's Install button with its size, the running install's progress (and Cancel), or why
+/// the last try failed. Shared by the Transcript pane and Settings ▸ General.
+pub fn addon_offer(ui: &mut egui::Ui, file: &str) {
+    ui.horizontal_wrapped(|ui| {
+        if let Some(p) = fast_whisper::installing() {
+            ui.add(egui::ProgressBar::new(p.fraction()).desired_width(180.0).text(p.status()));
+            if ui.small_button("Cancel").clicked() {
+                p.cancel.store(true, Ordering::SeqCst);
+            }
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
+            return;
+        }
+        let mb = fast_whisper::install_mb(file);
+        if glyph_text_button(ui, Glyph::Mic, "Install faster-whisper")
+            .on_hover_text(format!(
+                "Faster transcription, with each word pinned to the audio so captions land on the speech. \
+                 Downloads about {mb} MB once (Python, faster-whisper, the aligner and the picked model) into {}.",
+                fast_whisper::dir().display()
+            ))
+            .clicked()
+        {
+            fast_whisper::start_install(file);
+        }
+        match fast_whisper::install_error() {
+            Some(e) => ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}")),
+            None => ui.weak(format!("{mb} MB")),
+        };
+    });
+}
+
 /// The "Transcribe" section: model + download, the run, and the double-take list.
 fn transcribe_section(
     ui: &mut egui::Ui,
@@ -770,8 +851,13 @@ fn transcribe_section(
     resp: &mut SubtitlesResponse,
 ) {
     let (name, file, mb) = transcribe::MODELS[st.model.min(transcribe::MODELS.len() - 1)];
-    let have = transcribe::have_model(file);
-    let exe = st.exe.get_or_insert_with(transcribe::exe).clone();
+    // ws:addon-faster-whisper: the engine row (and the add-on's offer) first; faster-whisper keeps its
+    // own copy of each model and needs no whisper.cpp exe
+    engine_rows(ui, st, file);
+    let fast = st.engine == Engine::Faster;
+    let have = if fast { fast_whisper::have_model(file) } else { transcribe::have_model(file) };
+    let mb = if fast { fast_whisper::model_mb(file) } else { mb };
+    let exe = if fast { Some(PathBuf::new()) } else { st.exe.get_or_insert_with(transcribe::exe).clone() };
     let warn = ui.visuals().warn_fg_color;
 
     let downloading = st.download.as_ref().is_some_and(|p| !p.is_done());
@@ -791,10 +877,11 @@ fn transcribe_section(
                     ui.colored_label(warn, e);
                 }
                 let short = name.split(" - ").next().unwrap_or(name);
+                let which = if fast { "faster-whisper" } else { "whisper" };
                 if glyph_text_button(
                     ui,
                     Glyph::Subtitles,
-                    &format!("Get captions  (download whisper {short}, {mb} MB)"),
+                    &format!("Get captions  (download {which} {short}, {mb} MB)"),
                 )
                 .on_hover_text(format!(
                     "Downloads the {mb} MB model once, from huggingface.co into {}. Nothing else is fetched.",
@@ -802,7 +889,8 @@ fn transcribe_section(
                 ))
                 .clicked()
                 {
-                    st.download = Some(transcribe::download_model(file));
+                    st.download =
+                        Some(if fast { fast_whisper::download_model(file) } else { transcribe::download_model(file) });
                 }
             }
         }

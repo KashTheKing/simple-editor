@@ -39,6 +39,30 @@ runs on your own PC.
 You can also right-click a clip ▸ **Transcript ▸ Transcribe Selected Clip**, or use **Timeline ▸ Auto ▸
 Transcribe Selected Clip**.
 
+### faster-whisper: word times on the spoken words
+
+whisper.cpp's word times can drift, most of all after a long pause, so a caption or a word cut can land
+a little before or after the word. The optional **faster-whisper** add-on fixes that, and transcribes
+faster too:
+
+- It runs [faster-whisper](https://github.com/SYSTRAN/faster-whisper), then **Precise word timing**
+  pins every word to the audio the way [WhisperX](https://github.com/m-bain/whisperX) does: a second
+  model (wav2vec2) listens for each letter, and the edges next to a pause snap to where the sound
+  starts and stops.
+- **Install** it from the Transcript panel (the offer under **Engine**) or Settings ▸ General ▸
+  **Transcription**. It is about 445 MB, downloaded once (Python, faster-whisper and the aligner), plus
+  your picked model (150 MB for `base.en`). You need neither Python nor whisper.cpp for it. **Remove** in the same Settings row
+  frees the space.
+- **Engine** picks whisper.cpp or faster-whisper. Once the add-on is installed it is the default, with
+  Precise word timing on. Without the add-on, whisper.cpp runs.
+- Precise word timing works for English. Other languages keep faster-whisper's own word times, which
+  are still close.
+- Captions, Cut words, Remove fillers and subtitle exports all read the new times. Nothing else changes.
+
+Every file comes from python.org, PyPI and Hugging Face, pinned by size and checksum, and every one
+has a permissive licence: CPython (PSF), faster-whisper, CTranslate2 and onnxruntime (MIT), NumPy
+(BSD), tokenizers (Apache-2.0), the Whisper models (MIT) and wav2vec2-base-960h (Apache-2.0).
+
 The options set how lines are broken: **Line length**, **Lines per cue**, **Min duration**, **Pause
 split**, **Max words** and so on. Changed your mind? **Regenerate cues** rebuilds the subtitles from the
 same transcription without running it again. The transcription also finds **double takes** (a sentence

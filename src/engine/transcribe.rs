@@ -199,6 +199,11 @@ pub struct Options {
     /// and transcribed alone, so `-ml 1` word timings cannot drift across long pauses. Empty = one run
     /// over the whole range, as before.
     pub islands: Vec<(f64, f64)>,
+    // ---- ws:addon-faster-whisper ----
+    /// Which program transcribes (`fast_whisper::resolve` picked it; whisper.cpp needs nothing installed).
+    pub engine: crate::engine::fast_whisper::Engine,
+    /// faster-whisper only: pin the word times to the audio with the aligner.
+    pub align: bool,
 }
 
 /// Silences shorter than this (seconds) do not split an island - whisper keeps time fine across them,
@@ -239,23 +244,34 @@ fn temp_wav() -> PathBuf {
 pub struct Job {
     pub progress: Arc<Progress>,
     out: Arc<Mutex<Vec<Segment>>>,
+    /// The engine that runs it, and (faster-whisper) what the run reported about itself.
+    pub engine: crate::engine::fast_whisper::Engine,
+    pub info: Arc<Mutex<crate::engine::fast_whisper::RunInfo>>,
 }
 
 impl Job {
     pub fn segments(&self) -> Vec<Segment> {
         self.out.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
+    pub fn info(&self) -> crate::engine::fast_whisper::RunInfo {
+        self.info.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
 }
 
 pub fn start(opts: Options) -> Job {
+    use crate::engine::fast_whisper::{self, Engine};
     let out: Arc<Mutex<Vec<Segment>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = out.clone();
-    let progress = export::spawn_job("transcribe", move |prog| run(&opts, prog, &sink));
-    Job { progress, out }
+    let info = Arc::new(Mutex::new(fast_whisper::RunInfo::default()));
+    let (sink, info2, engine) = (out.clone(), info.clone(), opts.engine);
+    let progress = export::spawn_job("transcribe", move |prog| match opts.engine {
+        Engine::Faster => fast_whisper::run(&opts, prog, &sink, &info2),
+        Engine::WhisperCpp => run(&opts, prog, &sink),
+    });
+    Job { progress, out, engine, info }
 }
 
 /// 16 kHz mono wav of `[start, start+dur)` source seconds, through the ffmpeg we already ship next to.
-fn extract_wav(path: &str, start: f64, dur: f64, prog: &Progress) -> Result<PathBuf, String> {
+pub(crate) fn extract_wav(path: &str, start: f64, dur: f64, prog: &Progress) -> Result<PathBuf, String> {
     let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     let wav = temp_wav();
     let mut child = crate::media::bg::command(&ffmpeg)
