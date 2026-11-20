@@ -176,6 +176,8 @@ pub struct LibraryResponse {
     pub convert: Vec<(Id, String)>,
     /// ws:parity-editing: Export Each As ▸ format - the assets, written to a folder the app asks for.
     pub batch_export: Option<(Vec<Id>, String)>,
+    /// ws:parity-editing: Make Montage from these assets (in Library order).
+    pub montage: Option<Vec<Id>>,
     /// Source paths whose proxy should be rebuilt (the app releases decoders, deletes, rescans).
     pub regen_proxy: Vec<String>,
     /// Per-source proxy choice from the Proxies menu: (asset id, None = auto / Some(on)).
@@ -3165,6 +3167,13 @@ impl Tree<'_, '_> {
                 }
             });
             // ---- ws:parity-editing ----
+            let r = menu::row(ui, None, "Make Montage", "").on_hover_text(
+                "The selected photos and clips end to end at the end of the timeline, with a pan-and-zoom on photos \
+                 and dissolves between them. A selected song plays underneath and the photos stretch to fit it.",
+            );
+            if r.clicked() {
+                self.resp.montage = Some(ids.clone());
+            }
             menu::sub(ui, None, "Export Each As", |ui| {
                 for t in crate::engine::convert::TARGETS {
                     let r = menu::row(ui, None, t, "")

@@ -37,3 +37,4 @@ mod templates;
 pub mod tracks;
 mod transitions;
 pub mod trim;
+pub mod montage; // ws:parity-editing: Make Montage
