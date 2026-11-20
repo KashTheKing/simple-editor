@@ -613,13 +613,13 @@ pub struct App {
 // ---- ws:forgiveness ----
 /// The on-disk cache directory's size - `settings_ui::performance` (a sibling module, not a descendant
 /// of `app`, so it can't reach `caches::cache_bytes` directly) reads this for its "Clear Caches" row.
+pub fn caches_bytes_for_ui() -> u64 {
+    caches::cache_bytes()
+}
+
 /// ws:addon-voice: Settings ▸ General's Install / Remove row for a voice add-on.
 pub fn speech_addon_row(ui: &mut egui::Ui, addon: crate::engine::tts_addon::Addon) {
     speech_ctl::addon_row(ui, addon)
-}
-
-pub fn caches_bytes_for_ui() -> u64 {
-    caches::cache_bytes()
 }
 
 /// Marker in the undo stack for "a pane was dragged somewhere else". The arrangement itself lives in

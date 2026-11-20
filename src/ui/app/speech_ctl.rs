@@ -22,6 +22,9 @@ pub(super) struct SpeechState {
     preview: Option<(Arc<Progress>, tts::ProbedWav)>,
     /// A voice being cloned: (job, name).
     cloning: Option<(Arc<Progress>, String)>,
+    /// Add-ons seen installing last frame: one that finishes becomes the engine when Windows was picked
+    /// (Kokoro is the default natural voice once it is there).
+    was_installing: [bool; 2],
 }
 
 /// Install rows for the Jobs pane.
@@ -147,7 +150,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             Err(e) => app.toast(e),
         }
     }
-    if r.clone {
+    if r.clone && app.speech.ui.consent {
+        app.speech.ui.consent = false;
         if let Some((src, start, _)) = source {
             let name = tts::voice_file_name(&app.speech.ui.clone_name);
             let n = name.clone();
@@ -235,6 +239,16 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             }
         }
     }
+    for (i, a) in Addon::ALL.into_iter().enumerate() {
+        let now = tts_addon::installing(a).is_some();
+        if std::mem::replace(&mut app.speech.was_installing[i], now) && !now && a.available() {
+            if let Some(e) = adopt_engine(app.settings.tts_engine, a) {
+                app.settings.tts_engine = e;
+                app.settings.save();
+            }
+            app.toast(format!("{} voices installed", Engine::ALL[i + 1].label()));
+        }
+    }
     let busy = app.speech.voices_rx.is_some()
         || app.speech.preview.is_some()
         || app.speech.cloning.is_some()
@@ -242,6 +256,13 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     if busy {
         ctx.request_repaint_after(Duration::from_millis(200));
     }
+}
+
+/// The engine to switch to once `installed` finishes installing: only away from Windows (a user who
+/// already picked an add-on keeps it).
+fn adopt_engine(current: Engine, installed: Addon) -> Option<Engine> {
+    let e = Engine::ALL.into_iter().find(|e| e.addon() == Some(installed))?;
+    (current == Engine::Windows).then_some(e)
 }
 
 /// Settings ▸ General: Install / Remove and the size of one add-on.
@@ -358,5 +379,12 @@ mod tests {
         assert!(engine_arg(&json!({"engine": "nope"})).is_err());
         assert_eq!(engine_arg(&json!({"engine": "Kokoro"})), Ok(Some(Engine::Kokoro)));
         assert_eq!(engine_arg(&json!({})), Ok(None));
+    }
+
+    #[test]
+    fn a_finished_install_becomes_the_engine_only_from_windows() {
+        assert_eq!(adopt_engine(Engine::Windows, Addon::Kokoro), Some(Engine::Kokoro));
+        assert_eq!(adopt_engine(Engine::Windows, Addon::Chatterbox), Some(Engine::Chatterbox));
+        assert_eq!(adopt_engine(Engine::Chatterbox, Addon::Kokoro), None, "an add-on the user picked stays");
     }
 }

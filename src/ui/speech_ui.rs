@@ -14,6 +14,8 @@ pub struct SpeechUi {
     pub script: String,
     /// Name for the next cloned voice.
     pub clone_name: String,
+    /// The consent box for the next clone (cleared after each clone).
+    pub consent: bool,
 }
 
 /// What the app knows that the panel shows.
@@ -162,9 +164,10 @@ pub fn show(ui: &mut egui::Ui, st: &mut SpeechUi, s: &mut Settings, view: &Speec
             ui.label("Clone");
             ui.horizontal(|ui| {
                 ui.add(TextEdit::singleline(&mut st.clone_name).desired_width(110.0).hint_text("Name"));
-                let can = view.clone_source.is_some() && !st.clone_name.trim().is_empty();
+                let can = view.clone_source.is_some() && !st.clone_name.trim().is_empty() && st.consent;
                 let b = ui.add_enabled(can, Button::new("Clone"));
                 let b = match &view.clone_source {
+                    Some(_) if !st.consent => b.on_disabled_hover_text("Tick the permission box first"),
                     Some(src) => b.on_hover_text(format!("Makes a voice from 5 to 15 s of {src}")),
                     None => b.on_disabled_hover_text("Select a clip of the voice in the Library or on the timeline, or record a take"),
                 };
@@ -174,7 +177,8 @@ pub fn show(ui: &mut egui::Ui, st: &mut SpeechUi, s: &mut Settings, view: &Speec
             });
             ui.end_row();
             ui.label("");
-            ui.weak("Only clone voices you have permission to use");
+            ui.checkbox(&mut st.consent, "I have permission to use this voice")
+                .on_hover_text("Only clone your own voice or a voice whose owner agreed to it");
             ui.end_row();
         }
     });
