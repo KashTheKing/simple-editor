@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **TikTok and Snapchat text**: Gallery ▸ Titles ▸ Social has TikTok Classic, Background (white, dark and colours, a box per line that hugs it), Semi-Transparent, Typewriter and Neon, and Snapchat Bar (full width at any aspect ratio, drags up and down), Big Text and Highlight, as native text clips with TikTok Sans and Inter built in. Text clips gain Box shape (Block / Lines / Bar) and Corner radius; Gallery ▸ Captions gains TikTok Background and Snapchat Bar.
+
 ## 1.4.0
 
 ### Media player

@@ -721,6 +721,7 @@ fn tab_cats(tab: GalleryTab, lib: Option<&LibView>, lib_tab: bool, now: f64) -> 
         _ if lib_tab => Vec::new(),
         GalleryTab::Effects => crate::ui::effects_ui::categories().into_iter().map(String::from).collect(),
         GalleryTab::Transitions => TR_CATS.iter().map(|s| s.to_string()).collect(),
+        GalleryTab::Titles => crate::engine::presets::TITLE_CATEGORIES.iter().map(|s| s.to_string()).collect(),
         _ => Vec::new(),
     };
     let mut extra: Vec<String> = Vec::new();
@@ -2041,7 +2042,11 @@ pub fn show(
                 };
                 let origin =
                     if tab == GalleryTab::Luts || is_mine(tab, &n, settings, now) { Src::Mine } else { Src::BuiltIn };
-                let (tags, created) = mine_meta(tab, &n, now);
+                let (mut tags, created) = mine_meta(tab, &n, now);
+                // ws:social-text: a built-in title's category (Basic / Social) is a tag the menu filters on
+                if tab == GalleryTab::Titles && origin == Src::BuiltIn {
+                    tags.push(crate::engine::presets::title_category(&n).to_string());
+                }
                 (n, short, origin, tags, created)
             })
             .filter(|(_, short, origin, tags, _)| {
@@ -2290,6 +2295,11 @@ pub(crate) fn template_field_widget(ui: &mut egui::Ui, field: &str, clip: &mut C
             "text.color" => {
                 if let Some(t) = clip.text.as_mut() {
                     changed |= ui.color_edit_button_srgba_unmultiplied(&mut t.color).changed();
+                }
+            }
+            "text.box_color" => {
+                if let Some(t) = clip.text.as_mut() {
+                    changed |= ui.color_edit_button_srgba_unmultiplied(&mut t.box_color).changed();
                 }
             }
             "text.size" => {
@@ -3424,7 +3434,8 @@ mod tests {
         let text_id = p.add_text_clip(0.0, 2.0);
         settings.templates.push(crate::engine::presets::capture_template("My Title", &p, &[text_id]));
         let names = card_names(GalleryTab::Titles, &settings);
-        assert_eq!(names.len(), 4 + 1, "4 builtins (ws:browser-layer added Browser Window) + the one saved text template");
+        let social = crate::engine::presets::social_title_names().len(); // ws:social-text
+        assert_eq!(names.len(), 4 + social + 1, "4 builtins (ws:browser-layer added Browser Window), the Social ones, + the one saved text template");
         assert!(names.contains(&"My Title".to_string()));
         assert!(names.contains(&"Lower Third".to_string()));
     }

@@ -1986,7 +1986,7 @@ fn layers_with(
         style.text = cue_text.into_owned();
         // ---- ws:text-titles ----: `t` here is decode_layers' own timeline time (subtitles have no
         // clip-local time of their own - see compose.rs's identical call for the same reasoning).
-        let img = text.with(|tx| tx.render(&style, w as f32 / project.width.max(1) as f32, t));
+        let img = text.with(|tx| tx.render_in(&style, w as f32 / project.width.max(1) as f32, t, w as f32));
         if img.width > 1 || img.height > 1 {
             set.layers.push((LayerSet::SUBTITLES, img));
         }
@@ -2261,7 +2261,10 @@ fn layer_for<'p>(
         }
         ClipKind::Text => {
             let Some(style) = &clip.text else { return };
-            let img = text.with(|tx| tx.render(style, sv, clip.local(t)));
+            let lt = clip.local(t);
+            // a caption bar spans the frame at the drawn (boosted) size: `sv / s` canvases wide
+            let fw = crate::engine::compose::text_frame_w(clip, lt, w as f32 * sv / s.max(1e-6));
+            let img = text.with(|tx| tx.render_in(style, sv, lt, fw));
             if img.width > 1 || img.height > 1 {
                 set.layers.push((clip.id, img));
             }

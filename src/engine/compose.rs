@@ -112,6 +112,18 @@ fn placement_w(pw: u32, clip: &Clip, t: f64, native: (u32, u32), cw: u32, ch: u3
     let k = clip.scale.at(lt) as f32;
     let kx = clip.scale_x.at(lt) as f32;
     let ky = clip.scale_y.at(lt) as f32;
+    if is_bar(clip) {
+        // a caption bar spans the frame: centred, never rotated; only its height moves
+        return Placement {
+            cx: cw as f32 / 2.0,
+            cy: ch as f32 / 2.0 + clip.y.at(lt) as f32 * s,
+            w: nw * fit * k * kx,
+            h: nh * fit * k * ky,
+            rot: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+    }
     Placement {
         cx: cw as f32 / 2.0 + clip.x.at(lt) as f32 * s,
         cy: ch as f32 / 2.0 + clip.y.at(lt) as f32 * s,
@@ -123,7 +135,27 @@ fn placement_w(pw: u32, clip: &Clip, t: f64, native: (u32, u32), cw: u32, ch: u3
     }
 }
 
-/// The size a layer is decoded at: the smallest of a few fixed fractions of the decoder's own
+/// A Text clip drawn as a full-width caption bar (`TextStyle::is_bar`).
+pub fn is_bar(clip: &Clip) -> bool {
+    clip.kind == ClipKind::Text && clip.text.as_ref().is_some_and(|s| s.is_bar())
+}
+
+/// The frame width, in the text bitmap's own px, that a caption bar must span on a `cw`-px-wide
+/// canvas: the canvas width undone by the clip's horizontal scale (the placement scales it back up),
+/// so the bar is exactly the frame's width whatever the aspect ratio or scale. 0 for other clips.
+pub fn text_frame_w(clip: &Clip, lt: f64, cw: f32) -> f32 {
+    if !is_bar(clip) {
+        return 0.0;
+    }
+    let k = (clip.scale.at(lt) * clip.scale_x.at(lt)) as f32;
+    if k.abs() > 1e-3 {
+        cw / k.abs()
+    } else {
+        cw
+    }
+}
+
+/// The size a layer is decoded at:the smallest of a few fixed fractions of the decoder's own
 /// size `src` that covers the `need`ed placement (all of `src` when nothing does) - halvings for a
 /// still, eighths for video. The renderer scales a layer to its quad whatever size the bitmap is,
 /// so it need not match the placement pixel for pixel, and must not: a keyframed scale (a pop-in,
@@ -314,7 +346,7 @@ impl Compositor {
             let s = w as f32 / project.width.max(1) as f32;
             // ---- ws:text-titles ----: t here is the top-level render() timeline time, not clip-local -
             // subtitles have no clip to be local to, and the burnt-in style has no reveal/wave UI anyway.
-            let img = text.render(&self.sub_style, s, t);
+            let img = text.render_in(&self.sub_style, s, t, w as f32);
             if img.width > 1 || img.height > 1 {
                 let sv = h as f32 / project.height.max(1) as f32;
                 let p = Placement {
@@ -636,7 +668,7 @@ impl Compositor {
             }
             ClipKind::Text => {
                 let Some(style) = &clip.text else { return };
-                let img = text.render(style, s, lt);
+                let img = text.render_in(style, s, lt, text_frame_w(clip, lt, w as f32));
                 let native = (img.width, img.height);
                 self.draw_bitmap(project, pw, clip, &img, native, t, w, h, out, extra, opacity);
             }

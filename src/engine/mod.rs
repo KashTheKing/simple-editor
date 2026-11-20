@@ -42,6 +42,8 @@ pub mod enhance; // the AI enhancer add-on (Real-ESRGAN, downloaded on demand)
 pub mod html_lint;
 #[cfg(test)]
 mod blitz_tests;
+#[cfg(test)]
+mod social_text_tests; // ws:social-text
 pub mod library;
 pub mod shaderlib;
 pub mod skills;
