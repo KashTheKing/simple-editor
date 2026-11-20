@@ -205,6 +205,7 @@ mod group_sync; // ws:gap-group-sync
 mod os_paste; // Ctrl+V of a screenshot / copied files
 mod export_fix; // ws:forum-export
 mod health_ctl; // ws:forum-preview
+mod reference_ctl; // feat/reference-clips: Find a Reference
 
 #[derive(Clone)]
 enum ExportKind {
@@ -312,6 +313,8 @@ pub struct App {
     url_dialog: Option<(String, bool)>,
     /// Running URL downloads - polled each frame, imported into the library when they finish.
     downloads: Vec<crate::media::ytdlp::Download>,
+    /// feat/reference-clips: the Find a Reference pane, its searches / imports and reference transcriptions.
+    references: reference_ctl::RefState,
     /// One receiver per import batch: ffprobe runs on a worker, `poll_probes` adopts the results.
     probes: Vec<Receiver<crate::engine::import::Probed>>,
     /// Panes drawn last frame (`pane_drawn`) and the ones drawn so far this frame. A pane's side
@@ -1092,6 +1095,7 @@ impl App {
             ytdlp_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             url_dialog: None,
             downloads: Vec::new(),
+            references: Default::default(), // feat/reference-clips
             probes: Vec::new(),
             panes_shown: Vec::new(),
             panes_drawing: Vec::new(),
@@ -2139,6 +2143,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     styles_ctl::TOOLS, // feat/styles-context
     // ---- ws:gallery-stock ----
     stock_ctl::TOOLS,
+    // ---- feat/reference-clips ----
+    reference_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2363,6 +2369,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     tools_zones::frame,
     // ---- ws:gallery-stock ----
     stock_ctl::frame,
+    // ---- feat/reference-clips ----
+    reference_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -2523,6 +2531,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     // ---- ws:zones-markers ----
     tools_zones::draw_inspector,
     styles_ctl::draw, // feat/styles-context
+    // ---- feat/reference-clips ----
+    reference_ctl::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

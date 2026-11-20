@@ -1,0 +1,53 @@
+---
+title: Find a Reference
+description: Find a film quote, reaction GIF or scene, import just the part you need, and keep its credits.
+---
+
+**Window ▸ Find a Reference** (or right-click the Library ▸ **Find a Reference**) opens a panel for the clips you
+quote, react with or point at in a video.
+
+## Search
+
+Type what you're looking for: a line someone said, a reaction ("facepalm"), or a scene. The buttons below open that
+search on **Yarn**, **PlayPhrase**, **Clip.cafe**, **Tenor**, **GIPHY** or **YouTube** in your browser. The best fit
+comes first: quote sites for a line, GIF sites for a reaction, YouTube for anything else. Hover a button to see what
+the site is good for.
+
+## GIPHY and Tenor in the app
+
+Pick **GIPHY** or **Tenor** and press **Search** (or Enter) to see results right in the panel. Click one to import it
+into the Library as an MP4. This needs your own free key: get one from the service (**Settings ▸ General ▸ Get a
+Key**) and paste it into **GIPHY key** or **Tenor key**. Only your search words and your key are sent, and only when
+you search.
+
+## Import a link, or just a part
+
+Paste a link and press **Import** (this needs yt-dlp, see **Settings ▸ General ▸ yt-dlp folder**). Tick **Just a
+part** and type a range like `1:23-1:45` to download only those seconds. A link that starts at a time (`?t=83`) fills
+the range in for you. The same **Just a part** option is on **Import URL**.
+
+## Your references
+
+Everything imported from this panel:
+
+- keeps where it came from (the page, the site, the title and the uploader),
+- gets a `reference` tag and appears in the Library's **References** smart bin,
+- is transcribed in the background (when whisper and a model are installed), so typing a quote in the Library's
+  search or in **Search by quote** here finds it. Turn this off with **Settings ▸ General ▸ Transcribe references**.
+
+**Copy Credits** copies one line per reference (title, site, uploader, the part used and the link), ready for a
+description or an end card.
+
+## Fair use
+
+The first import shows a short note: clips from films, shows and GIF sites belong to their owners, and short excerpts
+for commentary, criticism, review, parody or teaching can be fair use depending on how and where you publish. Keep
+clips short and credit them. Simple Editor only ever downloads the one link you chose: it never scrapes or
+bulk-downloads.
+
+## For the Assistant
+
+`references.suggest` finds matching references already in the project and the best search links,
+`references.search_links` gives (or opens) the search addresses, and `references.import_range` imports a link or a
+part of it (it asks you first, since it downloads). `references.list`, `references.set` and `references.credits` read
+and edit the records.

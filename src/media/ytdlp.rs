@@ -69,6 +69,9 @@ pub struct DownloadOptions {
     pub dir: PathBuf,
     /// Extract the audio only (needs ffmpeg, which yt-dlp is pointed at when we have it).
     pub audio_only: bool,
+    // ---- feat/reference-clips ----
+    /// "Just a part": only these source seconds (`--download-sections`, cut clean at the ends).
+    pub range: Option<(f64, f64)>,
 }
 
 /// A running download. `progress` drives the UI (and `progress.cancel` kills yt-dlp); `path()` is the
@@ -77,12 +80,30 @@ pub struct Download {
     pub progress: Arc<Progress>,
     pub url: String,
     path: Arc<Mutex<Option<PathBuf>>>,
+    // ---- feat/reference-clips ----
+    /// (title, uploader) yt-dlp reported, for a reference's credits.
+    meta: Arc<Mutex<Option<(String, String)>>>,
 }
 
 impl Download {
     pub fn path(&self) -> Option<PathBuf> {
         self.path.lock().ok().and_then(|p| p.clone())
     }
+    /// (title, uploader) of what was downloaded, once yt-dlp has printed them.
+    pub fn meta(&self) -> Option<(String, String)> {
+        self.meta.lock().ok().and_then(|m| m.clone())
+    }
+}
+
+/// The `--print` line carrying the title and uploader: `meta:<title>\t<uploader>`.
+const META_PRINT: &str = "after_move:meta:%(title)s\t%(uploader)s";
+
+/// A `meta:` line -> (title, uploader); "NA" (yt-dlp's missing field) becomes "".
+fn parse_meta(line: &str) -> Option<(String, String)> {
+    let rest = line.strip_prefix("meta:")?;
+    let (t, u) = rest.split_once('\t').unwrap_or((rest, ""));
+    let clean = |x: &str| if x.trim() == "NA" { String::new() } else { x.trim().to_string() };
+    Some((clean(t), clean(u)))
 }
 
 /// Percent from a `dl:` progress line ("dl:  45.2%" → 0.452). None for any other line.
@@ -115,11 +136,18 @@ pub fn start_download(opts: DownloadOptions) -> Download {
     let path: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
     let url = opts.url.clone();
     let out = path.clone();
-    let progress = export::spawn_job("ytdlp", move |prog| run(&opts, prog, &out));
-    Download { progress, url, path }
+    let meta: Arc<Mutex<Option<(String, String)>>> = Arc::new(Mutex::new(None));
+    let m = meta.clone();
+    let progress = export::spawn_job("ytdlp", move |prog| run(&opts, prog, &out, &m));
+    Download { progress, url, path, meta }
 }
 
-fn run(opts: &DownloadOptions, prog: &Progress, out: &Mutex<Option<PathBuf>>) -> Result<(), String> {
+fn run(
+    opts: &DownloadOptions,
+    prog: &Progress,
+    out: &Mutex<Option<PathBuf>>,
+    meta: &Mutex<Option<(String, String)>>,
+) -> Result<(), String> {
     let exe = exe().ok_or("yt-dlp.exe not found")?;
     if opts.url.trim().is_empty() {
         return Err("No URL".into());
@@ -135,9 +163,19 @@ fn run(opts: &DownloadOptions, prog: &Progress, out: &Mutex<Option<PathBuf>>) ->
         "--progress",             // --print implies --quiet; keep the progress lines
         "--no-warnings",
         "--progress-template", "dl:%(progress._percent_str)s",
+        "--print", META_PRINT,    // feat/reference-clips: before the path, so the path stays the last line
         "--print", "after_move:filepath",
-        "-o", "%(title).100B [%(id)s].%(ext)s",
     ]);
+    // a part gets its range in the name, so it never overwrites (or is mistaken for) the whole download
+    match opts.range {
+        Some((a, b)) => {
+            cmd.arg("-o").arg(format!("%(title).100B [%(id)s] {}-{}.%(ext)s", a.round() as u64, b.round() as u64));
+            cmd.args(crate::engine::references::ytdlp_section_args((a, b)));
+        }
+        None => {
+            cmd.args(["-o", "%(title).100B [%(id)s].%(ext)s"]);
+        }
+    }
     cmd.arg("-P").arg(&opts.dir);
     // let yt-dlp merge/extract with the ffmpeg we already located, even when it is not on PATH
     if let Some(dir) = ffpipe::ffmpeg_exe().and_then(|p| p.parent().map(PathBuf::from)) {
@@ -157,6 +195,10 @@ fn run(opts: &DownloadOptions, prog: &Progress, out: &Mutex<Option<PathBuf>>) ->
                 break; // wait_ffmpeg kills the child and reports CANCELLED
             }
             let line = line.trim().to_string();
+            if let Some(m) = parse_meta(&line) {
+                *meta.lock().unwrap_or_else(|e| e.into_inner()) = Some(m);
+                continue;
+            }
             match parse_percent(&line) {
                 Some(f) => prog.set(f, format!("Downloading… {:.0}%", f * 100.0)),
                 // any other line is the `--print` filepath (the last one wins: audio extraction
@@ -194,6 +236,13 @@ mod tests {
         // a printed path is not progress
         assert_eq!(parse_percent(r"C:\Users\me\Videos\clip [abc].mp4"), None);
         assert_eq!(parse_percent(""), None);
+    }
+
+    #[test]
+    fn meta_lines_parse() {
+        assert_eq!(parse_meta("meta:A Scene\tSome Channel"), Some(("A Scene".into(), "Some Channel".into())));
+        assert_eq!(parse_meta("meta:Clip\tNA"), Some(("Clip".into(), String::new())));
+        assert_eq!(parse_meta(r"C:\Videos\clip.mp4"), None);
     }
 
     #[test]
@@ -248,6 +297,7 @@ mod tests {
             url: format!("http://{addr}/test.mp4"),
             dir: dir.clone(),
             audio_only: false,
+            range: None,
         });
         let mut seen_progress = false;
         for _ in 0..600 {
@@ -295,7 +345,7 @@ mod tests {
         if exe().is_none() {
             return; // yt-dlp not installed on this machine: nothing to check
         }
-        let opts = DownloadOptions { url: "  ".into(), dir: std::env::temp_dir(), audio_only: false };
+        let opts = DownloadOptions { url: "  ".into(), dir: std::env::temp_dir(), audio_only: false, range: None };
         let d = start_download(opts);
         for _ in 0..200 {
             if d.progress.is_done() {

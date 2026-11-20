@@ -10,7 +10,7 @@ module.exports = {
       type: 'category',
       label: 'Editing',
       collapsed: false,
-      items: ['library', 'project-settings', 'mixing-cameras', 'screen-recording', 'viewer', 'social-guides', 'device-emulator', 'timeline', 'inspector', 'animator', 'effects', 'background-removal', 'masks', 'html-layers', 'chat-forum-threads', 'browser-layer', 'online-library', 'stock', 'my-gallery', 'templates'],
+      items: ['library', 'find-a-reference', 'project-settings', 'mixing-cameras', 'screen-recording', 'viewer', 'social-guides', 'device-emulator', 'timeline', 'inspector', 'animator', 'effects', 'background-removal', 'masks', 'html-layers', 'chat-forum-threads', 'browser-layer', 'online-library', 'stock', 'my-gallery', 'templates'],
     },
     {
       type: 'category',

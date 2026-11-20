@@ -81,6 +81,8 @@ impl Project {
             // ---- ws:zones-markers ----
             marker_categories: default_marker_categories(),
             zones: Vec::new(),
+            // ---- feat/reference-clips ----
+            references: Vec::new(),
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);

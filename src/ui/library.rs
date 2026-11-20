@@ -204,6 +204,8 @@ pub struct LibraryResponse {
     pub place_template: Vec<String>,
     /// The user asked to import media from a URL (the app opens the Import URL window).
     pub import_url: bool,
+    /// feat/reference-clips: "Find a Reference" was picked (the app shows that pane).
+    pub find_reference: bool,
     /// "Edit labels…" was picked in a label menu - the app opens the label editor (Inspector).
     pub edit_labels: bool,
     /// An effect kind picked in the reuse sections - the app adds it to every selected visual clip.
@@ -706,6 +708,13 @@ fn matches_search(a: &crate::model::Asset, q: &str) -> bool {
     a.name().to_lowercase().contains(&q)
         || a.description.to_lowercase().contains(&q)
         || a.tags.iter().any(|t| t.to_lowercase().contains(&q))
+}
+
+// ---- feat/reference-clips ----
+/// The search text appears in this asset's transcribed reference quote (`Project::references`).
+fn quote_matches(project: &Project, id: Id, q: &str) -> bool {
+    let q = q.trim();
+    !q.is_empty() && project.reference(id).is_some_and(|r| r.quote.to_lowercase().contains(&q.to_lowercase()))
 }
 
 /// Kind chip: 0 All, 1 Video, 2 Audio, 3 Image, 4 Sequences (assets never match), 5 Short SFX (audio
@@ -1317,7 +1326,8 @@ fn browser(
                 let a = &project.assets[i];
                 // the folder chosen in the tree only narrows a search - the tree itself shows every folder
                 (!flat || folder_ok(state.folder.as_deref(), &a.folder))
-                    && matches_search(a, &state.search)
+                    // feat/reference-clips: a reference is also found by what is said in it
+                    && (matches_search(a, &state.search) || quote_matches(project, a.id, &state.search))
                     && matches_kind(a.kind, a.duration, state.kind_filter)
                     && (state.label_filter == 0 || a.label == state.label_filter)
                     // same predicate as "Remove unused": moodboard assets are not unused
@@ -1832,6 +1842,13 @@ fn empty_menu(
             .clicked()
     {
         resp.import_url = true;
+    }
+    // ---- feat/reference-clips ----
+    if menu::row(ui, Some(Glyph::Search), "Find a Reference", "")
+        .on_hover_text("Find a quote, reaction GIF or scene to use as a reference clip")
+        .clicked()
+    {
+        resp.find_reference = true;
     }
     ui.separator();
     if project_view {

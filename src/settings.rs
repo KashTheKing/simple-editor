@@ -775,6 +775,16 @@ pub struct Settings {
     /// Hovering a stock card previews it (a few frames, or a quiet sound snippet).
     #[serde(default = "default_true")]
     pub stock_preview: bool,
+    // ---- feat/reference-clips ----
+    /// Find a Reference: the user's own free GIPHY / Tenor API keys ("" = in-app search off for that
+    /// service; the browser search buttons work without them).
+    pub giphy_key: String,
+    pub tenor_key: String,
+    /// The one-time fair-use note was shown (and accepted) before the first reference import.
+    pub reference_note_seen: bool,
+    /// Transcribe each reference once imported (whisper + a downloaded model), so it is found by quote.
+    #[serde(default = "default_true")]
+    pub reference_transcribe: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1099,6 +1109,11 @@ impl Default for Settings {
             stock_on: Vec::new(),
             stock_in_project: true,
             stock_preview: true,
+            // ---- feat/reference-clips ----
+            giphy_key: String::new(),
+            tenor_key: String::new(),
+            reference_note_seen: false,
+            reference_transcribe: true,
         }
     }
 }

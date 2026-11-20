@@ -26,6 +26,7 @@ mod paths;
 mod planner;
 pub mod playlists; // ws:music-burn (`spaced_length`)
 mod queries;
+mod references; // feat/reference-clips
 mod sequences;
 mod shapes;
 // ws:transcript-captions: `transcript_hits` is a free fn (search over `&[Transcript]`, no `Project`

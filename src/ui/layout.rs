@@ -181,6 +181,11 @@ pub enum Pane {
     /// Project Context: the project's own Markdown document (About, Rules, Style guide, Links) the Assistant
     /// reads with every request, plus the read-only digest (`ui::styles_ui::context_pane`).
     Context,
+    // ---- feat/reference-clips ----
+    /// Find a Reference: search buttons for quote / GIF / video sites, in-app GIPHY / Tenor search, part
+    /// imports and the project's references by quote (`ui::reference_ui`, `ui::app::reference_ctl`).
+    /// Tab-stacked hidden in every preset (`stack_unplaced`); the Window menu and the Library open it.
+    References,
 }
 
 impl Pane {
@@ -269,6 +274,8 @@ impl Pane {
         Pane::ScreenRecording,
         // ---- feat/styles-context ----
         Pane::Context,
+        // ---- feat/reference-clips ----
+        Pane::References,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -312,6 +319,7 @@ impl Pane {
             Pane::Emulator => Glyph::Guides,
             Pane::ScreenRecording => Glyph::Record,
             Pane::Context => Glyph::Notepad, // feat/styles-context
+            Pane::References => Glyph::Search, // feat/reference-clips
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -364,6 +372,7 @@ impl Pane {
             Pane::Emulator => "Platform Emulator",
             Pane::ScreenRecording => "Screen Recording",
             Pane::Context => "Project Context", // feat/styles-context
+            Pane::References => "Find a Reference", // feat/reference-clips
         }
     }
 }

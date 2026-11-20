@@ -55,6 +55,9 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         }
         ui.end_row();
 
+        // ---- feat/reference-clips ----
+        changed |= reference_keys(ui, s);
+
         // ---- ws:ai-enhancer ----
         ui.label("AI enhancer");
         ui.horizontal(enhancer_row);
@@ -648,5 +651,37 @@ fn browser_row(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings) -> b
             changed = true;
         }
     }
+    changed
+}
+
+// ---- feat/reference-clips ----
+/// Find a Reference's GIPHY / Tenor keys (two grid rows each: the field, then where to get one).
+fn reference_keys(ui: &mut egui::Ui, s: &mut Settings) -> bool {
+    use crate::engine::references::Provider;
+    let mut changed = false;
+    for p in Provider::ALL {
+        let key = match p {
+            Provider::Giphy => &mut s.giphy_key,
+            Provider::Tenor => &mut s.tenor_key,
+        };
+        ui.label(format!("{} key", p.name())).on_hover_text(format!(
+            "Your own free {} API key, for searching {} inside Find a Reference. Only your searches and this key are sent to {}.",
+            p.name(),
+            p.name(),
+            p.name()
+        ));
+        ui.horizontal(|ui| {
+            changed |= ui.add(egui::TextEdit::singleline(key).password(true).desired_width(200.0).hint_text("none")).changed();
+            if ui.button("Get a Key").on_hover_text(p.key_page()).clicked() {
+                crate::engine::browsers::open_url(p.key_page());
+            }
+        });
+        ui.end_row();
+    }
+    ui.label("Transcribe references").on_hover_text(
+        "Transcribe each clip imported from Find a Reference, so the Library and the pane find it by what is said in it",
+    );
+    changed |= ui.checkbox(&mut s.reference_transcribe, "").changed();
+    ui.end_row();
     changed
 }

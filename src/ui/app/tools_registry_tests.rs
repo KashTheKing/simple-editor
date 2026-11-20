@@ -178,6 +178,9 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("browser_add_detail", "browser.page"),
     ("browser_clear_details", "browser.page"),
     ("browser_add_highlight", "cursor.set"),
+    // ---- feat/reference-clips ----
+    ("set_reference", "references.set"),
+    ("set_reference_quote", "references.set"),
 ];
 
 /// (Project op fn name, why it has no MCP tool yet). Every entry is a real, deliberate gap - either a
@@ -265,6 +268,7 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/paths.rs"),
     include_str!("../../model/ops/planner.rs"),
     include_str!("../../model/ops/queries.rs"),
+    include_str!("../../model/ops/references.rs"), // feat/reference-clips
     include_str!("../../model/ops/sequences.rs"),
     include_str!("../../model/ops/shapes.rs"),
     include_str!("../../model/ops/spans.rs"), // ws:animator

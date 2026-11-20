@@ -140,6 +140,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
     if resp.import_url {
         app.url_dialog = Some((String::new(), false));
     }
+    if resp.find_reference {
+        app.surface(Pane::References); // feat/reference-clips
+    }
     for name in resp.place_template {
         app.place_template(&name, app.playhead);
     }

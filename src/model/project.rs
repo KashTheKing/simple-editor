@@ -143,6 +143,10 @@ pub struct Project {
     /// Effect zones (`ops::zones`, drawn by `engine::zones::render_view`).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub zones: Vec<EffectZone>,
+    // ---- feat/reference-clips ----
+    /// Where each reference clip came from and what is said in it (`model::RefSource`, Find a Reference).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<RefSource>,
 }
 
 // ---- ws:project-color-fps ----

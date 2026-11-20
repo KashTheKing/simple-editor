@@ -683,6 +683,7 @@ mod project;
 pub mod repair; // forum-crash: the safe-start helpers are used by ui::app::recovery
 // ---- feat/styles-context ----: Project Context document + digest (pure text)
 pub mod context;
+mod reference; // feat/reference-clips
 mod shape;
 mod subtitle;
 mod text;
@@ -708,6 +709,7 @@ pub use marker::*;
 pub use path::*;
 pub use playlist::Playlist; // ws:music-burn
 pub use project::*;
+pub use reference::*; // feat/reference-clips
 pub use shape::*;
 pub use subtitle::*;
 pub use text::*;
