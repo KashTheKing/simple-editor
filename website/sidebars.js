@@ -22,7 +22,7 @@ module.exports = {
       type: 'category',
       label: 'Editing with AI',
       collapsed: false,
-      items: ['assistant', 'editing-skills', 'voice'],
+      items: ['assistant', 'project-context', 'editing-styles', 'editing-skills', 'voice'],
     },
     {
       type: 'category',

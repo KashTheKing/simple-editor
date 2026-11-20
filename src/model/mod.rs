@@ -681,6 +681,8 @@ mod path;
 mod playlist; // ws:music-burn
 mod project;
 pub mod repair; // forum-crash: the safe-start helpers are used by ui::app::recovery
+// ---- feat/styles-context ----: Project Context document + digest (pure text)
+pub mod context;
 mod shape;
 mod subtitle;
 mod text;

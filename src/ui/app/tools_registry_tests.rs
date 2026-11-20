@@ -10,6 +10,11 @@ use super::*;
 /// (Project op fn name, the MCP tool that reaches it). Seeded from the ~79 `pub fn ...(&mut self`
 /// fns in `src/model/ops/*.rs` after split-god-files.
 const OP_TOOLS: &[(&str, &str)] = &[
+    // ---- feat/styles-context ----
+    ("set_context", "context.set"),
+    ("set_context_section", "context.set"),
+    ("apply_context_style", "styles.apply"),
+    ("remove_context_style", "styles.remove"),
     ("add_asset", "media.import"),
     ("add_subclip", "media.subclip"),
     ("link_bin", "media.import_folder"),
@@ -249,6 +254,7 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/beats.rs"), // ws:beat-aligner
     include_str!("../../model/ops/autocut.rs"),
     include_str!("../../model/ops/buses.rs"),
+    include_str!("../../model/ops/context.rs"), // feat/styles-context
     include_str!("../../model/ops/editing.rs"),
     include_str!("../../model/ops/effects.rs"),
     include_str!("../../model/ops/graph.rs"),

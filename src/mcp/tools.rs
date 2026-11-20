@@ -64,6 +64,10 @@ pub fn leaves_project(tool: &str, args: &Value) -> bool {
                 // ws:skills: a skill is instructions for the assistant - writing or removing one is held
                 | "skills.save"
                 | "skills.delete"
+                // feat/styles-context: writing the styles library, and the describer's download
+                | "styles.save"
+                | "styles.delete"
+                | "styles.install_describer"
                 // ws:home-page: closes the project
                 | "home.show"
         )

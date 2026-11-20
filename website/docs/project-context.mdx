@@ -1,0 +1,71 @@
+---
+title: Project Context
+description: One Markdown document per project - what it is about, your rules, its style guide and links - that the Assistant reads with every request, plus a digest of your planner, notes, moodboard and comments.
+---
+
+:::caution Experimental
+Still being worked on; things may change or break.
+:::
+
+**Project Context** is where you tell the [Assistant](assistant.mdx) what the project is. It is one plain
+Markdown document, saved inside the project file, with four sections:
+
+- **About**: what the video is, who it is for, where it goes.
+- **Rules**: things the assistant must always or never do ("no music with lyrics", "keep the logo in the
+  top left"). Rules are sent as instructions.
+- **Style guide**: how it should look and feel: pacing, captions, colour, sound.
+- **Links**: references, a script, the brief.
+
+Every Assistant request (chat, tasks and the comments it handles) starts with the whole document, so you
+never have to repeat yourself. An agent connected over MCP reads it with `context.get`.
+
+![The Project Context panel beside the Assistant](/img/tutorial/project-context.png)
+
+## Open it
+
+- the notepad button at the top right of the Assistant (lit while the panel is open; click it again to close it),
+- **⋯ ▸ Project Context** in the Assistant,
+- **Window ▸ Project Context**, or the command palette (`Ctrl+K`, "Project Context").
+
+Type straight into the document. A new project shows the four headings to fill in. The eye button switches
+between editing and a Markdown preview. Each burst of typing is one undo step.
+
+## The digest
+
+Under the document, **Digest** (folded away until you open it) shows what else the assistant gets, gathered
+by itself and read-only:
+
+- **Planner**: every item with its checklist and notes, ticked or not,
+- **Notes**: each note's title and text,
+- **Moodboard**: the moodboard's pictures with their tags, and the notes under a planner item's pictures,
+- **Open comments**: timeline comments that are not ticked off, with their times.
+
+The buttons above it open the **Planner**, **Moodboard** and **Markers** panels, where you change those.
+
+## Editing styles
+
+A style from [Editing Styles](editing-styles.mdx) can be applied to the project: `/style vlog` in the
+Assistant (or **Apply** in its Styles tab) writes the style's guidance at the top of **Style guide** and its
+measurable rules at the top of **Rules**, between two comment lines you can see:
+
+```markdown
+## Rules
+
+<!-- style: vlog -->
+- Average shot length about 1.9 s (most shots 1.14-3.04 s).
+- Mix to -14 LUFS integrated.
+<!-- /style -->
+
+- Keep the logo in the top left.
+```
+
+What you wrote stays below it. Applying another style replaces it; **Remove** at the top of the panel,
+`/style off`, or Undo takes it back out and leaves your own text exactly as it was.
+
+## For agents (MCP)
+
+| Tool | What it does |
+|---|---|
+| `context.get` | `{text, sections {About, Rules, Style guide, Links}, style, digest}` |
+| `context.set` | `text` replaces the document, or `section` + `body` replaces one section; one undo step |
+| `styles.apply` / `styles.remove` | apply a library style to the project / take it out; one undo step each |

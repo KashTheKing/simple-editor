@@ -6,6 +6,7 @@ pub mod beats;
 pub mod browser;
 mod autocut;
 mod buses;
+mod context; // feat/styles-context
 mod editing;
 // ---- ws:inspector-gallery ----
 mod effects;
