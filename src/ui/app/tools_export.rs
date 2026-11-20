@@ -995,7 +995,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "export.slowmo",
-        desc: "Bake the clip(s) through setpts+minterpolate optical-flow slow motion, then swap them onto the result (the clip keeps its length and now shows the first part of the slowed footage - extend its end to reveal the rest).",
+        desc: "Bake the clip(s) through setpts+minterpolate optical-flow slow motion (the sound slowed with ffmpeg atempo, pitch kept), then swap them onto the result (the clip keeps its length and now shows the first part of the slowed footage - extend its end to reveal the rest).",
         args: &["clip_ids:array:true:", "factor:number:false:speed, default 0.5 (= half speed)"],
         kind: ToolKind::Job,
         run: |app, args| bake_tool(app, args, BakeKind::SlowMo(arg_f64(args, "factor").unwrap_or(0.5))),
