@@ -41,6 +41,18 @@ pub(super) fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str, c
         });
         ui.end_row();
 
+        // ---- forum-crash ----
+        ui.label("Compatibility graphics");
+        changed |= ui
+            .checkbox(&mut s.compat_graphics, "")
+            .on_hover_text(
+                "For old or troublesome graphics drivers: the preview renders on the CPU, vsync is off, and a \
+                 software OpenGL (Mesa's opengl32.dll in a compat-gl folder) is used when present. Takes effect \
+                 on the next start.",
+            )
+            .changed();
+        ui.end_row();
+
         // ---- ws:play-gate ----
         ui.label("Playback start");
         ui.vertical(|ui| {

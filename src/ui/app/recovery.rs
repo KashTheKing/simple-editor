@@ -64,6 +64,11 @@ pub fn install_panic_hook() {
             snapshot.unwrap_or_default()
         );
         let _ = std::fs::write(dir.join("crash.log"), body);
+        // forum-crash: a panic on the UI thread takes the app down: keep what was in flight for the next
+        // start (worker panics are caught and survived, so they leave the fingerprint alone)
+        if std::thread::current().name() == Some("main") {
+            crate::crashguard::flush_for_crash();
+        }
         default(info);
     }));
 }

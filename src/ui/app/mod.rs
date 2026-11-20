@@ -1433,6 +1433,7 @@ impl eframe::App for App {
             }
         } else if self.reveal.revealed() {
             boot::bench_first_frame(ctx);
+            crate::crashguard::graphics_ready(); // forum-crash: the first frame is on screen
         }
         // ws:forgiveness: confirm_discard_then's continuation sets this once the (non-blocking) discard
         // prompt resolves - the original close was cancelled below to let that prompt run, so re-send it.
@@ -1535,6 +1536,7 @@ impl eframe::App for App {
             }
             assistant_ctl::deny_held(self, "the app closed");
             tools_context::end_waits(self, "the app closed");
+            crate::crashguard::clean_exit(); // forum-crash: a normal close is never reported as a crash
         }
 
         // live links (paths / expressions) re-bake when their inputs changed; a hash check otherwise
