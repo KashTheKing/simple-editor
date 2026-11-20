@@ -39,7 +39,10 @@ click it).
 
 The catalogue has blur, motion blur, pixelate, VHS, glow, vignette, sharpen, chroma key (green screen),
 colour replace, levels, curves, hue and saturation, black & white, flip, 3D plane, camera shake,
-LUTs and a **Custom Shader** you write yourself in GLSL. Crop is not an effect any more: every clip has
+LUTs and a **Custom Shader** you write yourself in GLSL. The [online library](online-library.mdx) adds many
+more, including old film, Technicolor, film projector, halftone, sketch, sepia, posterize, dither, scan lines,
+vibrance, chroma hold, key spill, circle crop, wave, vertigo, nervous, choppy, Rutt-Etra, smart blur (noise
+reduction), deband, spot remover, elastic scale and the alpha tools (view, adjust, strobe, unpremultiply). Crop is not an effect any more: every clip has
 its own (the Inspector's Transform section, or the Preview's Crop tool). Projects with the old Crop
 effect still open; it turns into the clip's own crop when that looks the same, and otherwise stays.
 
@@ -70,6 +73,11 @@ Color**, **Push** and **Wipe**; the online library adds more (they share the gri
 installed). The row above the cards sets the **Duration** of the next one you add (1 second to start with;
 it is never longer than half of the shorter clip it touches), plus its colour (Fade to Color) or the
 direction it comes **From** (Push, Wipe).
+
+**Gradient Wipe** (online library) fills the incoming clip in from the dark parts of a gradient to the light
+parts. Pick one of its built-in patterns with **Pattern**, or click the transition and use the Inspector's
+**Gradient Image** button to pick any greyscale picture (a cloud texture, a brush stroke, a logo shape). **×**
+goes back to the pattern.
 
 - **Drag a card onto a cut** on the timeline. It snaps to the nearest cut or clip edge; away from any edge,
   drop on the right half of a clip for its end, the left half for its start.

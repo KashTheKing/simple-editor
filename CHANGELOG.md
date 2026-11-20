@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Effects parity
+- **Six more blend modes**: Exclusion, Saturate (adds the clip only as far as the picture below has room, so colours never clip) and the four colour modes Hue, Saturation, Color and Luminosity, in the Inspector's Blend list and the node editor's Blend / Combine nodes. Each mode's tooltip says what it does.
+- **White Balance eyedropper**: in the Inspector's **Color** section, click **White Balance**, then something in the Preview that should be white or grey; the clip's Primaries gains are set so it turns neutral. Click again to refine. MCP: `color.pick` with `target: "white_balance"`.
+- **Gradient Wipe** (online library transition): the incoming clip fills in from the dark parts of a gradient to the light parts. Eight built-in patterns (left to right, top to bottom, centre out, clock, diagonal, clouds, blinds, diamonds), softness and invert, or pick **any greyscale image** with the Inspector's **Gradient Image** button. MCP: `transition.set_shader` takes `image`.
+- **26 more effects in the online library**, covering the rest of Shotcut's video filters: Wave, Vertigo, Nervous, Choppy, Alpha Strobe, Chroma Hold, Key Spill, Circle Crop, Deband, Dither, Elastic Scale, Posterize, Sepia, Scan Lines, Vibrance, Unpremultiply Alpha, Technicolor, Film Projector, Rutt-Etra, Smart Blur (real-time noise reduction), Spot Remover, Color Gradient, Grid Lines, Alpha View, Alpha Adjust and Emboss.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

@@ -157,7 +157,7 @@ were written per feature as it landed; if a row disagrees with `tools/list`, `to
 | `html.check` | Read (image) | clip? \| html?, t?, fields? | One rendered frame as an image, plus lint. |
 | `clip.set_shader` | Mutate | clip, index?, src | Set a clip's shader effect source; returns `{ok, log, params}` (a compile error is a result, not a failure). |
 | `shader.check` | Read | src, kind? | Compile an effect or transition shader without changing anything. |
-| `transition.set_shader` | Mutate | id? \| clip?, src, params? | Make a transition a shader transition (gl-transitions format). |
+| `transition.set_shader` | Mutate | id? \| clip?, src, params?, image? | Make a transition a shader transition (gl-transitions format). `image`: the greyscale picture of a Gradient Wipe (`""` clears it). |
 | `skills.list` | Read | - | Assistant skills: name, description, args, source. |
 | `skills.get` | Read | name | One skill's text and parsed parts. |
 | `skills.save` | Ui (held) | name, description, args?, body | Write a skill into the user's skills folder. |
@@ -262,7 +262,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `color.auto` | Mutate | clip_id | Sample the frame at the playhead (via the live preview render path) and write/update an editable Levels+Color pair on the clip. |
 | `color.match` | Mutate | clip_id, reference_clip_id | Match a clip's histogram to a reference clip's (both rendered at their own timeline start via the live preview path) as an editable Curves effect. |
-| `color.pick` | Mutate | target, x, y | Sample the frame at (x,y); if a clip is selected, writes its ChromaKey/Qualifier target too. |
+| `color.pick` | Mutate | target, x, y | Sample the frame at (x,y); if a clip is selected, writes its ChromaKey key, Qualifier hue or (`white_balance`) Primaries gains that make the picked colour neutral. |
 | `color.primaries` | Mutate | clip_id, gain_b, gain_g, gain_r, gamma_b, gamma_g, gamma_r, lift_b, lift_g, lift_r, temp, tint | Find-or-create the clip's Primaries (lift/gamma/gain colour wheels + temp/tint) effect and set given fields (unset fields keep their current value). |
 | `color.qualifier` | Mutate | clip_id, hue, hue_width, lum_max, lum_min, sat_max, sat_min, softness | Find-or-create the clip's Qualifier (HSL-band secondary key) effect and set given fields. |
 

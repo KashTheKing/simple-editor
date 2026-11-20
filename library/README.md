@@ -115,6 +115,7 @@ vec4 transition(vec2 uv) {
 | `float progress` | 0 at the start, 1 at the end (already eased by the transition's easing) |
 | `float ratio` | width / height |
 | `vec2 u_res`, `float u_scale`, the helper functions | as for effects |
+| `sampler2D u_gradient`, `float u_has_gradient` | a picture the user picked for this transition (a gradient wipe's greyscale image; `u_has_gradient` is 1 when there is one, else 0 and `u_gradient` is blank white). Top-down like the pictures: sample it at `vec2(uv.x, 1.0 - uv.y)`. The Inspector offers its **Gradient Image** button for any source that uses `u_gradient`. |
 
 Rules:
 
@@ -130,6 +131,8 @@ Rules:
   canvas; the result is laid over the tracks below. On the CPU fallback and in XML / EDL export a
   shader transition is a cross fade, and so is one whose source does not compile.
 - Either picture may have transparency: return straight alpha.
+- The picked image is stored as a `// @image <path>` line in the transition's own copy of the source
+  (the Inspector and `transition.set_shader image` write it). Never put one in a library file.
 
 ## LUTs (`luts/*.cube`)
 
