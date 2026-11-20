@@ -92,6 +92,7 @@ pub mod styles_ui; // feat/styles-context: Editing Styles tab, Learn a style, Pr
 pub mod assistant_data;
 // ---- ws:html-layer ----
 pub mod html_code;
+pub mod script_intel;
 pub mod html_ui;
 // ---- ws:thread-viewers ----
 pub mod template_ui; // ws:animator-templates

@@ -53,7 +53,11 @@ pub(super) fn open(app: &mut App, path: &Path, external: bool) {
 
 fn load(app: &mut App, path: &Path) {
     match app.script_editor.load(path) {
-        Ok(()) => app.surface(Pane::ScriptEditor),
+        Ok(()) => {
+            // ---- feat/script-intellisense ---- a plugin's file completes and checks against the plugin API
+            app.script_editor.plugin = plugins_ctl::owns_file(app, path);
+            app.surface(Pane::ScriptEditor)
+        }
         Err(e) => app.toast(format!("Couldn't open {}: {e}", file_name(path))),
     }
 }

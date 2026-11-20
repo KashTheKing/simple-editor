@@ -172,6 +172,13 @@ fn owner_of(app: &App, path: &Path) -> Option<(Plugin, String)> {
     })
 }
 
+// ---- feat/script-intellisense ----
+/// Whether `path` is inside an installed plugin's folder (the Script Editor then uses the plugin API).
+pub(super) fn owns_file(app: &mut App, path: &Path) -> bool {
+    ensure_loaded(app);
+    owner_of(app, path).is_some()
+}
+
 /// The Script Editor's Run on a file inside a plugin: a plugin script runs in the plugin's sandbox (never
 /// with the full access of the user's own scripts), a panel script reloads its panel. None = not a plugin file.
 pub(super) fn run_if_plugin_file(app: &mut App, path: &Path, src: &str) -> Option<Result<(), String>> {
