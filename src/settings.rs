@@ -726,16 +726,6 @@ pub struct Settings {
     /// Export ▸ "Chapters from markers": embed the timeline markers as chapters in MP4/MOV/MKV exports.
     #[serde(default = "default_true")]
     pub export_chapters: bool,
-    /// Per-filter presets: one effect's settings saved under a name (Effects ▸ right-click ▸ Save Preset).
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub filter_presets: Vec<FilterPreset>,
-}
-
-/// ws:parity-editing: one effect's settings saved under a name, offered for that effect kind only.
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct FilterPreset {
-    pub name: String,
-    pub effect: crate::model::Effect,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1038,7 +1028,6 @@ impl Default for Settings {
             // ---- ws:parity-editing ----
             time_format: "smpte".into(),
             export_chapters: true,
-            filter_presets: Vec::new(),
         }
     }
 }
