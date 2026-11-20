@@ -36,6 +36,8 @@ pub mod mixer;
 pub mod mixer_fx;
 pub mod prerender;
 pub mod presets;
+pub mod retro; // feat-retro-2000s-pack: the Classic 2000s pack
+pub mod slideshow; // feat-retro-2000s-pack: Make Slideshow
 pub mod templates; // ws:animator-templates
 pub mod html;
 pub mod blitz; // ws:html-layer: the fast renderer (se-html helper)

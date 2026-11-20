@@ -178,6 +178,7 @@ mod transcript_pane;
 mod voiceover_pane;
 mod recorder_pane; // fix/screen-record: the Screen Recording pane
 mod template_ctl; // ws:animator-templates
+mod retro_ctl; // feat-retro-2000s-pack: slideshow.make, the Make Slideshow card
 mod beats_ctl; // ws:beat-aligner
 mod music_ctl; // ws:music-burn
 mod emulator_ctl; // ws:device-emulator
@@ -908,6 +909,8 @@ impl App {
         if !crate::winpos::background() {
             crate::winpos::place_on_cursor_monitor(cc);
         }
+        // feat-retro-2000s-pack: the Classic 2000s shaders into the library folder (once, off this thread)
+        crate::engine::retro::ensure_installed();
         let mut app = Self::build(&cc.egui_ctx, cc.gl.clone(), screenshot);
         // a media file from Explorer never gets here: `main` starts the player (`crate::player`) for it
         if let Some(p) = open {
@@ -2042,6 +2045,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:home-page ----
     home_ctl::TOOLS,
     script_ctl::TOOLS,
+    // ---- feat-retro-2000s-pack ----
+    retro_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[

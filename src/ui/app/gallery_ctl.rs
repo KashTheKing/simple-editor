@@ -175,7 +175,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         template_ctl::open_builder(app);
     }
     // ---- ws:text-titles ----
-    if let Some(name) = resp.place_title {
+    // feat-retro-2000s-pack: the Make Slideshow card makes a slideshow instead of placing a title
+    if resp.place_title.as_deref() == Some(crate::engine::retro::SLIDESHOW_CARD) {
+        super::retro_ctl::make_from_gallery(app);
+    } else if let Some(name) = resp.place_title {
         match app.place_title_template(&name, app.playhead) {
             Ok((_, customize)) => {
                 count_use(app, "Titles", &name);

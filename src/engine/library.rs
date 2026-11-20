@@ -399,6 +399,22 @@ pub fn merge(cat: &[Entry], installed: &std::collections::HashSet<String>) -> Ve
     yours.sort();
     for id in yours {
         let Some((kind, short)) = split_id(id) else { continue };
+        // feat-retro-2000s-pack: the built-in Classic 2000s pack installs itself before any catalogue is
+        // here - it is named, described and tagged from its own header, and is not "yours"
+        if let Some(src) = super::retro::source_of(id) {
+            let m = super::shaderlib::parse_meta(src);
+            out.push(Row {
+                id: id.clone(),
+                kind,
+                name: m.name,
+                desc: m.desc,
+                tags: m.tags,
+                installed: true,
+                yours: false,
+                thumb: thumb_of(kind, &short),
+            });
+            continue;
+        }
         out.push(Row {
             id: id.clone(),
             kind,

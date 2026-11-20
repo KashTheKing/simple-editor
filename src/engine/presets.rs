@@ -422,6 +422,10 @@ pub fn builtin_speed_ramps() -> Vec<CurvePreset> {
         // brief fast flash-forward
         ramp("Flash", &[(0.0, 1.0), (0.4, 1.0), (0.5, 6.0), (0.6, 1.0), (1.0, 1.0)]),
     ]
+    .into_iter()
+    // feat-retro-2000s-pack: the classic "speed up / slow down" presets
+    .chain(super::retro::speed_presets())
+    .collect()
 }
 
 fn caption(name: &str, f: impl FnOnce(&mut TextStyle)) -> TextStyle {
@@ -618,13 +622,15 @@ pub fn social_title_names() -> Vec<String> {
 pub fn title_category(name: &str) -> &'static str {
     if social_style(name).is_some() {
         "Social"
+    } else if super::retro::TITLES.contains(&name) || name == super::retro::SLIDESHOW_CARD {
+        super::retro::CATEGORY
     } else {
         "Basic"
     }
 }
 
 /// The Titles tab's categories, in menu order.
-pub const TITLE_CATEGORIES: [&str; 2] = ["Basic", "Social"];
+pub const TITLE_CATEGORIES: [&str; 3] = ["Basic", "Social", super::retro::CATEGORY];
 
 // ws:animator-templates: the payload (these two fields plus optional layers / transitions / slots)
 use super::templates::TemplateData;
@@ -717,6 +723,8 @@ pub fn builtin_titles() -> Vec<Template> {
         let clip = social_clip(&n)?;
         Some(Template { name: n, json: encode(vec![clip]) })
     }));
+    // ---- feat-retro-2000s-pack: the Classic 2000s titles (blue cards, white rounded lettering) ----
+    v.extend(super::retro::titles());
     v
 }
 
@@ -1192,8 +1200,8 @@ mod tests {
     #[test]
     fn speed_ramps_are_named_and_start_end_near_normal() {
         let ramps = builtin_speed_ramps();
-        assert_eq!(ramps.len(), 5);
-        let names: Vec<&str> = ramps.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(ramps.len(), 5 + super::super::retro::speed_presets().len());
+        let names: Vec<&str> = ramps.iter().map(|r| r.name.as_str()).take(5).collect();
         assert_eq!(names, ["Montage", "Hero", "Bullet", "Jump", "Flash"]);
         for r in &ramps {
             assert!(!r.absolute, "{}: normalised, so it scales to any clip duration", r.name);
@@ -1225,7 +1233,7 @@ mod tests {
     #[test]
     fn builtin_titles_decode_and_are_text_templates() {
         let titles = builtin_titles();
-        assert_eq!(titles.len(), 4 + social_title_names().len());
+        assert_eq!(titles.len(), 4 + social_title_names().len() + super::super::retro::TITLES.len());
         let mut names: Vec<&str> = titles.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         names.dedup();
