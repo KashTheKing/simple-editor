@@ -382,6 +382,8 @@ pub struct CtxState {
     pub digest_open: bool,
     /// The project as it was when the current burst of typing began (one undo step per burst).
     pub before: Option<String>,
+    /// The box lost the keyboard in the frame of an edit: the edit went out first, the Commit goes next frame.
+    pub commit_next: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -412,6 +414,7 @@ pub fn context_pane(ui: &mut egui::Ui, st: &mut CtxState, v: &CtxView) -> CtxOut
     let mut out = CtxOut::None;
     let id = egui::Id::new("project_context_text");
     let focused = ui.memory(|m| m.has_focus(id));
+    let commit_due = std::mem::take(&mut st.commit_next);
     // the project's text wins whenever the box is not being typed in (undo, an agent's context.set)
     if !focused && st.synced.as_deref() != Some(v.doc) {
         st.buf = if v.doc.trim().is_empty() { crate::model::context::template() } else { v.doc.to_string() };
@@ -452,7 +455,11 @@ pub fn context_pane(ui: &mut egui::Ui, st: &mut CtxState, v: &CtxView) -> CtxOut
                 out = CtxOut::Edited(text);
             }
             if r.lost_focus() {
-                out = CtxOut::Commit;
+                // never drop an edit made in the same frame: it goes out now, the undo step closes next frame
+                match out {
+                    CtxOut::Edited(_) => st.commit_next = true,
+                    _ => out = CtxOut::Commit,
+                }
             }
         }
         ui.add_space(6.0);
@@ -479,6 +486,15 @@ pub fn context_pane(ui: &mut egui::Ui, st: &mut CtxState, v: &CtxView) -> CtxOut
         }
         h.header_response.on_hover_text("Gathered from the planner, notes, moodboard and open comments; the assistant reads it too");
     });
+    if commit_due {
+        // a frame busy with another ask tries again on the next one
+        match out {
+            CtxOut::None => out = CtxOut::Commit,
+            CtxOut::RemoveStyle => {}         // closes the typing step itself
+            CtxOut::Edited(_) if focused => {} // typing again: the same step goes on until the box lets go
+            _ => st.commit_next = true,
+        }
+    }
     out
 }
 
