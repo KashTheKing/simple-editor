@@ -1,0 +1,8 @@
+{
+  "name": "FFmpeg 7.1.1 essentials (gyan.dev build)",
+  "version": "7.1.1",
+  "url": "https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip",
+  "sha256": "04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4",
+  "size": 92234348,
+  "license": "GPL-3.0 build of FFmpeg, run as a separate program (https://www.gyan.dev/ffmpeg/builds/)"
+}

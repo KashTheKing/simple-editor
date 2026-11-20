@@ -18,13 +18,21 @@ starts with a screenshot of the real app, taken by a script, so what you see her
 
 ## Download and run
 
-1. Download `simple-editor.exe` from the
-   [latest release](https://github.com/KashTheKing/simple-editor/releases/latest).
-2. Put it in any folder and double-click it. There is no installer.
-3. Install **FFmpeg**, which Simple Editor uses to export and to read some formats:
-   `winget install Gyan.FFmpeg` (or `choco install ffmpeg`). Playback works without it, export doesn't.
-   If FFmpeg isn't on your `PATH`, put `ffmpeg.exe` and `ffprobe.exe` next to `simple-editor.exe`, or
-   point **Settings ▸ General ▸ ffmpeg folder** at them.
+The [latest release](https://github.com/KashTheKing/simple-editor/releases/latest) has two downloads:
+
+- **`simple-editor-setup.exe`** (under 1 MB) installs Simple Editor for you only, with no administrator
+  prompt, into `%LOCALAPPDATA%\Programs\Simple Editor`. It adds a Start menu shortcut (a desktop one if you
+  tick it), opens `.sedit` projects, and can add **Edit with Simple Editor** to video files' right-click menu.
+  If FFmpeg isn't on your PC it says so and installs it (ticked by default; the download is checked against
+  its published checksum). Optional add-ons (yt-dlp, whisper.cpp, the fast HTML renderer, the AI enhancer)
+  are a tick each. Later, `update.exe` in the same folder updates the app and keeps your settings, and
+  **Settings ▸ Apps ▸ Simple Editor ▸ Uninstall** removes it (you choose whether to keep your preferences;
+  your projects are never touched).
+- **`simple-editor.exe`** is the portable app: put it in any folder and double-click it. Then install
+  **FFmpeg**, which Simple Editor uses to export and to read some formats: `winget install Gyan.FFmpeg`
+  (or `choco install ffmpeg`). Playback works without it, export doesn't. If FFmpeg isn't on your `PATH`,
+  put `ffmpeg.exe` and `ffprobe.exe` next to `simple-editor.exe`, or point **Settings ▸ General ▸ ffmpeg
+  folder** at them.
 
 ## The first launch
 

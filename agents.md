@@ -208,9 +208,13 @@ reference.
    (release build, about 7+ minutes) and report the size change.
 4. Squash-merge the PR into `main` (the docs site redeploys from `main`), then
    `git tag vX.Y.Z <merge commit>` and push the tag.
-5. `gh release create vX.Y.Z target/release/simple-editor.exe --title "Simple Editor X.Y.Z" --notes-file <notes>`:
-   one exe, the notes follow the previous release's shape (a download line, the docs link, then the
-   changelog sections). Attach the exe renamed to exactly `simple-editor.exe`.
+5. `scripts/release.ps1` builds both downloads into `dist\` (the app and `simple-editor-setup.exe`, the
+   installer / updater / uninstaller from `tools/se-setup`, which must stay under 1 MB) and prints their sizes
+   and SHA-256. `gh release create vX.Y.Z dist/simple-editor.exe dist/simple-editor-setup.exe --title
+   "Simple Editor X.Y.Z" --notes-file <notes>`: the notes follow the previous release's shape (a download
+   line, the docs link, then the changelog sections). The app asset must be named exactly
+   `simple-editor.exe`: the installer and `update.exe` look for that name and verify it against the
+   digest GitHub shows for the asset.
 6. Write the Discord announcement from the changelog (short, plain, emoji headings).
 
 ## Live co-editing (MCP)
