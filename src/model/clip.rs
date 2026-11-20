@@ -61,6 +61,11 @@ pub struct Clip {
     /// of resampling. On for new clips; projects from before it load with it off and sound as they did.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub keep_pitch: bool,
+    /// Time remap: source time as a function of clip time (speed keys, holds, backward stretches).
+    /// While present it replaces `speed` / `speed_curve` / `reverse` / `freeze`, and its last key is the
+    /// clip's duration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_map: Option<TimeMap>,
     // --- visual properties (project pixels / degrees / 0..1) ---
     #[serde(default = "crate::model::a0")]
     pub x: Animated,
@@ -190,6 +195,7 @@ impl Clip {
             reverse: false,
             freeze: None,
             keep_pitch: true,
+            time_map: None,
             x: a0(),
             y: a0(),
             scale: a1(),
@@ -284,6 +290,10 @@ impl Clip {
     }
     /// Length of the source window in source seconds.
     pub fn src_len(&self) -> f64 {
+        if let Some(m) = &self.time_map {
+            let (lo, hi) = m.range(self.duration);
+            return hi - lo;
+        }
         self.src_offset(self.duration)
     }
     /// Source seconds played over clip-local [0, l]: the rate summed over that time, so a ramp eases through
@@ -311,6 +321,9 @@ impl Clip {
     }
     /// Playback rate at clip-local time `l` (the ramp when keyframed, else the constant).
     pub fn rate(&self, l: f64) -> f64 {
+        if let Some(m) = &self.time_map {
+            return m.speed(l).abs().max(0.01);
+        }
         if self.speed_curve.is_animated() {
             self.speed_curve.at(l).clamp(0.01, 100.0)
         } else {
@@ -319,6 +332,9 @@ impl Clip {
     }
     /// Source media time at timeline time t (speed, reverse and freeze applied).
     pub fn src_time(&self, t: f64) -> f64 {
+        if let Some(m) = &self.time_map {
+            return m.frame_time(self.local(t));
+        }
         if let Some(f) = self.freeze {
             return f;
         }
@@ -354,7 +370,8 @@ impl Clip {
     }
     /// Speed, reverse or freeze in effect.
     pub fn is_retimed(&self) -> bool {
-        (self.speed - 1.0).abs() > EPS || self.speed_curve.is_animated() || self.reverse || self.freeze.is_some()
+        self.time_map.is_some()
+            || (self.speed - 1.0).abs() > EPS || self.speed_curve.is_animated() || self.reverse || self.freeze.is_some()
     }
     /// Anything that needs re-rendering (disqualifies a lossless `-c copy` export).
     pub fn has_effects(&self) -> bool {
@@ -372,9 +389,92 @@ impl Clip {
             || self.fade_in > 0.0
             || self.fade_out > 0.0
     }
+    /// Speed (source s per clip s, unsigned) at the clip's first (`start`) or last edge - what a trim
+    /// past that edge plays at.
+    pub fn edge_rate(&self, start: bool) -> f64 {
+        match &self.time_map {
+            Some(m) => m.speed(if start { 0.0 } else { self.duration }).abs().max(0.01),
+            None => self.speed.max(0.01),
+        }
+    }
+    /// After the time map changed: the clip's length is its last key, `src_in` its lowest source time.
+    pub fn sync_time_map(&mut self) {
+        if let Some(m) = &self.time_map {
+            self.duration = m.duration().max(MIN_CLIP);
+            self.src_in = m.range(self.duration).0;
+        }
+    }
+    /// Turn on time remapping with a map that plays exactly what the clip plays now (speed, its ramp,
+    /// reverse or freeze baked into keys); those settings go back to normal. `fps`: the source's frame
+    /// rate (0 = unknown). No-op when it is already on.
+    pub fn enable_time_map(&mut self, fps: f64) {
+        if self.time_map.is_some() {
+            return;
+        }
+        let d = self.duration;
+        let at = |c: &Clip, l: f64| {
+            if let Some(f) = c.freeze {
+                return f;
+            }
+            let o = c.src_offset(l.min(d));
+            if c.reverse { c.src_in + c.src_len() - o } else { c.src_in + o }
+        };
+        let mut ts: Vec<f64> = vec![0.0];
+        let ramp = self.speed_curve.is_animated() && self.freeze.is_none();
+        if ramp {
+            // the ramp's keys, plus points between them so its easing survives as smooth segments
+            let mut cuts: Vec<f64> = self.speed_curve.keys.iter().map(|k| k.t).filter(|&t| t > 0.0 && t < d).collect();
+            cuts.push(d);
+            let mut prev = 0.0;
+            for c in cuts {
+                for j in 1..=4 {
+                    ts.push(prev + (c - prev) * j as f64 / 4.0);
+                }
+                prev = c;
+            }
+        } else {
+            ts.push(d);
+        }
+        let keys = ts.iter().map(|&t| TimeKey { smooth: ramp, ..TimeKey::new(t, at(self, t)) }).collect();
+        let mut m = TimeMap { keys, fps: fps.max(0.0) };
+        m.normalize();
+        self.time_map = Some(m);
+        self.speed = 1.0;
+        self.speed_curve = a1();
+        self.reverse = false;
+        self.freeze = None;
+        self.sync_time_map();
+    }
+    /// Turn time remapping off: back to one constant speed over the same source range (backwards when
+    /// it ends earlier in the source than it starts, a freeze when it covers none).
+    pub fn disable_time_map(&mut self) {
+        let Some(m) = self.time_map.take() else { return };
+        let d = self.duration;
+        let (a, b) = (m.eval(0.0), m.eval(d));
+        let len = (b - a).abs();
+        self.speed_curve = a1();
+        if len < 1e-6 {
+            self.freeze = Some(a);
+            self.speed = 1.0;
+            self.reverse = false;
+        } else {
+            self.speed = (len / d.max(MIN_CLIP)).clamp(0.01, 100.0);
+            self.speed_curve.value = self.speed;
+            self.reverse = b < a;
+            self.src_in = a.min(b);
+            self.freeze = None;
+        }
+    }
     /// Change the playback rate keeping the source window and the timeline start (duration follows).
     pub fn set_speed(&mut self, speed: f64) {
         let speed = if speed.is_finite() { speed.clamp(0.01, 100.0) } else { 1.0 };
+        if let Some(m) = &mut self.time_map {
+            // every remapped speed scales by the same factor: the shape of the ramp stays
+            m.scale_speed(speed / self.speed.max(0.01));
+            self.speed = speed;
+            self.sync_time_map();
+            return;
+        }
         if self.freeze.is_none() {
             let len = self.src_len();
             self.duration = (len / speed).max(MIN_CLIP);
@@ -536,7 +636,10 @@ impl Clip {
         right.id = new_id;
         right.start = t;
         right.duration = self.end() - t;
-        if self.freeze.is_none() {
+        if let Some(m) = &self.time_map {
+            right.time_map = Some(m.crop(off, self.duration));
+            self.time_map = Some(m.crop(0.0, off));
+        } else if self.freeze.is_none() {
             if self.reverse {
                 // left plays the later part of the source window, right the earlier part
                 let src_in = self.src_in;
@@ -548,28 +651,39 @@ impl Clip {
         }
         right.shift_keys(-off);
         self.duration = off;
+        self.sync_time_map();
+        right.sync_time_map();
         Some(right)
     }
     /// Move the left edge to `new_start`, keeping the right edge fixed (slip-trim).
     /// `headroom` = source seconds available before the left edge (`Project::head_room`), INFINITY = unbounded.
     pub fn trim_start(&mut self, new_start: f64, headroom: f64) {
-        let min_start =
-            if headroom.is_finite() { self.start - headroom.max(0.0) / self.speed } else { f64::NEG_INFINITY };
+        let min_start = if headroom.is_finite() {
+            self.start - headroom.max(0.0) / self.edge_rate(true)
+        } else {
+            f64::NEG_INFINITY
+        };
         let ns = new_start.max(min_start).max(0.0).min(self.end() - MIN_CLIP);
         let d = ns - self.start;
         self.start = ns;
         self.duration -= d;
-        if self.freeze.is_none() && !self.reverse {
+        if let Some(m) = &self.time_map {
+            self.time_map = Some(m.crop(d, d + self.duration));
+        } else if self.freeze.is_none() && !self.reverse {
             self.src_in += d * self.speed;
         }
         self.shift_keys(-d);
+        self.sync_time_map();
     }
     /// Move the right edge to `new_end`. `max_duration` = longest allowed duration (`Project::max_clip_duration`).
     pub fn trim_end(&mut self, new_end: f64, max_duration: f64) {
         let ne = new_end.min(self.start + max_duration).max(self.start + MIN_CLIP);
         let d = ne - self.end();
         self.duration = ne - self.start;
-        if self.freeze.is_none() && self.reverse {
+        if let Some(m) = &self.time_map {
+            self.time_map = Some(m.crop(0.0, self.duration));
+            self.sync_time_map();
+        } else if self.freeze.is_none() && self.reverse {
             // the right edge of a reversed clip is the earliest source time
             self.src_in = (self.src_in - d * self.speed).max(0.0);
         }

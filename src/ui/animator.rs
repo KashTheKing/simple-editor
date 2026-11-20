@@ -3504,6 +3504,7 @@ fn speed_row(
     let next = project.tracks[tr].clips.iter().find(|n| (n.start - c.end()).abs() < 1.5 / project.fps).map(|n| n.id);
     // what the menu asked for: these keys (0..1 across the clip; none = normal speed), or a ramp through the cut
     let mut pick: Option<Result<Vec<Keyframe>, Id>> = None;
+    let mut remap = None; // ws:time-remap: Some(on) from the menu
     let mut hui = ui.new_child(egui::UiBuilder::new().id_salt(("an-head", id)).max_rect(rest.shrink2(vec2(20.0, 0.0))));
     hui.set_clip_rect(rest.intersect(ui.clip_rect()));
     menu::button(&mut hui, "Ramps", |ui| {
@@ -3514,6 +3515,13 @@ fn speed_row(
         }
         if menu::row(ui, None, "Normal", "").clicked() {
             pick = Some(Ok(Vec::new()));
+        }
+        // ws:time-remap
+        ui.separator();
+        let on = c.time_map.is_some();
+        let tip = "Remap time with keys: holds and backward stretches too; changing a speed changes the clip's length";
+        if menu::row(ui, None, "Time Remap", if on { "On" } else { "" }).on_hover_text(tip).clicked() {
+            remap = Some(!on);
         }
         if let Some(n) = next {
             ui.separator();
@@ -3545,7 +3553,25 @@ fn speed_row(
         }
         None => {}
     }
+    if let Some(on) = remap {
+        undo(project);
+        out.edited |= if on { project.time_remap_enable(id) } else { project.time_remap_disable(id) };
+    }
     let Some(c) = project.clip(id).cloned() else { return };
+    // ws:time-remap: a remapped clip's row is its speed lane (keys, holds, backward stretches)
+    if c.time_map.is_some() {
+        let (l, w, start) = (body.left(), body.width(), c.start);
+        let x = move |t: f64| l + ((start + t - t0) / (t1 - t0).max(1e-3)) as f32 * w;
+        let tx = move |px: f32| t0 + ((px - l) / w.max(1.0)) as f64 * (t1 - t0) - start;
+        let plot = Rect::from_min_max(body.min + vec2(0.0, 16.0), body.max - vec2(0.0, 4.0));
+        let r = crate::ui::time_remap_ui::lane(ui, plot, &x, &tx, project, id, pal, undo);
+        out.edited |= r.changed;
+        if let Some(s) = r.seek {
+            *playhead = (start + s).max(0.0);
+            out.seeked = true;
+        }
+        return;
+    }
     let sel = st.speed_sel.filter(|s| s.0 == id).map(|s| s.1);
     let resp = ui.interact(body, ui.id().with(("an-speed", id)), Sense::click_and_drag());
     let plot = Rect::from_min_max(body.min + vec2(0.0, 16.0), body.max - vec2(0.0, 8.0));

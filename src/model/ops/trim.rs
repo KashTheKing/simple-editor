@@ -193,7 +193,11 @@ impl Project {
             let max_in = (a.duration - c.src_len()).max(0.0);
             let new_in = (c.src_in + dsrc).clamp(0.0, max_in);
             if (new_in - c.src_in).abs() > EPS {
-                self.tracks[ti].clips[ci].src_in = new_in;
+                let c = &mut self.tracks[ti].clips[ci];
+                if let Some(m) = &mut c.time_map {
+                    m.slip(new_in - c.src_in);
+                }
+                c.src_in = new_in;
                 changed = true;
             }
         }

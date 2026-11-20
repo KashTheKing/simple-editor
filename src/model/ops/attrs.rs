@@ -39,9 +39,16 @@ impl Project {
                 c.mask = src.mask.clone();
             }
             if set.speed {
+                c.disable_time_map(); // ws:time-remap: back to one speed first, so `set_speed` sizes the clip
                 c.set_speed(src.speed);
                 c.reverse = src.reverse;
                 c.freeze = src.freeze;
+                // a time map is the source's own timing: pasted as its shape, started at this clip's source
+                c.time_map = src.time_map.clone().map(|mut m| {
+                    m.slip(c.src_in - src.src_in);
+                    m
+                });
+                c.sync_time_map();
             }
             if set.audio {
                 c.volume = src.volume.clone();

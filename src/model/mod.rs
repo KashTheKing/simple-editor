@@ -683,6 +683,7 @@ pub mod repair; // forum-crash: the safe-start helpers are used by ui::app::reco
 mod shape;
 mod subtitle;
 mod text;
+mod timemap;
 mod track;
 mod transition;
 
@@ -705,6 +706,7 @@ pub use project::*;
 pub use shape::*;
 pub use subtitle::*;
 pub use text::*;
+pub use timemap::*;
 pub use track::*;
 pub use transition::*;
 

@@ -744,6 +744,22 @@ impl DecoderPool {
         }
         self.source_cache.get(path, SourceCache::us(t), w, h)
     }
+    /// ws:time-remap: the cached frame of `path` at this size nearest to `t`, if one lies within `tol`
+    /// seconds - what a remapped clip running backwards shows instead of seeking back through a GOP
+    /// (the forward pass just decoded these frames). Never in an exact (export) pool.
+    pub fn cached_near(&mut self, path: &str, t: f64, w: u32, h: u32, tol: f64) -> Option<Arc<Frame>> {
+        if self.exact || self.source_cache.budget == 0 {
+            return None;
+        }
+        let us = SourceCache::us(t);
+        let tol = SourceCache::us(tol);
+        let m = self.source_cache.map.get(path)?;
+        let (_, f) = m
+            .iter()
+            .filter(|((k, kw, kh), _)| *kw == w && *kh == h && (*k - us).abs() <= tol)
+            .min_by_key(|((k, ..), _)| (*k - us).abs())?;
+        Some(f.1.clone())
+    }
     /// The file a source is decoded from: its proxy in a preview pool, unless `exact` is on.
     fn resolved(&self, path: &str) -> String {
         match self.proxies.get(path) {

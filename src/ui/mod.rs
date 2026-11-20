@@ -63,6 +63,7 @@ pub mod paste_ui;
 pub mod planner;
 pub mod preview;
 pub mod retime;
+pub mod time_remap_ui; // ws:time-remap
 // ---- ws:pro-monitor ----
 pub mod scopes_ui;
 pub mod settings_ui;

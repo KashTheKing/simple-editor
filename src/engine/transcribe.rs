@@ -762,7 +762,7 @@ pub fn target_for(project: &crate::model::Project, clip: crate::model::Id) -> Re
         .map(|a| a.path.clone())
         .filter(|p| !p.is_empty())
         .ok_or("that clip has no footage to transcribe")?;
-    if c.reverse || c.freeze.is_some() {
+    if c.reverse || c.freeze.is_some() || c.time_map.is_some() {
         return Err("reversed and frozen clips can't be transcribed".into());
     }
     let src_dur = (c.duration * c.speed).max(0.1);

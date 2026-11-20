@@ -2093,4 +2093,77 @@ mod tests {
         project.tracks[0].clips[0].opacity = Animated::new(0.0);
         assert_eq!(decodes(&project), 0, "opacity 0");
     }
+
+    // ---- ws:time-remap ----
+    /// Records the source frame (30 fps) each request lands on.
+    struct FrameSpy(std::sync::Arc<std::sync::Mutex<Vec<i64>>>);
+    impl VideoSource for FrameSpy {
+        fn size(&self) -> (u32, u32) {
+            (320, 240)
+        }
+        fn frame_at(&mut self, t: f64, w: u32, h: u32, out: &mut Frame) -> bool {
+            self.0.lock().unwrap().push((t * 30.0).floor() as i64);
+            out.resize(w, h);
+            out.fill([0, 255, 0, 255]);
+            out.pts = t;
+            true
+        }
+    }
+
+    /// Export frames of a remapped clip land on the source frames the map says: 1x, a hold, a rewind,
+    /// then 2x - every frame, exactly (an exact pool, as export uses, so no cache in between).
+    #[test]
+    fn time_remap_export_frames_land_on_their_source_frames() {
+        let mut project = Project::new();
+        (project.width, project.height, project.fps) = (320, 240, 30.0);
+        let id = project.add_asset(fake_asset());
+        project.insert_asset_clips(id, 0.0, None);
+        let cid = project.tracks[0].clips[0].id;
+        project.trim_clip(cid, None, Some(4.0)).unwrap();
+        project.time_remap_add_key(cid, 1.0).unwrap();
+        project.time_remap_add_key(cid, 2.0).unwrap();
+        project.time_remap_hold(cid, 1.0, 0.5).unwrap(); // 0..1: 0..1 s, 1..1.5: hold 1 s, 1.5..2.5: 1..2 s
+        project.time_remap_reverse(cid, 2.0).unwrap(); // 2.5..3.5 back to 1 s, 3.5..4.5 forward to 2 s
+        let m = project.clip(cid).unwrap().time_map.clone().unwrap();
+        let last = m.keys.len() - 2;
+        project.time_remap_edit(cid, |mm| {
+            mm.set_segment_speed(last, 2.0);
+        })
+        .unwrap(); // 4.5..5.5 plays 2..4 s
+        let c = project.clip(cid).unwrap().clone();
+        assert!((c.duration - 5.5).abs() < 1e-9, "{}", c.duration);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.set_exact(true);
+        pool.insert_video(&project.assets[0].path, Box::new(FrameSpy(seen.clone())));
+        let mut comp = Compositor::new();
+        let mut text = TextRasterizer::new();
+        let mut out = Frame::default();
+        let n = (c.duration * 30.0).round() as usize;
+        for i in 0..n {
+            comp.render(&project, i as f64 / 30.0, 320, 240, &mut pool, &mut text, &mut out);
+        }
+        let expect: Vec<i64> = (0..n)
+            .map(|i| {
+                let t = i as f64 / 30.0;
+                let s = if t < 1.0 {
+                    t
+                } else if t < 1.5 {
+                    1.0
+                } else if t < 2.5 {
+                    t - 0.5
+                } else if t < 3.5 {
+                    2.0 - (t - 2.5)
+                } else if t < 4.5 {
+                    1.0 + (t - 3.5)
+                } else {
+                    2.0 + 2.0 * (t - 4.5)
+                };
+                (s * 30.0 + 1e-6).floor() as i64
+            })
+            .collect();
+        let got = seen.lock().unwrap().clone();
+        assert_eq!(got, expect);
+        assert!(got[30..45].iter().all(|&f| f == 30), "the hold shows one frame");
+    }
 }

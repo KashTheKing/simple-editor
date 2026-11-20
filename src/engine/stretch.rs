@@ -157,8 +157,10 @@ impl Grains {
 }
 
 /// The mixer stretches this clip's sound (Keep Pitch on and its speed is not 1).
+// ponytail: a time-remapped clip stays on the varispeed path (`mixer::resample_mapped`, pitch follows speed);
+// stretching it means driving grains through `map.speed` with holds/backward muted, as the time-remap hand-off describes.
 pub fn stretches(clip: &Clip) -> bool {
-    clip.keep_pitch && clip.freeze.is_none() && ((clip.speed - 1.0).abs() > 1e-9 || clip.speed_curve.is_animated())
+    clip.keep_pitch && clip.freeze.is_none() && clip.time_map.is_none() && ((clip.speed - 1.0).abs() > 1e-9 || clip.speed_curve.is_animated())
 }
 
 /// A stretched clip plays too fast to hear somewhere in timeline `[t0, t1]` (muted for that block).

@@ -2021,6 +2021,13 @@ fn layers_with(
     set
 }
 
+/// ws:time-remap: Some(how far off a frame may be, source seconds) when `clip`'s time map runs backwards at
+/// timeline time `t` - two source frames.
+fn backwards(clip: &Clip, t: f64, fps: f64) -> Option<f64> {
+    let m = clip.time_map.as_ref()?;
+    (m.speed(clip.local(t)) < -crate::model::STILL).then(|| 2.0 / if fps > 0.0 { fps } else { 30.0 })
+}
+
 /// Start opening, in the background (`DecoderPool::warm`), the footage of every clip on screen
 /// anywhere in `lo..=hi` seconds.
 /// ponytail: top-level clips and forward play only - a clip inside a nested sequence, or one a
@@ -2275,7 +2282,12 @@ fn layer_for<'p>(
                             d.hole.clone()
                         }
                     },
-                    _ => match pool.frame_arc(&asset.path, st, dw, dh, spare) {
+                    // ws:time-remap: a stretch running backwards shows the nearest frame the forward pass left
+                    // in the cache (within 2 source frames) rather than seeking back
+                    _ => match backwards(clip, t, asset.fps)
+                        .and_then(|tol| pool.cached(&asset.path, st, dw, dh).or_else(|| pool.cached_near(&asset.path, st, dw, dh, tol)))
+                        .or_else(|| pool.frame_arc(&asset.path, st, dw, dh, spare))
+                    {
                         Some(f) => f,
                         None => continue,
                     },

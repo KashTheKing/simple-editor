@@ -228,9 +228,14 @@ fn mix_audio_clip(
         return;
     }
     let n = out.len() / 2;
-    let m = (n as f64 * clip.speed).ceil() as usize + 1;
+    let (s0, m) = match &clip.time_map {
+        Some(map) => mapped_span(map, clip.local(t0), n),
+        None => (0.0, (n as f64 * clip.speed).ceil() as usize + 1),
+    };
     let mut buf = scratch.take(depth * 2, m * 2);
-    let s0 = if clip.reverse {
+    let s0 = if clip.time_map.is_some() {
+        s0
+    } else if clip.reverse {
         // the source block ends at src_time(t0) and is walked backwards
         clip.src_time(t0) - (m - 1) as f64 / sr
     } else {
@@ -238,7 +243,7 @@ fn mix_audio_clip(
     };
     if let Some(src) = pool.audio(path, clip.audio_stream, voice) {
         read_block(src, s0, &mut buf);
-        resample_add(clip, ext, t0, &buf, out, track_gain, clip.speed, clip.reverse);
+        add_block(clip, ext, t0, s0, &buf, out, track_gain);
     }
     scratch.put(depth * 2, buf);
 }
@@ -293,11 +298,20 @@ fn mix_seq_clip(
         return;
     }
     let n = out.len() / 2;
-    let m = (n as f64 * clip.speed).ceil() as usize + 1;
+    let (s0, m) = match &clip.time_map {
+        Some(map) => mapped_span(map, clip.local(t0), n),
+        None => (0.0, (n as f64 * clip.speed).ceil() as usize + 1),
+    };
     let mut buf = scratch.take(depth * 2 + 1, m * 2);
-    let s0 = if clip.reverse { clip.src_time(t0) - (m - 1) as f64 / sr } else { clip.src_time(t0) };
+    let s0 = if clip.time_map.is_some() {
+        s0
+    } else if clip.reverse {
+        clip.src_time(t0) - (m - 1) as f64 / sr
+    } else {
+        clip.src_time(t0)
+    };
     mix_tracks(scratch, project, tracks, s0, pool, &mut Dest::Buf(&mut buf), depth + 1);
-    resample_add(clip, ext, t0, &buf, out, track_gain, clip.speed, clip.reverse);
+    add_block(clip, ext, t0, s0, &buf, out, track_gain);
     scratch.put(depth * 2 + 1, buf);
 }
 
@@ -372,6 +386,83 @@ fn read_block(src: &mut dyn AudioSource, s0: f64, buf: &mut [f32]) {
     }
     buf[..skip].fill(0.0);
     src.read_at(0.0, &mut buf[skip..]);
+}
+
+/// The source a remapped clip's block of `n` frames from clip-local `l0` reads: (first source second,
+/// frames to read). Forward stretches only - holds and backward stretches are silent (`resample_mapped`).
+/// ponytail: capped at 16x the block - a faster stretch plays its first 16x and skips the rest.
+fn mapped_span(map: &crate::model::TimeMap, l0: f64, n: usize) -> (f64, usize) {
+    let sr = SAMPLE_RATE as f64;
+    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+    for k in [0, n / 4, n / 2, 3 * n / 4, n] {
+        let s = map.eval(l0 + k as f64 / sr);
+        (lo, hi) = (lo.min(s), hi.max(s));
+    }
+    // between the sampled points a segment is monotone, but a key may sit between two of them
+    for key in map.keys.iter().filter(|k| k.t > l0 && k.t < l0 + n as f64 / sr) {
+        (lo, hi) = (lo.min(key.s), hi.max(key.s));
+    }
+    let m = (((hi - lo) * sr).ceil() as usize + 2).min(n * 16 + 2);
+    (lo, m)
+}
+
+/// `resample_add` for a plain clip, the remap's own walk for a remapped one.
+fn add_block(clip: &Clip, ext: &Ext, t0: f64, s0: f64, buf: &[f32], out: &mut [f32], track_gain: f32) {
+    match &clip.time_map {
+        Some(map) => resample_mapped(clip, map, ext, t0, s0, buf, out, track_gain),
+        None => resample_add(clip, ext, t0, buf, out, track_gain, clip.speed, clip.reverse),
+    }
+}
+
+/// A remapped clip's block: each output frame reads the source at the map's time for it (varispeed - the
+/// pitch follows the speed, as with a constant speed), muted where the map holds still or runs
+/// backwards, with a 2 ms ramp either side of a mute so it never clicks. `buf` starts at source `s0`.
+#[allow(clippy::too_many_arguments)]
+fn resample_mapped(
+    clip: &Clip,
+    map: &crate::model::TimeMap,
+    ext: &Ext,
+    t0: f64,
+    s0: f64,
+    buf: &[f32],
+    out: &mut [f32],
+    track_gain: f32,
+) {
+    const RAMP: f32 = 96.0; // frames, 2 ms at 48 kHz
+    let n = out.len() / 2;
+    let m = buf.len() / 2;
+    if n == 0 || m == 0 {
+        return;
+    }
+    let sr = SAMPLE_RATE as f64;
+    let (l0, r0) = gains(clip, ext, t0);
+    let (l1, r1) = gains(clip, ext, t0 + n as f64 / sr);
+    let (l0, r0, l1, r1) = (l0 * track_gain, r0 * track_gain, l1 * track_gain, r1 * track_gain);
+    let dl = (l1 - l0) / n as f32;
+    let dr = (r1 - r0) / n as f32;
+    let lt0 = clip.local(t0);
+    let audible = |l: f64| map.speed(l) > crate::model::STILL;
+    // the gate starts where it would be after the frames before this block (same rule, no state kept)
+    let mut gate = (1..=RAMP as usize)
+        .rev()
+        .fold(0.0f32, |g, k| if audible(lt0 - k as f64 / sr) { (g + 1.0 / RAMP).min(1.0) } else { (g - 1.0 / RAMP).max(0.0) });
+    let last = m - 1;
+    for (k, o) in out.chunks_exact_mut(2).enumerate() {
+        let l = lt0 + k as f64 / sr;
+        let (s, v) = map.eval2(l);
+        gate = if v > crate::model::STILL { (gate + 1.0 / RAMP).min(1.0) } else { (gate - 1.0 / RAMP).max(0.0) };
+        if gate <= 0.0 {
+            continue;
+        }
+        let pos = ((s - s0) * sr).clamp(0.0, last as f64);
+        let j = pos as usize;
+        let j1 = (j + 1).min(last);
+        let fr = (pos - j as f64) as f32;
+        let a = &buf[j * 2..j * 2 + 2];
+        let b = &buf[j1 * 2..j1 * 2 + 2];
+        o[0] += (a[0] + (b[0] - a[0]) * fr) * (l0 + dl * k as f32) * gate;
+        o[1] += (a[1] + (b[1] - a[1]) * fr) * (r0 + dr * k as f32) * gate;
+    }
 }
 
 /// Linearly resample `buf` (m source frames read at the clip's source time for `t0`) into `out`
@@ -923,6 +1014,41 @@ mod tests {
         p.tracks[ai].clips[0].freeze = Some(3.0);
         mx.mix(&p, 1.0, &mut pool, &mut out);
         assert!(out.iter().all(|s| *s == 0.0));
+    }
+
+    // ---- ws:time-remap ----
+    /// A remapped clip's audio follows the map sample by sample (varispeed), and is silent where the map
+    /// holds still or runs backwards.
+    #[test]
+    fn time_remap_follows_the_map_and_mutes_holds_and_reverse() {
+        use crate::model::{TimeKey, TimeMap};
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_audio("Z:\\nope\\fake.wav", 0, Box::new(Ramp));
+        let mut mx = Mixer::new();
+        let mut out = vec![0.0f32; 2 * 480];
+        let sr = SAMPLE_RATE as f64;
+        // 0..2 s: source 0..4 (2x), 2..3: hold at 4, 3..4: back to 3, 4..6: 3..5
+        let key = |t: f64, s: f64| TimeKey { smooth: false, ..TimeKey::new(t, s) };
+        let m = TimeMap { keys: vec![key(0.0, 0.0), key(2.0, 4.0), key(3.0, 4.0), key(4.0, 3.0), key(6.0, 5.0)], fps: 0.0 };
+        let c = &mut p.tracks[ai].clips[0];
+        c.time_map = Some(m);
+        c.sync_time_map();
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        let k = 400;
+        let want = (2.0 + 2.0 * k as f64 / sr) * 0.01;
+        assert!((out[k * 2] as f64 - want).abs() < 1e-4, "2x: {} vs {want}", out[k * 2]);
+        mx.mix(&p, 2.5, &mut pool, &mut out);
+        assert!(out.iter().all(|s| *s == 0.0), "hold is silent");
+        mx.mix(&p, 3.5, &mut pool, &mut out);
+        assert!(out.iter().all(|s| *s == 0.0), "backwards is silent");
+        mx.mix(&p, 5.0, &mut pool, &mut out);
+        let want = (4.0 + k as f64 / sr) * 0.01;
+        assert!((out[k * 2] as f64 - want).abs() < 1e-4, "forward again: {} vs {want}", out[k * 2]);
+        // coming out of the backward stretch the sound ramps in (no click): quiet at first, full by 2 ms
+        mx.mix(&p, 4.0, &mut pool, &mut out);
+        assert!(out[0].abs() < 0.002 && (out[200 * 2] as f64 - (3.0 + 200.0 / sr) * 0.01).abs() < 1e-4);
     }
 
     #[test]

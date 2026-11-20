@@ -285,7 +285,7 @@ pub fn duck(
     let mut windows: Vec<(f64, f64)> = Vec::new();
     for &id in dialogue {
         let Some(c) = project.clip(id) else { continue };
-        if c.reverse || c.freeze.is_some() {
+        if c.reverse || c.freeze.is_some() || c.time_map.is_some() {
             continue;
         }
         let (start, src_in, duration, speed) = (c.start, c.src_in, c.duration, c.speed);
@@ -372,7 +372,7 @@ pub fn detect_beats(
     let mut all_onsets = Vec::new();
     for &clip_id in targets {
         let Some(c) = project.clip(clip_id).cloned() else { continue };
-        if c.reverse || c.freeze.is_some() {
+        if c.reverse || c.freeze.is_some() || c.time_map.is_some() {
             continue;
         }
         let Some(peaks) = peaks_of(project, c.asset) else { continue };
@@ -430,7 +430,7 @@ pub fn split_beats(project: &mut Project, per_clip: &[(Id, Vec<f64>)]) -> usize 
 pub fn scene_cut_markers(project: &mut Project, clip: Id, cuts_src: &[f64]) -> Vec<Id> {
     let mut ids = Vec::new();
     let Some(c) = project.clip(clip).cloned() else { return ids };
-    if c.reverse || c.freeze.is_some() {
+    if c.reverse || c.freeze.is_some() || c.time_map.is_some() {
         return ids;
     }
     for &t_src in cuts_src {
@@ -445,7 +445,7 @@ pub fn scene_cut_markers(project: &mut Project, clip: Id, cuts_src: &[f64]) -> V
 /// Shared by the Scene cuts section's "Split" button and `media.scene_cuts`'s `split` path.
 pub fn split_scene_cuts(project: &mut Project, clip: Id, cuts_src: &[f64]) -> usize {
     let Some(c) = project.clip(clip).cloned() else { return 0 };
-    if c.reverse || c.freeze.is_some() {
+    if c.reverse || c.freeze.is_some() || c.time_map.is_some() {
         return 0;
     }
     // see split_beats' comment: `group` must grow with each split's new piece.

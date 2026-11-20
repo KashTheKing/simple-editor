@@ -39,6 +39,14 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("delete_clips", "timeline.delete"),
     ("move_clips", "timeline.move"),
     ("set_speed", "clip.set"),
+    // ---- ws:time-remap ----
+    ("time_remap_enable", "clip.time_remap"),
+    ("time_remap_disable", "clip.time_remap"),
+    ("time_remap_edit", "clip.time_remap"),
+    ("time_remap_set_keys", "clip.time_remap"),
+    ("time_remap_hold", "clip.time_remap"),
+    ("time_remap_reverse", "clip.time_remap"),
+    ("time_remap_add_key", "clip.time_remap"),
     ("add_node", "clip.add_node"),
     ("add_label", "labels.set"),
     ("remove_label", "labels.set"),
@@ -248,6 +256,7 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/spans.rs"), // ws:animator
     include_str!("../../model/ops/subtitles.rs"),
     include_str!("../../model/ops/templates.rs"),
+    include_str!("../../model/ops/timeremap.rs"), // ws:time-remap
     include_str!("../../model/ops/tracks.rs"),
     include_str!("../../model/ops/transitions.rs"),
     include_str!("../../model/ops/trim.rs"),

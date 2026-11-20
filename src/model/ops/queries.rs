@@ -160,6 +160,17 @@ impl Project {
             return f64::INFINITY;
         }
         let Some(a) = self.asset(clip.asset) else { return f64::INFINITY };
+        if let Some(m) = &clip.time_map {
+            // what a trim past the left edge reads: the first segment carried on backwards in clip time
+            let (s0, v) = m.eval2(0.0);
+            return if v > STILL {
+                s0.max(0.0)
+            } else if v < -STILL {
+                (a.duration - s0).max(0.0)
+            } else {
+                f64::INFINITY
+            };
+        }
         if clip.reverse {
             (a.duration - clip.src_end()).max(0.0)
         } else {
@@ -172,6 +183,17 @@ impl Project {
             return f64::INFINITY;
         }
         let Some(a) = self.asset(clip.asset) else { return f64::INFINITY };
+        if let Some(m) = &clip.time_map {
+            let (s1, v) = m.eval2(clip.duration);
+            let extra = if v > STILL {
+                a.duration - s1
+            } else if v < -STILL {
+                s1
+            } else {
+                return f64::INFINITY;
+            };
+            return (clip.duration + extra.max(0.0) / v.abs()).max(MIN_CLIP);
+        }
         let extra = if clip.reverse { clip.src_in } else { a.duration - clip.src_end() };
         (clip.duration + extra.max(0.0) / clip.speed).max(MIN_CLIP)
     }
