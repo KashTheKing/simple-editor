@@ -276,8 +276,10 @@ impl App {
         let a = self.project.in_point.unwrap_or(0.0);
         let b = self.project.out_point.unwrap_or_else(|| self.project.duration());
         if b > a {
-            let App { prerender, project, .. } = self;
-            if guarded(|| prerender.request(project, a, b)).is_none() {
+            // ws:zones-markers: keyed like `tick` / `frame` key it, on the player's drawn copy (zones in)
+            let view = self.player.project();
+            let prerender = &mut self.prerender;
+            if guarded(|| prerender.request(&view, a, b)).is_none() {
                 self.settings.movie_mode = false;
                 self.toast("Movie mode is not available in this build");
             }
@@ -294,8 +296,9 @@ impl App {
             return Err("Nothing to render - the range is empty");
         }
         self.settings.movie_mode = true;
-        let App { prerender, project, .. } = self;
-        if guarded(|| prerender.request(project, a, b)).is_none() {
+        let view = self.player.project(); // ws:zones-markers: as `request_prerender`
+        let prerender = &mut self.prerender;
+        if guarded(|| prerender.request(&view, a, b)).is_none() {
             self.settings.movie_mode = false;
             return Err("Movie mode is not available in this build");
         }

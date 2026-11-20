@@ -193,4 +193,19 @@ mod tests {
         p.zone_mut(z).unwrap().sequence = Some(999);
         assert!(matches!(render_view(&p), Cow::Borrowed(_)));
     }
+
+    /// Movie Mode keys its pre-rendered seconds on the drawn view: a zone changes the key of the seconds it
+    /// covers (so they render again, with the zone), and only those.
+    #[test]
+    fn a_zone_changes_the_prerender_key_of_its_seconds() {
+        use crate::engine::prerender::key_for;
+        let (mut p, v1) = project();
+        let before: Vec<u64> = (0..20).map(|s| key_for(&drawn(&p), s)).collect();
+        p.add_zone(3.0, 2.0, Some(v1), vec![Effect::new(EffectKind::Grayscale)]);
+        let after: Vec<u64> = (0..20).map(|s| key_for(&drawn(&p), s)).collect();
+        let changed: Vec<i64> = (0..20).filter(|&s| before[s as usize] != after[s as usize]).collect();
+        assert!(changed.contains(&3) && changed.contains(&4), "the zone's seconds re-render: {changed:?}");
+        assert!(!changed.contains(&15), "a second far from the zone keeps its render: {changed:?}");
+        assert_eq!(key_for(&p, 3), before[3], "the raw project's key never sees the zone (why the view is used)");
+    }
 }
