@@ -6,16 +6,11 @@ use std::io::ErrorKind;
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
-pub(crate) const VIDEO_EXTS: &[&str] = &[
-    "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "ts", "m2ts", "mts", "flv", "3gp", "mpg", "mpeg", "gif", "ogv",
-    "vob", "divx", "asf", "f4v", "dv", "mxf",
-];
-/// Written by older builds; removed on uninstall.
-const LEGACY_KEY: &str = r"Software\Classes\SystemFileAssociations\video\shell\SimpleEditor";
-
-fn key(ext: &str) -> String {
-    format!(r"Software\Classes\SystemFileAssociations\.{ext}\shell\SimpleEditor")
-}
+/// The key list shared with the installer / uninstaller (`tools/se-setup`), so both write and remove the same keys.
+#[path = "shell_keys.rs"]
+pub(crate) mod shell_keys;
+pub(crate) use shell_keys::VIDEO_EXTS;
+use shell_keys::{menu_key as key, LEGACY_MENU_KEY as LEGACY_KEY, MENU_LABEL};
 
 fn exe() -> String {
     std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default()
@@ -38,7 +33,7 @@ pub fn install() -> std::io::Result<()> {
     for ext in VIDEO_EXTS {
         let key = key(ext);
         let (k, _) = hk.create_subkey(&key)?;
-        k.set_value("", &"Edit with Simple Editor")?;
+        k.set_value("", &MENU_LABEL)?;
         k.set_value("Icon", &format!("\"{exe}\",0"))?;
         let (c, _) = hk.create_subkey(format!(r"{key}\command"))?;
         c.set_value("", &format!("\"{exe}\" \"%1\""))?;
