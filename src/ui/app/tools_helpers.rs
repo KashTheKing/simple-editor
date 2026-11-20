@@ -233,6 +233,7 @@ pub(super) fn apply_clip_fields(clip: &mut Clip, fields: &Value) -> Result<(), S
         match k.as_str() {
             "speed" | "reverse" => {} // handled by the caller
             "name" => clip.name = v.as_str().ok_or("name: string")?.to_string(),
+            "comment" => clip.comment = v.as_str().ok_or("comment: string")?.to_string(),
             "enabled" => clip.enabled = v.as_bool().ok_or("enabled: bool")?,
             "label" => clip.label = v.as_u64().filter(|&l| l <= 8).ok_or("label: 0..8")? as u8,
             "freeze" => clip.freeze = if v.is_null() { None } else { Some(v.as_f64().ok_or("freeze: number|null")?) },

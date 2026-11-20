@@ -1050,6 +1050,16 @@ fn clip_section(
         }
         let line = format!("{track} · {} · {:.1} s", timecode(clip.start, fps), clip.duration);
         ui.add(egui::Label::new(RichText::new(line).weak()).truncate()).on_hover_text(tip);
+        // ws:parity-editing: the clip's comment, under its name (one undo step per edit, like the name)
+        let r = ui.add(
+            egui::TextEdit::multiline(&mut clip.comment)
+                .hint_text("Comment")
+                .desired_rows(1)
+                .desired_width(ui.available_width()),
+        );
+        mark(ui, "comment", &r);
+        g.note_text(&r);
+        r.on_hover_text("A note on this clip. It shows when you hover the clip on the timeline.");
     }
     if clip.kind == ClipKind::Adjustment {
         ui.weak("Adjustment layer - its effects apply to everything below it.");
@@ -1474,6 +1484,7 @@ fn clip_section(
         if let Some(c) = project.clip_mut(id) {
             c.container_label = clip.container_label.clone();
             c.name = clip.name.clone();
+            c.comment = clip.comment.clone();
             c.enabled = clip.enabled;
             c.label = clip.label;
             c.mask = clip.mask.clone();

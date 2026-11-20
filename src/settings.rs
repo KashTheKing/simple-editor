@@ -719,6 +719,23 @@ pub struct Settings {
     // ---- ws:player-metadata ----
     /// Saved tag sets (Settings ▸ Metadata), applied in one click in the player, the Library and Export.
     pub metadata_presets: Vec<crate::engine::tags::MetaPreset>,
+    // ---- ws:parity-editing ----
+    /// How times are shown (Settings ▸ General ▸ Time display): "smpte" (HH:MM:SS:FF), "clock"
+    /// (HH:MM:SS.mmm) or "frames". Applied app-wide through `ui::set_time_format`.
+    pub time_format: String,
+    /// Export ▸ "Chapters from markers": embed the timeline markers as chapters in MP4/MOV/MKV exports.
+    #[serde(default = "default_true")]
+    pub export_chapters: bool,
+    /// Per-filter presets: one effect's settings saved under a name (Effects ▸ right-click ▸ Save Preset).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub filter_presets: Vec<FilterPreset>,
+}
+
+/// ws:parity-editing: one effect's settings saved under a name, offered for that effect kind only.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct FilterPreset {
+    pub name: String,
+    pub effect: crate::model::Effect,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1018,6 +1035,10 @@ impl Default for Settings {
             emulator: BTreeMap::new(),
             match_import: true, // ws:project-color-fps
             metadata_presets: Vec::new(), // ws:player-metadata
+            // ---- ws:parity-editing ----
+            time_format: "smpte".into(),
+            export_chapters: true,
+            filter_presets: Vec::new(),
         }
     }
 }

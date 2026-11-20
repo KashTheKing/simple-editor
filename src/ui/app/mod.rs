@@ -941,6 +941,7 @@ impl App {
         // ---- ws:neutral-web ---- (before anything builds a cache path or opens a link)
         Settings::set_cache_folder(&settings.cache_folder);
         crate::engine::browsers::set_choice(&settings.web_browser);
+        crate::ui::set_time_format(crate::ui::TimeFormat::from_id(&settings.time_format)); // ws:parity-editing
         // ---- ws:pages ---- (a pre-pages file keeps its old tree as the "Before update" profile)
         layout_ctl::migrate_to_pages(&mut settings);
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
