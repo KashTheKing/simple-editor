@@ -592,11 +592,15 @@ impl App {
                         }
                     }
                     Err(e) => {
-                        self.toast(format!(
-                            "Couldn't replace the original ({e}); edited file left at {}, original backed up as {}",
-                            temp.display(),
-                            quick_export::bak_path(&original).display()
-                        ));
+                        // the original is untouched: keep the edit as a visible copy, never hidden leftovers
+                        let name = original.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        match quick_export::keep_as_copy(&temp, &original) {
+                            Ok(copy) => self.toast_with_folder(
+                                format!("{name} is open in another program, so it wasn't replaced. Your edit is saved as {}", copy.file_name().unwrap_or_default().to_string_lossy()),
+                                copy,
+                            ),
+                            Err(_) => self.toast(format!("Couldn't replace {name} ({e}); your edit is at {}", temp.display())),
+                        }
                         self.player.set_project(&self.project);
                     }
                 }

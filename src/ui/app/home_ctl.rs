@@ -203,14 +203,7 @@ fn handle(app: &mut App, a: PageAction) {
             app.home.rename = Some(RenameDlg { path, name, error: None, focus: true });
         }
         PageAction::OpenFolder(path) => {
-            let p = Path::new(&path);
-            let mut cmd = std::process::Command::new("explorer");
-            if p.is_file() {
-                cmd.arg("/select,").arg(p);
-            } else if let Some(d) = p.parent() {
-                cmd.arg(d);
-            }
-            let _ = cmd.spawn();
+            crate::contextmenu::reveal(Path::new(&path));
         }
         PageAction::Remove(path) => {
             remove(app, &path);

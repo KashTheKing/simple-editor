@@ -148,13 +148,7 @@ pub(super) fn draw(app: &mut App, ctx: &egui::Context) {
                         }
                         if let Some(p) = &t.open_path {
                             if ui.small_button("Open Folder").clicked() {
-                                let mut cmd = std::process::Command::new("explorer");
-                                if p.is_dir() {
-                                    cmd.arg(p);
-                                } else {
-                                    cmd.arg("/select,").arg(p);
-                                }
-                                let _ = cmd.spawn();
+                                crate::contextmenu::reveal(p);
                             }
                             // a saved video, sound or picture: open it in its default program, or import it
                             if is_media_file(p) {
