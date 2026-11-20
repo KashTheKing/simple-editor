@@ -24,9 +24,31 @@ const KEYWORDS: &[&str] = &[
 ];
 /// The globals a script is handed (`scripting::PRELUDE`) and Luau's own libraries.
 const GLOBALS: &[&str] = &[
-    "editor", "library", "project", "query", "math", "string", "table", "bit32", "utf8", "os", "coroutine", "buffer",
-    "print", "tostring", "tonumber", "pairs", "ipairs", "select", "type", "typeof", "assert", "error", "pcall",
-    "setmetatable", "getmetatable",
+    "editor",
+    "library",
+    "project",
+    "query",
+    "math",
+    "string",
+    "table",
+    "bit32",
+    "utf8",
+    "os",
+    "coroutine",
+    "buffer",
+    "print",
+    "tostring",
+    "tonumber",
+    "pairs",
+    "ipairs",
+    "select",
+    "type",
+    "typeof",
+    "assert",
+    "error",
+    "pcall",
+    "setmetatable",
+    "getmetatable",
 ];
 
 /// `[[`, `[=[`, `[==[`... at `i`: the number of `=` (the level), or `None`.
@@ -99,7 +121,10 @@ pub fn tokens(text: &str) -> Vec<(Range<usize>, Kind)> {
             i += 1;
             while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'.') {
                 // an exponent's sign belongs to the number
-                if (b[i] == b'e' || b[i] == b'E') && matches!(b.get(i + 1), Some(b'+' | b'-')) && !text[s..i].starts_with("0x") {
+                if (b[i] == b'e' || b[i] == b'E')
+                    && matches!(b.get(i + 1), Some(b'+' | b'-'))
+                    && !text[s..i].starts_with("0x")
+                {
                     i += 1;
                 }
                 i += 1;
@@ -329,7 +354,11 @@ pub fn show(ui: &mut egui::Ui, st: &mut ScriptEditor) -> Vec<Act> {
             ui.label(egui::RichText::new("●").color(ui.visuals().warn_fg_color)).on_hover_text("Unsaved changes");
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("Open Externally").on_hover_text("Open the file in the app Windows uses for it, or Notepad").clicked() {
+            if ui
+                .button("Open Externally")
+                .on_hover_text("Open the file in the app Windows uses for it, or Notepad")
+                .clicked()
+            {
                 acts.push(Act::OpenExternally);
             }
             if ui.button("Open Folder").on_hover_text("Show the file in File Explorer").clicked() {
@@ -361,22 +390,25 @@ pub fn show(ui: &mut egui::Ui, st: &mut ScriptEditor) -> Vec<Act> {
     let code_h = (ui.available_height() - line_h).max(60.0);
     let (dark, base) = (ui.visuals().dark_mode, ui.visuals().text_color());
     let font = egui::TextStyle::Monospace.resolve(ui.style());
-    egui::ScrollArea::both().id_salt("se-script-editor-scroll").max_height(code_h).auto_shrink([false, false]).show(ui, |ui| {
-        let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-            let mut job = highlight(buf.as_str(), &font, dark, base);
-            job.wrap.max_width = wrap;
-            ui.fonts_mut(|f| f.layout_job(job))
-        };
-        let rows = ((code_h / ui.text_style_height(&egui::TextStyle::Monospace)) as usize).max(4);
-        egui::TextEdit::multiline(&mut st.text)
-            .id(editor_id)
-            .code_editor()
-            .lock_focus(true)
-            .desired_rows(rows)
-            .desired_width(f32::INFINITY)
-            .layouter(&mut layouter)
-            .show(ui);
-    });
+    egui::ScrollArea::both().id_salt("se-script-editor-scroll").max_height(code_h).auto_shrink([false, false]).show(
+        ui,
+        |ui| {
+            let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+                let mut job = highlight(buf.as_str(), &font, dark, base);
+                job.wrap.max_width = wrap;
+                ui.fonts_mut(|f| f.layout_job(job))
+            };
+            let rows = ((code_h / ui.text_style_height(&egui::TextStyle::Monospace)) as usize).max(4);
+            egui::TextEdit::multiline(&mut st.text)
+                .id(editor_id)
+                .code_editor()
+                .lock_focus(true)
+                .desired_rows(rows)
+                .desired_width(f32::INFINITY)
+                .layouter(&mut layouter)
+                .show(ui);
+        },
+    );
     // the last run's result: selectable, so an error can be copied
     let colour = if st.output_err { ui.visuals().error_fg_color } else { ui.visuals().weak_text_color() };
     let text = if st.output.is_empty() { "Run shows the script's result here".to_string() } else { st.output.clone() };
@@ -437,7 +469,11 @@ pub fn scripts_menu(ui: &mut egui::Ui, metas: &[ScriptMeta], external: bool) -> 
                 ui.separator();
             }
             Entry::AddScript => {
-                let tip = if external { "Make a new script and open it in your editor" } else { "Make a new script and open it in the Script Editor" };
+                let tip = if external {
+                    "Make a new script and open it in your editor"
+                } else {
+                    "Make a new script and open it in the Script Editor"
+                };
                 if menu::row(ui, Some(tools::Glyph::Letter('+')), "Add Script", "").on_hover_text(tip).clicked() {
                     act = Some(MenuAct::AddScript);
                 }
@@ -463,7 +499,8 @@ fn script_rows(ui: &mut egui::Ui, m: &ScriptMeta, external: bool) -> Option<Menu
     if menu::row(ui, None, "Open", "").on_hover_text(tip).clicked() {
         return Some(MenuAct::Open(p()));
     }
-    if menu::row(ui, Some(tools::Glyph::Folder), "Open Folder", "").on_hover_text("Show it in File Explorer").clicked() {
+    if menu::row(ui, Some(tools::Glyph::Folder), "Open Folder", "").on_hover_text("Show it in File Explorer").clicked()
+    {
         return Some(MenuAct::OpenFolder(p()));
     }
     let r = menu::row(ui, None, "Rename…", "");
@@ -558,7 +595,10 @@ mod tests {
     #[test]
     fn menu_shows_add_script_with_zero_scripts() {
         assert_eq!(entries(0), vec![Entry::AddScript, Entry::OpenFolder]);
-        assert_eq!(entries(2), vec![Entry::Script(0), Entry::Script(1), Entry::Separator, Entry::AddScript, Entry::OpenFolder]);
+        assert_eq!(
+            entries(2),
+            vec![Entry::Script(0), Entry::Script(1), Entry::Separator, Entry::AddScript, Entry::OpenFolder]
+        );
         // and the Window menu draws the Scripts submenu whatever the count
         let menus = include_str!("app/menus.rs");
         assert!(menus.contains("scripts_ctl::menu(self, ui)"));

@@ -69,8 +69,9 @@ pub const NEW_NAME: &str = "New Script";
 pub fn valid_stem(name: &str) -> Result<String, String> {
     let mut s = name.trim();
     for ext in [".luau", ".lua"] {
-        if s.len() > ext.len() && s[s.len() - ext.len()..].eq_ignore_ascii_case(ext) {
-            s = s[..s.len() - ext.len()].trim_end();
+        let cut = s.len().saturating_sub(ext.len());
+        if cut > 0 && s.get(cut..).is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
+            s = s[..cut].trim_end();
         }
     }
     if s.is_empty() {
@@ -1160,10 +1161,9 @@ mod file_tests {
         let mut call = |_: &str, _: &Value| -> Result<Value, String> { Ok(serde_json::json!({"duration": 12})) };
         run(TEMPLATE, "New Script", &mut call, &mut logs).unwrap();
         assert_eq!(logs, vec!["The project is 12 s long"]);
-        let m = meta(&{
-            let d = scratch("meta");
-            create_in(&d).unwrap()
-        });
+        let d = scratch("meta");
+        let m = meta(&create_in(&d).unwrap());
+        let _ = std::fs::remove_dir_all(&d);
         assert_eq!(m.name, NEW_NAME, "the template keeps the file name as the menu name");
         assert!(m.desc.starts_with("What this script does"));
         assert!(check("local x = ", "bad").unwrap_err().contains("bad"), "a syntax error names the chunk");
@@ -1177,5 +1177,6 @@ mod file_tests {
             assert!(valid_stem(bad).is_err(), "{bad}");
         }
         assert!(valid_stem("COM10").is_ok() && valid_stem("console").is_ok());
+        assert_eq!(valid_stem("ééé").unwrap(), "ééé", "a non-ASCII name never slices mid-character");
     }
 }

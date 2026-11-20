@@ -228,7 +228,9 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 pub(super) fn button(app: &mut App, ui: &mut egui::Ui) {
     let id = egui::Id::new("se-script-editor-button");
     let open = app.pane_drawn(Pane::ScriptEditor);
-    if crate::ui::titlebar::panel_toggle_button(ui, &app.palette, id, tools::Glyph::Terminal, "Script Editor", open).clicked() {
+    if crate::ui::titlebar::panel_toggle_button(ui, &app.palette, id, tools::Glyph::Terminal, "Script Editor", open)
+        .clicked()
+    {
         app.toggle_panel(Pane::ScriptEditor);
     }
 }
@@ -329,7 +331,47 @@ pub(super) const TOOLS: &[ToolDef] = &[
             }
             open(app, &path, false);
             let ed = &app.script_editor;
-            Ok(ToolOutcome::Done(json!({"ok": true, "open": ed.path.as_deref() == Some(path.as_path()), "unsaved": ed.dirty()})))
+            Ok(ToolOutcome::Done(
+                json!({"ok": true, "open": ed.path.as_deref() == Some(path.as_path()), "unsaved": ed.dirty()}),
+            ))
         },
     },
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn script_tools_are_registered_and_file_changes_are_guarded() {
+        let none = json!({});
+        for t in ["scripts.create", "scripts.rename", "scripts.delete", "scripts.open"] {
+            assert!(mcp::tools::find(t).is_some(), "{t} is in the catalogue");
+        }
+        for t in ["scripts.create", "scripts.rename", "scripts.delete"] {
+            assert!(assistant_ctl::leaves_project(t, &none), "{t} waits for Allow");
+        }
+        assert!(!assistant_ctl::leaves_project("scripts.open", &none), "the pane is in the app");
+        assert!(assistant_ctl::leaves_project("scripts.open", &json!({"external": true})), "another program is not");
+        assert!(!script_ctl::script_may_call("scripts.create"), "a sandboxed script can't make files");
+    }
+
+    #[test]
+    fn the_pane_is_wired() {
+        assert_eq!(Pane::by_title("Script Editor"), Some(Pane::ScriptEditor));
+        assert!(Pane::ALL.contains(&Pane::ScriptEditor));
+        assert_eq!(menus::toggle_action(Pane::ScriptEditor), Some(Action::ToggleScriptEditor));
+        let menus = include_str!("menus.rs");
+        assert!(menus.contains("scripts_ctl::button(self, ui)"), "the top bar has the toggle button");
+        let reg = include_str!("mod.rs");
+        for entry in [
+            "scripts_ctl::draw,",
+            "scripts_ctl::act,",
+            "scripts_ctl::windows,",
+            "scripts_ctl::tick,",
+            "scripts_ctl::TOOLS,",
+        ] {
+            assert!(reg.contains(entry), "{entry} is registered");
+        }
+    }
+}
