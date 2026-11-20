@@ -282,6 +282,26 @@ pub(super) fn clip_menu(
                 }
             });
         }
+        // ---- ws:forum-ui ----: split screens and censoring, one pick each
+        if m.native_size {
+            menu::sub(ui, None, "Layout", |ui| {
+                for l in crate::model::ops::findability::Layout::ALL {
+                    if menu::row(ui, None, l.name(), "").on_hover_text(l.hint()).clicked() {
+                        *act = Some(Act::Layout(l));
+                    }
+                }
+            });
+        }
+        menu::sub(ui, None, "Censor", |ui| {
+            use crate::model::ops::findability::Censor;
+            let tip = "Over In to Out when marked, else over the selected clips";
+            if !m.audio && menu::row(ui, None, "Blur", "").on_hover_text(tip).clicked() {
+                *act = Some(Act::Censor(Censor::Blur));
+            }
+            if (m.audio || m.native_size) && menu::row(ui, None, "Mute", "").on_hover_text(tip).clicked() {
+                *act = Some(Act::Censor(Censor::Mute));
+            }
+        });
         menu::sub(ui, None, "Add", |ui| {
             acts(ui, &[Some(AddMarker), Some(AddTransition), Some(AddTransitionEnd)]);
             // a mask means nothing on audio

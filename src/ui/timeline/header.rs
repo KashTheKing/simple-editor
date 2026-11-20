@@ -167,6 +167,13 @@ pub(super) fn draw_header(
         if menu::row(ui, Some(Glyph::Pencil), "Rename…", &menu::shortcut(Action::RenameTrack)).clicked() {
             *track_rename = Some((ti, track.name.clone()));
         }
+        // ---- ws:forum-ui ----
+        if menu::row(ui, Some(Glyph::Copy), "Duplicate Track", "")
+            .on_hover_text("A copy of this track and its clips, right next to it")
+            .clicked()
+        {
+            act = Some(Act::DuplicateTrack(ti));
+        }
         if !is_video {
             menu::sub(ui, None, "Waveform", |ui| {
                 for (d, name) in [(None, "Follow View Setting"), (Some(false), "Simple"), (Some(true), "Detailed")] {

@@ -171,6 +171,7 @@ mod perf_ctl; // ws:perf-window
 mod quick_export; // ws:quick-export
 mod animator_ctl; // ws:animator
 mod tools_animate_bulk; // ws:animator: animate.audit, keyblocks.convert_all, animate.spans_from_transitions
+mod tools_findability; // ws:forum-ui: track.duplicate, clip.layout, clip.censor
 // ---- ws:panels-multiscreen ----
 mod render_pane;
 mod screens_ctl;
@@ -2042,6 +2043,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:home-page ----
     home_ctl::TOOLS,
     script_ctl::TOOLS,
+    // ---- ws:forum-ui ----
+    tools_findability::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[

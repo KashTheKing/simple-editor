@@ -550,6 +550,13 @@ enum Act {
     ReorderTrack(usize, bool),
     /// Track menu ▸ Waveform -> `Project::set_track_waveform` (None = follow the setting).
     SetTrackWaveform(usize, Option<bool>),
+    // ---- ws:forum-ui ----
+    /// Track menu ▸ Duplicate Track -> `Project::duplicate_track`.
+    DuplicateTrack(usize),
+    /// Clip menu ▸ Layout -> `Project::apply_layout` over the selection.
+    Layout(crate::model::ops::findability::Layout),
+    /// Clip menu ▸ Censor -> `Project::censor` over In/Out, else the selection's span.
+    Censor(crate::model::ops::findability::Censor),
 }
 
 mod arm;
@@ -2224,6 +2231,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 | Act::SetTrackColor(..)
                 | Act::ReorderTrack(..)
                 | Act::SetTrackWaveform(..)
+                | Act::DuplicateTrack(_)
+                | Act::Layout(_)
+                | Act::Censor(_)
         );
         let before = refusable.then(|| p.clone());
         let mut changed = true;
@@ -2327,6 +2337,22 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         }
                     }
                 }
+            }
+            // ---- ws:forum-ui ----
+            Act::DuplicateTrack(ti) => {
+                label = "Duplicate track";
+                changed = p.duplicate_track(ti).is_some();
+            }
+            Act::Layout(l) => {
+                label = "Layout";
+                changed = p.apply_layout(&ids, l);
+            }
+            Act::Censor(what) => {
+                label = "Censor";
+                changed = match p.censor_range(&ids) {
+                    Some((t0, t1)) => p.censor(what, &ids, t0, t1).is_some(),
+                    None => false,
+                };
             }
             Act::StretchToScreen => {
                 for &id in &ids {

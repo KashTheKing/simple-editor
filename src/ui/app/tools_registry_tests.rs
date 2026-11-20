@@ -79,6 +79,10 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("set_track_color", "track.set"),
     ("set_track_waveform", "track.set"),
     ("move_track", "track.move"),
+    // ---- ws:forum-ui ----
+    ("duplicate_track", "track.duplicate"),
+    ("apply_layout", "clip.layout"),
+    ("censor", "clip.censor"),
     ("ripple_trim", "timeline.ripple_trim"),
     ("roll_edit", "timeline.roll"),
     ("slip", "timeline.slip"),
@@ -218,6 +222,7 @@ const OP_INTERNAL: &[(&str, &str)] = &[
 ];
 
 const OP_FILES: &[&str] = &[
+    include_str!("../../model/ops/findability.rs"), // ws:forum-ui
     include_str!("../../model/ops/assets.rs"),
     include_str!("../../model/ops/attrs.rs"),
     include_str!("../../model/ops/browser.rs"),
