@@ -1773,7 +1773,10 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
             for &(sid, x0, y0) in clips.iter() {
                 if let Some(cl) = c.project.clip_mut(sid) {
                     let lt = cl.local(c.playhead);
-                    cl.x.set_at(lt, x0 + dx as f64);
+                    // a caption bar spans the frame: it only moves up and down
+                    if !crate::engine::compose::is_bar(cl) {
+                        cl.x.set_at(lt, x0 + dx as f64);
+                    }
                     cl.y.set_at(lt, y0 + dy as f64);
                 }
             }

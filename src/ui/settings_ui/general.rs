@@ -135,9 +135,15 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         }
     });
     // ---- ws:layout-modes-onboarding ----
+    // ---- ws:home-page ----
     changed |= ui
-        .checkbox(&mut s.home_screen, "Start screen")
+        .checkbox(&mut s.home_page, "Home page")
+        .on_hover_text("Open on a page of recent projects and New cards; File ▸ New and File ▸ Quit to Project List go there too. Off: the start screen card below")
+        .changed();
+    changed |= ui
+        .add_enabled(!s.home_page, egui::Checkbox::new(&mut s.home_screen, "Start screen"))
         .on_hover_text("The Open / Import / formats / recent projects card over an empty project")
+        .on_disabled_hover_text("Used when the Home page is off")
         .changed();
     changed |= ui.checkbox(&mut s.snap, "Snapping in the timeline").changed();
     let mut detailed = s.timeline_waveform == "detailed";

@@ -934,3 +934,19 @@ A button that opens a panel/pane/window (e.g. the top-right Performance button) 
   showed up as fake 0.5 s hitches while cargo hammered the disk - keep the writer thread.
 - Measuring through MCP on a loaded machine: `layout.page` round-trips of 1-25 s were idle time (HTTP), not UI
   work - read the trace, not the call time.
+
+## 2026-11-19 TikTok / Snapchat text (claude/feat-social-text-styles-4016d6)
+- `TextStyle.box_mode` (BOX_BLOCK / BOX_LINES / BOX_BAR) + `box_radius`, both `#[serde(default)]` (old files = one
+  square block, as before). The box is a coverage mask (`engine::text::box_mask`) drawn in the rasterizer, so the
+  cached bitmap carries it and preview (CPU + GPU via `playback::layer_for`), export, proxies and thumbnails all get it.
+- BOX_LINES: `line_boxes` gives one rounded rect per line plus concave quarter-circle fillets where widths step;
+  neighbours meet on a whole-pixel row (no AA seam). Radius and fillet split the width step (each <= half of it).
+- BOX_BAR: needs the frame width, so `TextRasterizer::render_in(style, scale, t, frame_w)` (cache key gains the width
+  only for bars). Callers pass `compose::text_frame_w(clip, lt, canvas_w)` (canvas width / the clip's x scale);
+  `placement_w` centres a bar and drops rotation; the Preview drag keeps x for a bar. Subtitles pass the canvas width.
+- Fonts bundled for the first time: `assets/fonts/` TikTok Sans + Inter, static Bold Latin subsets (~46 + 50 KB)
+  made with fontTools instancer + subset from the Google Fonts variable files (OFL 1.1, no Reserved Font Name);
+  `TextRasterizer::load_system_fonts` registers them first. ~96 KB of exe: over the +64 KB line, needs the release
+  PR's size note.
+- `reveal_bucket` now clamps t to the reveal's key range, so a typewriter stops re-rasterising after its last key.
+- `SE_SOCIAL_SHOTS=<dir> cargo test each_social_preset_renders_its_look` dumps a PPM of every preset (over grey).

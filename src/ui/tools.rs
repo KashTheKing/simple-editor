@@ -344,6 +344,8 @@ pub(crate) enum Glyph {
     // ---- ws:docs-release ----
     // ---- ws:quick-export ----
     Upload,
+    // ---- ws:home-page ----
+    Home,
 }
 
 impl Glyph {
@@ -504,6 +506,8 @@ impl Glyph {
         // ---- ws:docs-release ----
         // ---- ws:quick-export ----
         Glyph::Upload,
+        // ---- ws:home-page ----
+        Glyph::Home,
     ];
 
     /// Stable lower-case name of the variant, kept in sync with `from_name` - what a saved icon
@@ -574,6 +578,7 @@ impl Glyph {
             Glyph::ImportArrow => "import",
             Glyph::ExportArrow => "export",
             Glyph::Upload => "upload", // ws:quick-export
+            Glyph::Home => "home", // ws:home-page
             Glyph::Transition => "transition",
             Glyph::Subtitles => "subtitles",
             Glyph::Gear => "gear",
@@ -734,6 +739,7 @@ impl Glyph {
             Glyph::ImportArrow => 0xE8B5,               // Import
             Glyph::ExportArrow => 0xEDE1,               // Export
             Glyph::Upload => 0xE78B,                    // arrow up out of a box: Quick Export (ws:quick-export)
+            Glyph::Home => 0xE80F,                      // Home (ws:home-page)
             Glyph::Transition => 0xEF1F,                // two overlapping squares
             Glyph::Subtitles => 0xE7F0,                 // CC
             Glyph::Gear => 0xE713,                      // Settings

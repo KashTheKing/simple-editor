@@ -78,13 +78,9 @@ impl App {
     pub(super) fn check_lock_file(&mut self, path: &Path) {
         let lock = Self::lock_path(path);
         if self.settings.lock_warn {
-            if let Ok(existing_pid) = std::fs::read_to_string(&lock) {
-                if !existing_pid.trim().is_empty() {
-                    self.toast(format!(
-                        "This project may already be open elsewhere (lock left by pid {})",
-                        existing_pid.trim()
-                    ));
-                }
+            // ws:home-page: only a live other Simple Editor window counts (a lock outlives a closed one)
+            if let Some(pid) = crate::ui::home_page::open_elsewhere(path, std::process::id()) {
+                self.toast(format!("This project may already be open elsewhere (lock left by pid {pid})"));
             }
         }
         let _ = std::fs::write(&lock, std::process::id().to_string());
@@ -195,7 +191,8 @@ impl App {
                 }
                 self.settings.touch_recent_project(&path.to_string_lossy());
                 self.settings.save();
-                let _ = std::fs::remove_file(Self::lock_path(&path));
+                // ws:home-page: the lock stays while the project is open here (a rename elsewhere checks it)
+                let _ = std::fs::write(Self::lock_path(&path), std::process::id().to_string());
                 autosave::clear_for(&path);
                 self.fire_hook("project_save", json!({"path": path.to_string_lossy()}));
                 self.toast_with_folder("Project saved", path);
@@ -594,11 +591,15 @@ impl App {
                         }
                     }
                     Err(e) => {
-                        self.toast(format!(
-                            "Couldn't replace the original ({e}); edited file left at {}, original backed up as {}",
-                            temp.display(),
-                            quick_export::bak_path(&original).display()
-                        ));
+                        // the original is untouched: keep the edit as a visible copy, never hidden leftovers
+                        let name = original.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        match quick_export::keep_as_copy(&temp, &original) {
+                            Ok(copy) => self.toast_with_folder(
+                                format!("{name} is open in another program, so it wasn't replaced. Your edit is saved as {}", copy.file_name().unwrap_or_default().to_string_lossy()),
+                                copy,
+                            ),
+                            Err(_) => self.toast(format!("Couldn't replace {name} ({e}); your edit is at {}", temp.display())),
+                        }
                         self.player.set_project(&self.project);
                     }
                 }

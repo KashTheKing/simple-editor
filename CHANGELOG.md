@@ -13,6 +13,9 @@
 ### Fixed
 - **Opening the Audio or Export page no longer freezes the editor**: the microphone list (Voiceover) and the encoder list (Export) are looked up in the background after launch instead of the first time the page draws (that could take 5-16 seconds).
 - **Switching pages is smoother**: the page switch saves your layout in the background, and the Inspector and the Library no longer read a video's file size from disk on every frame (on a busy or sleeping drive either could hold a page's first frame for a tenth of a second or more).
+### Home page
+- **A Home page instead of the small start card**: the app opens on it. **New** is a row of cards (a **+** for a blank project, then one per format, Shorts / TikTok / Reels starting at Max length 1:00, then your saved formats) that go straight into the editor; **Projects** lists your recent projects with a thumbnail, **Rename**, **Open Folder** and **Open**, and a double-click opens one. Missing projects are greyed out with **Remove**. **File ▸ Quit to Project List**, the app icon and the house button go back (through the save prompt), **File ▸ New** goes there too; **Settings ▸ General ▸ Home page** turns it off for the old card. MCP: `home.show`, `project.recent`.
+- **TikTok and Snapchat text**: Gallery ▸ Titles ▸ Social has TikTok Classic, Background (white, dark and colours, a box per line that hugs it), Semi-Transparent, Typewriter and Neon, and Snapchat Bar (full width at any aspect ratio, drags up and down), Big Text and Highlight, as native text clips with TikTok Sans and Inter built in. Text clips gain Box shape (Block / Lines / Bar) and Corner radius; Gallery ▸ Captions gains TikTok Background and Snapchat Bar.
 
 ## 1.4.0
 
@@ -55,6 +58,8 @@
 
 
 ### Timeline
+- **Timeline tabs**: open several timelines at once, each in its own tab above the timeline (Main plus any sequences or nests you open); click to switch, × (on hover) or middle-click to close (the sequence stays), + for a new sequence, drag to reorder, right-click for Close, Close Others and Rename. Each tab keeps its own playhead, zoom, scroll, selection and in / out, the tabs are saved with the project, and Ctrl+Tab / Ctrl+Shift+Tab cycle them.
+- **Instant trims and overwrites.** Trimming, ripple trimming or dropping over a clip no longer stalls on big projects: the undo step is kept as-is and only written out if you open it in History, so the edit lands on the next frame.
 - **Max length.** Project settings (and an open sequence's) get a Max length row: on/off, an m:ss field and quick
   picks (0:15, 0:30, 1:00 Shorts/Reels, 1:30, 3:00 TikTok/Shorts, 10:00). The timeline draws a red end line, shades
   and hatches everything past it (clips included) and shows "over by 0:04"; Zoom to Fit and the scrollbar span it.

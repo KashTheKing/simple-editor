@@ -147,8 +147,13 @@ impl App {
         ui.spacing_mut().interact_size.y = titlebar::BUTTON.y;
         egui::MenuBar::new().style(titlebar::bar_style).ui(ui, |ui| {
             if let Some(icon) = titlebar::app_icon(ui.ctx()) {
-                let (r, _) = ui.allocate_exact_size(egui::vec2(24.0, 16.0), egui::Sense::hover());
+                // ---- ws:home-page ---- the app icon goes to the Home page (while it's on)
+                let sense = if self.settings.home_page { egui::Sense::click() } else { egui::Sense::hover() };
+                let (r, resp) = ui.allocate_exact_size(egui::vec2(24.0, 16.0), sense);
                 titlebar::paint_icon(ui, &icon, r.left_center());
+                if self.settings.home_page && resp.on_hover_text("Home").clicked() {
+                    out.push(Action::GoHome);
+                }
             }
             menu::button(ui, "File", |ui| menu::scroll(ui, |ui| self.file_menu(ui)));
             menu::button(ui, "Edit", |ui| menu::scroll(ui, |ui| self.edit_menu(ui)));
@@ -157,6 +162,8 @@ impl App {
             menu::button(ui, "Playback", |ui| menu::scroll(ui, |ui| self.playback_menu(ui, &mut out)));
             menu::button(ui, "Window", |ui| menu::scroll(ui, |ui| self.window_menu(ui)));
             menu::button(ui, "Help", |ui| self.help_menu(ui));
+            // ---- ws:home-page ----
+            home_ctl::button(self, ui);
             if !self.settings.one_window {
                 layout_ctl::page_switcher(self, ui);
             }
@@ -177,6 +184,10 @@ impl App {
     fn file_menu(&mut self, ui: &mut egui::Ui) {
         use Action::*;
         let has_clips = !self.timeline_is_empty();
+        // ---- ws:home-page ----
+        if self.settings.home_page {
+            acts(ui, &[Some(GoHome)]);
+        }
         acts(ui, &[Some(NewProject), Some(OpenProject), Some(OpenFile)]);
         self.recent_menu(ui);
         acts(ui, &[Some(Save), Some(SaveProjectAs), None]);

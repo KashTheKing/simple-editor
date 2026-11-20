@@ -16,3 +16,4 @@ CHANGELOG.md merge=union
 # integration/nov13: the thread CSS is include_str!'d into generated pages that a test compares with
 # library/html/*.html; a CRLF checkout made the generated pages differ (library_templates_are_the_starters).
 library/thread/*.css text eol=lf
+*.ttf binary

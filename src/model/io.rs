@@ -11,9 +11,18 @@ pub fn chats_json_in(path: &Path) -> Option<String> {
     f.assistant_chats.map(|v| v.to_string())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Whole-project serialisations on this thread: the instant-trims regression test asserts an edit's
+    /// commit makes none (`trim_commit_does_not_serialise_the_project`).
+    pub(crate) static TO_JSON_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl Project {
     // ---------- persistence ----------
     pub fn to_json(&self) -> String {
+        #[cfg(test)]
+        TO_JSON_CALLS.with(|n| n.set(n.get() + 1));
         serde_json::to_string_pretty(self).unwrap_or_default()
     }
     pub fn from_json(s: &str) -> Result<Self, String> {

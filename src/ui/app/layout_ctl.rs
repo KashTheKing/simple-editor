@@ -761,7 +761,7 @@ fn finish_onboarding(app: &mut App, st: &Onboarding) {
 /// screen both gate on that), as one labelled undo step like the inspector's own format buttons.
 fn apply_format(app: &mut App, i: usize) {
     let Some(p) = crate::ui::guides::PRESETS.get(i) else { return };
-    if !(app.project.is_empty() && app.project.assets.is_empty()) {
+    if !app.project.is_blank() {
         return;
     }
     let before = app.project.to_json();
@@ -781,7 +781,12 @@ fn home_window(app: &mut App, ctx: &egui::Context) {
     if app.onboarding.is_some() {
         return; // the wizard comes first; the cards appear once it is done
     }
-    let empty = app.project.is_empty() && app.project.assets.is_empty();
+    // ---- ws:home-page ---- the card is the Home page's off-switch fallback
+    if !super::home_ctl::popup_allowed(app) {
+        return;
+    }
+    // ws:timeline-tabs: the whole project, not the timeline in front (an empty sequence tab showed the cards)
+    let empty = app.project.is_blank();
     let Some(action) = home::show(ctx, &app.settings, &app.hotkeys, empty, app.home_dismissed) else { return };
     match action {
         home::HomeAction::Open => app.pending_actions.push(Action::OpenFile),
@@ -927,7 +932,7 @@ mod tests {
     }
 
     fn layout_step() -> UndoEntry {
-        UndoEntry { json: LAYOUT_STEP.to_owned(), label: String::new(), at: 0.0, category: HistoryCategory::Layout }
+        UndoEntry { json: LAYOUT_STEP.into(), label: String::new(), at: 0.0, category: HistoryCategory::Layout }
     }
 
     /// Every page keeps its own arrangement through switches: edit A, visit B, come back - A's edit
