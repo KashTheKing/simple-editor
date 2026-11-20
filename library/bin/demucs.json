@@ -1,15 +1,15 @@
 {
   "name": "Stem Separation (Demucs htdemucs via demucs.cpp)",
-  "version": "htdemucs-4s-demucscpp-4edae49",
+  "version": "htdemucs-4s-demucscpp-4edae49-mingw1",
   "program": {
     "url": "https://github.com/KashTheKing/simple-editor/releases/download/demucs-v1/se-demucs-win64.zip",
-    "sha256": "a2646fd4a399b1fc474e3e293c4242eb1dd30f22ec2590217b122fbd8afbc321",
-    "size": 1011688
+    "sha256": "d62a536ebc2e2b5c77fc2b273f54a83e95ce0a9ad0d23b85375342d4c13f0307",
+    "size": 1642379
   },
   "model": {
     "url": "https://huggingface.co/datasets/Retrobear/demucs.cpp/resolve/main/ggml-model-htdemucs-4s-f16.bin",
     "sha256": "72b17c42d308982ddb5069bc3bf48b81a5aac4cb6516e4366c0fa7cef6df0064",
     "size": 83994361
   },
-  "license": "demucs.cpp MIT (github.com/sevagh/demucs.cpp); Demucs code and htdemucs weights MIT (github.com/facebookresearch/demucs); Eigen MPL-2.0 (headers, unmodified); libnyquist BSD-2-Clause; vcomp140.dll Microsoft Visual C++ redistributable"
+  "license": "demucs.cpp MIT (github.com/sevagh/demucs.cpp); Demucs code and htdemucs weights MIT (github.com/facebookresearch/demucs); Eigen MPL-2.0 (headers, unmodified); libnyquist BSD-2-Clause (WAV only); built by tools/demucs-helper/build.sh with mingw-w64 (static; GCC runtime library exception)"
 }

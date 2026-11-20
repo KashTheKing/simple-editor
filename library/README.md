@@ -312,12 +312,11 @@ Optional programs the app installs on a click, never bundled in the exe. Each ma
      and throwaway-worktree trick as the se-html manifest). Existing installs update by Uninstall + Install.
 
 - `bin/demucs.json`: Stem Separation, two downloads in one manifest: `program` (a zip with
-  `demucs_mt.cpp.main.exe`, `vcomp140.dll`, `README.txt` and `licenses/`: demucs.cpp built for Windows by us,
-  see the zip's README for the commit, flags and the one-line Windows patch) and `model` (the htdemucs
-  4-source f16 weights, straight from the Retrobear/demucs.cpp Hugging Face dataset). `engine::demucs::install`
-  unpacks the zip into `%APPDATA%\SimpleEditorin\demucs` and puts the weights beside the exe. To publish:
-  `gh release create demucs-v1 se-demucs-win64.zip --repo KashTheKing/simple-editor --title "Stem Separation
-  add-on"`, check the size and SHA-256 in the manifest match the uploaded file, then commit the manifest on `main`.
+  `demucs_mt.cpp.main.exe`, `demucs_mt.cpp.main.v2.exe`, `README.txt` and `licenses/`: demucs.cpp built for
+  Windows by `tools/demucs-helper/build.sh`) and `model` (the htdemucs 4-source f16 weights, straight from the
+  Retrobear/demucs.cpp Hugging Face dataset). `engine::demucs::install` unpacks the zip into
+  `%APPDATA%\SimpleEditor\bin\demucs` and puts the weights beside the exe. Building and publishing the zip:
+  `tools/demucs-helper/README.md`.
 
 ## index.json (generated)
 
