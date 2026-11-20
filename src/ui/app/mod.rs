@@ -189,6 +189,7 @@ mod windows_dlg;
 mod project_match; // ws:project-color-fps
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
+mod plugins_ctl; // feat/plugins: the Plugins pane, plugin panels, Install from URL
 mod os_paste; // Ctrl+V of a screenshot / copied files
 
 enum ExportKind {
@@ -599,6 +600,9 @@ pub struct App {
     // ---- ws:timeline-tabs ----
     /// The background timeline tabs' views and the Rename Sequence window.
     tabs: timeline_tabs::TabsState,
+    // ---- feat/plugins ----
+    /// Installed plugins, their open panels and the Install from URL / confirm windows.
+    plugins: plugins_ctl::PluginsUi,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -1176,6 +1180,7 @@ impl App {
             emulator_tex: None,
             match_offer: None, // ws:project-color-fps
             tabs: Default::default(), // ws:timeline-tabs
+            plugins: Default::default(), // feat/plugins
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -2042,6 +2047,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:home-page ----
     home_ctl::TOOLS,
     script_ctl::TOOLS,
+    // ---- feat/plugins ----
+    plugins_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2234,6 +2241,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     music_ctl::frame,
     // ---- ws:preview-audio-only ----
     audio_only::tick,
+    // ---- feat/plugins ----
+    plugins_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -2315,6 +2324,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     project_match::window,
     // ---- ws:timeline-tabs ----
     timeline_tabs::windows,
+    // ---- feat/plugins ----
+    plugins_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -2389,6 +2400,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     music_ctl::draw,
     // ---- ws:device-emulator ----
     emulator_ctl::draw,
+    // ---- feat/plugins ----
+    plugins_ctl::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

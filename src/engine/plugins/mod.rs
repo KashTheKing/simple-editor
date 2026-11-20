@@ -318,6 +318,9 @@ pub struct Installed {
 #[serde(default)]
 pub struct State {
     pub plugins: BTreeMap<String, Installed>,
+    /// `Pane::Plugin(n)` shows `panel_slots[n]` ("plugin-id/panel-id"). Slots are never reused for another
+    /// panel, so a layout saved with a plugin's panel finds it again (or a closed slot) after a restart.
+    pub panel_slots: Vec<String>,
 }
 
 /// Where plugins live. Tests point every root at a scratch folder.
@@ -594,6 +597,25 @@ pub fn uninstall(roots: &Roots, id: &str) -> Result<(), String> {
         std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     roots.save_state(&state)
+}
+
+/// The pane slot of panel `key` ("plugin-id/panel-id"), assigned (and saved) the first time it is asked for.
+pub fn slot_for(roots: &Roots, key: &str) -> Result<u16, String> {
+    let mut state = roots.load_state();
+    if let Some(i) = state.panel_slots.iter().position(|k| k == key) {
+        return Ok(i as u16);
+    }
+    if state.panel_slots.len() >= u16::MAX as usize {
+        return Err("too many plugin panels".into());
+    }
+    state.panel_slots.push(key.to_string());
+    roots.save_state(&state)?;
+    Ok((state.panel_slots.len() - 1) as u16)
+}
+
+/// "plugin-id/panel-id".
+pub fn panel_key(plugin: &str, panel: &str) -> String {
+    format!("{plugin}/{panel}")
 }
 
 /// Keep the user's folder choice for a `files: pick` plugin.

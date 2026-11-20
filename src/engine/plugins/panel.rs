@@ -91,8 +91,6 @@ impl Recorder {
 
 /// A plugin panel: its VM, the last tree it drew, and what the user has done since.
 pub struct Panel {
-    pub key: String,
-    pub title: String,
     pub ctx: Ctx,
     pub script: PathBuf,
     vm: Option<Vm>,
@@ -111,8 +109,8 @@ pub struct Panel {
 }
 
 impl Panel {
-    pub fn new(key: String, title: String, ctx: Ctx, script: PathBuf) -> Panel {
-        Panel { key, title, ctx, script, vm: None, nodes: Vec::new(), changes: HashMap::new(), error: None, log: Vec::new(), stale: true, drawn_for: u64::MAX, last_ms: 0.0, images: HashMap::new() }
+    pub fn new(ctx: Ctx, script: PathBuf) -> Panel {
+        Panel { ctx, script, vm: None, nodes: Vec::new(), changes: HashMap::new(), error: None, log: Vec::new(), stale: true, drawn_for: u64::MAX, last_ms: 0.0, images: HashMap::new() }
     }
 
     /// Throw the VM away: the next draw loads the script again (Reload, or Retry after an error).
@@ -298,6 +296,55 @@ fn bind_ui<'s, 'r>(
     Ok(())
 }
 
+// ------------------------------------------------------------------ pane slots
+
+/// What `Pane::Plugin(n)` shows: the panel key ("plugin-id/panel-id") and its tab title / icon. Titles are
+/// `&'static str` because every pane title is; each distinct title is leaked once (a handful per plugin).
+#[derive(Clone, Default)]
+struct SlotInfo {
+    key: String,
+    title: &'static str,
+    icon: Option<&'static str>,
+}
+
+static SLOTS: std::sync::Mutex<Vec<SlotInfo>> = std::sync::Mutex::new(Vec::new());
+
+fn slots() -> std::sync::MutexGuard<'static, Vec<SlotInfo>> {
+    SLOTS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// The tab title of plugin pane `n` ("Plugin panel" for a slot whose plugin is gone).
+pub fn slot_title(n: u16) -> &'static str {
+    slots().get(n as usize).map(|s| s.title).filter(|t| !t.is_empty()).unwrap_or("Plugin panel")
+}
+
+/// The icon name of plugin pane `n`.
+pub fn slot_icon(n: u16) -> Option<&'static str> {
+    slots().get(n as usize).and_then(|s| s.icon)
+}
+
+/// The panel key a slot shows.
+pub fn slot_key(n: u16) -> Option<String> {
+    slots().get(n as usize).map(|s| s.key.clone()).filter(|k| !k.is_empty())
+}
+
+/// Record slot `n`'s panel, title and icon (from `plugins/state.json`'s `panel_slots` and the manifests).
+pub fn set_slot(n: u16, key: &str, title: &str, icon: &str) {
+    let mut v = slots();
+    if v.len() <= n as usize {
+        v.resize(n as usize + 1, SlotInfo::default());
+    }
+    let s = &mut v[n as usize];
+    if s.title != title {
+        s.title = Box::leak(title.to_string().into_boxed_str());
+    }
+    let icon = (!icon.is_empty()).then_some(icon);
+    if s.icon != icon {
+        s.icon = icon.map(|i| &*Box::leak(i.to_string().into_boxed_str()));
+    }
+    s.key = key.to_string();
+}
+
 // ------------------------------------------------------------------ drawing
 
 use eframe::egui;
@@ -456,7 +503,7 @@ mod tests {
         std::fs::write(&script, src).unwrap();
         let mut c = ctx(Permissions::default(), Permissions::default());
         c.dir = dir;
-        Panel::new("t/main".into(), "T".into(), c, script)
+        Panel::new(c, script)
     }
 
     fn run(p: &mut Panel, rev: u64) -> Vec<String> {

@@ -153,8 +153,8 @@ pub fn extract(bytes: &[u8], dest: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(written)
 }
 
-/// Build a zip of `files` (name, bytes): deflated when that is smaller, else stored. Used by the tests'
-/// fixtures and by "Pack plugin" for authors; the archives it writes are what `read` accepts.
+/// Build a zip of `files` (name, bytes): deflated when that is smaller, else stored. The tests' fixtures.
+#[cfg(test)]
 pub fn write(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut cd = Vec::new();

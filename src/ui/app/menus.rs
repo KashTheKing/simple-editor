@@ -422,6 +422,8 @@ impl App {
             menu::sub(ui, None, "Move to window", |ui| self.move_to_menu(ui));
         }
         acts(ui, &[Some(Action::MaximizePane)]);
+        // ---- feat/plugins ---- Window ▸ Plugins: the Plugins pane, Install from URL, each plugin's panels / scripts
+        plugins_ctl::window_menu(self, ui);
         // ---- ws:command-palette ---- (per-script icon/hotkey/desc from ScriptMeta)
         if !self.script_metas().is_empty() {
             menu::sub(ui, Some(tools::Glyph::Terminal), "Scripts", |ui| {

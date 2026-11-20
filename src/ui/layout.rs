@@ -177,6 +177,12 @@ pub enum Pane {
     /// Screen recording: live preview, source, audio choice, meters, Record / Stop (was the Screen
     /// Recording popup; `ui::capture_ui`, `ui::app::recorder_pane`).
     ScreenRecording,
+    // ---- feat/plugins ----
+    /// Installed plugins: enable, update, uninstall, permissions, Install from URL (`ui::app::plugins_ctl`).
+    Plugins,
+    /// A panel a plugin draws with Luau. The number is a slot kept in `plugins/state.json`
+    /// (`engine::plugins::panel::slot_*`), so a stored layout reopens the same plugin's panel.
+    Plugin(u16),
 }
 
 impl Pane {
@@ -263,6 +269,8 @@ impl Pane {
         Pane::Emulator,
         // ---- fix/screen-record ----
         Pane::ScreenRecording,
+        // ---- feat/plugins ---- (plugin panels are not listed: they come and go with their plugins)
+        Pane::Plugins,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -305,6 +313,8 @@ impl Pane {
             Pane::Playlists => Glyph::MusicNote,
             Pane::Emulator => Glyph::Guides,
             Pane::ScreenRecording => Glyph::Record,
+            Pane::Plugins => Glyph::Wrench,
+            Pane::Plugin(n) => crate::engine::plugins::panel::slot_icon(n).and_then(Glyph::from_name).unwrap_or(Glyph::Bolt),
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -356,6 +366,8 @@ impl Pane {
             Pane::Playlists => "Playlists",
             Pane::Emulator => "Platform Emulator",
             Pane::ScreenRecording => "Screen Recording",
+            Pane::Plugins => "Plugins",
+            Pane::Plugin(n) => crate::engine::plugins::panel::slot_title(n),
         }
     }
 }
