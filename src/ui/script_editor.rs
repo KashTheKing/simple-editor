@@ -738,7 +738,7 @@ fn code(ui: &mut egui::Ui, st: &mut ScriptEditor, id: egui::Id, code_h: f32) {
     let mut clicked = None;
     egui::Area::new(id.with("completion"))
         .order(egui::Order::Foreground)
-        .fixed_pos(caret.left_bottom() + egui::vec2(0.0, 2.0))
+        .fixed_pos(egui::pos2(rect_at(comp.start).left() - 26.0, caret.bottom() + 2.0))
         .show(&ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 let w = 420.0;

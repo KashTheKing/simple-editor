@@ -19,6 +19,9 @@ per script with `@budget_ms`. A hook that blows its budget is disabled for the r
 with exactly one toast — an ordinary UI event (a selection change, an import finishing) must never
 be allowed to make the editor feel like it hitched.
 
+Every name a script can use, with parameters, types and where it exists, is in [scripting-api.md](scripting-api.md)
+(generated from `src/scripting_api.rs`, which the Script Editor's completion reads).
+
 **Bridge surface** (`editor` table, `src/scripting.rs`):
 - `editor.tool(name, args)` — call any MCP tool by name, same catalogue as the table below.
 - `editor.tools()` — every tool as `{name, description}` (no `kind`/`args` — those aren't part of
