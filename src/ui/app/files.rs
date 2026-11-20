@@ -619,6 +619,8 @@ impl App {
             start |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
             if crate::media::ffpipe::ffmpeg_exe().is_some() {
                 ui.checkbox(&mut audio_only, "Audio only (music / SFX)");
+                // ---- feat/reference-clips ----
+                start |= super::reference_ctl::part_row(ui, &mut self.references, &url);
             }
             ui.horizontal(|ui| {
                 ui.label("Save to");
@@ -638,8 +640,17 @@ impl App {
         });
         match (open, start) {
             (_, true) => {
-                self.url_dialog = None;
-                self.start_download(url.trim(), audio_only);
+                // ---- feat/reference-clips ----
+                match super::reference_ctl::part_range(&self.references) {
+                    Err(e) => {
+                        self.toast(e);
+                        self.url_dialog = Some((url, audio_only));
+                    }
+                    Ok(range) => {
+                        self.url_dialog = None;
+                        self.start_download(url.trim(), audio_only, range);
+                    }
+                }
             }
             (true, false) => self.url_dialog = Some((url, audio_only)),
             (false, false) => self.url_dialog = None,
@@ -668,14 +679,30 @@ impl App {
         });
     }
 
-    pub(super) fn start_download(&mut self, url: &str, audio_only: bool) {
+    /// `range` = "Just a part" (source seconds). The download's progress, or None when yt-dlp is missing.
+    pub(super) fn start_download(
+        &mut self,
+        url: &str,
+        audio_only: bool,
+        range: Option<(f64, f64)>,
+    ) -> Option<Arc<crate::engine::export::Progress>> {
         if !self.ytdlp_available.load(std::sync::atomic::Ordering::Relaxed) {
             self.toast("yt-dlp not found - set its folder in Settings");
-            return;
+            return None;
         }
-        let opts = crate::media::ytdlp::DownloadOptions { url: url.to_string(), dir: self.download_dir(), audio_only };
-        self.toast("Downloading…");
-        self.downloads.push(crate::media::ytdlp::start_download(opts));
+        let opts = crate::media::ytdlp::DownloadOptions { url: url.to_string(), dir: self.download_dir(), audio_only, range };
+        self.toast(match range {
+            Some((a, b)) => format!(
+                "Downloading {}-{}…",
+                crate::engine::references::fmt_time(a),
+                crate::engine::references::fmt_time(b)
+            ),
+            None => "Downloading…".to_string(),
+        });
+        let d = crate::media::ytdlp::start_download(opts);
+        let prog = d.progress.clone();
+        self.downloads.push(d);
+        Some(prog)
     }
 
     /// "Convert To…" on a library asset: transcode next to the source, then import the result.

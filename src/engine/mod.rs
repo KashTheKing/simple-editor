@@ -36,6 +36,7 @@ pub mod mixer;
 pub mod mixer_fx;
 pub mod prerender;
 pub mod presets;
+pub mod references; // feat/reference-clips: Find a Reference
 pub mod templates; // ws:animator-templates
 pub mod html;
 pub mod blitz; // ws:html-layer: the fast renderer (se-html helper)

@@ -887,22 +887,29 @@ impl App {
             self.toast("Eyedropper: click a point on the preview to sample a colour (not wired yet)");
         }
         // URL downloads: import the finished file, report failures
-        let mut fetched: Vec<(Option<PathBuf>, Option<String>, bool)> = Vec::new();
+        // (feat/reference-clips: the progress and yt-dlp's title / uploader ride along, so a reference import
+        // is recognised and credited)
+        type Fetched = (Option<PathBuf>, Option<String>, bool, Arc<Progress>, Option<(String, String)>);
+        let mut fetched: Vec<Fetched> = Vec::new();
         self.downloads.retain(|d| {
             if d.progress.is_done() {
-                fetched.push((d.path(), d.progress.error(), d.progress.is_cancelled()));
+                fetched.push((d.path(), d.progress.error(), d.progress.is_cancelled(), d.progress.clone(), d.meta()));
                 false
             } else {
                 true
             }
         });
-        for (path, err, cancelled) in fetched {
+        for (path, err, cancelled, prog, meta) in fetched {
+            if err.is_some() || path.is_none() {
+                super::reference_ctl::forget(self, &prog);
+            }
             match (path, err) {
                 (Some(p), None) => {
                     let ids = self.import_files(&[p.clone()]);
                     self.library.selected = ids.last().copied();
                     self.library.tab = 0;
                     self.toast(format!("Imported {}", p.file_name().unwrap_or_default().to_string_lossy()));
+                    super::reference_ctl::downloaded(self, &prog, meta, &ids);
                 }
                 // cancelling is not a failure - matches finish_export's wording
                 (_, Some(_)) if cancelled => self.toast("Download cancelled"),

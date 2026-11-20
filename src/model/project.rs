@@ -131,6 +131,10 @@ pub struct Project {
     /// through `timeline_tabs()`, which drops deleted sequences and always holds the open one.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub timeline_tabs: Vec<Option<Id>>,
+    // ---- feat/reference-clips ----
+    /// Where each reference clip came from and what is said in it (`model::RefSource`, Find a Reference).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<RefSource>,
 }
 
 // ---- ws:project-color-fps ----

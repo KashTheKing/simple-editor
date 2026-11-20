@@ -87,6 +87,7 @@ pub mod html_ui;
 pub mod template_ui; // ws:animator-templates
 pub mod list_rows; // the shared table rows (thread viewers and the browser layer's tab rows)
 pub mod thread_ui;
+pub mod reference_ui; // feat/reference-clips: Find a Reference
 // ---- ws:browser-layer ----
 mod browser_ui;
 

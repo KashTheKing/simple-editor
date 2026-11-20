@@ -66,6 +66,8 @@ pub fn leaves_project(tool: &str, args: &Value) -> bool {
                 | "skills.delete"
                 // ws:home-page: closes the project
                 | "home.show"
+                // feat/reference-clips: downloads from the internet
+                | "references.import_range"
         )
         // ws:home-page: renames a project file / edits the recents list
         || (tool == "project.recent" && args.get("action").and_then(Value::as_str).is_some_and(|a| a != "list"))

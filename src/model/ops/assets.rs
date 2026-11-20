@@ -76,6 +76,8 @@ impl Project {
             color: ColorSpace::Sdr,
             // ---- ws:timeline-tabs ----
             timeline_tabs: Vec::new(),
+            // ---- feat/reference-clips ----
+            references: Vec::new(),
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);

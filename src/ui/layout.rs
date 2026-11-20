@@ -177,6 +177,11 @@ pub enum Pane {
     /// Screen recording: live preview, source, audio choice, meters, Record / Stop (was the Screen
     /// Recording popup; `ui::capture_ui`, `ui::app::recorder_pane`).
     ScreenRecording,
+    // ---- feat/reference-clips ----
+    /// Find a Reference: search buttons for quote / GIF / video sites, in-app GIPHY / Tenor search, part
+    /// imports and the project's references by quote (`ui::reference_ui`, `ui::app::reference_ctl`).
+    /// Tab-stacked hidden in every preset (`stack_unplaced`); the Window menu and the Library open it.
+    References,
 }
 
 impl Pane {
@@ -263,6 +268,8 @@ impl Pane {
         Pane::Emulator,
         // ---- fix/screen-record ----
         Pane::ScreenRecording,
+        // ---- feat/reference-clips ----
+        Pane::References,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -305,6 +312,7 @@ impl Pane {
             Pane::Playlists => Glyph::MusicNote,
             Pane::Emulator => Glyph::Guides,
             Pane::ScreenRecording => Glyph::Record,
+            Pane::References => Glyph::Search, // feat/reference-clips
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -356,6 +364,7 @@ impl Pane {
             Pane::Playlists => "Playlists",
             Pane::Emulator => "Platform Emulator",
             Pane::ScreenRecording => "Screen Recording",
+            Pane::References => "Find a Reference", // feat/reference-clips
         }
     }
 }

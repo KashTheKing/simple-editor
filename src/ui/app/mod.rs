@@ -190,6 +190,7 @@ mod project_match; // ws:project-color-fps
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
 mod os_paste; // Ctrl+V of a screenshot / copied files
+mod reference_ctl; // feat/reference-clips: Find a Reference
 
 enum ExportKind {
     File { path: PathBuf },
@@ -296,6 +297,8 @@ pub struct App {
     url_dialog: Option<(String, bool)>,
     /// Running URL downloads - polled each frame, imported into the library when they finish.
     downloads: Vec<crate::media::ytdlp::Download>,
+    /// feat/reference-clips: the Find a Reference pane, its searches / imports and reference transcriptions.
+    references: reference_ctl::RefState,
     /// One receiver per import batch: ffprobe runs on a worker, `poll_probes` adopts the results.
     probes: Vec<Receiver<crate::engine::import::Probed>>,
     /// Panes drawn last frame (`pane_drawn`) and the ones drawn so far this frame. A pane's side
@@ -1051,6 +1054,7 @@ impl App {
             ytdlp_available: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             url_dialog: None,
             downloads: Vec::new(),
+            references: Default::default(), // feat/reference-clips
             probes: Vec::new(),
             panes_shown: Vec::new(),
             panes_drawing: Vec::new(),
@@ -2042,6 +2046,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:home-page ----
     home_ctl::TOOLS,
     script_ctl::TOOLS,
+    // ---- feat/reference-clips ----
+    reference_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2234,6 +2240,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     music_ctl::frame,
     // ---- ws:preview-audio-only ----
     audio_only::tick,
+    // ---- feat/reference-clips ----
+    reference_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -2389,6 +2397,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     music_ctl::draw,
     // ---- ws:device-emulator ----
     emulator_ctl::draw,
+    // ---- feat/reference-clips ----
+    reference_ctl::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

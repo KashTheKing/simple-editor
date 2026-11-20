@@ -679,6 +679,7 @@ pub mod ops;
 mod path;
 mod playlist; // ws:music-burn
 mod project;
+mod reference; // feat/reference-clips
 mod repair;
 mod shape;
 mod subtitle;
@@ -702,6 +703,7 @@ pub use marker::*;
 pub use path::*;
 pub use playlist::Playlist; // ws:music-burn
 pub use project::*;
+pub use reference::*; // feat/reference-clips
 pub use shape::*;
 pub use subtitle::*;
 pub use text::*;

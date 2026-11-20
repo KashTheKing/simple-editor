@@ -204,6 +204,8 @@ pub struct LibraryResponse {
     pub place_template: Vec<String>,
     /// The user asked to import media from a URL (the app opens the Import URL window).
     pub import_url: bool,
+    /// feat/reference-clips: "Find a Reference" was picked (the app shows that pane).
+    pub find_reference: bool,
     /// "Edit labels…" was picked in a label menu - the app opens the label editor (Inspector).
     pub edit_labels: bool,
     /// An effect kind picked in the reuse sections - the app adds it to every selected visual clip.
@@ -1803,6 +1805,13 @@ fn empty_menu(
             .clicked()
     {
         resp.import_url = true;
+    }
+    // ---- feat/reference-clips ----
+    if menu::row(ui, Some(Glyph::Search), "Find a Reference", "")
+        .on_hover_text("Find a quote, reaction GIF or scene to use as a reference clip")
+        .clicked()
+    {
+        resp.find_reference = true;
     }
     ui.separator();
     if project_view {
