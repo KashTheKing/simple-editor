@@ -72,4 +72,27 @@ pub const TOOLS: &[ToolDef] = &[
             Ok(ToolOutcome::Done(json!({"clip_id": id, "start": t0.min(t1), "end": t0.max(t1)})))
         },
     },
+    ToolDef {
+        name: "clip.rotate",
+        desc: "Turn the selected (or given) visual clips by `degrees` (default 90, clockwise), keyframes included.",
+        args: &["degrees:number:false:default 90", "clip_ids:array:false:default: the selection"],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let d = arg_f64(args, "degrees").unwrap_or(90.0);
+            let mut n = 0;
+            for id in target_ids(app, args) {
+                let Some(c) = app.project.clip_mut(id) else { continue };
+                if !c.draws() {
+                    continue;
+                }
+                c.rotation.value += d;
+                c.rotation.keys.iter_mut().for_each(|k| k.v += d);
+                n += 1;
+            }
+            if n == 0 {
+                return Err("select a video, image, text or shape clip first".into());
+            }
+            Ok(ToolOutcome::Done(json!({"rotated": n})))
+        },
+    },
 ];

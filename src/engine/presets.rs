@@ -705,12 +705,48 @@ pub fn builtin_titles() -> Vec<Template> {
         cap.exposed = vec!["text.text".into()];
         vec![cap]
     };
+    // ---- ws:forum-ui: the two moving texts people ask the forums for ----
+    // a bar along the bottom with text crawling right to left across it (drag the clip longer = slower)
+    let ticker = {
+        let mut bar = Clip::new(0, ClipKind::Shape, "Ticker Bar", 0.0, 10.0);
+        if let Some(s) = bar.shape.as_mut() {
+            s.fill = [180, 20, 30, 230];
+            s.w = Animated::new(1920.0);
+            s.h = Animated::new(64.0);
+        }
+        bar.y = Animated::new(470.0);
+        let mut text = Clip::new(0, ClipKind::Text, "Ticker", 0.0, 10.0);
+        if let Some(t) = text.text.as_mut() {
+            t.text = "Breaking news  •  Type your scrolling text here  •  It crawls across the bar".into();
+            t.size = Animated::new(38.0);
+            t.bold = true;
+        }
+        text.y = Animated::new(470.0);
+        text.x.key_at(0.0, 1900.0);
+        text.x.key_at(10.0, -1900.0);
+        text.exposed = vec!["text.text".into(), "text.color".into()];
+        vec![bar, text]
+    };
+    // end credits rising from below the frame to above it
+    let credits = {
+        let mut text = Clip::new(0, ClipKind::Text, "Credits", 0.0, 12.0);
+        if let Some(t) = text.text.as_mut() {
+            t.text = "Directed by\nYour Name\n\nStarring\nName One\nName Two\n\nThanks for watching".into();
+            t.size = Animated::new(48.0);
+        }
+        text.y.key_at(0.0, 900.0);
+        text.y.key_at(12.0, -900.0);
+        text.exposed = vec!["text.text".into(), "text.color".into(), "text.size".into()];
+        vec![text]
+    };
     let mut v = vec![
         Template { name: "Lower Third".into(), json: encode(lower_third) },
         Template { name: "Title Card".into(), json: encode(title_card) },
         Template { name: "Caption Box".into(), json: encode(caption_box) },
         // ws:browser-layer: a browser window over whatever is below it (edited in the Inspector)
         Template { name: "Browser Window".into(), json: encode(vec![Clip::new(0, ClipKind::Browser, "Browser", 0.0, 5.0)]) },
+        Template { name: "News Ticker".into(), json: encode(ticker) },
+        Template { name: "Scrolling Credits".into(), json: encode(credits) },
     ];
     // ---- ws:social-text: one native Text clip each, centred (inside every platform's safe zone) ----
     v.extend(social_title_names().into_iter().filter_map(|n| {

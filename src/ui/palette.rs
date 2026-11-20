@@ -81,6 +81,9 @@ pub enum Command {
     Complete(String),
     /// Export with the Export pane's current settings: the save dialog, then the job starts.
     QuickExport,
+    // ---- ws:forum-ui ----
+    /// A plain-phrase task (`ui::tasks::TASKS[i]`).
+    Task(usize),
 }
 
 impl Default for Command {
@@ -367,6 +370,7 @@ pub fn recent_id(cmd: &Command) -> Option<String> {
         Command::Script(path) => format!("script.{}", path.to_string_lossy()),
         Command::Setting(key, _) => format!("setting.{key}"),
         Command::QuickExport => "export.quick_pane".into(),
+        Command::Task(i) => format!("task.{i}"),
         Command::GoTo(t) => match t {
             Target::Clip { id, .. } => format!("clip.{id}"),
             Target::Timeline(s) => format!("seq.{}", s.unwrap_or(0)),

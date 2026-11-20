@@ -56,6 +56,7 @@ pub mod nodes;
 // ---- ws:layout-modes-onboarding ----
 pub mod onboarding;
 pub mod palette;
+pub mod tasks; // ws:forum-ui: the palette's plain-phrase task rows
 pub mod paste_ui;
 pub mod planner;
 pub mod preview;

@@ -173,6 +173,7 @@ fn command_kind(cmd: &palette::Command) -> &'static str {
         },
         palette::Command::Ask(_) => "assistant",
         palette::Command::Complete(_) => "complete",
+        palette::Command::Task(_) => "task", // ws:forum-ui
     }
 }
 
