@@ -881,11 +881,6 @@ impl App {
                 self.toast(e);
             }
         }
-        // ponytail: armed but not consumed into an actual pixel sample yet - see color_ui.rs's doc
-        // comment. An honest toast beats a click that silently does nothing.
-        if inspector::take_pending_eyedrop().is_some() {
-            self.toast("Eyedropper: click a point on the preview to sample a colour (not wired yet)");
-        }
         // URL downloads: import the finished file, report failures
         let mut fetched: Vec<(Option<PathBuf>, Option<String>, bool)> = Vec::new();
         self.downloads.retain(|d| {

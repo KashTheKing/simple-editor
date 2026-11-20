@@ -489,6 +489,8 @@ pub fn transition_shader(src: &str) -> String {
 uniform sampler2D u_to;
 uniform float progress;
 uniform float ratio;
+uniform sampler2D u_gradient;
+uniform float u_has_gradient;
          vec4 getFromColor(vec2 uv) { return texture(u_from, vec2(uv.x, 1.0 - uv.y)); }
          vec4 getToColor(vec2 uv) { return texture(u_to, vec2(uv.x, 1.0 - uv.y)); }
 ",

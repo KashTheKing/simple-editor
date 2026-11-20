@@ -406,8 +406,8 @@ pub(crate) struct MonitorState {
 /// FRAME_HOOK: dynamic-trim rate-drop detection, the Scopes readback gate, and the dual-frame trim
 /// view's decode refresh - all paused (or simply not requested) while `app.export.is_some()`.
 pub(crate) fn monitor_tick(app: &mut App, ctx: &egui::Context) {
-    if let Some(id) = crate::ui::inspector::take_pending_eyedrop() {
-        app.monitor.pick_armed = Some((id, crate::ui::preview::PickTarget::Chroma));
+    if let Some(armed) = crate::ui::inspector::take_pending_eyedrop() {
+        app.monitor.pick_armed = Some(armed);
     }
     // ws:pro-monitor review fix: `Player::pause()` never resets `clock.rate` to 0 (only `play()` sets it
     // to 1.0, `set_rate` rejects 0.0 outright - see playback.rs), so the raw `rate()` reads whatever the

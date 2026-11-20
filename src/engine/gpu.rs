@@ -118,6 +118,9 @@ const UNIFORMS: &[&str] = &[
     "u_to",
     "progress",
     "ratio",
+    // parity-effects: the gradient wipe's picture (`wipe_image`)
+    "u_gradient",
+    "u_has_gradient",
 ];
 
 // Program cache keys. Effects live at EFFECT_BASE + kind index; user shaders at their source hash
@@ -215,6 +218,7 @@ const U_B: u32 = 3;
 const U_PREV: u32 = 4;
 const U_NEXT: u32 = 5;
 const U_LUT3D: u32 = 6;
+const U_GRADIENT: u32 = 7; // parity-effects: a shader transition's `// @image`
 
 /// Texture-cache keys for the neighbouring frames of a motion-blurred clip. Clip ids are small
 /// counters (`Project::new_id`), so the top bits are free to tag a variant of the same clip.
@@ -328,6 +332,11 @@ pub struct GpuRenderer {
     // ---- ws:color-engine ----
     /// `TEXTURE_3D` LUT uploads, keyed by `Effect.lut` path (no mtime invalidation - see engine::lut).
     lut_textures: HashMap<String, glow::Texture>,
+    /// parity-effects: gradient-wipe pictures (`// @image` on a shader transition), by path.
+    wipe_textures: HashMap<String, glow::Texture>,
+    /// parity-effects: set while rendering an export frame - a gradient image still decoding is waited
+    /// for there, where the preview draws the built-in pattern for a frame or two instead.
+    wait_for_wipes: bool,
     /// Opt-in gate for `frame_stats`'s readback (default off, so an idle preview never pays for it).
     stats_wanted: bool,
     /// The last computed `FrameStats` and the playhead time it was sampled at, so a repeated call at the
@@ -389,6 +398,8 @@ impl GpuRenderer {
                 loaned: Vec::new(),
                 text: None,
                 lut_textures: HashMap::new(),
+                wipe_textures: HashMap::new(),
+                wait_for_wipes: false,
                 stats_wanted: false,
                 last_stats: None,
                 perf_composite_us: 0,
@@ -509,7 +520,10 @@ impl GpuRenderer {
         if w == 0 || h == 0 {
             return;
         }
-        let Some(canvas) = self.render_canvas(project, t, w, h, layers) else {
+        self.wait_for_wipes = true;
+        let canvas = self.render_canvas(project, t, w, h, layers);
+        self.wait_for_wipes = false;
+        let Some(canvas) = canvas else {
             self.restore(host);
             return;
         };
@@ -546,7 +560,10 @@ impl GpuRenderer {
     /// target is what `glReadPixels` reads (`GL_RED` for NV12, `GL_RGBA` otherwise); the caller puts it
     /// back in the pool. Caller does `reclaim`/`host_fbo`/`restore`.
     fn export_target(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet, nv12: bool) -> Option<Target> {
-        let canvas = self.render_canvas(project, t, w, h, layers)?;
+        self.wait_for_wipes = true;
+        let canvas = self.render_canvas(project, t, w, h, layers);
+        self.wait_for_wipes = false;
+        let canvas = canvas?;
         if !nv12 {
             return Some(canvas);
         }
@@ -1252,6 +1269,42 @@ impl GpuRenderer {
         }
     }
 
+    /// parity-effects: the texture of a gradient wipe's `// @image`, uploaded once per path. None: no
+    /// image, it is still decoding (the preview; export waits - `wait_for_wipes`), or it can't be read -
+    /// the shader then uses its built-in pattern.
+    fn wipe_texture(&mut self, path: &str) -> Option<glow::Texture> {
+        if path.is_empty() {
+            return None;
+        }
+        if let Some(&tex) = self.wipe_textures.get(path) {
+            return Some(tex);
+        }
+        let f = crate::engine::wipe_image::get(path, self.wait_for_wipes)?;
+        let gl = self.gl.clone();
+        unsafe {
+            let tex = gl.create_texture().ok()?;
+            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+            gl.tex_image_2d(
+                glow::TEXTURE_2D,
+                0,
+                glow::RGBA8 as i32,
+                f.width as i32,
+                f.height as i32,
+                0,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                glow::PixelUnpackData::Slice(Some(&f.rgba)),
+            );
+            gl.bind_texture(glow::TEXTURE_2D, None);
+            self.wipe_textures.insert(path.to_string(), tex);
+            Some(tex)
+        }
+    }
+
     /// Bind `prog`, point the fixed sampler units at `tex`/`mask`, size uniforms, and draw the triangle.
     fn draw(&self, key: u64, dst: &Target, tex: glow::Texture, mask: Option<glow::Texture>, set: impl Fn(&Prog)) {
         let Some(prog) = self.programs.map.get(&key) else { return };
@@ -1706,7 +1759,13 @@ impl GpuRenderer {
         let knobs = tr.shader_params();
         let scale = w as f32 / project.width.max(1) as f32;
         let to_tex = to.tex;
+        let gradient = self.wipe_texture(&crate::engine::shaderlib::parse_meta(&tr.shader).image);
+        let blank = self.blank;
         self.draw(transition_key(&tr.shader), &dst, from.tex, None, |prog| unsafe {
+            gl.active_texture(glow::TEXTURE0 + U_GRADIENT);
+            gl.bind_texture(glow::TEXTURE_2D, Some(gradient.unwrap_or(blank)));
+            gl.uniform_1_i32(prog.uni.get("u_gradient"), U_GRADIENT as i32);
+            gl.uniform_1_f32(prog.uni.get("u_has_gradient"), if gradient.is_some() { 1.0 } else { 0.0 });
             gl.uniform_1_i32(prog.uni.get("u_from"), U_TEX as i32);
             gl.active_texture(glow::TEXTURE0 + U_B);
             gl.bind_texture(glow::TEXTURE_2D, Some(to_tex));
@@ -2237,7 +2296,7 @@ impl Drop for GpuRenderer {
             for (_, t) in self.textures.drain() {
                 gl.delete_texture(t.tex);
             }
-            for (_, t) in self.lut_textures.drain() {
+            for (_, t) in self.lut_textures.drain().chain(self.wipe_textures.drain()) {
                 gl.delete_texture(t);
             }
             for t in self.loaned.drain(..).chain(self.pool.free.drain(..)).chain(self.source_canvas.take()) {
@@ -2529,9 +2588,17 @@ fn user_key(src: &str) -> u64 {
     USER_BIT | hash_str(src)
 }
 
-/// Cache key of a shader transition source: never the same program as that text as an effect.
+/// Cache key of a shader transition source: never the same program as that text as an effect. A
+/// `// @image` line (the gradient wipe's picture, a uniform) does not change the program, so picking
+/// another image never recompiles.
 fn transition_key(src: &str) -> u64 {
-    USER_BIT | (hash_str(src) ^ 0x2545_F491_4F6C_DD1D) & !USER_BIT
+    let h = if src.contains("@image") {
+        let code: String = src.lines().filter(|l| !crate::engine::shaderlib::is_image_line(l)).flat_map(|l| [l, "\n"]).collect();
+        hash_str(&code)
+    } else {
+        hash_str(src)
+    };
+    USER_BIT | (h ^ 0x2545_F491_4F6C_DD1D) & !USER_BIT
 }
 
 fn hash_str(s: &str) -> u64 {

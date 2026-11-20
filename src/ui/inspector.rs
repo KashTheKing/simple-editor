@@ -123,10 +123,9 @@ thread_local! {
     static PENDING_COLOR_AUTO: RefCell<Option<Id>> = const { RefCell::new(None) };
     /// Color section "Match" click: (clip, reference clip) - same App-only reason as above.
     static PENDING_COLOR_MATCH: RefCell<Option<(Id, Id)>> = const { RefCell::new(None) };
-    /// Color section "Eyedropper" click. ponytail: armed here, but nothing samples a pixel from it yet
-    /// (that needs a canvas click handler in `preview.rs`, owned by canvas-handles-monitor) -
-    /// `App::poll_panels` still drains it and toasts an honest "not wired yet".
-    static PENDING_EYEDROP: RefCell<Option<Id>> = const { RefCell::new(None) };
+    /// Color section "Eyedropper" / "White Balance" click: (clip, what the pick writes). `monitor_tick`
+    /// arms the preview with it; the next click on the canvas samples the colour.
+    static PENDING_EYEDROP: RefCell<Option<(Id, crate::ui::preview::PickTarget)>> = const { RefCell::new(None) };
     /// A slot's Media row: (clip, Some(asset) = a Library clip dropped on it, None = Unlink). `App` runs
     /// it through `container.replace` / `container.unlink` (one undo step each).
     static PENDING_SLOT: RefCell<Option<(Id, Option<Id>)>> = const { RefCell::new(None) };
@@ -150,7 +149,7 @@ pub fn take_pending_color_match() -> Option<(Id, Id)> {
     PENDING_COLOR_MATCH.with(|p| p.borrow_mut().take())
 }
 
-pub fn take_pending_eyedrop() -> Option<Id> {
+pub fn take_pending_eyedrop() -> Option<(Id, crate::ui::preview::PickTarget)> {
     PENDING_EYEDROP.with(|p| p.borrow_mut().take())
 }
 
@@ -330,6 +329,10 @@ pub(crate) fn transition_section(ui: &mut egui::Ui, project: &mut Project, ids: 
         if e.kind == TransitionKind::Shader {
             let specs = crate::model::shader_specs(&e.shader);
             crate::ui::effects_ui::plain_param_rows(ui, &specs, &mut e.params, &mut g);
+            // parity-effects: a gradient wipe's picture (`// @image` in this transition's source)
+            if e.shader.contains("u_gradient") {
+                gradient_image_row(ui, &mut e.shader, &mut g);
+            }
         }
         ui.label("Ease");
         egui::ComboBox::from_id_salt("insp_tr_ease").selected_text(e.ease.name()).show_ui(ui, |ui| {
@@ -379,9 +382,48 @@ pub(crate) fn transition_section(ui: &mut egui::Ui, project: &mut Project, ids: 
             if e.params != first.params && t.kind == TransitionKind::Shader {
                 t.params.clone_from(&e.params); // ws:shader-library
             }
+            // parity-effects: a new gradient image goes to every selected gradient wipe
+            if e.shader != first.shader && t.kind == TransitionKind::Shader && t.shader.contains("u_gradient") {
+                let img = crate::engine::shaderlib::parse_meta(&e.shader).image;
+                t.shader = crate::engine::shaderlib::with_image(&t.shader, &img);
+            }
         }
     }
     true
+}
+
+/// parity-effects: the Gradient Image row of a gradient-wipe transition: the picked file's name (click
+/// to pick another) and a clear button. Writes `// @image <path>` into `shader`.
+fn gradient_image_row(ui: &mut egui::Ui, shader: &mut String, g: &mut Gesture) {
+    let cur = crate::engine::shaderlib::parse_meta(shader).image;
+    ui.label("Gradient Image").on_hover_text(
+        "A greyscale picture: the incoming clip appears where it is dark first and where it is light last. \
+         None uses the Pattern control.",
+    );
+    ui.horizontal(|ui| {
+        let name = if cur.is_empty() {
+            "None".to_string()
+        } else {
+            std::path::Path::new(&cur).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(cur.clone())
+        };
+        let r = ui.button(name).on_hover_text(if cur.is_empty() { "Pick an image" } else { cur.as_str() });
+        if r.clicked() {
+            let pick = rfd::FileDialog::new()
+                .add_filter("Image", &["png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp", "gif"])
+                .pick_file();
+            if let Some(p) = pick {
+                let p = p.to_string_lossy().to_string();
+                crate::engine::wipe_image::warm(&p);
+                *shader = crate::engine::shaderlib::with_image(shader, &p);
+                g.click();
+            }
+        }
+        if !cur.is_empty() && ui.small_button("×").on_hover_text("Use the Pattern control instead").clicked() {
+            *shader = crate::engine::shaderlib::with_image(shader, "");
+            g.click();
+        }
+    });
+    ui.end_row();
 }
 
 /// Project settings (nothing selected): a short form of labelled dropdowns - Name, Format (the platform
@@ -1207,7 +1249,11 @@ fn clip_section(
                     PENDING_COLOR_MATCH.with(|p| *p.borrow_mut() = Some((id, rid)));
                 }
                 if resp.eyedrop {
-                    PENDING_EYEDROP.with(|p| *p.borrow_mut() = Some(id));
+                    PENDING_EYEDROP.with(|p| *p.borrow_mut() = Some((id, crate::ui::preview::PickTarget::Chroma)));
+                }
+                if resp.white_balance {
+                    PENDING_EYEDROP
+                        .with(|p| *p.borrow_mut() = Some((id, crate::ui::preview::PickTarget::WhiteBalance)));
                 }
             });
         });

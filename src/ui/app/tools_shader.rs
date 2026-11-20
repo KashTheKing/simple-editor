@@ -243,6 +243,11 @@ fn transition_set_shader(app: &mut App, args: &Value) -> Result<Value, String> {
         None => app.apply_transition_shader(&src, arg_u64(args, "clip"))?,
     };
     let tr = app.project.transition_mut(tid).ok_or("no such transition")?;
+    // parity-effects: the gradient wipe's picture
+    if let Some(img) = arg_str(args, "image") {
+        tr.shader = crate::engine::shaderlib::with_image(&tr.shader, img);
+        crate::engine::wipe_image::warm(img);
+    }
     if let Some(vals) = args.get("params").and_then(|v| v.as_array()) {
         for (i, v) in vals.iter().enumerate().take(tr.params.len()) {
             tr.params[i] = v.as_f64().ok_or("params must be numbers")?;
@@ -289,6 +294,7 @@ pub const TOOLS: &[ToolDef] = &[
             "clip:integer:false:clip on the right of the cut",
             "src:string:true:GLSL source",
             "params:array:false:control values in @param order",
+            "image:string:false:a greyscale image path for a source that reads u_gradient (the library's Gradient Wipe); \"\" clears it",
         ],
         kind: ToolKind::Mutate,
         run: |a, v| transition_set_shader(a, v).map(ToolOutcome::Done),
