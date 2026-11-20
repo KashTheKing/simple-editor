@@ -55,6 +55,7 @@
 
 ### Timeline
 - **Timeline tabs**: open several timelines at once, each in its own tab above the timeline (Main plus any sequences or nests you open); click to switch, × (on hover) or middle-click to close (the sequence stays), + for a new sequence, drag to reorder, right-click for Close, Close Others and Rename. Each tab keeps its own playhead, zoom, scroll, selection and in / out, the tabs are saved with the project, and Ctrl+Tab / Ctrl+Shift+Tab cycle them.
+- **Instant trims and overwrites.** Trimming, ripple trimming or dropping over a clip no longer stalls on big projects: the undo step is kept as-is and only written out if you open it in History, so the edit lands on the next frame.
 - **Max length.** Project settings (and an open sequence's) get a Max length row: on/off, an m:ss field and quick
   picks (0:15, 0:30, 1:00 Shorts/Reels, 1:30, 3:00 TikTok/Shorts, 10:00). The timeline draws a red end line, shades
   and hatches everything past it (clips included) and shows "over by 0:04"; Zoom to Fit and the scrollbar span it.

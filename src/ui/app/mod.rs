@@ -633,13 +633,99 @@ pub(crate) enum HistoryCategory {
 /// previous one. Only sentinel entries (layout steps) carry a fixed label.
 #[derive(Clone)]
 pub(crate) struct UndoEntry {
-    pub json: String,
+    pub json: Snap,
     pub label: String,
     /// Seconds since Unix epoch (`SystemTime`, not `Instant` - a History panel needs a real clock to
     /// group by day and survive across app restarts... though the stack itself is session-only today;
     /// kept as a real timestamp anyway since "session-only" is the smaller, more surprising fact here).
     pub at: f64,
     pub category: HistoryCategory,
+}
+
+/// An undo snapshot. An edit pushes the project itself (a clone: a few ms even with megabytes of HTML
+/// sources); it becomes JSON text only when something reads it as text (History labels, MCP
+/// `history.*`, tests), once. Serialising a big project on every trim was most of an edit's commit
+/// time (`bench_trim_commit`); Undo/Redo take the project back without a parse.
+#[derive(Clone)]
+pub(crate) struct Snap(Arc<(std::sync::OnceLock<String>, Mutex<Option<Project>>)>);
+
+impl Snap {
+    pub fn of(p: Project) -> Self {
+        Snap(Arc::new((std::sync::OnceLock::new(), Mutex::new(Some(p)))))
+    }
+    /// The JSON text (serialised now on first use).
+    pub fn text(&self) -> &str {
+        self.0 .0.get_or_init(|| {
+            let p = self.0 .1.lock().unwrap_or_else(|e| e.into_inner()).take();
+            p.map(|p| p.to_json()).unwrap_or_default()
+        })
+    }
+    /// Identity for caches keyed by entry (History labels) - reading it never serialises.
+    pub fn key(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+    /// Has this snapshot been turned into text yet (the regression test's probe).
+    pub fn is_text(&self) -> bool {
+        self.0 .0.get().is_some()
+    }
+    /// The project it holds: a clone while it is still one, else parsed from its text.
+    pub fn project(&self) -> Result<Project, String> {
+        if let Some(j) = self.0 .0.get() {
+            return Project::from_json(j);
+        }
+        let held = self.0 .1.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match held {
+            Some(p) => Ok(p),
+            None => Project::from_json(self.text()),
+        }
+    }
+}
+impl std::ops::Deref for Snap {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.text()
+    }
+}
+impl From<String> for Snap {
+    fn from(s: String) -> Self {
+        let cell = std::sync::OnceLock::new();
+        let _ = cell.set(s);
+        Snap(Arc::new((cell, Mutex::new(None))))
+    }
+}
+impl From<&str> for Snap {
+    fn from(s: &str) -> Self {
+        Snap::from(s.to_owned())
+    }
+}
+impl From<Project> for Snap {
+    fn from(p: Project) -> Self {
+        Snap::of(p)
+    }
+}
+impl PartialEq<str> for Snap {
+    fn eq(&self, other: &str) -> bool {
+        // a held project serialises to an object: a sentinel (LAYOUT_STEP) never matches it, unparsed
+        if !self.is_text() && !other.starts_with('{') {
+            return false;
+        }
+        self.text() == other
+    }
+}
+impl PartialEq<&str> for Snap {
+    fn eq(&self, other: &&str) -> bool {
+        *self == **other
+    }
+}
+impl PartialEq<String> for Snap {
+    fn eq(&self, other: &String) -> bool {
+        *self == **other
+    }
+}
+impl std::fmt::Debug for Snap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.text())
+    }
 }
 
 fn now_secs() -> f64 {
@@ -696,7 +782,8 @@ pub(crate) fn describe_change(old_json: &str, new_json: &str) -> String {
 
 /// Push an undo snapshot (capped) and clear the redo history. Labels are NOT derived here - that cost
 /// (two project parses) belongs to the History panel, lazily; see `UndoEntry::label`.
-fn push_undo_json(undo: &mut Vec<UndoEntry>, redo: &mut Vec<UndoEntry>, json: String) {
+fn push_undo_json(undo: &mut Vec<UndoEntry>, redo: &mut Vec<UndoEntry>, json: impl Into<Snap>) {
+    let json = json.into();
     let entry = if json == LAYOUT_STEP {
         UndoEntry { label: "Rearranged panels".into(), category: HistoryCategory::Layout, at: now_secs(), json }
     } else {
@@ -1134,7 +1221,7 @@ impl App {
     // toast()/toast_with_folder()/push_toast()/toast_undo() moved to feedback.rs (ws:forgiveness).
 
     fn push_undo(&mut self) {
-        push_undo_json(&mut self.undo, &mut self.redo, self.project.to_json());
+        push_undo_json(&mut self.undo, &mut self.redo, self.project.clone());
     }
 
     // ws:source-monitor: `insert_at` (chain each asset's clips end to end) is now
@@ -2441,7 +2528,7 @@ impl App {
     /// of "Project edited". Callers push the entry themselves (this only sets the label on the last
     /// one) - see `push_undo_json`. First real caller: ws:forgiveness (Delete/RippleDelete, History
     /// panel restore).
-    pub(crate) fn push_undo_labeled(&mut self, before: String, label: &'static str) {
+    pub(crate) fn push_undo_labeled(&mut self, before: impl Into<Snap>, label: &'static str) {
         push_undo_json(&mut self.undo, &mut self.redo, before);
         if let Some(e) = self.undo.last_mut() {
             e.label = label.to_string();

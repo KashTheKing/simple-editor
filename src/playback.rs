@@ -1596,7 +1596,7 @@ pub(crate) fn video_dirty_spans(old: &Project, new: &Project) -> Option<Vec<(f64
         || json(&old.scaler) != json(&new.scaler)
         || old.show_subtitles != new.show_subtitles
         || old.tracks.len() != new.tracks.len()
-        || json(&old.assets) != json(&new.assets)
+        || old.assets != new.assets // (field compare: serialising megabytes of HTML sources took ms per edit)
         || json(&old.sequences) != json(&new.sequences)
     {
         return None;
