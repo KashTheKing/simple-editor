@@ -662,3 +662,45 @@ fn step(
     }
     Ok(px)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Positive logits on the left half, negative on the right: the resized mask keeps the split, at any size.
+    #[test]
+    fn mask_bytes_resizes_logits_into_coverage() {
+        let high: Vec<f32> = (0..S * S).map(|i| if i % S < S / 2 { 8.0 } else { -8.0 }).collect();
+        for (w, h) in [(1024, 576), (320, 180), (7, 3)] {
+            let m = mask_bytes(&high, w, h);
+            assert_eq!(m.len(), w * h);
+            assert!(m[0] >= 250 && m[w - 1] <= 5, "{w}x{h}: left inside, right outside");
+            assert!((area(&m) - 0.5).abs() < 1.0 / w as f64 + 1e-9, "{w}x{h}: half the frame");
+        }
+        assert_eq!(mask_bytes(&vec![0.0; S * S], 2, 2), vec![128; 4], "a zero logit is half coverage");
+    }
+
+    #[test]
+    fn points_scale_to_the_model_input_and_clamp() {
+        let p = points_of(&serde_json::json!([[0.5, 0.25, 1], [1.5, -0.2, 0], [0.1, 0.1], "junk", [0.2]]));
+        assert_eq!(p, vec![(512.0, 256.0, 1), (1024.0, 0.0, 0), (102.4, 102.4, 1)]);
+        assert!(points_of(&serde_json::json!(null)).is_empty());
+    }
+
+    #[test]
+    fn png_frames_land_whole_and_area_counts_half_coverage() {
+        let dir = std::env::temp_dir().join(format!("se-sam2-helper-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("000000.png");
+        let px = [0u8, 127, 128, 255, 200, 10];
+        write_png(&path, 3, 2, &px).unwrap();
+        assert!(!path.with_extension("png.part").exists(), "written to a .part, then renamed in");
+        let mut r = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(&path).unwrap())).read_info().unwrap();
+        let mut buf = vec![0u8; r.output_buffer_size().unwrap()];
+        let info = r.next_frame(&mut buf).unwrap();
+        assert_eq!((info.width, info.height, &buf[..6]), (3, 2, &px[..]));
+        assert_eq!(area(&px), 0.5);
+        assert_eq!(area(&[]), 0.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
