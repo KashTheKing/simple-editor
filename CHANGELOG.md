@@ -14,6 +14,9 @@
 - **A Home page instead of the small start card**: the app opens on it. **New** is a row of cards (a **+** for a blank project, then one per format, Shorts / TikTok / Reels starting at Max length 1:00, then your saved formats) that go straight into the editor; **Projects** lists your recent projects with a thumbnail, **Rename**, **Open Folder** and **Open**, and a double-click opens one. Missing projects are greyed out with **Remove**. **File ▸ Quit to Project List**, the app icon and the house button go back (through the save prompt), **File ▸ New** goes there too; **Settings ▸ General ▸ Home page** turns it off for the old card. MCP: `home.show`, `project.recent`.
 - **TikTok and Snapchat text**: Gallery ▸ Titles ▸ Social has TikTok Classic, Background (white, dark and colours, a box per line that hugs it), Semi-Transparent, Typewriter and Neon, and Snapchat Bar (full width at any aspect ratio, drags up and down), Big Text and Highlight, as native text clips with TikTok Sans and Inter built in. Text clips gain Box shape (Block / Lines / Bar) and Corner radius; Gallery ▸ Captions gains TikTok Background and Snapchat Bar.
 
+### Formats
+- **ASS / SSA subtitles**: Import Subtitles…, `subtitles.import` and the media player's side-car subtitles read Advanced SubStation Alpha and SubStation Alpha files as well as SRT and VTT. Styling and positioning tags are dropped (the project's subtitle style applies), `\N` line breaks are kept, and UTF-16 or ANSI files import too.
+
 ## 1.4.0
 
 ### Media player

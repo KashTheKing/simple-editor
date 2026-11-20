@@ -118,10 +118,15 @@ pub fn karaoke(
     }
 }
 
-/// Parse SRT or WebVTT (auto-detected by the "WEBVTT" header / timestamp style). Malformed blocks are
-/// skipped. Returns (start, end, text) triples in file order.
+/// Parse SRT, WebVTT or ASS/SSA (auto-detected: an `[Events]` / `[Script Info]` section is ASS,
+/// anything else goes by the "WEBVTT" header / timestamp style). Malformed blocks are skipped.
+/// Returns (start, end, text) triples in file order (ASS: sorted by start time).
 pub fn parse(text: &str) -> Vec<(f64, f64, String)> {
     let text = text.trim_start_matches('\u{feff}');
+    // ---- ws:parity-formats ----
+    if is_ass(text) {
+        return parse_ass(text);
+    }
     let mut out = Vec::new();
     let mut block: Vec<&str> = Vec::new();
     for line in text.lines().chain(std::iter::once("")) {
@@ -197,6 +202,151 @@ fn strip_tags(s: &str, out: &mut String) {
     }
 }
 
+// ---- ws:parity-formats ----
+/// The file extensions the subtitle importers accept (pickers and the `subtitles.import` tool).
+pub const IMPORT_EXTS: &[&str] = &["srt", "vtt", "ass", "ssa"];
+
+/// A subtitle file's text: UTF-8 (BOM or not), UTF-16 with a BOM (what Aegisub and Notepad save
+/// ASS files as on Windows), else read byte-for-char as Latin-1 so an old ANSI file still imports.
+pub fn read_file(path: &std::path::Path) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(decode_text(&bytes))
+}
+
+/// `read_file`'s decoding, on bytes.
+pub fn decode_text(bytes: &[u8]) -> String {
+    let utf16 = |be: bool| {
+        let units: Vec<u16> = bytes[2..]
+            .chunks_exact(2)
+            .map(|c| if be { u16::from_be_bytes([c[0], c[1]]) } else { u16::from_le_bytes([c[0], c[1]]) })
+            .collect();
+        String::from_utf16_lossy(&units)
+    };
+    match bytes {
+        [0xFF, 0xFE, ..] => utf16(false),
+        [0xFE, 0xFF, ..] => utf16(true),
+        _ => match std::str::from_utf8(bytes) {
+            Ok(s) => s.trim_start_matches('\u{feff}').to_string(),
+            Err(_) => bytes.iter().map(|&b| b as char).collect(),
+        },
+    }
+}
+
+/// Is this an Advanced SubStation Alpha / SubStation Alpha script? Any `[Script Info]` or `[Events]`
+/// section header (case-insensitive, leading whitespace allowed) says so.
+pub fn is_ass(text: &str) -> bool {
+    text.lines().take(4000).any(|l| {
+        let l = l.trim().to_ascii_lowercase();
+        l == "[script info]" || l == "[events]"
+    })
+}
+
+/// The `Dialogue:` lines of an ASS/SSA script's `[Events]` section as (start, end, text). The
+/// section's `Format:` line names the columns (the defaults are ASS's own order, which SSA shares
+/// for Start / End / Text); the Text column is the rest of the line, commas and all. `Comment:` lines
+/// and every other section (styles, fonts, graphics) are skipped. Override blocks (`{\i1}`, `{\pos(..)}`,
+/// any `{...}`) are removed, drawing-mode runs (`{\p1}` .. `{\p0}`: vector commands, not words) are
+/// dropped, `\N` / `\n` become line breaks and `\h` a space. Cues with no text left are skipped.
+/// Sorted by start time (ASS files list lines in any order, by layer or by style).
+pub fn parse_ass(text: &str) -> Vec<(f64, f64, String)> {
+    let mut out: Vec<(f64, f64, String)> = Vec::new();
+    let mut in_events = false;
+    let (mut start_i, mut end_i, mut text_i, mut cols) = (1usize, 2usize, 9usize, 10usize);
+    for line in text.lines() {
+        let line = line.trim_start_matches('\u{feff}').trim_end_matches('\r');
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_events = trimmed.eq_ignore_ascii_case("[events]");
+            continue;
+        }
+        if !in_events {
+            continue;
+        }
+        let Some((key, rest)) = trimmed.split_once(':') else { continue };
+        let key = key.trim();
+        if key.eq_ignore_ascii_case("format") {
+            let names: Vec<String> = rest.split(',').map(|s| s.trim().to_ascii_lowercase()).collect();
+            let at = |n: &str| names.iter().position(|x| x == n);
+            if let (Some(s), Some(e), Some(t)) = (at("start"), at("end"), at("text")) {
+                (start_i, end_i, text_i, cols) = (s, e, t, names.len());
+            }
+            continue;
+        }
+        if !key.eq_ignore_ascii_case("dialogue") {
+            continue;
+        }
+        // the Text column is the last one and may itself hold commas
+        let fields: Vec<&str> = rest.splitn(cols, ',').collect();
+        if fields.len() < cols || text_i >= fields.len() {
+            continue;
+        }
+        let (Some(start), Some(end)) = (parse_time(fields[start_i].trim()), parse_time(fields[end_i].trim())) else {
+            continue;
+        };
+        if end < start {
+            continue;
+        }
+        let body = ass_text(fields[text_i]);
+        if body.trim().is_empty() {
+            continue;
+        }
+        out.push((start, end, body));
+    }
+    out.sort_by(|a, b| a.0.total_cmp(&b.0));
+    out
+}
+
+/// One ASS Text field as plain lines: override blocks removed, drawings dropped, escapes resolved.
+fn ass_text(s: &str) -> String {
+    let mut out = String::new();
+    let mut drawing = false;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' => {
+                let mut block = String::new();
+                for c in chars.by_ref() {
+                    if c == '}' {
+                        break;
+                    }
+                    block.push(c);
+                }
+                // `\p<n>` switches drawing mode on (n > 0) or off (0); the last one in the block wins
+                let mut rest = block.as_str();
+                while let Some(i) = rest.find("\\p") {
+                    let after = &rest[i + 2..];
+                    let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    // `\pos(..)` / `\pbo` are other tags, not a drawing switch
+                    if !digits.is_empty() {
+                        drawing = digits.parse::<u32>().unwrap_or(0) > 0;
+                    }
+                    rest = after;
+                }
+            }
+            '\\' => match chars.peek() {
+                Some('N') | Some('n') => {
+                    chars.next();
+                    if !drawing {
+                        out.push('\n');
+                    }
+                }
+                Some('h') => {
+                    chars.next();
+                    if !drawing {
+                        out.push(' ');
+                    }
+                }
+                _ if !drawing => out.push(c),
+                _ => {}
+            },
+            _ if !drawing => out.push(c),
+            _ => {}
+        }
+    }
+    // a line break at either end (a `\N` used as spacing) and trailing spaces per line go
+    out.lines().map(str::trim_end).collect::<Vec<_>>().join("\n").trim_matches('\n').to_string()
+}
+
 fn fmt_time(t: f64, sep: char) -> String {
     let ms = (t.max(0.0) * 1000.0).round() as u64;
     format!("{:02}:{:02}:{:02}{}{:03}", ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60, sep, ms % 1000)
@@ -250,6 +400,51 @@ mod tests {
         assert_eq!(cues[0], (3.0, 4.0, "good".to_string()));
         assert!(parse("").is_empty());
         assert!(parse("garbage\nonly").is_empty());
+    }
+
+    // ---- ws:parity-formats ----
+    #[test]
+    fn parses_ass() {
+        let ass = "\u{feff}[Script Info]\r\nTitle: test\r\nScriptType: v4.00+\r\n\r\n[V4+ Styles]\r\nFormat: Name, Fontname, Fontsize\r\nStyle: Default,Arial,20\r\n\r\n[Events]\r\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\r\nDialogue: 0,0:00:05.00,0:00:06.50,Default,,0,0,0,,Second, with a comma\r\nComment: 0,0:00:00.00,0:00:09.00,Default,,0,0,0,,not shown\r\nDialogue: 0,0:00:01.00,0:00:02.50,Default,,0,0,0,,{\\an8}Hello {\\i1}world{\\i0}\\NNext\\hline\r\nDialogue: 0,0:00:03.00,0:00:04.00,Default,,0,0,0,,{\\p1}m 0 0 l 100 0 100 100{\\p0}\r\nDialogue: 0,0:00:07.00,0:00:08.00,Default,,0,0,0,,{\\pos(10,20)}Placed\r\nDialogue: 0,bad,0:00:08.00,Default,,0,0,0,,skipped\r\n";
+        assert!(is_ass(ass));
+        let cues = parse(ass);
+        assert_eq!(
+            cues,
+            vec![
+                (1.0, 2.5, "Hello world\nNext line".to_string()),
+                (5.0, 6.5, "Second, with a comma".to_string()),
+                (7.0, 8.0, "Placed".to_string()),
+            ],
+            "sorted, override blocks and drawings gone, the drawing-only line skipped"
+        );
+    }
+
+    #[test]
+    fn parses_ssa_with_its_own_format_line() {
+        // SSA v4: a Marked column first, and a reordered Format line is honoured
+        let ssa = "[Script Info]\nScriptType: v4.00\n\n[V4 Styles]\nFormat: Name, Fontname\n\n[Events]\nFormat: Marked, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: Marked=0,0:01:00.25,0:01:02.00,Default,NTP,0000,0000,0000,!Effect,Old {\\b1}school{\\b0}\n";
+        assert_eq!(parse(ssa), vec![(60.25, 62.0, "Old school".to_string())]);
+        let odd = "[Events]\nFormat: Text, End, Start\nDialogue: a, b, c,0:00:02.00,0:00:01.00\n";
+        assert!(parse(odd).is_empty(), "Text is not last: the column count still splits it, nothing parses");
+        let reordered = "[Events]\nFormat: Start, End, Text\nDialogue: 0:00:01.00,0:00:02.00,Hi, there\n";
+        assert_eq!(parse(reordered), vec![(1.0, 2.0, "Hi, there".to_string())]);
+        assert!(!is_ass("1\n00:00:01,000 --> 00:00:02,000\n[Events] in a cue is just text\n"));
+        assert_eq!(IMPORT_EXTS, &["srt", "vtt", "ass", "ssa"]);
+    }
+
+    #[test]
+    fn decodes_utf16_and_ansi_files() {
+        let text = "[Events]\nFormat: Start, End, Text\nDialogue: 0:00:01.00,0:00:02.00,Café\n";
+        let mut le = vec![0xFF, 0xFE];
+        le.extend(text.encode_utf16().flat_map(|u| u.to_le_bytes()));
+        let mut be = vec![0xFE, 0xFF];
+        be.extend(text.encode_utf16().flat_map(|u| u.to_be_bytes()));
+        for bytes in [le, be, text.as_bytes().to_vec()] {
+            assert_eq!(parse(&decode_text(&bytes)), vec![(1.0, 2.0, "Café".to_string())]);
+        }
+        // Latin-1 / ANSI: 0xE9 alone is not UTF-8
+        let ansi: Vec<u8> = text.replace('é', "\u{0}").bytes().map(|b| if b == 0 { 0xE9 } else { b }).collect();
+        assert_eq!(parse(&decode_text(&ansi)), vec![(1.0, 2.0, "Café".to_string())]);
     }
 
     #[test]

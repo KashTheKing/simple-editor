@@ -1,6 +1,6 @@
 //! The audio and subtitle tracks a file carries, for the player's track selector, and the cues of the
 //! one picked. Listed with ffprobe the first time the selector opens (not at startup); a subtitle
-//! stream is pulled out with ffmpeg as SRT when it is switched on. A `<name>.srt` / `.vtt` beside the
+//! stream is pulled out with ffmpeg as SRT when it is switched on. A `<name>.srt` / `.vtt` / `.ass` / `.ssa` beside the
 //! file is offered too, as Media Player does.
 
 use crate::media::ffpipe;
@@ -102,7 +102,7 @@ pub fn probe(path: &Path) -> Tracks {
             }
         }
     }
-    for ext in ["srt", "vtt"] {
+    for ext in crate::engine::subtitles::IMPORT_EXTS {
         let side = path.with_extension(ext);
         if side.is_file() {
             let n = t.subtitles.len();
@@ -119,7 +119,7 @@ pub fn cues(path: &Path, track: &Track) -> Result<Vec<(f64, f64, String)>, Strin
         return Err("picture subtitles cannot be shown".into());
     }
     let text = match &track.file {
-        Some(f) => std::fs::read_to_string(f).map_err(|e| e.to_string())?,
+        Some(f) => crate::engine::subtitles::read_file(f)?,
         None => {
             let exe = ffpipe::ffmpeg_exe().ok_or("ffmpeg not found")?;
             let out = ffpipe::command(&exe)

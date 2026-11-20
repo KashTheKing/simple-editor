@@ -288,11 +288,12 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// Import Subtitles…: the one import path, for the subtitle lane's right-click and the Subtitles pane's ⋯
-/// menu alike - pick an .srt/.vtt, parse it, then replace inline (an empty project has nothing to lose)
+/// menu alike - pick an .srt/.vtt/.ass/.ssa, parse it, then replace inline (an empty project has nothing to lose)
 /// or ask before replacing (Cancel keeps the existing cues and discards the import).
 pub(super) fn import_subtitles(app: &mut App) {
-    let Some(path) = rfd::FileDialog::new().add_filter("Subtitles", &["srt", "vtt"]).pick_file() else { return };
-    let cues = std::fs::read_to_string(&path).map(|t| crate::engine::subtitles::parse(&t)).unwrap_or_default();
+    let exts = crate::engine::subtitles::IMPORT_EXTS;
+    let Some(path) = rfd::FileDialog::new().add_filter("Subtitles", exts).pick_file() else { return };
+    let cues = crate::engine::subtitles::read_file(&path).map(|t| crate::engine::subtitles::parse(&t)).unwrap_or_default();
     if cues.is_empty() {
         app.toast("No subtitles found in that file");
     } else if app.project.subtitles.is_empty() {

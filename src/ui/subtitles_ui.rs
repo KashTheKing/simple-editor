@@ -434,7 +434,7 @@ pub fn show(
             }
         }
         if project.subtitles.is_empty() {
-            ui.weak("No subtitles. \"+ Add\" one at the playhead, or right-click to import an .srt / .vtt file.");
+            ui.weak("No subtitles. \"+ Add\" one at the playhead, or right-click to import a subtitle file.");
         }
     });
     menu::context(&bg, |ui| more_menu(ui, state, project, &mut undone, undo, &mut resp));
