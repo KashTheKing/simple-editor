@@ -162,6 +162,8 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 |---|---|
 | Split at Playhead | <kbd>Ctrl+B</kbd> |
 | Link / Unlink | <kbd>Ctrl+L</kbd> |
+| Group | <kbd>Ctrl+G</kbd> |
+| Ungroup | <kbd>Ctrl+Shift+G</kbd> |
 | Enable / Disable Clip | <kbd>Shift+D</kbd> |
 | Nudge Left 1 Frame | <kbd>Comma</kbd> |
 | Nudge Right 1 Frame | <kbd>Period</kbd> |

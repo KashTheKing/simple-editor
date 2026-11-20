@@ -95,6 +95,22 @@ impl Project {
         }
         out
     }
+    /// Add every clip that shares a group (Clip ▸ Group) with one of `ids`, in order, no repeats.
+    /// A selection unit only: callers that want the A/V partners too run `expand_links` on the result.
+    pub fn expand_groups(&self, ids: &[Id]) -> Vec<Id> {
+        let mut out: Vec<Id> = Vec::new();
+        for &id in ids {
+            let g = self.clip(id).map_or(0, |c| c.group);
+            let members: Vec<Id> =
+                if g == 0 { vec![id] } else { self.all_clips().filter(|(_, c)| c.group == g).map(|(_, c)| c.id).collect() };
+            for m in members {
+                if !out.contains(&m) {
+                    out.push(m);
+                }
+            }
+        }
+        out
+    }
     pub fn video_tracks(&self) -> Vec<usize> {
         (0..self.tracks.len()).filter(|&i| self.tracks[i].kind == TrackKind::Video).collect()
     }

@@ -301,7 +301,13 @@ pub(super) fn handle(
             if !mods.ctrl {
                 c.selection.clear();
             }
-            c.selection.push(cid);
+            // pressing a grouped clip takes its whole group along (Alt: just the clip)
+            let unit = if mods.alt { vec![cid] } else { c.project.expand_groups(&[cid]) };
+            for id in unit {
+                if !c.selection.contains(&id) {
+                    c.selection.push(id);
+                }
+            }
         }
     }
     if spacer {

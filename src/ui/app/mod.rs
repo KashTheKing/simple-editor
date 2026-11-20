@@ -190,6 +190,7 @@ mod windows_dlg;
 mod project_match; // ws:project-color-fps
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
+mod group_sync; // ws:gap-group-sync
 mod os_paste; // Ctrl+V of a screenshot / copied files
 mod export_fix; // ws:forum-export
 mod health_ctl; // ws:forum-preview
@@ -609,6 +610,9 @@ pub struct App {
     // ---- ws:forum-preview ----
     /// Playback health chip and the VFR notice (`health_ctl`).
     health: health_ctl::State,
+    // ---- ws:gap-group-sync ----
+    /// A Sync by Audio correlating on its worker thread.
+    group_sync: group_sync::SyncState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -1188,6 +1192,7 @@ impl App {
             match_offer: None, // ws:project-color-fps
             tabs: Default::default(), // ws:timeline-tabs
             health: Default::default(), // ws:forum-preview
+            group_sync: Default::default(), // ws:gap-group-sync
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -2072,6 +2077,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     health_ctl::TOOLS,
     // ---- ws:forum-ui ----
     tools_findability::TOOLS,
+    // ---- ws:gap-group-sync ----
+    group_sync::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2173,6 +2180,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     home_ctl::act,
     // ---- ws:forum-export ----
     export_fix::act,
+    // ---- ws:gap-group-sync ----
+    group_sync::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -2221,6 +2230,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:keys-actions ----
     // ---- ws:color-page ----
     color_page::tick,
+    // ---- ws:gap-group-sync ----
+    group_sync::tick,
     // ---- ws:perf-baseline ----
     // ---- ws:pro-schema ----
     // ---- ws:play-decode-path ----

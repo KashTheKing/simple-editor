@@ -256,8 +256,9 @@ pub(super) fn clip_menu(
         acts(ui, &[Some(Delete), Some(RippleDelete), None]);
         acts(
             ui,
-            &[Some(Split), Some(JoinThroughEdit), Some(DuplicateClips), Some(ToggleEnabled), Some(LinkToggle), None],
+            &[Some(Split), Some(JoinThroughEdit), Some(DuplicateClips), Some(ToggleEnabled), Some(LinkToggle)],
         );
+        acts(ui, &[Some(GroupClips), Some(UngroupClips), Some(SyncByAudio), None]); // ws:gap-group-sync
         menu::sub(ui, Some(Glyph::Speed), "Speed", |ui| acts(ui, &[Some(Retime), Some(FreezeFrame)]));
         // video/image/sequence only - Project::fit_clip_to_screen skips the rest of a mixed selection
         if m.native_size {

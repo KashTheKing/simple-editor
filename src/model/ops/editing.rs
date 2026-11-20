@@ -465,6 +465,33 @@ impl Project {
             }
         }
     }
+    /// Group the clips (+ their linked partners) so they select, move, copy and delete together. Clips
+    /// already in a group join the new one (Ctrl+G on two groups merges them). Needs 2+ clips; returns
+    /// the group id.
+    pub fn group_clips(&mut self, ids: &[Id]) -> Option<Id> {
+        let ids = self.expand_links(&self.expand_groups(ids));
+        let ids: Vec<Id> = ids.into_iter().filter(|&id| self.clip(id).is_some()).collect();
+        if ids.len() < 2 {
+            return None;
+        }
+        let g = self.new_id();
+        for id in ids {
+            self.clip_mut(id)?.group = g;
+        }
+        Some(g)
+    }
+    /// Dissolve every group one of `ids` belongs to. Returns how many clips left a group.
+    pub fn ungroup_clips(&mut self, ids: &[Id]) -> usize {
+        let groups: Vec<Id> = ids.iter().filter_map(|&id| self.clip(id)).map(|c| c.group).filter(|&g| g != 0).collect();
+        let mut n = 0;
+        for t in &mut self.tracks {
+            for c in t.clips.iter_mut().filter(|c| c.group != 0 && groups.contains(&c.group)) {
+                c.group = 0;
+                n += 1;
+            }
+        }
+        n
+    }
     /// Apply speed/reverse to the clips and their linked clips (keeps source windows; durations follow).
     /// Returns false if the new lengths would collide with neighbours (nothing changed).
     pub fn set_speed(&mut self, ids: &[Id], speed: f64, reverse: bool) -> bool {

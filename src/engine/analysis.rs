@@ -131,6 +131,12 @@ pub fn bpm(onsets: &[f64]) -> Option<f64> {
 /// Best lag (seconds) aligning `b` to `a` via cross-correlation of their downsampled envelopes.
 /// `max_lag` is hard-capped at 120s. `None` on empty input.
 pub fn xcorr_offset(a: &Peaks, b: &Peaks, max_lag: f64) -> Option<f64> {
+    xcorr_match(a, b, max_lag).map(|(lag, _)| lag)
+}
+
+/// `xcorr_offset` plus how much to trust it: the Pearson correlation (-1..1) of the two envelopes where
+/// they overlap at that lag. Near 1 = the same sound; under ~0.4 = probably not the same recording.
+pub fn xcorr_match(a: &Peaks, b: &Peaks, max_lag: f64) -> Option<(f64, f64)> {
     if a.is_empty() || b.is_empty() {
         return None;
     }
@@ -179,7 +185,22 @@ pub fn xcorr_offset(a: &Peaks, b: &Peaks, max_lag: f64) -> Option<f64> {
     if best_score <= 0.0 {
         return None;
     }
-    Some(best_lag_n as f64 / RATE)
+    let pairs: Vec<(f64, f64)> = (0..ea.len())
+        .filter_map(|i| {
+            let j = i as isize + best_lag_n;
+            (j >= 0 && (j as usize) < eb.len()).then(|| (ea[i] as f64, eb[j as usize] as f64))
+        })
+        .collect();
+    let n = pairs.len().max(1) as f64;
+    let (ma, mb) = pairs.iter().fold((0.0, 0.0), |(x, y), &(a, b)| (x + a / n, y + b / n));
+    let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
+    for &(a, b) in &pairs {
+        sab += (a - ma) * (b - mb);
+        saa += (a - ma) * (a - ma);
+        sbb += (b - mb) * (b - mb);
+    }
+    let confidence = if saa > 0.0 && sbb > 0.0 { sab / (saa * sbb).sqrt() } else { 0.0 };
+    Some((best_lag_n as f64 / RATE, confidence))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
