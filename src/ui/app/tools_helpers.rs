@@ -300,6 +300,10 @@ pub(super) fn apply_clip_fields(clip: &mut Clip, fields: &Value) -> Result<(), S
                     }
                     "box_color" => t.box_color = color_arg(v).ok_or("box_color: [r,g,b,a]")?,
                     "box_padding" => t.box_padding = v.as_f64().ok_or("box_padding: number")? as f32,
+                    "box_mode" => {
+                        t.box_mode = v.as_u64().filter(|&m| m <= 2).ok_or("box_mode: 0 block, 1 lines, 2 bar")? as u8
+                    }
+                    "box_radius" => t.box_radius = v.as_f64().ok_or("box_radius: number")?.max(0.0) as f32,
                     _ => return Err(format!("unknown clip field '{k}'")),
                 }
             }
