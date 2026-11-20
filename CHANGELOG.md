@@ -35,6 +35,8 @@
 
 ### What moved
 - **Ripple Delete is now called Delete and Close Gap** (still <kbd>Delete</kbd>; <kbd>Shift+Delete</kbd> does it too), and **Delete (Leave Gap)** is **Delete and Leave Gap** (still <kbd>Backspace</kbd>). Your shortcuts are kept.
+### Speed keeps the pitch
+- **Keep pitch**: a sped-up or slowed-down clip now sounds at its own pitch instead of chipmunk or slow-motion voices, in playback, scrubbing, export and audio bakes, speed ramps and reverse included (a built-in time stretch, no new download). It is a tick next to Speed in the Inspector, on for new clips; projects made before it sound as they did until you tick it. Above 400 % a Keep pitch clip is muted. Shuttling with J / L keeps the pitch from 0.25x to 4x (it was muted above 2x and changed pitch below). The Slow motion bake now slows the sound with the picture, pitch kept (it used to stay at full speed and drift out of sync). MCP: `clip.set {fields: {keep_pitch}}`, `timeline.list` field `keep_pitch`.
 
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.

@@ -166,6 +166,7 @@ pub(crate) fn swap_clip_asset(project: &mut Project, clip_id: Id, new_asset: Id,
     fresh.bus = c.bus;
     fresh.markers = std::mem::take(&mut c.markers);
     fresh.audio_role = c.audio_role;
+    fresh.keep_pitch = c.keep_pitch;
     fresh.asset = new_asset;
     fresh.src_in = ((c.start - t0) / factor.max(1e-6)).max(0.0);
     *c = fresh;
@@ -994,7 +995,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "export.slowmo",
-        desc: "Bake the clip(s) through setpts+minterpolate optical-flow slow motion, then swap them onto the result (the clip keeps its length and now shows the first part of the slowed footage - extend its end to reveal the rest).",
+        desc: "Bake the clip(s) through setpts+minterpolate optical-flow slow motion (the sound slowed with ffmpeg atempo, pitch kept), then swap them onto the result (the clip keeps its length and now shows the first part of the slowed footage - extend its end to reveal the rest).",
         args: &["clip_ids:array:true:", "factor:number:false:speed, default 0.5 (= half speed)"],
         kind: ToolKind::Job,
         run: |app, args| bake_tool(app, args, BakeKind::SlowMo(arg_f64(args, "factor").unwrap_or(0.5))),
@@ -1170,6 +1171,9 @@ mod tests {
         // half-speed bake: the timeline offset lands twice as far into the (twice as long) file
         assert!(swap_clip_asset(&mut p, 3, aid, 2.0, 0.5));
         assert_eq!(p.clip(3).unwrap().src_in, 2.0);
+        p.clip_mut(3).unwrap().keep_pitch = false;
+        assert!(swap_clip_asset(&mut p, 3, aid, 2.0, 1.0));
+        assert!(!p.clip(3).unwrap().keep_pitch, "an old clip's Keep pitch setting is kept, not reset");
         assert!(!swap_clip_asset(&mut p, 999, aid, 0.0, 1.0));
         assert!(p.asset(7).is_some(), "the original asset is kept");
     }

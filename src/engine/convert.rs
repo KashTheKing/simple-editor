@@ -75,6 +75,19 @@ pub enum BakeFilter {
     SlowMo { factor: f64, fps: f64 },
 }
 
+/// An ffmpeg `atempo` chain playing audio at `factor` x with its pitch kept. One `atempo` takes 0.5..100,
+/// so slower speeds chain halvings: 0.25 -> `atempo=0.5,atempo=0.5`.
+pub fn atempo_chain(factor: f64) -> String {
+    let mut f = factor.clamp(0.01, 100.0);
+    let mut parts = Vec::new();
+    while f < 0.5 {
+        parts.push("atempo=0.5".to_string());
+        f /= 0.5;
+    }
+    parts.push(format!("atempo={f:.6}"));
+    parts.join(",")
+}
+
 /// The `ConvertOptions` `start_bake_filter` runs - pure, so the filter strings are testable.
 pub fn bake_filter_opts(
     src: PathBuf,
@@ -89,7 +102,9 @@ pub fn bake_filter_opts(
         BakeFilter::Denoise => (None, Some("afftdn".to_string())),
         BakeFilter::SlowMo { factor, fps } => {
             let factor = factor.clamp(0.05, 1.0);
-            (Some(format!("setpts={:.4}*PTS,minterpolate=fps={}:mi_mode=mci", 1.0 / factor, fps.max(1.0))), None)
+            let vf = format!("setpts={:.4}*PTS,minterpolate=fps={}:mi_mode=mci", 1.0 / factor, fps.max(1.0));
+            // the sound slows with the picture, pitch kept (Keep Pitch's promise for bakes too)
+            (Some(vf), Some(atempo_chain(factor)))
         }
     };
     ConvertOptions {
@@ -341,6 +356,9 @@ mod tests {
         let vf = m.vf_extra.unwrap();
         assert!(vf.contains("setpts=2.0000*PTS"), "{vf}");
         assert!(vf.contains("minterpolate=fps=30"), "{vf}");
+        assert_eq!(m.af_extra.as_deref(), Some("atempo=0.500000"), "the sound slows too, pitch kept");
+        assert_eq!(atempo_chain(0.25), "atempo=0.5,atempo=0.500000");
+        assert_eq!(atempo_chain(0.1), "atempo=0.5,atempo=0.5,atempo=0.5,atempo=0.800000");
         assert_eq!((m.encoder.as_str(), m.crf, m.preset.as_str()), ("auto", 20, "fast"));
 
         let dir = temp_dir("bake");

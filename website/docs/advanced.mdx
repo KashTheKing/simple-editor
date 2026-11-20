@@ -93,6 +93,11 @@ shows every animated value of the selected clip as a curve.
 
 - **Speed / Retime…** (<kbd>Ctrl+R</kbd>) sets a clip's speed (25 % to 400 % presets, or any percentage) and
   can play it in reverse. For a speed that changes over time, use a ramp from **Gallery ▸ Speed Ramps**.
+- **Keep pitch** (Inspector, under Speed) keeps a sped-up or slowed-down clip's sound at its own pitch, in
+  playback, scrubbing and export, ramps and reverse included. It is on for new clips; clips from projects made
+  before it keep the old sound (the pitch follows the speed) until you tick it. A Keep pitch clip faster than
+  400 % is silent. Shuttling (<kbd>J</kbd> / <kbd>L</kbd>) keeps the pitch too, up to 4x; faster or backwards
+  shuttling is silent. The Slow motion bake slows the sound with the picture, pitch kept.
 - **Freeze Frame at Playhead** (<kbd>Shift+R</kbd>) holds one frame.
 - **Flow Motion Between Selected Clips** (Clip menu, two clips that touch) makes animation carry on smoothly
   across the cut: the second clip's moves pick up at the speed the first one's ended.

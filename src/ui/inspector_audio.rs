@@ -229,6 +229,14 @@ pub(super) fn speed_rows(
         mark(ui, "speed", &r);
     });
     crate::ui::prop_field(ui, "Reverse", |ui| g.note(&ui.checkbox(&mut reverse, "")));
+    let mut keep_pitch = c.keep_pitch;
+    crate::ui::prop_field(ui, "Keep pitch", |ui| {
+        let r = ui.checkbox(&mut keep_pitch, "").on_hover_text(
+            "Time-stretch the sound so a speed change keeps its pitch. Off: the pitch follows the speed. Above 400 % such a clip is muted: the stretch would skip most of the sound.",
+        );
+        mark(ui, "keep_pitch", &r);
+        g.note(&r);
+    });
     if let Some(f) = c.freeze {
         crate::ui::prop_field(ui, "Freeze", |ui| {
             ui.weak(format!("holds the frame at source {}", crate::ui::duration_text(f)));
@@ -243,6 +251,15 @@ pub(super) fn speed_rows(
     let mut changed = false;
     if constant.is_some() || reverse != c.reverse {
         changed |= project.set_speed(ids, constant.unwrap_or(c.speed), reverse);
+    }
+    if keep_pitch != c.keep_pitch {
+        // the sound's setting: a video clip's linked audio takes it too
+        for l in project.expand_links(ids) {
+            if let Some(cm) = project.clip_mut(l) {
+                cm.keep_pitch = keep_pitch;
+                changed = true;
+            }
+        }
     }
     if curve != c.speed_curve {
         if let Some(cm) = project.clip_mut(c.id) {

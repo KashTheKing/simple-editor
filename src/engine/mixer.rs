@@ -1,6 +1,7 @@
 //! Audio mixer: sums every audible audio clip at timeline time t into interleaved stereo f32.
 //! Used by playback (real-time, block by block) and export (offline to WAV).
-//! Handles speed/reverse (linear resampling), freeze (silence), volume/pan/fades (gains lerped across
+//! Handles speed/reverse (linear resampling, or the pitch-keeping stretch of `engine::stretch` for a Keep
+//! Pitch clip, muted above `stretch::MAX_RATE`), freeze (silence), volume/pan/fades (gains lerped across
 //! each block), transitions (gain crossfades with virtual clip extension) and Sequence clips (their
 //! timeline mixed recursively, depth ≤ 8). Only audio tracks sound: a nested sequence plays from its
 //! Sequence clip on an audio track (the linked video-track twin is picture-only), so it is heard once
@@ -14,10 +15,13 @@
 //! that and mix straight into `out`.
 
 use crate::engine::mixer_fx::BusGraph;
+use crate::engine::stretch::{self, Grains};
 use crate::media::{AudioSource, DecoderPool, SAMPLE_RATE};
 use crate::model::{Clip, ClipKind, Id, Project, Track, TrackKind, Transition};
 
 const MAX_DEPTH: usize = 8;
+/// Scratch pool index of a stretched clip's output at depth 0 (after every depth's two buffers).
+const STRETCH_BUF: usize = 2 * (MAX_DEPTH + 2);
 
 /// Transition windows touching a clip: (cut time, clamped half-window, transition, clip is the right
 /// side). At most one per clip edge.
@@ -51,9 +55,11 @@ impl Dest<'_> {
 }
 
 /// Buffer pool, two per recursion depth: [2d] = source-read/resample buffer, [2d+1] = sequence
-/// sub-mix buffer. Grown once per size increase, never freed.
+/// sub-mix buffer, plus [STRETCH_BUF + d] = a stretched clip's output. Grown once per size increase, never
+/// freed. Also each stretched clip's grain positions, so the next block carries on from them.
+// ponytail: grains of deleted clips stay (a few bytes each) until the mixer goes
 #[derive(Default)]
-struct Scratch(Vec<Vec<f32>>, Voices);
+struct Scratch(Vec<Vec<f32>>, Voices, std::collections::HashMap<Id, Grains>);
 
 /// The (asset, audio stream) of every audio clip mixed so far in this block. A clip's voice is how
 /// many earlier ones read the same stream: clips that sound together each get a decoder of their own
@@ -172,6 +178,9 @@ fn mix_tracks(
             if i1 <= i0 {
                 continue;
             }
+            if stretch::stretches(clip) && stretch::too_fast(clip, t + i0 as f64 / sr, t + i1 as f64 / sr) {
+                continue; // a Keep Pitch clip above 4x is muted, not chipmunked
+            }
             // an Audio clip reads its asset; a Sequence clip (None) sub-mixes its nested timeline
             let path = match clip.kind {
                 ClipKind::Audio => match project.asset(clip.asset) {
@@ -206,24 +215,57 @@ fn mix_audio_clip(
     depth: usize,
     track_gain: f32,
 ) {
+    let key = (clip.asset, clip.audio_stream);
+    let voice = scratch.1.iter().filter(|v| **v == key).count();
+    scratch.1.push(key);
+    let sr = SAMPLE_RATE as f64;
+    if stretch::stretches(clip) {
+        stretch_add(scratch, clip, ext, t0, out, depth, track_gain, |_, f0, buf| {
+            if let Some(src) = pool.audio(path, clip.audio_stream, voice) {
+                read_block(src, f0 as f64 / sr, buf);
+            }
+        });
+        return;
+    }
     let n = out.len() / 2;
     let m = (n as f64 * clip.speed).ceil() as usize + 1;
     let mut buf = scratch.take(depth * 2, m * 2);
-    let sr = SAMPLE_RATE as f64;
     let s0 = if clip.reverse {
         // the source block ends at src_time(t0) and is walked backwards
         clip.src_time(t0) - (m - 1) as f64 / sr
     } else {
         clip.src_time(t0)
     };
-    let key = (clip.asset, clip.audio_stream);
-    let voice = scratch.1.iter().filter(|v| **v == key).count();
-    scratch.1.push(key);
     if let Some(src) = pool.audio(path, clip.audio_stream, voice) {
         read_block(src, s0, &mut buf);
-        resample_add(clip, ext, t0, &buf, out, track_gain);
+        resample_add(clip, ext, t0, &buf, out, track_gain, clip.speed, clip.reverse);
     }
     scratch.put(depth * 2, buf);
+}
+
+/// A Keep Pitch clip: its sound time-stretched to the clip's speed (`engine::stretch`, ramps and reverse
+/// included), then gains as for any clip. `read(scratch, f0, buf)` adds source frames from `f0` into `buf`.
+#[allow(clippy::too_many_arguments)]
+fn stretch_add(
+    scratch: &mut Scratch,
+    clip: &Clip,
+    ext: &Ext,
+    t0: f64,
+    out: &mut [f32],
+    depth: usize,
+    track_gain: f32,
+    mut read: impl FnMut(&mut Scratch, i64, &mut [f32]),
+) {
+    let sr = SAMPLE_RATE as f64;
+    let mut y = scratch.take(STRETCH_BUF + depth, out.len());
+    let mut g = scratch.2.remove(&clip.id).unwrap_or_default();
+    let j0 = ((t0 - clip.start) * sr).round() as i64;
+    let dir = if clip.reverse { -1 } else { 1 };
+    let nominal = |k: i64| (clip.src_time(clip.start + (k * stretch::HOP) as f64 / sr) * sr).round() as i64;
+    g.render(stretch::sig(clip), j0, &mut y, dir, nominal, |f0, buf| read(scratch, f0, buf));
+    resample_add(clip, ext, t0, &y, out, track_gain, 1.0, false);
+    scratch.2.insert(clip.id, g);
+    scratch.put(STRETCH_BUF + depth, y);
 }
 
 /// One Sequence clip on an audio track: recursively mix its sequence's tracks at source rate into a
@@ -242,15 +284,20 @@ fn mix_seq_clip(
     depth: usize,
     track_gain: f32,
 ) {
+    let sr = SAMPLE_RATE as f64;
+    let Some(tracks) = project.sequence_tracks(clip.sequence) else { return };
+    if stretch::stretches(clip) {
+        stretch_add(scratch, clip, ext, t0, out, depth, track_gain, |sc, f0, buf| {
+            mix_tracks(sc, project, tracks, f0 as f64 / sr, pool, &mut Dest::Buf(buf), depth + 1)
+        });
+        return;
+    }
     let n = out.len() / 2;
     let m = (n as f64 * clip.speed).ceil() as usize + 1;
     let mut buf = scratch.take(depth * 2 + 1, m * 2);
-    let sr = SAMPLE_RATE as f64;
     let s0 = if clip.reverse { clip.src_time(t0) - (m - 1) as f64 / sr } else { clip.src_time(t0) };
-    if let Some(tracks) = project.sequence_tracks(clip.sequence) {
-        mix_tracks(scratch, project, tracks, s0, pool, &mut Dest::Buf(&mut buf), depth + 1);
-        resample_add(clip, ext, t0, &buf, out, track_gain);
-    }
+    mix_tracks(scratch, project, tracks, s0, pool, &mut Dest::Buf(&mut buf), depth + 1);
+    resample_add(clip, ext, t0, &buf, out, track_gain, clip.speed, clip.reverse);
     scratch.put(depth * 2 + 1, buf);
 }
 
@@ -328,14 +375,16 @@ fn read_block(src: &mut dyn AudioSource, s0: f64, buf: &mut [f32]) {
 }
 
 /// Linearly resample `buf` (m source frames read at the clip's source time for `t0`) into `out`
-/// (n frames) and add with gains lerped across the block.
+/// (n frames, `step` source frames each, walked backwards when `rev`) and add with gains lerped across the
+/// block. A stretched clip passes its already timed output with a step of 1.
 /// ponytail: gains (volume keys, fades, transition ease) are sampled at the block ends and lerped -
 /// exact for linear ramps, ≤ one block of shape error otherwise; split at kinks if it matters. Both
 /// callers use 1024-frame blocks (≈21 ms: `playback::BLOCK` and `export::MIX_BLOCK`), so playback and
 /// export shape a fade identically.
 /// `track_gain` (ws:audio-dsp-automation: the hosting track's `volume` at the block start) scales
 /// both channels on top of the clip's own gains.
-fn resample_add(clip: &Clip, ext: &Ext, t0: f64, buf: &[f32], out: &mut [f32], track_gain: f32) {
+#[allow(clippy::too_many_arguments)]
+fn resample_add(clip: &Clip, ext: &Ext, t0: f64, buf: &[f32], out: &mut [f32], track_gain: f32, step: f64, rev: bool) {
     let n = out.len() / 2;
     let m = buf.len() / 2;
     if n == 0 || m == 0 {
@@ -348,7 +397,7 @@ fn resample_add(clip: &Clip, ext: &Ext, t0: f64, buf: &[f32], out: &mut [f32], t
     let dr = (r1 - r0) / n as f32;
     let last = m - 1;
     for (k, o) in out.chunks_exact_mut(2).enumerate() {
-        let pos = if clip.reverse { last as f64 - k as f64 * clip.speed } else { k as f64 * clip.speed };
+        let pos = if rev { last as f64 - k as f64 * step } else { k as f64 * step };
         let pos = pos.max(0.0);
         let j = (pos as usize).min(last);
         let j1 = (j + 1).min(last);
@@ -759,6 +808,87 @@ mod tests {
         assert!(out.iter().all(|s| *s == 1.0));
     }
 
+    /// Mix [0, secs) of `p` in blocks of `block` frames, left channel.
+    fn mix_left(p: &Project, secs: f64, block: usize) -> Vec<f32> {
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_audio("Z:\\nope\\fake.wav", 0, Box::new(Sine(0.5)));
+        let mut mx = Mixer::new();
+        let frames = (secs * SAMPLE_RATE as f64) as usize;
+        let mut out = vec![0f32; block * 2];
+        let mut y = Vec::with_capacity(frames);
+        while y.len() < frames {
+            let n = (frames - y.len()).min(block);
+            mx.mix(p, y.len() as f64 / SAMPLE_RATE as f64, &mut pool, &mut out[..n * 2]);
+            y.extend(out[..n * 2].chunks_exact(2).map(|s| s[0]));
+        }
+        y
+    }
+
+    /// Zero crossings upwards per second.
+    fn freq(x: &[f32]) -> f64 {
+        x.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count() as f64 * SAMPLE_RATE as f64 / x.len() as f64
+    }
+
+    #[test]
+    fn keep_pitch_stretches_the_sound() {
+        let sr = SAMPLE_RATE as usize;
+        for speed in [1.5, 0.5] {
+            let mut p = project();
+            let ai = p.audio_tracks()[0];
+            p.tracks[ai].clips[0].set_speed(speed); // 10 s of source
+            let dur = p.tracks[ai].clips[0].duration;
+            assert!((dur - 10.0 / speed).abs() < 1e-9);
+            let y = mix_left(&p, dur + 0.5, 1024);
+            let body = &y[sr / 10..((dur - 0.1) * sr as f64) as usize];
+            let f = freq(body);
+            assert!((f - 440.0).abs() < 440.0 * 0.02, "speed {speed}: {f} Hz (resampled would be {})", 440.0 * speed);
+            let rms = (body.iter().map(|v| v * v).sum::<f32>() / body.len() as f32).sqrt();
+            assert!(rms > 0.3, "speed {speed}: level {rms}");
+            // sound until the clip ends (the stretched length), silence after
+            let end = (dur * sr as f64) as usize;
+            assert!(y[end - sr / 10..end - 2048].iter().any(|v| v.abs() > 0.3), "speed {speed}: plays to its end");
+            assert!(y[end + 2048..].iter().all(|v| *v == 0.0), "speed {speed}: silent after its end");
+            // Keep Pitch off: the old resample, pitch follows the speed
+            p.tracks[ai].clips[0].keep_pitch = false;
+            let f = freq(&mix_left(&p, 2.0, 1024)[sr / 10..]);
+            assert!((f - 440.0 * speed).abs() < 440.0 * speed * 0.02, "resampled at {speed}: {f} Hz");
+        }
+    }
+
+    #[test]
+    fn keep_pitch_same_sound_in_any_block_size() {
+        // export mixes in 1024-frame blocks from its start, playback in its own blocks from wherever Play
+        // was pressed: the stretched sound must not depend on how it is cut
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        p.tracks[ai].clips[0].set_speed(1.5);
+        let a = mix_left(&p, 2.0, 1024);
+        let b = mix_left(&p, 2.0, 700);
+        let worst = a.iter().zip(&b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+        assert!(worst < 1e-4, "{worst}");
+    }
+
+    #[test]
+    fn keep_pitch_mutes_above_4x() {
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        p.tracks[ai].clips[0].set_speed(5.0);
+        assert!(mix_left(&p, 1.0, 1024).iter().all(|v| *v == 0.0));
+        p.tracks[ai].clips[0].set_speed(4.0);
+        assert!(freq(&mix_left(&p, 1.0, 1024)[4800..]) > 400.0);
+    }
+
+    #[test]
+    fn old_projects_load_without_keep_pitch() {
+        // a clip saved before Keep Pitch existed: no key -> off, and it saves without the key again
+        let mut v = serde_json::to_value(Clip::new(1, ClipKind::Audio, "a", 0.0, 5.0)).unwrap();
+        assert_eq!(v["keep_pitch"], serde_json::json!(true), "new clips keep the pitch");
+        v.as_object_mut().unwrap().remove("keep_pitch");
+        let c: Clip = serde_json::from_value(v.clone()).unwrap();
+        assert!(!c.keep_pitch);
+        assert_eq!(serde_json::to_value(&c).unwrap(), v);
+    }
+
     #[test]
     fn speed_reverse_freeze() {
         let mut p = project();
@@ -769,7 +899,8 @@ mod tests {
         let mut out = vec![0.0f32; 2 * 480]; // 10 ms
         let sr = SAMPLE_RATE as f64;
 
-        // speed 2: at t=1 the source time is 2, advancing 2× per output frame
+        // speed 2: at t=1 the source time is 2, advancing 2× per output frame (resampled: Keep Pitch off)
+        p.tracks[ai].clips[0].keep_pitch = false;
         p.tracks[ai].clips[0].set_speed(2.0);
         assert!((p.tracks[ai].clips[0].duration - 5.0).abs() < 1e-9);
         mx.mix(&p, 1.0, &mut pool, &mut out);
@@ -1022,7 +1153,8 @@ mod tests {
             c.volume.value = 1.0;
             c.pan.value = 0.0;
         }
-        // speed 2 on the sequence clip: at t=1.5 sequence-local source time = 1.0
+        // speed 2 on the sequence clip: at t=1.5 sequence-local source time = 1.0 (resampled)
+        p.clip_mut(sc).unwrap().keep_pitch = false;
         p.clip_mut(sc).unwrap().set_speed(2.0);
         mx.mix(&p, 1.5, &mut pool, &mut out);
         assert!((out[0] - 0.01).abs() < 1e-4, "{}", out[0]);

@@ -256,7 +256,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `clip.mask_target` | Ui | effect | Point the existing mask-tool canvas drag at the clip's own mask, or one effect's. |
 | `clip.remove_effect` | Mutate | clip_id, index | Remove effect at index. |
 | `clip.reorder_effect` | Mutate | clip_id, from, to | Move an effect to a new stack index (Project::reorder_effect). |
-| `clip.set` | Mutate | clip_id, fields | Set clip fields: name, enabled, label, speed, reverse, freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, crop_left, crop_right, crop_top, crop_bottom (0..0.5), opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …). |
+| `clip.set` | Mutate | clip_id, fields | Set clip fields: name, enabled, label, speed, reverse, keep_pitch (bool: time-stretch the sound so a speed change keeps its pitch; muted above 4x; also sets the linked audio), freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, crop_left, crop_right, crop_top, crop_bottom (0..0.5), opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …). |
 | `clip.set_mask` | Mutate | clip_id, effect, fields | Edit a mask: fields {shape, cx, cy, rx, ry, rotation, feather, expand, opacity, invert, enabled, points:[[x,y],…]} in project pixels relative to the layer centre. |
 
 **`color.*`** (5 tools)
@@ -310,7 +310,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `export.queue` | Ui | audio, path, preset, range_in, range_out, stem_by | Append an export job to the render queue; returns immediately with its queue position. audio: mix \| streams \| stems, stem_by: track \| bus \| role (default the Export pane's). |
 | `export.quick` | Job | path, preset | Export with the last-used (or given) preset/options; blocks until the file is written (up to 30 min). |
 | `export.retry_software` | Ui | - | Retry the running (stuck) or last failed export with the software x264 encoder. |
-| `export.slowmo` | Job | clip_ids, factor | Bake the clip(s) through setpts+minterpolate optical-flow slow motion, then swap them onto the result (the clip keeps its length and now shows the first part of the slowed footage — extend its end to reveal the rest). |
+| `export.slowmo` | Job | clip_ids, factor | Bake the clip(s) through setpts+minterpolate optical-flow slow motion (the sound slowed with ffmpeg atempo, pitch kept), then swap them onto the result (the clip keeps its length and now shows the first part of the slowed footage — extend its end to reveal the rest). |
 | `export.stabilize` | Job | clip_ids | Bake the clip(s) through ffmpeg deshake, then swap them onto the result. |
 | `export.status` | Read | - | Current export progress (fraction, status, ETA seconds) and the queue / bake counts. |
 | `export.xml` | Read | path | Write the main timeline as Final Cut Pro 7 XML (xmeml v5) for Premiere / Resolve: clips, audio level/pan, A/V links, cross dissolves and sequence + clip markers (track names are not part of xmeml). |

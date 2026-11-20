@@ -2439,9 +2439,11 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
     // past a fade-in sitting at the new start time - it only ever plays audio mixed from that exact time.
     let mut filling = false;
     let mut pending: Option<Cmd> = None;
-    // ws:player-rate-loop: scratch mix window for 0<rate<=2 (sized for the widest case, rate=2 -> 2*BLOCK
-    // frames), decimated/duplicated down to exactly BLOCK output frames; last_wraps detects a loop seam.
-    let mut scratch = vec![0f32; BLOCK * 2 * 2];
+    // ws:player-rate-loop: a shuttle rate other than 1 plays the timeline mix through the pitch-keeping
+    // stretch (`engine::stretch`, as Keep Pitch clips), which asks for the timeline in order, once, as at 1x;
+    // `sh` = (anchor time, rate, output frame) of the running shuttle. last_wraps detects a loop seam.
+    let mut sh_grains = crate::engine::stretch::Grains::default();
+    let mut sh: Option<(f64, f64, i64)> = None;
     let mut last_wraps: u64 = 0;
     // ---- ws:play-gate ----
     // buffer before playing: the ring is being filled from the paused clock time `pre_at` with the
@@ -2625,11 +2627,12 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
             // a cold device/decoder open makes this same block "late" on every fresh Play/Seek, and snapping
             // then would skip mixed_until straight past a fade-in sitting at the new start time. Resample if
             // drift ever matters.
-            let now = lock(&shared.clock).now();
-            if !filling && now - (mixed_until - queued) > 0.05 {
-                mixed_until = now + queued;
-            }
+            // (at a shuttle rate the ring's `queued` output seconds hold `queued * rate` of timeline)
             let rate = lock(&shared.clock).rate;
+            let now = lock(&shared.clock).now();
+            if !filling && now - (mixed_until - queued * rate.max(0.0)) > 0.05 {
+                mixed_until = now + queued * rate.max(0.0);
+            }
             if (rate - 1.0).abs() < 1e-9 {
                 // unchanged fast path: byte-identical to the pre-rate-loop code at the default rate
                 if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, &mut block)) {
@@ -2642,24 +2645,28 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                     mixer.graph().publish(&METER_FEED);
                 }
                 mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
-            } else if rate > 0.0 && rate <= 2.0 {
-                // fixed-ratio resample: mix `win` real frames of source (spanning win/SAMPLE_RATE of
-                // TIMELINE time), then decimate/duplicate down to exactly BLOCK OUTPUT frames - that
-                // many frames of source content plays back in one BLOCK of real output time.
-                let win = ((BLOCK as f64 * rate).round().max(1.0) as usize).min(scratch.len() / 2);
-                let buf = &mut scratch[..win * 2];
-                if guarded(&mut pool, |pool| mixer.mix(&project, mixed_until, pool, buf)) {
-                    for i in 0..BLOCK {
-                        let si = (i * win / BLOCK).min(win - 1);
-                        block[i * 2] = buf[si * 2];
-                        block[i * 2 + 1] = buf[si * 2 + 1];
-                    }
+            } else if rate > 0.0 && rate <= crate::engine::stretch::MAX_RATE {
+                // time-stretched, pitch kept: BLOCK output frames cover BLOCK * rate frames of timeline
+                let sr = SAMPLE_RATE as f64;
+                let (anchor, j) = match sh {
+                    Some((a, r, j)) if r == rate && (a + j as f64 * r / sr - mixed_until).abs() < 1e-6 => (a, j),
+                    _ => (mixed_until, 0), // a new start: rate change, seek, wrap or catch-up
+                };
+                let sig = rate.to_bits() ^ anchor.to_bits();
+                let hop = crate::engine::stretch::HOP;
+                let nominal = |k: i64| ((anchor + (k * hop) as f64 * rate / sr) * sr).round() as i64;
+                let ok = guarded(&mut pool, |pool| {
+                    sh_grains.render(sig, j, &mut block, 1, nominal, |f0, buf| mixer.mix(&project, f0 as f64 / sr, pool, buf))
+                });
+                if ok {
                     lock(&ring).extend(block.iter().copied());
                     mixer.graph().publish(&METER_FEED); // ws:audio-dsp-automation
                 }
-                mixed_until += win as f64 / SAMPLE_RATE as f64;
+                let j = j + BLOCK as i64;
+                sh = Some((anchor, rate, j));
+                mixed_until = anchor + j as f64 * rate / sr;
             } else {
-                // reverse or >2x: not resampled/pitch-shifted - muted outright (still extends the ring
+                // reverse or above 4x: muted outright (still extends the ring
                 // so pacing/underrun logic sees normal progress; no drift tracking needed while muted).
                 block.fill(0.0);
                 lock(&ring).extend(block.iter().copied());
