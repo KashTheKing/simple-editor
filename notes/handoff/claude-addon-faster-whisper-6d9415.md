@@ -41,7 +41,11 @@ made it compile for Windows, fixed a bug in the aligner, and finished the docs.
   per-segment re-timing with a fake onnx session). It failed before the aligner fix.
 - All 11 wheel pins (URL, size, SHA-256) match PyPI's JSON API. Licences: MIT, BSD-3, Apache-2.0,
   MPL-2.0+MIT (tqdm, unmodified). No GPL.
-- Unit tests under Wine: see "Unit tests" below.
+- Unit tests did **not** run. The crate can't build for Linux: winit has no Linux backend enabled, and
+  alsa-sys is missing. The Windows test exe builds (`cargo test --target x86_64-pc-windows-gnu --no-run`),
+  but Wine 9 crashes in this container even on a hello-world exe. Run these first on Windows:
+  `cargo test fast_whisper` (8 tests) and
+  `cargo test transcript_ctl::tests::faster_whisper_falls_back transcript_ctl::tests::transcribe_tools_take`.
 
 ## Not verified (needs Windows)
 
