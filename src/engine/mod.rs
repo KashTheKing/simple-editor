@@ -74,3 +74,5 @@ pub mod voice;
 pub mod xmeml;
 // ---- ws:parity-formats ----
 pub mod formats;
+pub mod lottie;
+pub mod synth;

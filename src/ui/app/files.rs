@@ -86,8 +86,11 @@ impl App {
         let _ = std::fs::write(&lock, std::process::id().to_string());
     }
     pub(super) fn media_dialog() -> rfd::FileDialog {
+        // ws:parity-formats: SVG drawings and Lottie animations import too (converted on the way in)
+        let mut exts = MEDIA_EXTS.to_vec();
+        exts.extend_from_slice(formats_ctl::CONVERTED_EXTS);
         rfd::FileDialog::new()
-            .add_filter("Media", MEDIA_EXTS)
+            .add_filter("Media", &exts)
             .add_filter("Simple Editor project", &[PROJECT_EXT])
             .add_filter("All files", &["*"])
     }

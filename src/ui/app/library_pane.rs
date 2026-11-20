@@ -140,6 +140,15 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
     if resp.import_url {
         app.url_dialog = Some((String::new(), false));
     }
+    // ---- ws:parity-formats ----
+    if let Some(kind) = resp.generate {
+        if !app.ffmpeg_missing() {
+            let p = &app.project;
+            let spec = crate::engine::synth::GenSpec::new(kind, p.width, p.height, p.fps);
+            formats_ctl::start_generate(app, spec);
+            app.toast(format!("Generating {}…", kind.label()));
+        }
+    }
     for name in resp.place_template {
         app.place_template(&name, app.playhead);
     }

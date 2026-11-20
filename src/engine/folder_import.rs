@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 pub const MEDIA_EXTS: &[&str] = &[
     "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "ts", "m2ts", "mts", "flv", "3gp", "mpg", "mpeg", "gif", "mp3",
     "wav", "m4a", "aac", "flac", "ogg", "opus", "wma", "png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff",
+    // ---- ws:parity-formats ---- (.svg / Lottie are converted first, so only the Import dialog offers
+    // them: `formats_ctl::CONVERTED_EXTS`; a folder or a linked bin never probes one as media)
+    "avif",
 ];
 
 /// Folders nested deeper than this below the picked one are skipped (and counted).

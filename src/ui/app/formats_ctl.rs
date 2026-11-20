@@ -11,8 +11,9 @@
 
 use super::tools_helpers::*;
 use super::*;
-use crate::engine::formats;
+use crate::engine::{formats, lottie, synth};
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
+use std::collections::HashMap;
 use crate::player::tracks::Track;
 
 type Cues = Vec<(f64, f64, String)>;
@@ -35,8 +36,9 @@ enum Job {
     /// Soft subtitles being muxed into a file.
     Embed { prog: Arc<Progress>, out: PathBuf, done: Arc<Progress> },
     /// A file drawn in the background (an SVG, a generator, a Lottie animation), imported into `bin`
-    /// when it lands; `what` names it in the toast.
-    Make { prog: Arc<Progress>, out: PathBuf, bin: String, what: String, done: Arc<Progress> },
+    /// when it lands; `what` names it in the toast. `renamed`: the job names its file itself (a
+    /// Lottie's extension depends on what it draws).
+    Make { prog: Arc<Progress>, out: PathBuf, bin: String, what: String, done: Arc<Progress>, renamed: Option<Arc<Mutex<Option<PathBuf>>>> },
 }
 
 impl Job {
@@ -77,8 +79,11 @@ pub(super) fn generated_dir(app: &App) -> PathBuf {
     }
 }
 
+/// Files the Import dialog offers beyond `MEDIA_EXTS`: converted on the way in by `intercept`.
+pub(super) const CONVERTED_EXTS: &[&str] = &["svg", "json", "lottie"];
+
 /// The video containers a subtitle extraction offers in its file dialog.
-const MEDIA_EXTS: &[&str] = &["mkv", "mp4", "m4v", "mov", "webm", "avi", "ts", "m2ts", "mts", "ogv", "wmv", "flv"];
+const SUB_SOURCE_EXTS: &[&str] = &["mkv", "mp4", "m4v", "mov", "webm", "avi", "ts", "m2ts", "mts", "ogv", "wmv", "flv"];
 
 // ---------------------------------------------------------------------------------------------------
 // subtitle extraction
@@ -89,7 +94,7 @@ pub(super) fn extract_dialog(app: &mut App) {
     if app.ffmpeg_missing() {
         return;
     }
-    let Some(path) = rfd::FileDialog::new().add_filter("Media files", MEDIA_EXTS).pick_file() else { return };
+    let Some(path) = rfd::FileDialog::new().add_filter("Media files", SUB_SOURCE_EXTS).pick_file() else { return };
     let slot: Arc<Mutex<Vec<Track>>> = Arc::default();
     let (p, s) = (path.clone(), slot.clone());
     let prog = export::spawn_job("subtitle-probe", move |_| {
@@ -123,9 +128,20 @@ fn start_extract(app: &mut App, path: &Path, track: Track, ask: bool) -> Arc<Pro
     done
 }
 
-/// The chooser: one button per text track of the picked file.
+/// WINDOW_DRAWER: the track chooser, while a file with several text tracks waits for a pick.
 pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
     let Some((path, tracks)) = app.formats.chooser.clone() else { return };
+    let (open, pick) = track_chooser(ctx, &path, &tracks);
+    if let Some(t) = pick {
+        app.formats.chooser = None;
+        start_extract(app, &path, t, true);
+    } else if !open {
+        app.formats.chooser = None;
+    }
+}
+
+/// The chooser: one button per text track of the picked file. Returns (still open, the track picked).
+fn track_chooser(ctx: &egui::Context, path: &Path, tracks: &[Track]) -> (bool, Option<Track>) {
     let mut open = true;
     let mut pick: Option<Track> = None;
     egui::Window::new("Subtitle tracks")
@@ -135,9 +151,9 @@ pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .show(ctx, |ui| {
-            ui.label(file_name(&path)).on_hover_text(path.display().to_string());
+            ui.label(file_name(path)).on_hover_text(path.display().to_string());
             ui.add_space(4.0);
-            for t in &tracks {
+            for t in tracks {
                 let r = ui.add_sized([260.0, 24.0], egui::Button::new(&t.label));
                 let r = if t.file.is_some() { r.on_hover_text("A subtitle file beside the video") } else { r };
                 if r.clicked() {
@@ -145,12 +161,7 @@ pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
                 }
             }
         });
-    if let Some(t) = pick {
-        app.formats.chooser = None;
-        start_extract(app, &path, t, true);
-    } else if !open {
-        app.formats.chooser = None;
-    }
+    (open, pick)
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -243,16 +254,114 @@ pub(super) fn start_make(
         make(&o, p)
     });
     let done = Progress::new();
-    app.formats.jobs.push(Job::Make { prog, out: out.clone(), bin: bin.to_string(), what, done: done.clone() });
+    app.formats.jobs.push(Job::Make { prog, out: out.clone(), bin: bin.to_string(), what, done: done.clone(), renamed: None });
     (done, out)
 }
 
-/// The import funnel's gate for the formats that are converted first: an `.svg` is drawn to a PNG
-/// (in `Generated\`, imported when it lands); every other path passes through untouched.
+/// Generate `spec` (`engine::synth`) into `Generated\` and import it into the Library's "Generated"
+/// bin. Returns (the progress an MCP caller waits on, the output path).
+pub(super) fn start_generate(app: &mut App, spec: synth::GenSpec) -> (Arc<Progress>, PathBuf) {
+    let spec = spec.clamped();
+    let name = spec.kind.label();
+    let out = formats::converted_path(&generated_dir(app), Path::new(name), spec.file_ext());
+    let text = app.text.clone();
+    start_make(app, format!("Generate · {name}"), out, GENERATED_BIN, move |o, prog| {
+        prog.set(0.0, format!("Generating {name}…"));
+        let glyphs = if spec.kind == synth::GenKind::Counter { counter_glyphs(&text, &spec) } else { HashMap::new() };
+        if spec.kind == synth::GenKind::Counter && glyphs.is_empty() {
+            return Err("no font could draw the digits".into());
+        }
+        synth::encode(o, (spec.width, spec.height), spec.fps, spec.frames(), spec.still(), spec.alpha(), prog, |i, b| {
+            synth::draw(&spec, i, &glyphs, b);
+            Ok(())
+        })
+    })
+}
+
+/// The Library bin generators land in.
+const GENERATED_BIN: &str = "Generated";
+
+/// The counter's characters, drawn once by the app's text rasteriser (a bold monospaced face, a fifth
+/// of the frame high) so each frame only copies pixels.
+fn counter_glyphs(text: &Arc<Mutex<crate::engine::text::TextRasterizer>>, spec: &synth::GenSpec) -> HashMap<char, synth::Glyph> {
+    let px = (spec.height as f64 * 0.22).round().max(8.0);
+    let mut tr = text.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = HashMap::new();
+    for c in synth::COUNTER_CHARS.chars() {
+        let style = crate::model::TextStyle {
+            text: c.to_string(),
+            font: "Consolas, Cascadia Mono, Segoe UI".into(),
+            size: crate::model::Animated::new(px),
+            bold: true,
+            color: spec.color,
+            ..Default::default()
+        };
+        let f = tr.render(&style, 1.0, 0.0);
+        if f.width > 1 && f.rgba.len() == (f.width * f.height * 4) as usize && !f.bgrx {
+            out.insert(c, synth::Glyph { w: f.width, h: f.height, rgba: f.rgba.clone() });
+        }
+    }
+    out
+}
+
+/// Render a Lottie animation (`.json` or `.lottie`) into `Generated\` and import it. Returns (the
+/// progress an MCP caller waits on, the output path) - the path's extension is decided on the job
+/// thread (still / transparent), so the returned one is the folder's name stem.
+pub(super) fn start_lottie(app: &mut App, src: &Path) -> (Arc<Progress>, PathBuf) {
+    let dir = generated_dir(app);
+    let stem = PathBuf::from(src.file_stem().unwrap_or_default());
+    let src_path = src.to_path_buf();
+    // the output's own name is only known once the animation is read: the job writes it into `named`
+    let named: Arc<Mutex<Option<PathBuf>>> = Arc::default();
+    let n = named.clone();
+    let placeholder = dir.join(format!("{}.lottie-pending", stem.display()));
+    let (done, _) = start_make(app, format!("Lottie · {}", file_name(src)), placeholder.clone(), "", move |_, prog| {
+        prog.set(0.0, "Reading the animation…");
+        let comp = lottie::Comp::parse(&lottie::read_file(&src_path)?)?;
+        let alpha = synth::lottie_alpha(&comp);
+        let out = formats::converted_path(&dir, &stem, synth::output_ext(!comp.animated(), alpha));
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        synth::encode_lottie(&comp, &out, alpha, prog)?;
+        *n.lock().unwrap_or_else(|e| e.into_inner()) = Some(out);
+        if !comp.unsupported.is_empty() {
+            prog.set(1.0, format!("{NOTE}{}", comp.unsupported.join(", ")));
+        }
+        Ok(())
+    });
+    if let Some(Job::Make { renamed, .. }) = app.formats.jobs.last_mut() {
+        *renamed = Some(named);
+    }
+    (done, placeholder)
+}
+
+/// A made job's status that is a note for the user (what a Lottie file was drawn without).
+const NOTE: &str = "Drawn without: ";
+
+/// Is `p` a Lottie animation? `.lottie` always; a `.json` when its first 64 KB has Bodymovin's keys.
+fn is_lottie_file(p: &Path) -> bool {
+    match p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).as_deref() {
+        Some("lottie") => true,
+        Some("json") => {
+            use std::io::Read;
+            let mut head = vec![0u8; 64 * 1024];
+            let n = std::fs::File::open(p).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+            lottie::is_lottie(&String::from_utf8_lossy(&head[..n]))
+        }
+        _ => false,
+    }
+}
+
+/// The import funnel's gate for the formats that are converted first: an `.svg` is drawn to a PNG and
+/// a Lottie animation rendered to a clip (in `Generated\`, imported when they land); every other
+/// path passes through untouched.
 pub(super) fn intercept(app: &mut App, paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut rest = Vec::with_capacity(paths.len());
     for p in paths {
-        if formats::is_svg(p) {
+        if is_lottie_file(p) {
+            if !app.ffmpeg_missing() {
+                start_lottie(app, p);
+            }
+        } else if formats::is_svg(p) {
             let out = formats::converted_path(&generated_dir(app), p, "png");
             let src = p.clone();
             start_make(app, format!("SVG · {}", file_name(p)), out, "", move |o, prog| {
@@ -323,12 +432,16 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
                     done.finish(None);
                 }
             },
-            Job::Make { out, bin, what, done, .. } => match err {
+            Job::Make { prog, out, bin, what, done, renamed } => match err {
                 Some(e) => {
                     app.toast(format!("{what} failed: {e}"));
                     done.finish(Some(e));
                 }
                 None => {
+                    let out = renamed.and_then(|r| r.lock().unwrap_or_else(|e| e.into_inner()).take()).unwrap_or(out);
+                    if let Some(note) = prog.status().strip_prefix(NOTE) {
+                        app.toast(format!("{} is drawn without its {note}", file_name(&out)));
+                    }
                     let ids = app.import_files(std::slice::from_ref(&out));
                     if let (Some(&id), false) = (ids.last(), bin.is_empty()) {
                         app.project.add_folder(&bin);
@@ -339,6 +452,7 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
                     if let Some(&id) = ids.last() {
                         app.library.selected = Some(id);
                         done.set(1.0, format!("asset {id}"));
+                        app.toast_with_folder(format!("{} is in the Library", file_name(&out)), out.clone());
                     }
                     app.fire_hook("import", json!({"asset_ids": ids, "path": out.to_string_lossy()}));
                     done.finish(None);
@@ -413,6 +527,84 @@ pub const TOOLS: &[ToolDef] = &[
             Ok(ToolOutcome::Job(done, out))
         },
     },
+    ToolDef {
+        name: "media.generate",
+        desc: "Generate a clip into the Library's Generated bin (the file goes in Generated\\ beside the project): kind = bars (SMPTE colour bars, a still picture) | noise (TV static) | plasma | counter (a timer over a transparent background). Size and fps default to the project's, duration to 5 s (counter 10 s). Counter: down=true counts down from start (default: the duration) to 0; format = clock (M:SS) | precise (M:SS.cc) | seconds | frames; color / background [r,g,b,a] (background alpha 0 = transparent). Replies with the asset id when it is in.",
+        args: &[
+            "kind:string:true:bars | noise | plasma | counter",
+            "duration:number:false:seconds",
+            "width:integer:false:",
+            "height:integer:false:",
+            "fps:number:false:",
+            "colour:boolean:false:noise: coloured speckles",
+            "speed:number:false:plasma: flow speed (1 = default, 0 = still)",
+            "down:boolean:false:counter: count down",
+            "start:number:false:counter: value at the first frame, seconds",
+            "format:string:false:counter: clock | precise | seconds | frames",
+            "color:array:false:counter: text [r,g,b,a]",
+            "background:array:false:counter: [r,g,b,a]",
+            "seed:integer:false:noise: pattern seed",
+        ],
+        kind: ToolKind::Job,
+        run: |app, args| {
+            let kind = req(arg_str(args, "kind"), "kind")?;
+            let kind = synth::GenKind::parse(kind).ok_or_else(|| format!("unknown kind '{kind}' (bars, noise, plasma, counter)"))?;
+            if crate::media::ffpipe::ffmpeg_exe().is_none() {
+                return Err("ffmpeg.exe not found".into());
+            }
+            let p = &app.project;
+            let mut spec = synth::GenSpec::new(kind, p.width, p.height, p.fps);
+            if let Some(v) = arg_f64(args, "duration") {
+                spec.duration = v;
+            }
+            if let Some(v) = arg_u64(args, "width") {
+                spec.width = v as u32;
+            }
+            if let Some(v) = arg_u64(args, "height") {
+                spec.height = v as u32;
+            }
+            if let Some(v) = arg_f64(args, "fps") {
+                spec.fps = v;
+            }
+            spec.colour = arg_bool(args, "colour").or_else(|| arg_bool(args, "color_noise")).unwrap_or(false);
+            if let Some(v) = arg_f64(args, "speed") {
+                spec.speed = v;
+            }
+            spec.down = arg_bool(args, "down").unwrap_or(false);
+            spec.start = arg_f64(args, "start");
+            if let Some(f) = arg_str(args, "format") {
+                spec.format = synth::CounterFormat::parse(f).ok_or_else(|| format!("unknown format '{f}'"))?;
+            }
+            if let Some(c) = args.get("color").and_then(color_arg) {
+                spec.color = c;
+            }
+            if let Some(c) = args.get("background").and_then(color_arg) {
+                spec.background = c;
+            }
+            if let Some(v) = arg_u64(args, "seed") {
+                spec.seed = v;
+            }
+            let (done, out) = start_generate(app, spec);
+            Ok(ToolOutcome::Job(done, out))
+        },
+    },
+    ToolDef {
+        name: "media.import_lottie",
+        desc: "Import a Lottie animation (Bodymovin .json or a .lottie package): rendered to a clip in Generated\\ beside the project (transparent where the animation is) and added to the Library; replies with the asset id when it is in. Shapes, solids, precomps, parenting, gradients, trim paths and eased keyframes are drawn; masks, mattes, text / image layers, expressions and effects are not (the reply's toast names what a file uses of them). media.import takes these files too, without waiting.",
+        args: &["path:string:true:a .json or .lottie file"],
+        kind: ToolKind::Job,
+        run: |app, args| {
+            let path = PathBuf::from(req(arg_str(args, "path"), "path")?);
+            if !path.is_file() {
+                return Err(format!("{} not found", path.display()));
+            }
+            if crate::media::ffpipe::ffmpeg_exe().is_none() {
+                return Err("ffmpeg.exe not found".into());
+            }
+            let (done, out) = start_lottie(app, &path);
+            Ok(ToolOutcome::Job(done, out))
+        },
+    },
 ];
 
 #[cfg(test)]
@@ -421,6 +613,21 @@ mod tests {
 
     fn track(index: usize, bitmap: bool) -> Track {
         Track { index, label: format!("T{index}"), file: None, bitmap }
+    }
+
+    #[test]
+    fn assert_no_idle_repaint_subtitle_tracks() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(crate::theme::test_fonts());
+        let tracks = vec![track(0, false), Track { file: Some(PathBuf::from("C:/v/film.ass")), ..track(1, false) }];
+        let path = Path::new("C:/v/film.mkv");
+        for _ in 0..30 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                let (open, pick) = track_chooser(ctx, path, &tracks);
+                assert!(open && pick.is_none());
+            });
+        }
+        assert!(!ctx.has_requested_repaint(), "an idle track chooser must not repaint");
     }
 
     #[test]
@@ -437,8 +644,23 @@ mod tests {
     }
 
     #[test]
+    fn lottie_files_are_recognised_by_content() {
+        let dir = std::env::temp_dir().join(format!("se-lottie-sniff-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let anim = dir.join("anim.json");
+        std::fs::write(&anim, r#"{"v":"5.7","fr":30,"ip":0,"op":60,"w":512,"h":512,"layers":[]}"#).unwrap();
+        let other = dir.join("package.json");
+        std::fs::write(&other, r#"{"name":"x","version":"1.0.0"}"#).unwrap();
+        assert!(is_lottie_file(&anim));
+        assert!(!is_lottie_file(&other), "an ordinary JSON file is left alone");
+        assert!(is_lottie_file(Path::new("C:/x/missing.lottie")), "a .lottie package by its extension");
+        assert!(!is_lottie_file(Path::new("C:/x/a.mp4")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn tools_are_registered() {
-        for name in ["subtitles.tracks", "subtitles.extract", "subtitles.embed"] {
+        for name in ["subtitles.tracks", "subtitles.extract", "subtitles.embed", "media.generate", "media.import_lottie"] {
             assert!(TOOLS.iter().any(|t| t.name == name), "{name}");
         }
     }
