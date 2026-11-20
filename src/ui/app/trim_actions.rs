@@ -40,7 +40,7 @@ impl<T> Changed for Option<T> {
 /// snapshot/push-if-changed idiom (see e.g. its `NudgeLeft | NudgeRight` arm) so History reads e.g.
 /// "Ripple trim" instead of the generic "Project edited", and a refused op pushes nothing.
 fn commit<T: Changed>(app: &mut App, label: &'static str, f: impl FnOnce(&mut Project) -> T) -> T {
-    let before = app.project.to_json();
+    let before = app.project.clone(); // pushed as a Snap: no serialise on the commit path
     let out = f(&mut app.project);
     if out.changed() {
         app.push_undo_labeled(before, label);
@@ -327,6 +327,43 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Simple trims should be nearly instant": an edit's commit (the keyboard `commit` above, and the
+    /// timeline's press-time copy pushed on release) and `after_edit` must not serialise the project -
+    /// on a real 5 MB project that alone took most of a frame. Undo takes the snapshot back unparsed,
+    /// and the snapshot still reads as the project's JSON when something asks for text.
+    #[test]
+    fn trim_commit_does_not_serialise_the_project() {
+        let calls = || crate::model::io::TO_JSON_CALLS.with(|n| n.get());
+        let scratch = std::env::temp_dir().join(format!("se-trim-commit-test-{}", std::process::id()));
+        *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(scratch);
+        let mut app = App::build(&egui::Context::default(), None, None);
+        *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let a: crate::model::Asset = serde_json::from_str(
+            r#"{"id":0,"path":"C:/v.mp4","kind":"Video","duration":10.0,"width":64,"height":64,"fps":30.0}"#,
+        )
+        .unwrap();
+        app.set_project(Project::from_media(a), None);
+        let id = app.project.tracks.iter().flat_map(|t| &t.clips).next().unwrap().id;
+        let original = app.project.to_json();
+        let n0 = calls();
+        // keyboard trim
+        assert!(commit(&mut app, "Trim", |p| p.trim_clip(id, None, Some(8.0)).is_ok()));
+        // timeline edge drag: the copy taken at press, pushed on release
+        let before = app.project.clone();
+        app.project.trim_clip(id, None, Some(6.0)).unwrap();
+        push_undo_json(&mut app.undo, &mut app.redo, before);
+        app.after_edit();
+        assert_eq!(calls(), n0, "a trim commit serialised the whole project");
+        assert!(app.undo.iter().all(|e| !e.json.is_text()), "undo snapshots stay unserialised until read");
+        app.act(Action::Undo);
+        app.act(Action::Undo);
+        assert_eq!(calls(), n0, "Undo serialised the whole project");
+        assert_eq!(app.project.clip(id).unwrap().duration, 10.0, "two undos restore the untrimmed clip");
+        assert!(app.redo[0].json.text().contains("\"tracks\""), "read as text, it is the JSON");
+        assert_eq!(app.redo[1].json.project().unwrap().clip(id).unwrap().duration, 8.0);
+        assert_eq!(app.project.to_json(), original);
+    }
 
     /// `commit`'s undo-push decision reads `Changed`; pin every impl it relies on so a refused op
     /// (false / empty Vec / None) is guaranteed to push nothing, and a real one always does.

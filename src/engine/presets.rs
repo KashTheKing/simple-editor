@@ -467,8 +467,164 @@ pub fn builtin_caption_styles() -> Vec<TextStyle> {
             t.outline_color = [0, 120, 255, 255];
             t.outline_width.value = 3.0;
         }),
+        // ---- ws:social-text ----
+        // ---- ws:social-text ---- (a caption preset's name is its `text`)
+        caption("TikTok Background", |t| {
+            *t = TextStyle {
+                text: std::mem::take(&mut t.text),
+                ..social_style("TikTok Background").unwrap_or_default()
+            };
+            t.size.value = 46.0;
+        }),
+        caption("Snapchat Bar", |t| {
+            *t = TextStyle { text: std::mem::take(&mut t.text), ..social_style("Snapchat Bar").unwrap_or_default() };
+            t.size.value = 40.0;
+        }),
     ]
 }
+
+/// A caption / title preset name compared loosely: case, spaces, `_` and `-` ignored, so
+/// "tiktok_background" finds "TikTok Background".
+pub fn preset_name_eq(a: &str, b: &str) -> bool {
+    let k = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect::<String>();
+    k(a) == k(b)
+}
+
+// ---- ws:social-text ----
+/// TikTok's text-tool colours offered as Background presets: (name, box, text).
+pub const TIKTOK_COLORS: [(&str, [u8; 4], [u8; 4]); 3] = [
+    ("Red", [254, 44, 85, 255], [255, 255, 255, 255]),
+    ("Yellow", [242, 205, 70, 255], [0, 0, 0, 255]),
+    ("Blue", [52, 150, 240, 255], [255, 255, 255, 255]),
+];
+
+/// The short-video app text looks, as plain `TextStyle`s (also the source of the caption presets and
+/// the Gallery's Social titles). Fonts are the bundled ones (`engine::text::BUNDLED_FONTS`).
+/// None for any other name.
+pub fn social_style(name: &str) -> Option<TextStyle> {
+    use crate::model::{BOX_BAR, BOX_LINES};
+    let tiktok = |text: &str| TextStyle {
+        text: text.into(),
+        font: "TikTok Sans".into(),
+        size: Animated::new(64.0),
+        bold: true,
+        line_spacing: 1.0,
+        box_padding: 16.0,
+        box_radius: 14.0,
+        ..Default::default()
+    };
+    let lines = |text: &str, bg: [u8; 4], fg: [u8; 4]| TextStyle {
+        box_mode: BOX_LINES,
+        box_color: bg,
+        color: fg,
+        ..tiktok(text)
+    };
+    let two = "Your text\ngoes right here";
+    let snap = |text: &str| TextStyle { text: text.into(), font: "Inter".into(), bold: true, ..Default::default() };
+    let s = match name {
+        "TikTok Classic" => TextStyle {
+            outline_width: Animated::new(1.5),
+            outline_color: [0, 0, 0, 200],
+            shadow: true,
+            shadow_color: [0, 0, 0, 150],
+            shadow_x: 0.0,
+            shadow_y: 2.0,
+            shadow_blur: 3.0,
+            ..tiktok(two)
+        },
+        "TikTok Background" => lines(two, [255, 255, 255, 255], [0, 0, 0, 255]),
+        "TikTok Background Dark" => lines(two, [0, 0, 0, 255], [255, 255, 255, 255]),
+        "TikTok Semi-Transparent" => lines(two, [0, 0, 0, 140], [255, 255, 255, 255]),
+        "TikTok Typewriter" => TextStyle {
+            reveal: Animated {
+                keys: vec![
+                    Keyframe { t: 0.0, v: 0.0, ease: Ease::Linear },
+                    Keyframe { t: 1.2, v: 1.0, ease: Ease::Linear },
+                ],
+                ..Animated::new(1.0)
+            },
+            shadow: true,
+            shadow_color: [0, 0, 0, 150],
+            shadow_x: 0.0,
+            shadow_y: 2.0,
+            shadow_blur: 3.0,
+            ..tiktok(two)
+        },
+        "TikTok Neon" => TextStyle {
+            color: [255, 236, 250, 255],
+            outline_width: Animated::new(2.5),
+            outline_color: [255, 48, 196, 255],
+            shadow: true,
+            shadow_color: [255, 40, 200, 230],
+            shadow_x: 0.0,
+            shadow_y: 0.0,
+            shadow_blur: 9.0,
+            ..tiktok(two)
+        },
+        "Snapchat Bar" => TextStyle {
+            size: Animated::new(44.0),
+            box_mode: BOX_BAR,
+            box_color: [0, 0, 0, 140],
+            box_padding: 14.0,
+            ..snap("Caption")
+        },
+        "Snapchat Big Text" => TextStyle {
+            size: Animated::new(110.0),
+            shadow: true,
+            shadow_color: [0, 0, 0, 140],
+            shadow_x: 0.0,
+            shadow_y: 3.0,
+            shadow_blur: 8.0,
+            ..snap("BIG TEXT")
+        },
+        "Snapchat Highlight" => TextStyle {
+            size: Animated::new(56.0),
+            color: [0, 0, 0, 255],
+            box_mode: BOX_LINES,
+            box_color: [255, 252, 0, 255],
+            box_padding: 18.0,
+            box_radius: 999.0,
+            ..snap("Highlight")
+        },
+        _ => {
+            let c = name.strip_prefix("TikTok Background ")?;
+            let &(_, bg, fg) = TIKTOK_COLORS.iter().find(|(n, _, _)| *n == c)?;
+            lines(two, bg, fg)
+        }
+    };
+    Some(s)
+}
+
+/// Every social title, in Gallery order.
+pub fn social_title_names() -> Vec<String> {
+    let mut v: Vec<String> =
+        ["TikTok Classic", "TikTok Background", "TikTok Background Dark"].map(String::from).to_vec();
+    v.extend(TIKTOK_COLORS.iter().map(|(n, _, _)| format!("TikTok Background {n}")));
+    v.extend(
+        [
+            "TikTok Semi-Transparent",
+            "TikTok Typewriter",
+            "TikTok Neon",
+            "Snapchat Bar",
+            "Snapchat Big Text",
+            "Snapchat Highlight",
+        ]
+        .map(String::from),
+    );
+    v
+}
+
+/// The Gallery Titles tab's category of a built-in title.
+pub fn title_category(name: &str) -> &'static str {
+    if social_style(name).is_some() {
+        "Social"
+    } else {
+        "Basic"
+    }
+}
+
+/// The Titles tab's categories, in menu order.
+pub const TITLE_CATEGORIES: [&str; 2] = ["Basic", "Social"];
 
 // ws:animator-templates: the payload (these two fields plus optional layers / transitions / slots)
 use super::templates::TemplateData;
@@ -549,13 +705,33 @@ pub fn builtin_titles() -> Vec<Template> {
         cap.exposed = vec!["text.text".into()];
         vec![cap]
     };
-    vec![
+    let mut v = vec![
         Template { name: "Lower Third".into(), json: encode(lower_third) },
         Template { name: "Title Card".into(), json: encode(title_card) },
         Template { name: "Caption Box".into(), json: encode(caption_box) },
         // ws:browser-layer: a browser window over whatever is below it (edited in the Inspector)
         Template { name: "Browser Window".into(), json: encode(vec![Clip::new(0, ClipKind::Browser, "Browser", 0.0, 5.0)]) },
-    ]
+    ];
+    // ---- ws:social-text: one native Text clip each, centred (inside every platform's safe zone) ----
+    v.extend(social_title_names().into_iter().filter_map(|n| {
+        let clip = social_clip(&n)?;
+        Some(Template { name: n, json: encode(vec![clip]) })
+    }));
+    v
+}
+
+/// A social title as the one Text clip `titles.place` drops in. A caption bar sits a little below the
+/// middle, where the app puts it; everything else is centred, inside every platform's safe zone.
+pub fn social_clip(name: &str) -> Option<Clip> {
+    let style = social_style(name)?;
+    let mut c = Clip::new(0, ClipKind::Text, name, 0.0, 4.0);
+    c.y = Animated::new(if style.is_bar() { 160.0 } else { 0.0 });
+    c.exposed = vec!["text.text".into(), "text.color".into()];
+    if style.box_color[3] > 0 {
+        c.exposed.push("text.box_color".into());
+    }
+    c.text = Some(style);
+    Some(c)
 }
 
 /// Rewrite `t`'s captured clips, ADDING each `(clip_index, field)` pair's `field` to that clip's
@@ -1037,11 +1213,11 @@ mod tests {
     #[test]
     fn caption_styles_are_named_and_distinct() {
         let styles = builtin_caption_styles();
-        assert_eq!(styles.len(), 8);
+        assert_eq!(styles.len(), 10);
         let mut names: Vec<&str> = styles.iter().map(|s| s.text.as_str()).collect();
         names.sort();
         names.dedup();
-        assert_eq!(names.len(), 8, "every style has a unique name");
+        assert_eq!(names.len(), 10, "every style has a unique name");
     }
 
     // ---- ws:text-titles ----
@@ -1049,11 +1225,11 @@ mod tests {
     #[test]
     fn builtin_titles_decode_and_are_text_templates() {
         let titles = builtin_titles();
-        assert_eq!(titles.len(), 4);
+        assert_eq!(titles.len(), 4 + social_title_names().len());
         let mut names: Vec<&str> = titles.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         names.dedup();
-        assert_eq!(names.len(), 4, "every title has a unique name");
+        assert_eq!(names.len(), titles.len(), "every title has a unique name");
         for t in &titles {
             let (clips, assets) = decode_template(t).unwrap_or_else(|| panic!("{} failed to decode", t.name));
             assert!(assets.is_empty(), "{}: titles carry no media assets", t.name);

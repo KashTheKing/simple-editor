@@ -17,7 +17,7 @@ use std::sync::mpsc;
 pub(crate) const TW: u32 = 192;
 pub(crate) const TH: u32 = 108;
 /// Bump when the picture changes for the same template (the key includes it).
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 
 #[derive(Default)]
 struct State {
@@ -188,8 +188,22 @@ pub(crate) fn render(tpl: &crate::settings::Template) -> Option<Frame> {
     if best == 0 {
         return None;
     }
-    let f = shots.into_iter().find(|s| s.0 * 10 >= best * 8).map(|s| s.1)?;
-    Some(fit(&f, framing(&f)))
+    let i = shots.iter().position(|s| s.0 * 10 >= best * 8)?;
+    let f = &shots[i].1;
+    let frame = framing(f);
+    // ws:social-text: a dark or see-through text box vanishes on the black card: draw that moment
+    // again over a dark grey (framed where the black one found the text)
+    let dark_box = p
+        .all_clips()
+        .filter_map(|(_, c)| c.text.as_ref())
+        .any(|s| s.box_color[3] > 0 && s.box_color[..3].iter().all(|&v| v < 90));
+    if dark_box {
+        p.preview_bg = crate::model::BackgroundMode::Custom([72, 74, 82, 255]);
+        let mut g = Frame::default();
+        comp.render(&p, (end * i as f64 / 8.0).min(end - 1e-3), rw, rh, &mut pool, &mut text, &mut g);
+        return Some(fit(&g, frame));
+    }
+    Some(fit(f, frame))
 }
 
 /// The picture for `tpl`: from the disk cache (`true`), else rendered and cached (`false`).

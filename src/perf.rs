@@ -319,3 +319,62 @@ pub fn startup_mark(label: &str) {
         eprintln!("startup {label:<28} {:7.1} ms", since_process_start().as_secs_f64() * 1000.0);
     }
 }
+
+// ---- ws:page-switch-freeze ----
+// `SE_FRAME_TRACE=<ms>`: print every UI frame slower than <ms> to stderr with its sections and the panes
+// that took over 1 ms - how a hitch (a first page visit, a pane's first draw) is found. Off: one load.
+thread_local! {
+    static TRACE: std::cell::RefCell<Vec<(String, f32)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+pub fn frame_trace_on() -> Option<f32> {
+    static ON: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("SE_FRAME_TRACE").ok().and_then(|v| v.parse().ok()))
+}
+/// Trace lines go to stderr from a writer thread: a slow disk must not show up as a slow frame.
+fn trace_print(line: String) {
+    static TX: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<String>>> = std::sync::OnceLock::new();
+    let tx = TX.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for l in rx {
+                eprintln!("{l}");
+            }
+        });
+        std::sync::Mutex::new(tx)
+    });
+    let _ = tx.lock().map(|t| t.send(line));
+}
+/// Add `label` (ms since `t`) to this frame's trace.
+pub fn frame_trace(label: impl Into<String>, t: std::time::Instant) {
+    if frame_trace_on().is_some() {
+        let ms = t.elapsed().as_secs_f32() * 1000.0;
+        TRACE.with(|v| v.borrow_mut().push((label.into(), ms)));
+    }
+}
+thread_local! {
+    static LAST_END: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+/// Start of a frame: `prev_cpu` is eframe's figure for the previous frame (its update + paint, seconds).
+/// A previous frame whose paint (tessellation, texture uploads) was slow prints its own line.
+pub fn frame_trace_start(prev_cpu: Option<f32>) {
+    if frame_trace_on().is_none() {
+        return;
+    }
+    let gap = LAST_END.with(|l| l.get()).map_or(0.0, |t| t.elapsed().as_secs_f32() * 1000.0);
+    let cpu = prev_cpu.unwrap_or(0.0) * 1000.0;
+    if cpu >= 20.0 || gap >= 100.0 {
+        trace_print(format!("frame gap {gap:6.1} ms (previous frame update+paint {cpu:.1} ms)"));
+    }
+}
+/// End of a frame: print it when it was slow, then start the next one empty.
+pub fn frame_trace_end(t0: std::time::Instant, page: &str) {
+    let Some(min) = frame_trace_on() else { return };
+    LAST_END.with(|l| l.set(Some(std::time::Instant::now())));
+    let rows = TRACE.with(|v| std::mem::take(&mut *v.borrow_mut()));
+    let ms = t0.elapsed().as_secs_f32() * 1000.0;
+    if ms >= min {
+        let parts: Vec<String> = rows.iter().filter(|r| r.1 >= 1.0).map(|(l, m)| format!("{l} {m:.1}")).collect();
+        trace_print(format!("slow frame {ms:6.1} ms [{page}] {}", parts.join(" | ")));
+    }
+}
+

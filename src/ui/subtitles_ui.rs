@@ -621,7 +621,22 @@ fn style_section(
         });
         ui.end_row();
         ui.label("Box");
-        note(&ui.color_edit_button_srgba_unmultiplied(&mut style.box_color), &mut start, &mut changed);
+        ui.horizontal(|ui| {
+            note(&ui.color_edit_button_srgba_unmultiplied(&mut style.box_color), &mut start, &mut changed);
+            for (v, lab, tip) in [
+                (crate::model::BOX_BLOCK, "Block", "One box around the caption"),
+                (crate::model::BOX_LINES, "Lines", "A box per line that hugs its width"),
+                (crate::model::BOX_BAR, "Bar", "A band the full width of the frame"),
+            ] {
+                note(&ui.selectable_value(&mut style.box_mode, v, lab).on_hover_text(tip), &mut start, &mut changed);
+            }
+        });
+        ui.end_row();
+        ui.label("Box padding");
+        note(&ui.add(DragValue::new(&mut style.box_padding).range(0.0..=100.0).speed(0.5)), &mut start, &mut changed);
+        ui.end_row();
+        ui.label("Corner radius");
+        note(&ui.add(DragValue::new(&mut style.box_radius).range(0.0..=200.0).speed(0.5)), &mut start, &mut changed);
         ui.end_row();
         ui.label("Margin");
         note(&ui.add(DragValue::new(&mut margin).range(0.0..=1000.0)), &mut start, &mut changed);
