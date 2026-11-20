@@ -30,7 +30,7 @@ fn acts_if(ui: &mut egui::Ui, on: bool, items: &[Option<Action>]) {
 }
 
 /// Window menu: the everyday panels first, then the niche ones under More ▸ (hidden, not deleted).
-const MAIN_PANES: [Pane; 20] = [
+const MAIN_PANES: [Pane; 21] = [
     Pane::Library,
     Pane::MediaBrowser,
     Pane::Presets,
@@ -39,6 +39,7 @@ const MAIN_PANES: [Pane; 20] = [
     Pane::Inspector,
     Pane::Timeline,
     Pane::Mixer,
+    Pane::AudioScopes, // ws:parity-audio
     Pane::Subtitles,
     Pane::Markers,
     Pane::Scopes,
@@ -297,6 +298,7 @@ impl App {
             acts(ui, &[Some(AddSubtitle), Some(AddContainer)]);
             acts(ui, &[None, Some(AddHtmlLayer), Some(AddHtmlScene), Some(AddChatThread), Some(AddForumThread), Some(AddVideoComments), Some(ImportHtml), Some(SnapshotWeb)]); // ws:html-layer
             acts(ui, &[None, Some(AddBrowser), Some(ImportWebPage), Some(RecordMouse), Some(CursorWaypoints)]); // ws:browser-layer
+            acts(ui, &[None, Some(ToneGenerator)]); // ws:parity-audio
         });
         menu::sub(ui, Some(tools::Glyph::Transition), "Transition", |ui| {
             acts_if(ui, has_sel, &[Some(AddTransition), Some(AddLastTransition), Some(AddTransitionEnd)]);

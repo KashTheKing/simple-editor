@@ -177,6 +177,10 @@ pub enum Pane {
     /// Screen recording: live preview, source, audio choice, meters, Record / Stop (was the Screen
     /// Recording popup; `ui::capture_ui`, `ui::app::recorder_pane`).
     ScreenRecording,
+    // ---- ws:parity-audio ----
+    /// Spectrum analyser, vectorscope (goniometer) and correlation meter of what is playing
+    /// (`ui::audio_scopes_ui`, `ui::app::tools_audio_parity`). A tab beside the Mixer on the Audio page.
+    AudioScopes,
 }
 
 impl Pane {
@@ -263,6 +267,8 @@ impl Pane {
         Pane::Emulator,
         // ---- fix/screen-record ----
         Pane::ScreenRecording,
+        // ---- ws:parity-audio ----
+        Pane::AudioScopes,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -305,6 +311,7 @@ impl Pane {
             Pane::Playlists => Glyph::MusicNote,
             Pane::Emulator => Glyph::Guides,
             Pane::ScreenRecording => Glyph::Record,
+            Pane::AudioScopes => Glyph::Scope, // ws:parity-audio
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -356,6 +363,7 @@ impl Pane {
             Pane::Playlists => "Playlists",
             Pane::Emulator => "Platform Emulator",
             Pane::ScreenRecording => "Screen Recording",
+            Pane::AudioScopes => "Audio Scopes", // ws:parity-audio
         }
     }
 }
@@ -594,7 +602,7 @@ impl Layout {
     }
 
     /// The Audio page: [Library | Media Browser | Gallery (Audio side)] · [Preview] · [Voiceover |
-    /// Transcript | Subtitles] · [Inspector] on top; [Timeline | Beat Aligner] · [Mixer] below (Timeline in front).
+    /// Transcript | Subtitles] · [Inspector] on top; [Timeline | Beat Aligner] · [Mixer | Audio Scopes] below (Timeline in front).
     /// `layout_ctl::switch_page` turns the Library to audio and the Gallery to its Audio side on the way in.
     /// A saved Audio layout is kept: Window ▸ Layout ▸ Reset Page Layout gets this.
     pub fn audio_layout() -> Self {
@@ -607,7 +615,8 @@ impl Layout {
         let inspector = t.insert_pane(Pane::Inspector);
         let top = Self::linear(t, Horizontal, &[(music, 0.26), (preview, 0.41), (sound, 0.16), (inspector, 0.17)]);
         let timeline = Self::tabs(t, &[Pane::Timeline, Pane::BeatAligner], 0);
-        let mixer = t.insert_pane(Pane::Mixer);
+        // ws:parity-audio: the Audio Scopes ride as a tab beside the Mixer
+        let mixer = Self::tabs(t, &[Pane::Mixer, Pane::AudioScopes], 0);
         let bottom = Self::linear(t, Horizontal, &[(timeline, 0.67), (mixer, 0.33)]);
         let root = Self::linear(t, Vertical, &[(top, 0.57), (bottom, 0.43)]);
         Self::stack_unplaced(t, music);
@@ -2263,7 +2272,9 @@ mod tests {
         let egui_tiles::Container::Linear(lin) = l.tree.tiles.get_container(row).unwrap() else { panic!() };
         assert!(lin.shares[group(Preview)] > lin.shares[group(Presets)]);
         let bottom = l.tree.tiles.parent_of(group(Timeline)).unwrap();
-        assert_eq!(l.tree.tiles.parent_of(l.tree.tiles.find_pane(&Mixer).unwrap()), Some(bottom));
+        // ws:parity-audio: the Mixer fronts a tab group with the Audio Scopes
+        assert_eq!(l.tree.tiles.parent_of(group(Mixer)), Some(bottom));
+        assert_eq!(group(AudioScopes), group(Mixer), "Mixer | Audio Scopes share one panel");
     }
 
     /// The Inspector is the top-right tile of every page's default: walk the tree from the root taking

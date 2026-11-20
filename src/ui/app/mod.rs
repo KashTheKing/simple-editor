@@ -2144,6 +2144,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     timeline_tabs::act,
     // ---- ws:home-page ----
     home_ctl::act,
+    // ---- ws:parity-audio ----
+    tools_audio_parity::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -2318,6 +2320,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     project_match::window,
     // ---- ws:timeline-tabs ----
     timeline_tabs::windows,
+    // ---- ws:parity-audio ----
+    tools_audio_parity::tick,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -2392,6 +2396,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     music_ctl::draw,
     // ---- ws:device-emulator ----
     emulator_ctl::draw,
+    // ---- ws:parity-audio ----
+    tools_audio_parity::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without
