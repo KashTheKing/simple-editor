@@ -109,12 +109,42 @@ fn text_tracks(tracks: &[Track]) -> Vec<Track> {
     tracks.iter().filter(|t| !t.bitmap).cloned().collect()
 }
 
+/// Which track an extraction reads: one already chosen, or (MCP) an index into the file's subtitle
+/// tracks / the first text track, looked up on the job thread.
+enum Pick {
+    Track(Track),
+    Index(usize),
+    FirstText,
+}
+
+/// The track `pick` names among `tracks`.
+fn pick_track(tracks: &[Track], pick: Pick) -> Result<Track, String> {
+    let t = match pick {
+        Pick::Track(t) => t,
+        Pick::Index(i) => tracks.get(i).cloned().ok_or_else(|| format!("no track {i} ({} found)", tracks.len()))?,
+        Pick::FirstText => text_tracks(tracks).into_iter().next().ok_or("no text subtitle track in that file")?,
+    };
+    if t.bitmap {
+        return Err("that track is picture subtitles, which can't become text".into());
+    }
+    Ok(t)
+}
+
 /// Start reading `track` of `path`. Returns the progress an MCP caller waits on.
 fn start_extract(app: &mut App, path: &Path, track: Track, ask: bool) -> Arc<Progress> {
+    let label = format!("{} · {}", file_name(path), track.label);
+    start_extract_pick(app, path, Pick::Track(track), label, ask)
+}
+
+fn start_extract_pick(app: &mut App, path: &Path, pick: Pick, label: String, ask: bool) -> Arc<Progress> {
     let slot: Arc<Mutex<Cues>> = Arc::default();
-    let (p, s, t) = (path.to_path_buf(), slot.clone(), track.clone());
+    let (p, s) = (path.to_path_buf(), slot.clone());
     let prog = export::spawn_job("subtitle-extract", move |prog| {
         prog.set(0.1, "Reading subtitles…");
+        let t = match pick {
+            Pick::Track(t) => t,
+            other => pick_track(&crate::player::tracks::probe(&p).subtitles, other)?,
+        };
         let cues = crate::player::tracks::cues(&p, &t)?;
         if cues.is_empty() {
             return Err("that track has no cues".into());
@@ -123,7 +153,6 @@ fn start_extract(app: &mut App, path: &Path, track: Track, ask: bool) -> Arc<Pro
         Ok(())
     });
     let done = Progress::new();
-    let label = format!("{} · {}", file_name(path), track.label);
     app.formats.jobs.push(Job::Extract { prog, label, slot, done: done.clone(), ask });
     done
 }
@@ -495,15 +524,12 @@ pub const TOOLS: &[ToolDef] = &[
             if crate::media::ffpipe::ffmpeg_exe().is_none() {
                 return Err("ffmpeg.exe not found".into());
             }
-            let tracks = crate::player::tracks::probe(&path).subtitles;
-            let track = match arg_u64(args, "track") {
-                Some(i) => tracks.get(i as usize).cloned().ok_or_else(|| format!("no track {i} ({} found)", tracks.len()))?,
-                None => text_tracks(&tracks).into_iter().next().ok_or("no text subtitle track in that file")?,
-            };
-            if track.bitmap {
-                return Err("that track is picture subtitles, which can't become text".into());
+            if !path.is_file() {
+                return Err(format!("{} not found", path.display()));
             }
-            let done = start_extract(app, &path, track, false);
+            // the ffprobe runs on the job thread, not here
+            let pick = arg_u64(args, "track").map_or(Pick::FirstText, |i| Pick::Index(i as usize));
+            let done = start_extract_pick(app, &path, pick, file_name(&path), false);
             Ok(ToolOutcome::Job(done, path))
         },
     },
@@ -566,7 +592,7 @@ pub const TOOLS: &[ToolDef] = &[
             if let Some(v) = arg_f64(args, "fps") {
                 spec.fps = v;
             }
-            spec.colour = arg_bool(args, "colour").or_else(|| arg_bool(args, "color_noise")).unwrap_or(false);
+            spec.colour = arg_bool(args, "colour").unwrap_or(false);
             if let Some(v) = arg_f64(args, "speed") {
                 spec.speed = v;
             }
@@ -635,6 +661,11 @@ mod tests {
         let all = vec![track(0, true), track(1, false), track(2, true), track(3, false)];
         let t = text_tracks(&all);
         assert_eq!(t.iter().map(|t| t.index).collect::<Vec<_>>(), vec![1, 3], "indices stay the stream's own");
+        assert_eq!(pick_track(&all, Pick::FirstText).unwrap().index, 1);
+        assert_eq!(pick_track(&all, Pick::Index(3)).unwrap().index, 3);
+        assert!(pick_track(&all, Pick::Index(2)).unwrap_err().contains("picture"));
+        assert!(pick_track(&all, Pick::Index(9)).unwrap_err().contains("no track 9"));
+        assert!(pick_track(&[track(0, true)], Pick::FirstText).is_err());
     }
 
     #[test]

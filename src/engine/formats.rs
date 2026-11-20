@@ -305,7 +305,8 @@ pub fn svg_to_png(svg_file: &Path, out: &Path) -> Result<(u32, u32), String> {
     let page = svg_page(&text, &name, size);
     // the page's own folder: an <image href="logo.png"> next to the SVG still loads
     let base = svg_file.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
-    let view = crate::engine::html::View { base: &base, ..Default::default() };
+    // Edge, not the fast helper: a browser draws every SVG feature (filters, masks, text on a path)
+    let view = crate::engine::html::View { base: &base, renderer: crate::model::HtmlRenderer::Edge, ..Default::default() };
     let png = crate::engine::html::render_png_in(&page, &[], 1.0, 0.0, &view)?;
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
