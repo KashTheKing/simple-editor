@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Installer
+- **`simple-editor-setup.exe`, an installer under 1 MB** that opens instantly: it installs Simple Editor for you only, with no administrator prompt, into `%LOCALAPPDATA%\Programs\Simple Editor`, with a Start menu shortcut, an optional desktop shortcut, `.sedit` projects opening in the app, an entry in Settings ▸ Apps and the same **Edit with Simple Editor** right-click menu the app offers. When FFmpeg is missing it says so and installs it (ticked by default, checked against its published checksum). An add-on checklist (yt-dlp, whisper.cpp, the fast HTML renderer, the AI enhancer) shows which are already installed. The portable `simple-editor.exe` stays.
+- **Updates**: `update.exe` in the install folder checks the latest GitHub release, downloads it (checksum-verified), waits for Simple Editor to close, swaps the exe and puts the old one back if anything fails. Settings stay.
+- **Uninstall** asks whether to keep or remove your preferences, then removes the app, its add-ons, the FFmpeg it installed, its shortcuts and every registry key the installer or the app ever added (older ones too), and deletes itself. Projects are never touched.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

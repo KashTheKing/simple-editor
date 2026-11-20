@@ -73,8 +73,11 @@ impl Record {
 /// Put `new` in place of `target` atomically enough: the old file is renamed aside first (a running exe
 /// can be renamed, not overwritten), and renamed back if the new one cannot take its place.
 pub fn swap_in(new: &Path, target: &Path) -> Result<(), String> {
-    let old = PathBuf::from(format!("{}.old", target.display()));
-    let _ = std::fs::remove_file(&old);
+    // an `.old` from last time may still be running (it can't be deleted then): use the next free name
+    let old = (0..20)
+        .map(|i| PathBuf::from(if i == 0 { format!("{}.old", target.display()) } else { format!("{}.old{i}", target.display()) }))
+        .find(|o| !o.exists() || std::fs::remove_file(o).is_ok())
+        .ok_or_else(|| format!("{}: too many old copies still running", target.display()))?;
     let had = target.exists();
     if had {
         std::fs::rename(target, &old).map_err(|e| format!("{}: {e}", target.display()))?;
@@ -644,6 +647,18 @@ mod tests {
         let net = FakeNet::new(&[("https://api.github.com/repos/KashTheKing/simple-editor/releases/latest", rel_text.as_bytes()), ("https://dl/v1.5.0/simple-editor.exe", b"app 1.5.X")]);
         assert!(quiet(|r| apply_update(&w.p, &mut reg, &net, &FakeShell::default(), &rel, &|| Ok(()), r)).is_err());
         assert_eq!(std::fs::read(w.p.app_exe()).unwrap(), b"app 1.4.0");
+    }
+
+    #[test]
+    fn swap_finds_a_free_name_when_an_old_copy_is_in_use() {
+        let t = TempDir::new("swapold");
+        let target = t.path().join("a.exe");
+        std::fs::write(&target, b"v1").unwrap();
+        // an `.old` that can't be removed (a directory stands in for a running exe)
+        std::fs::create_dir_all(t.path().join("a.exe.old").join("x")).unwrap();
+        std::fs::write(t.path().join("a.new"), b"v2").unwrap();
+        swap_in(&t.path().join("a.new"), &target).unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"v2");
     }
 
     #[test]

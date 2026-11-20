@@ -314,8 +314,6 @@ impl App {
         let mut first_radio = true;
         for (i, c) in p.checks.iter().enumerate() {
             if let Some(hd) = &c.heading {
-                let h = self.measure(hd, title_font, width);
-                let _ = h;
                 let l = self.child("STATIC", hd, SS_NOPREFIX, 0, font);
                 unsafe { MoveWindow(l, x, y + s(4), width, s(18), 0) };
                 y += s(26);

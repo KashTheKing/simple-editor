@@ -83,7 +83,8 @@ is in [docs/customizing.md](docs/customizing.md); the library file formats are i
 
 ## Requirements
 
-- Windows 10 or 11 (64-bit). No installer needed.
+- Windows 10 or 11 (64-bit). No installer needed: run the portable `simple-editor.exe`, or
+  `simple-editor-setup.exe` (under 1 MB, per-user, no admin) to get shortcuts, `.sedit` files, FFmpeg and add-ons set up.
 - [FFmpeg](https://ffmpeg.org) for export, images, and fallback playback. Get it with
   `winget install Gyan.FFmpeg` or `choco install ffmpeg`, or point Settings at its folder. Basic
   playback works without it.

@@ -219,19 +219,26 @@ struct Update {
     p: Paths,
     current: String,
     release: Option<crate::net::Release>,
+    /// What the check job found (handed over without a second network call on the UI thread).
+    found: std::sync::Arc<std::sync::Mutex<Option<crate::net::Release>>>,
     updated: bool,
 }
 
 impl Update {
     fn checking(&self) -> Next {
         let current = self.current.clone();
+        let found = self.found.clone();
         let page = Page { title: "Simple Editor updates".into(), body: "Checking for a newer version…".into(), secondary: Some("Cancel".into()), busy: true, ..Default::default() };
         Next::Run(
             page,
             Box::new(move |rep| {
                 rep.say(0.3, "Asking GitHub for the latest release…");
                 match setup::check_update(&WinNet, &current)? {
-                    Some(r) => Ok(format!("new:{}", r.tag)),
+                    Some(r) => {
+                        let tag = r.tag.clone();
+                        *found.lock().unwrap() = Some(r);
+                        Ok(format!("new:{tag}"))
+                    }
                     None => Ok("same".into()),
                 }
             }),
@@ -287,25 +294,18 @@ impl Flow for Update {
                 ..Default::default()
             }),
             Ok(s) if s.starts_with("new:") => {
-                // look the release up again in the job's result shape: keep it simple, ask once more
                 let tag = s[4..].to_string();
-                match crate::net::latest_release(&WinNet, crate::net::REPO) {
-                    Ok(r) if r.tag == tag => {
-                        self.release = Some(r);
-                        Next::Show(Page {
-                            title: format!("Simple Editor {} is available", crate::version::plain(&tag)),
-                            body: format!(
-                                "You have {}. Updating keeps your settings and projects; Simple Editor closes for a moment if it's open.",
-                                if self.current.is_empty() { "an older version".to_string() } else { self.current.clone() }
-                            ),
-                            primary: Some("Update".into()),
-                            secondary: Some("Not Now".into()),
-                            ..Default::default()
-                        })
-                    }
-                    Ok(_) => self.checking(),
-                    Err(e) => Next::Show(failed_page("Couldn't check for updates", &e, "Try Again")),
-                }
+                self.release = self.found.lock().unwrap().take();
+                Next::Show(Page {
+                    title: format!("Simple Editor {} is available", crate::version::plain(&tag)),
+                    body: format!(
+                        "You have {}. Updating keeps your settings and projects. If Simple Editor is open, the update waits for you to close it.",
+                        if self.current.is_empty() { "an older version".to_string() } else { self.current.clone() }
+                    ),
+                    primary: Some("Update".into()),
+                    secondary: Some("Not Now".into()),
+                    ..Default::default()
+                })
             }
             Ok(v) => {
                 self.updated = true;
@@ -339,7 +339,7 @@ fn update_main(args: &[String]) -> i32 {
         });
         return if r.is_ok() { 0 } else { 1 };
     }
-    ui::run("Simple Editor Update", Box::new(Update { p, current, release: None, updated: false }));
+    ui::run("Simple Editor Update", Box::new(Update { p, current, release: None, found: Default::default(), updated: false }));
     0
 }
 
@@ -430,7 +430,8 @@ fn uninstall_main(args: &[String], me: &Path) -> i32 {
     let p = paths();
     let temp_copy = has(args, "--from-temp");
     // a program can't delete its own folder while it runs from it: carry on from a copy in %TEMP%
-    if !temp_copy && me.starts_with(&p.install) {
+    let inside = me.display().to_string().to_lowercase().starts_with(&p.install.display().to_string().to_lowercase());
+    if !temp_copy && inside {
         let tmp = std::env::temp_dir().join(format!("se-uninstall-{}.exe", std::process::id()));
         if std::fs::copy(me, &tmp).is_ok() {
             let mut a: Vec<&str> = vec!["--uninstall", "--from-temp"];
