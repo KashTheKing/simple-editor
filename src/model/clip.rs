@@ -53,6 +53,10 @@ pub struct Clip {
     /// Freeze frame: show/hold the source frame at this source time for the whole clip (audio is silent).
     #[serde(default)]
     pub freeze: Option<f64>,
+    /// Keep the sound's pitch when the speed is not 1: the mixer time-stretches it (`engine::stretch`) instead
+    /// of resampling. On for new clips; projects from before it load with it off and sound as they did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_pitch: bool,
     // --- visual properties (project pixels / degrees / 0..1) ---
     #[serde(default = "crate::model::a0")]
     pub x: Animated,
@@ -180,6 +184,7 @@ impl Clip {
             speed_curve: a1(),
             reverse: false,
             freeze: None,
+            keep_pitch: true,
             x: a0(),
             y: a0(),
             scale: a1(),

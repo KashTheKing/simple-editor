@@ -231,7 +231,7 @@ pub(super) fn apply_clip_fields(clip: &mut Clip, fields: &Value) -> Result<(), S
     let obj = fields.as_object().ok_or("'fields' must be an object")?;
     for (k, v) in obj {
         match k.as_str() {
-            "speed" | "reverse" => {} // handled by the caller
+            "speed" | "reverse" | "keep_pitch" => {} // handled by the caller
             "name" => clip.name = v.as_str().ok_or("name: string")?.to_string(),
             "enabled" => clip.enabled = v.as_bool().ok_or("enabled: bool")?,
             "label" => clip.label = v.as_u64().filter(|&l| l <= 8).ok_or("label: 0..8")? as u8,

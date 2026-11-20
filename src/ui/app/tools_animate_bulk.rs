@@ -100,6 +100,7 @@ pub(super) fn list_json(p: &Project, args: &Value) -> Value {
                 "src_in" => json!(c.src_in),
                 "speed" => json!(c.speed),
                 "reverse" => json!(c.reverse),
+                "keep_pitch" => json!(c.keep_pitch),
                 "freeze" => json!(c.freeze),
                 "enabled" => json!(c.enabled),
                 "label" => json!(p.clip_label(c)),

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Speed keeps the pitch
+- **Keep pitch**: a sped-up or slowed-down clip now sounds at its own pitch instead of chipmunk or slow-motion voices, in playback, scrubbing, export and audio bakes, speed ramps and reverse included (a built-in time stretch, no new download). It is a tick next to Speed in the Inspector, on for new clips; projects made before it sound as they did until you tick it. Above 400 % a Keep pitch clip is muted. Shuttling with J / L keeps the pitch from 0.25x to 4x (it was muted above 2x and changed pitch below). MCP: `clip.set {fields: {keep_pitch}}`, `timeline.list` field `keep_pitch`.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

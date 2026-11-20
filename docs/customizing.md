@@ -253,7 +253,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `clip.mask_target` | Ui | effect | Point the existing mask-tool canvas drag at the clip's own mask, or one effect's. |
 | `clip.remove_effect` | Mutate | clip_id, index | Remove effect at index. |
 | `clip.reorder_effect` | Mutate | clip_id, from, to | Move an effect to a new stack index (Project::reorder_effect). |
-| `clip.set` | Mutate | clip_id, fields | Set clip fields: name, enabled, label, speed, reverse, freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, crop_left, crop_right, crop_top, crop_bottom (0..0.5), opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …). |
+| `clip.set` | Mutate | clip_id, fields | Set clip fields: name, enabled, label, speed, reverse, keep_pitch (bool: time-stretch the sound so a speed change keeps its pitch; muted above 4x; also sets the linked audio), freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, crop_left, crop_right, crop_top, crop_bottom (0..0.5), opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …). |
 | `clip.set_mask` | Mutate | clip_id, effect, fields | Edit a mask: fields {shape, cx, cy, rx, ry, rotation, feather, expand, opacity, invert, enabled, points:[[x,y],…]} in project pixels relative to the layer centre. |
 
 **`color.*`** (5 tools)

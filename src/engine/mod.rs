@@ -34,6 +34,7 @@ pub mod import;
 pub mod lut;
 pub mod mixer;
 pub mod mixer_fx;
+pub mod stretch; // pitch-keeping time stretch (Keep Pitch clips, the shuttle)
 pub mod prerender;
 pub mod presets;
 pub mod templates; // ws:animator-templates

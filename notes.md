@@ -950,3 +950,22 @@ A button that opens a panel/pane/window (e.g. the top-right Performance button) 
   PR's size note.
 - `reveal_bucket` now clamps t to the reveal's key range, so a typewriter stops re-rasterising after its last key.
 - `SE_SOCIAL_SHOTS=<dir> cargo test each_social_preset_renders_its_look` dumps a PPM of every preset (over grey).
+
+## Keep pitch: speed changes keep the pitch (claude/gap-pitch-speed, 2026-11-19, Shotcut gap #1)
+- One stretch path: `engine::stretch::Grains` (WSOLA, 1024-frame Hann grains every 512, +-240-frame nudge by
+  normalised correlation). `Mixer` runs every `stretch::stretches(clip)` clip through it (`stretch_add`), so
+  playback, paused scrub, export and the audio bakes match; a sequence clip stretches its sub-mix the same way.
+  Grains are placed from `clip.src_time`, so speed ramps (and a time-remap that keeps using `src_time`) stretch
+  with no extra code: a time-remap session should call `stretch::stretches` / keep `src_time` as the mapping.
+- `Grains` remembers chosen grain positions by grain index (blocks of any size join, tested 1024 vs 700) and keeps
+  the source frames it read, so forwards each block reads only new frames: the decoder sees one contiguous read
+  (MF drops everything before the last read; the ffmpeg pipe would respawn on a big step back).
+- `Clip.keep_pitch`: true from `Clip::new`, serde default false + skipped when false, so old projects load and
+  save unchanged. Above `stretch::MAX_RATE` (4x) a keep-pitch clip is muted per block (`too_fast`).
+- Shuttle (JKL, `playback.rs` audio thread): 0 < rate <= 4 runs the timeline mix through a `Grains` (rate 1 path
+  untouched); reverse / above 4x stay muted. The underrun catch-up now counts `queued * rate` of timeline (at
+  0.25x the old check snapped every block).
+- No crate: nothing small and permissive in Rust (Rubber Band GPL; Signalsmith binding needs C++), and ffmpeg
+  `atempo` for export would have split export from playback. The standalone media player (`player/engine.rs`,
+  `MAX_AUDIBLE_RATE` = 2, resamples in the device callback) is NOT changed: its ring is source-timed, so it needs
+  its own rework to stretch.
