@@ -1193,6 +1193,10 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
             let (fit_px, pw) = (state.fit_px, c.project.width);
             menu::sub(ui, Some(Glyph::Zoom), "Zoom", |ui| zoom_rows(ui, &mut state.view, fit_px, pw));
             menu::sub(ui, None, "Playback Resolution", |ui| {
+                let tip = "Lower while playing when frames drop, full while paused";
+                if menu::check(ui, c.quality == 0, "Auto", "").on_hover_text(tip).clicked() {
+                    r.set_quality = Some(0);
+                }
                 for q in QUALITIES {
                     if menu::check(ui, c.quality == q, &format!("{q} %"), "").clicked() {
                         r.set_quality = Some(q);

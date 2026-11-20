@@ -457,6 +457,11 @@ impl App {
             out.push(ToggleHud);
         }
         menu::sub(ui, None, "Playback Resolution", |ui| {
+            let tip = "Lower while playing when frames drop, full while paused";
+            if menu::check(ui, self.settings.preview_quality == 0, "Auto", "").on_hover_text(tip).clicked() {
+                self.settings.preview_quality = 0;
+                self.settings.save();
+            }
             for q in crate::ui::preview::QUALITIES {
                 if menu::check(ui, self.settings.preview_quality == q, &format!("{q} %"), "").clicked() {
                     self.settings.preview_quality = q;

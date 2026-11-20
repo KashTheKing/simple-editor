@@ -129,7 +129,7 @@ fn candidates(app: &App) -> Vec<Candidate> {
 
 fn advise_now(app: &App) -> Advice {
     let frame_ms = 1000.0 / app.project.fps.max(1.0) as f32;
-    playcheck::advise(&candidates(app), frame_ms, app.settings.preview_quality, &crate::ui::preview::QUALITIES)
+    playcheck::advise(&candidates(app), frame_ms, super::preview_pane::effective_quality(app), &crate::ui::preview::QUALITIES)
 }
 
 /// (chip reason, fix label, fix tooltip) for `advice`.
@@ -221,7 +221,7 @@ pub(super) fn chip(app: &mut App, ui: &mut egui::Ui) {
     }
     let advice = app.health.advice.clone().unwrap_or(Advice::Open);
     let ph = app.settings.proxy_height.max(120).min(1080);
-    let (reason, fix) = words(&advice, app.settings.preview_quality, ph);
+    let (reason, fix) = words(&advice, super::preview_pane::effective_quality(app), ph);
     let perf_open = app.pane_drawn(Pane::Performance);
     let out = crate::ui::health_chip::draw(
         ui,

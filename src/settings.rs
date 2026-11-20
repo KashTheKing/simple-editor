@@ -268,7 +268,8 @@ pub struct Settings {
     // ---- round 3 ----
     /// Render the preview on the GPU (OpenGL) when a context is available.
     pub gpu: bool,
-    /// Preview render scale in percent (100 = full canvas; lower is faster).
+    /// Preview render scale in percent (100 = full canvas; lower is faster). 0 = Auto: lowered while
+    /// playing when frames drop, full while paused (`preview_pane::auto_res`).
     pub preview_quality: u32,
     /// "Movie mode": play back pre-rendered full-quality frames.
     pub movie_mode: bool,
@@ -598,6 +599,9 @@ pub struct Settings {
     // ---- ws:beat-aligner ----
     /// Beat Aligner tap latency (ms taken off every tap; Calibrate measures it).
     pub beat_latency_ms: f64,
+    /// How late the speakers / headphones play the sound (Bluetooth: often 100-300 ms). Playback sends the
+    /// sound this much early so it matches the picture (`playback::set_audio_delay_ms`). Exports unchanged.
+    pub audio_delay_ms: u32,
     // ---- ws:perf-baseline ----
     // ---- ws:pro-schema ----
     // (no per-field `#[serde(default)]`: the container-level one back-fills a missing field from
@@ -1134,6 +1138,7 @@ impl Default for Settings {
             anim_folded: Vec::new(),
             // ---- ws:beat-aligner ----
             beat_latency_ms: 0.0,
+            audio_delay_ms: 0,
             // ---- ws:perf-baseline ----
             // ---- ws:pro-schema ----
             hud: false,

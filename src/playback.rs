@@ -2477,6 +2477,20 @@ fn recycle(old: Option<Arc<LayerSet>>, spare: &mut Vec<Frame>) {
     }
 }
 
+/// Settings ▸ General ▸ Headphone delay, in microseconds: how late the output device plays what it is
+/// given (Bluetooth headphones). The audio thread mixes this far ahead of the clock, so the sound reaches
+/// the ears in time with the picture.
+static AUDIO_DELAY_US: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_audio_delay_ms(ms: u32) {
+    AUDIO_DELAY_US.store(ms.min(2000) as u64 * 1000, Ordering::Relaxed);
+}
+
+/// Seconds the audio is mixed ahead of the clock (`set_audio_delay_ms`).
+fn audio_lead() -> f64 {
+    AUDIO_DELAY_US.load(Ordering::Relaxed) as f64 / 1e6
+}
+
 fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
     use cpal::traits::StreamTrait;
     crate::media::bg::raise_thread();
@@ -2524,7 +2538,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                         want_pre = false;
                         (pre, pre_at) = (true, lock(&shared.clock).now());
                         lock(&ring).clear();
-                        mixed_until = pre_at;
+                        mixed_until = pre_at + audio_lead();
                         shared.audio_ready.store(false, Ordering::Relaxed);
                     }
                     Err(RecvTimeoutError::Disconnected) => return,
@@ -2550,7 +2564,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                     if pre {
                         // the buffered audio may be from the old project: fill again from the same time
                         lock(&ring).clear();
-                        mixed_until = pre_at;
+                        mixed_until = pre_at + audio_lead();
                         shared.audio_ready.store(false, Ordering::Relaxed);
                     }
                 }
@@ -2566,7 +2580,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                         shared.audio_lag_us.store(0, Ordering::Relaxed);
                     } else {
                         lock(&ring).clear();
-                        mixed_until = t;
+                        mixed_until = t + audio_lead();
                         filling = true;
                         if matches!(c, Cmd::Play) {
                             lag_from = Some(lock(&shared.clock).base_at);
@@ -2593,7 +2607,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                     if !(pre && (t - pre_at).abs() < 1e-6) {
                         (pre, pre_at) = (true, t);
                         lock(&ring).clear();
-                        mixed_until = t;
+                        mixed_until = t + audio_lead();
                     }
                     shared.audio_ready.store(false, Ordering::Relaxed); // true again once the ring is full
                 }
@@ -2671,7 +2685,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
             if cur_wraps != last_wraps {
                 last_wraps = cur_wraps;
                 lock(&ring).clear();
-                mixed_until = lock(&shared.clock).now(); // mix from the post-wrap time, not the stale one
+                mixed_until = lock(&shared.clock).now() + audio_lead(); // mix from the post-wrap time, not the stale one
                 filling = true;
                 queued = 0.0;
             }
@@ -2685,8 +2699,10 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
             // (at a shuttle rate the ring's `queued` output seconds hold `queued * rate` of timeline)
             let rate = lock(&shared.clock).rate;
             let now = lock(&shared.clock).now();
-            if !filling && now - (mixed_until - queued * rate.max(0.0)) > 0.05 {
-                mixed_until = now + queued * rate.max(0.0);
+            // (the ring runs `audio_lead` ahead of the clock: the headphone delay)
+            let lead = audio_lead();
+            if !filling && now + lead - (mixed_until - queued * rate.max(0.0)) > 0.05 {
+                mixed_until = now + lead + queued * rate.max(0.0);
             }
             if (rate - 1.0).abs() < 1e-9 {
                 // unchanged fast path: byte-identical to the pre-rate-loop code at the default rate
@@ -2727,7 +2743,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 // so pacing/underrun logic sees normal progress; no drift tracking needed while muted).
                 block.fill(0.0);
                 lock(&ring).extend(block.iter().copied());
-                mixed_until = lock(&shared.clock).now();
+                mixed_until = lock(&shared.clock).now() + audio_lead();
             }
         } else {
             filling = false; // ring reached LEAD_SECS (or we're paused): back to normal underrun detection

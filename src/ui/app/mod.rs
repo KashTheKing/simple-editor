@@ -602,6 +602,8 @@ pub struct App {
     /// The loop range the In / Out Loop set: while the player still loops exactly that, it follows the
     /// marks as they move (`preview_pane::follow_inout_loop`).
     inout_loop: Option<(f64, f64)>,
+    /// Auto playback resolution's state (`preview_pane::auto_res`).
+    auto_res: preview_pane::AutoRes,
     // ---- ws:project-color-fps ----
     /// "Match project to this video?" waiting for an answer (`project_match`).
     match_offer: Option<project_match::MatchOffer>,
@@ -1260,6 +1262,7 @@ impl App {
             script_editor: Default::default(), // feat/scripts-editor
             script_editor_run: false,
             inout_loop: None,
+            auto_res: Default::default(),
             match_offer: None, // ws:project-color-fps
             footage: Default::default(), // ws:mixed-footage
             tabs: Default::default(), // ws:timeline-tabs

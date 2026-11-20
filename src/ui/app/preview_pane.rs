@@ -151,7 +151,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
         }
-        let (cw, ch) = preview_canvas(resp.canvas, app.settings.preview_quality);
+        auto_res(app);
+        crate::playback::set_audio_delay_ms(app.settings.audio_delay_ms); // an atomic store: cheap each frame
+        let (cw, ch) = preview_canvas(resp.canvas, effective_quality(app));
         app.player.set_canvas(cw, ch, app.settings.preview_max_width);
         // same clamp the player applies, so the GPU renders at the aspect the player decodes at
         app.canvas = clamp_canvas(cw, ch, app.settings.preview_max_width);
@@ -296,5 +298,75 @@ fn drag_mark(app: &mut App, m: crate::ui::media_bar::MarkDrag) {
     }
     if m.end {
         app.after_edit();
+    }
+}
+
+/// Auto playback resolution (`Settings.preview_quality == 0`): the level a play runs at, and that play's
+/// dropped-frame watch.
+#[derive(Default)]
+pub(crate) struct AutoRes {
+    /// The resolution plays start at (100 until frames drop).
+    level: u32,
+    /// The current play: when the 1.5 s window began, the dropped count then, and whether it dropped.
+    window: Option<(Instant, u64)>,
+    dropped: bool,
+    playing: bool,
+}
+
+/// The render scale in use now: the setting, or with Auto the play's level while playing, full while paused.
+pub(super) fn effective_quality(app: &App) -> u32 {
+    match app.settings.preview_quality {
+        0 if app.player.is_playing() => app.auto_res.level.max(25),
+        0 => 100,
+        q => q,
+    }
+}
+
+/// Each frame: with Auto on, a play that keeps dropping frames (3+ in 1.5 s) steps one resolution down
+/// and stays there; a play that ends with none dropped lets the next one start a step higher. Changing
+/// the size only while it drops (or between plays) keeps a smooth play from ever being disturbed.
+pub(super) fn auto_res(app: &mut App) {
+    let a = &mut app.auto_res;
+    if a.level == 0 {
+        a.level = 100;
+    }
+    let playing = app.player.is_playing();
+    if app.settings.preview_quality != 0 || !playing {
+        if a.playing && !a.dropped && a.level < 100 {
+            a.level = step(a.level, true);
+        }
+        (a.playing, a.window, a.dropped) = (false, None, false);
+        return;
+    }
+    a.playing = true;
+    let (now, d) = (Instant::now(), app.player.dropped_frames());
+    match a.window {
+        None => a.window = Some((now, d)),
+        Some((t0, d0)) if now.duration_since(t0).as_secs_f32() >= 1.5 => {
+            if d.saturating_sub(d0) >= 3 {
+                a.dropped = true;
+                a.level = step(a.level, false);
+            }
+            a.window = Some((now, d));
+        }
+        _ => {}
+    }
+}
+
+/// The next playback resolution up or down (`QUALITIES` is 100, 75, 50, 25).
+fn step(q: u32, up: bool) -> u32 {
+    let qs = crate::ui::preview::QUALITIES;
+    let i = qs.iter().position(|&x| x == q).unwrap_or(0);
+    if up { qs[i.saturating_sub(1)] } else { qs[(i + 1).min(qs.len() - 1)] }
+}
+
+#[cfg(test)]
+mod auto_res_tests {
+    #[test]
+    fn steps_through_the_resolutions_and_stops_at_the_ends() {
+        assert_eq!(super::step(100, false), 75);
+        assert_eq!(super::step(25, false), 25);
+        assert_eq!(super::step(50, true), 75);
+        assert_eq!(super::step(100, true), 100);
     }
 }

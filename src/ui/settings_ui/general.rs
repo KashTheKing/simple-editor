@@ -58,6 +58,24 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         // ---- feat/reference-clips ----
         changed |= reference_keys(ui, s);
 
+        ui.label("Headphone delay");
+        ui.horizontal(|ui| {
+            let r = ui.add(egui::Slider::new(&mut s.audio_delay_ms, 0..=500).suffix(" ms")).on_hover_text(
+                "Bluetooth headphones play sound late. Set how late, and playback sends the sound that much early so it \
+                 matches the picture. 0 for wired speakers. Exports are not changed.",
+            );
+            changed |= r.changed();
+            if ui.button("Bluetooth").on_hover_text("A typical Bluetooth delay: 200 ms").clicked() {
+                s.audio_delay_ms = 200;
+                changed = true;
+            }
+            if ui.button("Off").clicked() {
+                s.audio_delay_ms = 0;
+                changed = true;
+            }
+        });
+        ui.end_row();
+
         ui.label("Downloads folder");
         ui.horizontal(|ui| {
             changed |= ui

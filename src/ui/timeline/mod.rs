@@ -1029,6 +1029,29 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 if let Some(th) = c.thumbs.as_deref_mut() {
                     draw_filmstrip(&lp, ui.ctx(), state, clip, aspect, &path_at, rect, vis.shrink(1.0), th);
                 }
+            } else if c.view.thumbs && clip.text.as_ref().is_some_and(|t| !t.text.trim().is_empty()) {
+                // a text clip's picture: its own words in its own colour on a dark strip, under the name row
+                let t = clip.text.as_ref().unwrap();
+                let area = Rect::from_min_max(pos2(vis.left() + 1.0, rect.top() + 17.0), vis.shrink(1.0).max);
+                if area.height() >= 10.0 {
+                    let tp = lp.with_clip_rect(area);
+                    tp.rect_filled(area, 0.0, Color32::from_black_alpha(140));
+                    let [r, g, b, _] = t.color;
+                    let ink = Color32::from_rgb(r, g, b);
+                    let line = t.text.lines().find(|l| !l.trim().is_empty()).unwrap_or_default().trim();
+                    let size = (area.height() * 0.62).clamp(9.0, 22.0);
+                    tp.text(pos2(area.left() + 4.0, area.center().y), Align2::LEFT_CENTER, line, FontId::proportional(size), ink);
+                }
+            } else if c.view.thumbs && clip.shape.is_some() && clip.link != 0 && is_visualizer_clip(clip) {
+                // an audio visualizer's picture: the song it follows, as a waveform over a dark strip
+                let song = c.project.all_clips().map(|(_, s)| s).find(|s| s.link == clip.link && s.kind == ClipKind::Audio);
+                let d = song.and_then(|s| Some((s, c.project.asset(s.asset)?.path.as_str())))
+                    .and_then(|(s, path)| Some((s, c.waveforms.detail(path, s.audio_stream)?)));
+                let area = Rect::from_min_max(pos2(vis.left() + 1.0, rect.top() + 17.0), vis.shrink(1.0).max);
+                if let Some((s, d)) = d.filter(|_| area.height() >= 10.0) {
+                    lp.rect_filled(area, 0.0, Color32::from_black_alpha(140));
+                    draw_waveform(&lp.with_clip_rect(area), &d, s, area, state, pal.accent, false);
+                }
             }
             let name_pc = lp.with_clip_rect(vis.shrink(1.0));
             let name_pos = pos2(vis.left() + 4.0, rect.top() + 2.0);
@@ -2737,4 +2760,9 @@ fn has_song(p: &DragPayload, project: &Project) -> bool {
         DragPayload::Paths(fs) => fs.iter().any(file),
         _ => false,
     }
+}
+
+/// An Audio Visualizer clip: a shape carrying a visualizer shader (`engine::visualizer::add`).
+fn is_visualizer_clip(clip: &Clip) -> bool {
+    clip.effects.iter().any(|e| e.kind == EffectKind::Shader && crate::engine::visualizer::is_visualizer(&e.shader))
 }
