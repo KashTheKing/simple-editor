@@ -1922,7 +1922,8 @@ mod tests {
         let all = settings.all_export_presets();
         assert_eq!(all[0].name, export::PRESET_MAX_QUALITY);
         assert_eq!(all[1].name, export::PRESET_FAST_PREVIEW);
-        assert_eq!(all[2].name, "YouTube 1080p", "platform tiles follow the built-ins");
+        assert_eq!(all[2].name, "Overlay (ProRes 4444)", "ws:gap-alpha-export's built-in card");
+        assert_eq!(all[3].name, "YouTube 1080p", "platform tiles follow the built-ins");
         // both keep the project's own size (and so its fps - exports never change the frame rate)
         let mut project = ranged_project();
         project.width = 2560;
@@ -1958,7 +1959,7 @@ mod tests {
         // nor can a user preset take their names
         let p = ExportPreset { name: export::PRESET_FAST_PREVIEW.into(), ..Default::default() };
         assert!(save_user_preset(&mut s, p, true).is_err());
-        assert_eq!(s.all_export_presets().len(), 6);
+        assert_eq!(s.all_export_presets().len(), 7); // + ws:gap-alpha-export's Overlay card
         // duplicating a built-in makes an editable copy
         let n = duplicate_preset(&mut s, export::PRESET_MAX_QUALITY).unwrap();
         assert_eq!(n, format!("{} copy", export::PRESET_MAX_QUALITY));

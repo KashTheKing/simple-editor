@@ -497,6 +497,8 @@ fn help_changelog_and_templates_save_are_registered() {
 /// bugfixes (#76) then routed the Subtitles pane's Transcribe through `App::transcribe_clip`: the
 /// section's own 150 ms job poll (subtitles_ui.rs) is deleted - `transcript_ctl::tick` already polls
 /// every run - so the count drops again, 14 to 13.
+/// ws:addon-faster-whisper then added one in subtitles_ui.rs (`addon_offer`'s 250 ms progress poll, only
+/// while the add-on installs; a shared widget with no `&mut App` for `animate_until`), 13 to 14.
 /// Counts real call lines across the files that had them before this PR (skipping doc-comment text and
 /// `animate_until`'s own internal `ctx.request_repaint_after(dt)` funnel call), so a future edit that
 /// silently adds, removes or migrates one of the 15 is caught here instead of going unnoticed.
@@ -517,7 +519,7 @@ fn pre_existing_repaint_sites_unchanged_and_named() {
         .filter(|l| l.contains("request_repaint_after(") && !l.contains("request_repaint_after(dt)"))
         .count();
     assert_eq!(
-        count, 13,
+        count, 14,
         "the count of pre-existing raw request_repaint_after sites moved - if that was intentional, \
          update this count AND the tracked-gap note in CHANGELOG.md/goals.md"
     );

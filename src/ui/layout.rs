@@ -2239,7 +2239,7 @@ mod tests {
             ("Edit", &[Library, Presets, Source, Preview, Inspector, Clips, Timeline]),
             ("Animate", &[Presets, Preview, Inspector, Timeline, Animator]),
             ("Color", &[Presets, Preview, Inspector, Timeline, Nodes, Curves, Scopes, Grade, Clips]),
-            ("Audio", &[Library, MediaBrowser, Presets, Preview, Mixer, Voiceover, Transcript, Subtitles, Inspector, Timeline, BeatAligner]),
+            ("Audio", &[Library, MediaBrowser, Presets, Preview, Mixer, AudioScopes, Voiceover, Transcript, Subtitles, Inspector, Timeline, BeatAligner]), // + ws:parity-audio Audio Scopes
             ("Export", &[Export, Preview, Jobs, Performance, Timeline]),
         ];
         assert_eq!(PAGES, shown.map(|(p, _)| p), "the pages in order (Alt+1..6 are the first six)");

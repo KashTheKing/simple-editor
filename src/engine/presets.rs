@@ -1269,7 +1269,7 @@ mod tests {
     #[test]
     fn builtin_titles_decode_and_are_text_templates() {
         let titles = builtin_titles();
-        assert_eq!(titles.len(), 4 + social_title_names().len() + super::super::retro::TITLES.len());
+        assert_eq!(titles.len(), 6 + social_title_names().len() + super::super::retro::TITLES.len()); // + forum-ui News Ticker, Scrolling Credits
         let mut names: Vec<&str> = titles.iter().map(|t| t.name.as_str()).collect();
         names.sort();
         names.dedup();

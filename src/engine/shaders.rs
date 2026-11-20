@@ -1606,7 +1606,7 @@ mod shader_body_tests {
             let want = !matches!(k, K::Wobble | K::Plane3d | K::Shader);
             assert_eq!(has, want, "{:?}", k);
         }
-        assert_eq!(bodies().len(), 26);
+        assert_eq!(bodies().len(), 28); // + parity-preview-tools Corner Pin, Lens Correction
     }
 
     #[test]
