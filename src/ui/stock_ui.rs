@@ -199,10 +199,22 @@ fn header(ui: &mut egui::Ui, st: &mut StockUi, view: &View, out: &mut Resp) {
     }
 }
 
-fn status_line(ui: &mut egui::Ui, view: &View) {
+fn status_line(ui: &mut egui::Ui, view: &View, out: &mut Resp) {
+    let on: Vec<&str> = view.sources.iter().filter(|s| s.1 && s.2).map(|s| s.0.name()).collect();
+    if on.is_empty() {
+        ui.horizontal(|ui| {
+            ui.colored_label(ui.visuals().warn_fg_color, "No stock source is on.");
+            let r = ui.button("Stock settings").on_hover_text("Turn a source on");
+            #[cfg(test)]
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("stock_go_settings"), r.rect));
+            if r.clicked() {
+                out.acts.push(Act::Settings);
+            }
+        });
+        return;
+    }
     match &view.status {
         Status::Idle => {
-            let on: Vec<&str> = view.sources.iter().filter(|s| s.1 && s.2).map(|s| s.0.name()).collect();
             ui.weak(format!("Free stock from {}.", on.join(", ")));
         }
         Status::Loading => {
@@ -270,7 +282,12 @@ fn details(ui: &mut egui::Ui, h: &Hit, view: &View, out: &mut Resp) {
         let credit = crate::engine::stock::attribution(h);
         ui.add(egui::Label::new(egui::RichText::new(&credit).small()).wrap());
         if h.licence().needs_credit() {
-            ui.weak("Credit the author where you publish. Export credits collects every credit.");
+            ui.horizontal_wrapped(|ui| {
+                ui.weak("Credit the author where you publish.");
+                if ui.small_button("Export credits…").on_hover_text("Write the credits of the project's stock files to a text file").clicked() {
+                    out.acts.push(Act::Credits);
+                }
+            });
         }
         ui.horizontal(|ui| {
             let busy = view.busy.get(&h.id).copied();
@@ -339,7 +356,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut StockUi, view: &mut View) -> Resp {
     let mut out = Resp::default();
     header(ui, st, view, &mut out);
     ui.separator();
-    status_line(ui, view);
+    status_line(ui, view, &mut out);
     let accent = ui.visuals().selection.stroke.color;
     let hits = view.hits;
     if let Some(sel) = st.selected.clone() {
@@ -434,6 +451,18 @@ mod tests {
     }
 
     fn run(ctx: &egui::Context, st: &mut StockUi, hits: &[Hit], status: Status, events: Vec<egui::Event>, t: f64) -> Resp {
+        run_with(ctx, st, hits, status, events, t, vec![(Source::Commons, true, true), (Source::Pexels, false, false)])
+    }
+
+    fn run_with(
+        ctx: &egui::Context,
+        st: &mut StockUi,
+        hits: &[Hit],
+        status: Status,
+        events: Vec<egui::Event>,
+        t: f64,
+        sources: Vec<(Source, bool, bool)>,
+    ) -> Resp {
         let busy = HashMap::new();
         let have = HashSet::new();
         let mut out = Resp::default();
@@ -454,7 +483,7 @@ mod tests {
                     more: true,
                     busy: &busy,
                     have: &have,
-                    sources: vec![(Source::Commons, true, true), (Source::Pexels, false, false)],
+                    sources: sources.clone(),
                     thumb: &mut thumb,
                     frame: &mut frame,
                     drag_path: &path,
@@ -494,6 +523,21 @@ mod tests {
         // the header compares against the last frame's query: simulate a kind change made this frame
         let out = run(&ctx, &mut st, &[], Status::Idle, vec![], 0.0);
         assert!(!out.acts.contains(&Act::Search));
+    }
+
+    #[test]
+    fn stock_with_no_source_on_offers_a_settings_button() {
+        let ctx = egui::Context::default();
+        let mut st = StockUi::default();
+        let off = vec![(Source::Commons, false, true), (Source::Pexels, false, false)];
+        run_with(&ctx, &mut st, &[], Status::Idle, vec![], 0.0, off.clone());
+        let r: Rect = ctx.data(|d| d.get_temp(egui::Id::new("stock_go_settings"))).expect("button drawn");
+        let c = r.center();
+        let press = |pressed| egui::Event::PointerButton { pos: c, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        run_with(&ctx, &mut st, &[], Status::Idle, vec![egui::Event::PointerMoved(c)], 0.1, off.clone());
+        run_with(&ctx, &mut st, &[], Status::Idle, vec![press(true)], 0.2, off.clone());
+        let out = run_with(&ctx, &mut st, &[], Status::Idle, vec![press(false)], 0.25, off);
+        assert!(out.acts.contains(&Act::Settings), "{:?}", out.acts);
     }
 
     #[test]

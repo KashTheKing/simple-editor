@@ -56,6 +56,9 @@ struct Ctl {
     downloads: Vec<Download>,
     playing: Option<String>,
     hover_since: Option<(String, f64)>,
+    /// Results already downloaded into `.0` (one disk check per result when the list, the folder or a
+    /// download changes, never per frame). None = check again.
+    have: Option<(PathBuf, HashSet<String>)>,
 }
 
 thread_local! {
@@ -231,7 +234,7 @@ fn start_search(ctx: Option<&egui::Context>, settings: &crate::settings::Setting
             }
         }
         if srcs.is_empty() {
-            land(&mut c, q, (Vec::new(), vec!["Every source is off: turn one on in the ⋯ menu".into()]), reply);
+            land(&mut c, q, (Vec::new(), vec!["No stock source is on: turn one on in Settings ▸ Stock".into()]), reply);
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
@@ -274,6 +277,7 @@ fn land(c: &mut Ctl, q: Query, found: Found, reply: Option<Arc<Progress>>) {
         c.hits = found.0;
     }
     c.more = more;
+    c.have = None;
     c.status = Status::Done(found.1);
     c.shown = Some(q);
 }
@@ -391,6 +395,7 @@ fn poll_downloads(app: &mut App) {
     });
     for d in done {
         let file = d.out.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        CTL.with(|c| c.borrow_mut().have = None);
         let file = match (d.prog.error(), file) {
             (None, Some(f)) => f,
             (e, _) => {
@@ -515,8 +520,12 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     let resp = CTL.with(|c| {
         let mut c = c.borrow_mut();
         let busy: HashMap<String, f32> = c.downloads.iter().map(|d| (d.hit.id.clone(), d.prog.fraction())).collect();
-        let have: HashSet<String> = c.hits.iter().filter(|h| planned(&dir, h).is_file()).map(|h| h.id.clone()).collect();
-        let Ctl { hits, status, more, thumbs, previews, hover_since, .. } = &mut *c;
+        if c.have.as_ref().is_none_or(|(d, _)| *d != dir) {
+            let set = c.hits.iter().filter(|h| planned(&dir, h).is_file()).map(|h| h.id.clone()).collect();
+            c.have = Some((dir.clone(), set));
+        }
+        let Ctl { hits, status, more, thumbs, previews, hover_since, have, .. } = &mut *c;
+        let have: &HashSet<String> = have.as_ref().map(|h| &h.1).expect("filled above");
         let mut want_thumbs: Vec<(String, String)> = Vec::new();
         let tc = RefCell::new(&mut app.thumbs);
         let mut thumb = |h: &Hit| -> Option<(egui::TextureId, [u32; 2])> {
@@ -548,7 +557,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             status: status.clone(),
             more: *more,
             busy: &busy,
-            have: &have,
+            have,
             sources,
             thumb: &mut thumb,
             frame: &mut frame,
