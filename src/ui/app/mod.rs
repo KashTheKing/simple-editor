@@ -1261,6 +1261,7 @@ impl App {
         self.project.refresh_spans(); // ws:animator: the transitions under a span follow the edit
         let p = &self.project;
         self.selection.retain(|id| p.clip(*id).is_some());
+        recovery::note_new_effects(&self.project); // forum-crash: a crash in a new effect names it
         self.player.set_project(&self.project);
         audio_only::edited(&self.project); // ws:preview-audio-only: the mix is analysed / baked again
         if self.settings.movie_mode {

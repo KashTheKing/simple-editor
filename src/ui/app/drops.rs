@@ -28,6 +28,10 @@ pub(super) fn drop_target(
 impl App {
     pub(super) fn handle_drops(&mut self, ctx: &egui::Context) {
         let dropped: Vec<PathBuf> = ctx.input(|i| i.raw.dropped_files.iter().filter_map(|f| f.path.clone()).collect());
+        // forum-crash: a crash in the next few seconds (the drop's first probes and decodes) names the file
+        for f in &dropped {
+            crate::crashguard::linger(crate::crashguard::Kind::Drag, &f.to_string_lossy(), "", 6.0);
+        }
         if dropped.is_empty() || self.export.is_some() {
             return;
         }

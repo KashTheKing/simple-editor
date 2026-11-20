@@ -21,7 +21,21 @@ No GitHub account? Describe it in the [Discord](https://discord.gg/6taNJVs5FT) a
 Simple Editor writes a `crash.log` and keeps your latest autosave. Paste `%APPDATA%\SimpleEditor` into
 Explorer's address bar, find `crash.log`, and attach it to the report. It contains a copy of your project's
 timeline (clip names and file paths), so open it and check you are happy to share it first. When you start the
-app again it offers to recover your work.
+app again it says what it was doing when it closed and offers to recover your work, with a file that caused
+the crash taken offline (see [Getting started](getting-started.mdx)).
+
+## If the window doesn't open or stays white
+
+Old graphics cards and some drivers can't start the editor's graphics. Simple Editor then asks
+**Start in compatibility mode?**: click **Yes**. It also asks after a start that closed before its window
+was ready. Compatibility mode draws the preview on the processor instead of the graphics card and turns
+vsync off. Turn it on or off in **Settings ▸ Performance ▸ Compatibility graphics**, or start once with
+`simple-editor.exe --compat-graphics`.
+
+If it still doesn't open, update the graphics driver. As a last resort, a software OpenGL works on any PC:
+put Mesa's `opengl32.dll` (the "llvmpipe" build for 64-bit Windows) in a folder named `compat-gl` next to
+`simple-editor.exe`, or in `%LOCALAPPDATA%\SimpleEditor\compat-gl`. Compatibility mode uses it when it is
+there. Everything then renders on the processor, so playback is slower.
 
 ## Ideas and questions
 

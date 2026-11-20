@@ -233,6 +233,45 @@ impl RecoverPlan {
     }
 }
 
+/// A rolling autosave's project, from its folder (`<project stem>-<pid>`).
+pub(super) fn backup_name(path: &Path) -> String {
+    let dir = path.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    match dir.rsplit_once('-') {
+        Some((stem, pid)) if pid.chars().all(|c| c.is_ascii_digit()) && !stem.is_empty() => stem.to_string(),
+        _ => dir,
+    }
+}
+
+thread_local! {
+    /// Effect count per clip after the last edit (`note_new_effects`).
+    static FX_COUNTS: std::cell::RefCell<std::collections::HashMap<Id, usize>> = Default::default();
+}
+
+/// How long a newly added effect stays "in flight": its first renders happen on the render thread.
+const FILTER_LINGER_SECS: f32 = 8.0;
+
+/// forum-crash: called after every edit. A clip that gained an effect is fingerprinted for a few
+/// seconds (`crashguard::Kind::Filter`), so a crash in that effect's first renders names the effect and
+/// the clip's file. One pass over the open timeline's clips, no allocation beyond the count map.
+pub(super) fn note_new_effects(project: &Project) {
+    FX_COUNTS.with(|m| {
+        let mut m = m.borrow_mut();
+        let mut next = std::collections::HashMap::with_capacity(m.len());
+        for c in project.tracks.iter().flat_map(|t| t.clips.iter()) {
+            let n = c.effects.len();
+            if let Some(&before) = m.get(&c.id) {
+                if n > before {
+                    let path = project.asset(c.asset).map(|a| a.path.as_str()).unwrap_or("");
+                    let name = c.effects.last().map(|e| e.name()).unwrap_or_default();
+                    crate::crashguard::linger(crate::crashguard::Kind::Filter, path, &name, FILTER_LINGER_SECS);
+                }
+            }
+            next.insert(c.id, n);
+        }
+        *m = next;
+    });
+}
+
 /// "45 s ago", "12 min ago", "3 h ago", "2 days ago".
 pub(super) fn ago(secs: u64) -> String {
     match secs {
@@ -257,16 +296,24 @@ pub(super) fn restore_window(app: &mut App, ctx: &egui::Context) {
         if list.is_empty() {
             ui.weak("No autosaves found.");
         }
+        // forum-crash: aligned rows, the project's name and the age in their own columns (the newest
+        // 20 plus one per hour for two days, so "an hour ago" is a row here)
+        const CTRLS: &[crate::ui::list_rows::Ctrl] =
+            &[crate::ui::list_rows::Ctrl { glyph: "↺", hint: "Load this autosave (Undo goes back)" }];
         egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
-            for (path, t) in &list {
-                let age = SystemTime::now().duration_since(*t).unwrap_or_default();
-                ui.horizontal(|ui| {
-                    ui.label(format!("{} - {} s ago", path.display(), age.as_secs()));
-                    if ui.small_button("Load").clicked() {
-                        pick = Some(path.clone());
-                    }
-                });
+            let mut rows = crate::ui::list_rows::Rows::new(ui, "restore_autosave", CTRLS, &[90.0], false).fixed_order();
+            for (i, (path, t)) in list.iter().enumerate() {
+                let age = ago(SystemTime::now().duration_since(*t).unwrap_or_default().as_secs());
+                let name = backup_name(path);
+                let spec = crate::ui::list_rows::RowSpec { key: i as u64, label: &name, values: &[age.as_str()], ..Default::default() };
+                let r = rows.row(ui, i, &spec);
+                let twice = r.body.double_clicked();
+                r.body.on_hover_text(path.display().to_string());
+                if r.ctrl == Some(0) || twice {
+                    pick = Some(path.clone());
+                }
             }
+            let _ = rows.finish(ui);
         });
     });
     app.restore_backup_open = open;
@@ -311,6 +358,12 @@ mod tests {
         for m in [SafeStart::Normal, SafeStart::NoMedia, SafeStart::NoEffects] {
             assert!(!m.label().contains(" - ") && !m.label().contains(':'), "plain labels");
         }
+    }
+
+    #[test]
+    fn backup_rows_show_the_project_name() {
+        assert_eq!(backup_name(Path::new(r"C:\a\autosave\My Film-1234\1800000000.sedit")), "My Film");
+        assert_eq!(backup_name(Path::new(r"C:\a\autosave\untitled-99\1.sedit")), "untitled");
     }
 
     #[test]

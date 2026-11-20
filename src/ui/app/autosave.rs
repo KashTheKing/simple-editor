@@ -34,9 +34,39 @@ fn slug_dir(slug: &str) -> PathBuf {
     Settings::autosave_dir().join(slug)
 }
 
-/// Writes `json` as a new rolling file in `dir`, then trims to the newest 20 by mtime. Takes the
-/// directory directly (rather than resolving it from `Settings` internally) so a test can point it at
-/// a temp dir.
+/// The newest autosaves always kept (10 minutes at the default 30 s).
+const KEEP_NEWEST: usize = 20;
+/// forum-crash: and one per hour for this long, so "restore from an hour ago" works (a forum report:
+/// hourly backups that weren't there).
+const KEEP_HOURLY_SECS: u64 = 48 * 3600;
+
+/// Which rolling files to delete, given each one's time (unix seconds) and now: everything but the
+/// newest `KEEP_NEWEST` and the newest file of each clock hour within `KEEP_HOURLY_SECS`.
+pub(super) fn to_delete(files: &[(PathBuf, u64)], now: u64) -> Vec<PathBuf> {
+    let mut v: Vec<&(PathBuf, u64)> = files.iter().collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0))); // newest first
+    let mut hours_kept = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (i, (p, t)) in v.into_iter().enumerate() {
+        let recent = now.saturating_sub(*t) <= KEEP_HOURLY_SECS;
+        let first_of_hour = recent && hours_kept.insert(t / 3600);
+        if i >= KEEP_NEWEST && !first_of_hour {
+            out.push(p.clone());
+        }
+    }
+    out
+}
+
+/// A rolling file's time: its name (`<unix secs>.sedit`), else its mtime.
+fn file_secs(path: &Path, mtime: SystemTime) -> u64 {
+    path.file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or_else(|| mtime.duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))
+}
+
+/// Writes `json` as a new rolling file in `dir`, then trims it (`to_delete`). Takes the directory
+/// directly (rather than resolving it from `Settings` internally) so a test can point it at a temp dir.
 fn write_and_trim(dir: &Path, json: &str) -> Option<PathBuf> {
     std::fs::create_dir_all(dir).ok()?;
     // seconds resolution: two writes within the same second overwrite each other - acceptable, the
@@ -46,15 +76,14 @@ fn write_and_trim(dir: &Path, json: &str) -> Option<PathBuf> {
     let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs();
     let path = dir.join(format!("{secs}.sedit"));
     std::fs::write(&path, json).ok()?;
-    let mut files: Vec<(PathBuf, SystemTime)> = std::fs::read_dir(dir)
+    let files: Vec<(PathBuf, u64)> = std::fs::read_dir(dir)
         .ok()?
         .flatten()
-        .filter_map(|e| e.metadata().ok().and_then(|m| m.modified().ok()).map(|t| (e.path(), t)))
+        .filter_map(|e| e.metadata().ok().and_then(|m| m.modified().ok()).map(|t| (file_secs(&e.path(), t), e.path())))
+        .map(|(t, p)| (p, t))
         .collect();
-    files.sort_by_key(|(_, t)| *t);
-    while files.len() > 20 {
-        let (oldest, _) = files.remove(0);
-        let _ = std::fs::remove_file(oldest);
+    for old in to_delete(&files, secs) {
+        let _ = std::fs::remove_file(old);
     }
     Some(path)
 }
@@ -161,6 +190,31 @@ mod tests {
         assert!(!should_skip(false, true, true));
         // exporting always skips, regardless of the rest
         assert!(should_skip(true, true, false));
+    }
+
+    /// forum-crash: three hours of 30 s autosaves keep the newest 20 plus one per hour, and a restore
+    /// from "about two hours ago" finds a file within that hour.
+    #[test]
+    fn hourly_backups_survive_the_rolling_trim() {
+        let now: u64 = 1_800_000_000 - 1_800_000_000 % 3600 + 1800; // half past an hour
+        let files: Vec<(PathBuf, u64)> =
+            (0..360u64).map(|i| (PathBuf::from(format!("{}.sedit", now - i * 30)), now - i * 30)).collect();
+        let gone = to_delete(&files, now);
+        let kept: Vec<u64> = files.iter().filter(|(p, _)| !gone.contains(p)).map(|(_, t)| *t).collect();
+        // 20 newest (the last 10 minutes) + the newest of each of the 3 earlier clock hours it spans
+        assert_eq!(kept.len(), 23, "{kept:?}");
+        for h in 1..=3u64 {
+            let hour = now / 3600 - h;
+            assert_eq!(kept.iter().filter(|t| *t / 3600 == hour).count(), 1, "one file for hour -{h}");
+        }
+        let want = now - 2 * 3600;
+        let best = kept.iter().min_by_key(|t| t.abs_diff(want)).unwrap();
+        assert!(best.abs_diff(want) <= 3600, "a backup within an hour of the chosen time");
+        // a file older than two days goes, even when it is the only one of its hour
+        let old = vec![(PathBuf::from("1.sedit"), now - 49 * 3600)];
+        let mut many: Vec<(PathBuf, u64)> = files[..20].to_vec();
+        many.extend(old);
+        assert_eq!(to_delete(&many, now), vec![PathBuf::from("1.sedit")]);
     }
 
     #[test]

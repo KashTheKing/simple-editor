@@ -118,8 +118,13 @@ You don't lose work if the app or Windows crashes:
 
 - **Autosave** writes a copy of your project every 30 seconds while it has unsaved changes. Change
   the interval in **Settings ▸ General ▸ Autosave interval** (0 turns it off).
-- After a crash, the next start asks **Recover unsaved project?**. Click **Yes** to load it.
-- Older autosaves are listed by **Restore Autosave…** in the command palette (<kbd>Ctrl+P</kbd>, then `>`).
+- After a crash, the next start says what it was doing when it closed (for example "while playing
+  clip.mp4") and offers **Recover**. If a media file caused it, that file is offline so the project
+  opens; **Bring the File Back** tries it again. **Recover Without Media** opens the project with every
+  file offline for that session, and **Recover Without Effects** switches every effect off (one
+  <kbd>Ctrl+Z</kbd> turns them back on).
+- Older autosaves are listed by **Restore Autosave…** in the command palette (<kbd>Ctrl+P</kbd>, then `>`):
+  the last ten minutes, plus one per hour for two days.
 - Almost everything can be undone with <kbd>Ctrl+Z</kbd> and redone with <kbd>Ctrl+Shift+Z</kbd>
   (or <kbd>Ctrl+Y</kbd>). Deleting something shows a message with an **Undo** button too.
 
