@@ -9,7 +9,12 @@ impl Project {
     /// every asset of that file takes its new displayed size, so a quarter turn swaps width and height.
     /// Returns how many assets use the file.
     pub fn set_media_io(&mut self, path: &str, io: MediaIo, coded: Option<(u32, u32)>, file_rot: i32) -> usize {
-        let key = self.assets.iter().find(|a| a.path.eq_ignore_ascii_case(path)).map_or(path, |a| a.path.as_str()).to_string();
+        let key = self
+            .assets
+            .iter()
+            .find(|a| a.path.eq_ignore_ascii_case(path))
+            .map_or(path, |a| a.path.as_str())
+            .to_string();
         if io.is_default() {
             self.media_io.remove(&key);
         } else {

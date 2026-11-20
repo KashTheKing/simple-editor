@@ -173,7 +173,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let (flat, rot) = (dir.join("flat.mp4"), dir.join("rot.mp4"));
         let ok = ffpipe::command(&exe)
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=red:s=320x240:d=1,drawbox=y=120:h=120:color=blue:t=fill"])
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=red:s=320x240:d=1,drawbox=y=120:h=120:color=blue:t=fill",
+            ])
             .args(["-pix_fmt", "yuv420p", "-c:v", "libx264"])
             .arg(&flat)
             .status()

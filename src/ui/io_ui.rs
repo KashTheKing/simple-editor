@@ -92,9 +92,12 @@ fn props_body(ui: &mut egui::Ui, st: &mut PropsUi, v: &PropsView) -> Option<Prop
     }
     for s in &info.streams {
         let head = format!("Stream {} · {} · {}", s.index, kind_name(&s.kind), s.codec.to_uppercase());
-        egui::CollapsingHeader::new(head).id_salt(("props_stream", s.index)).default_open(s.kind != "data").show(ui, |ui| {
-            stream_grid(ui, s);
-        });
+        egui::CollapsingHeader::new(head).id_salt(("props_stream", s.index)).default_open(s.kind != "data").show(
+            ui,
+            |ui| {
+                stream_grid(ui, s);
+            },
+        );
     }
     let video = info.streams.iter().find(|s| s.kind == "video");
     // decode overrides: a project asset's video only
@@ -305,23 +308,23 @@ fn bitrate_graph(ui: &mut egui::Ui, b: &Bitrate) {
     for (i, k) in b.kbps.iter().enumerate() {
         let h = (k / top) as f32 * (rect.height() - 8.0);
         let x = rect.left() + i as f32 * w;
-        p.rect_filled(egui::Rect::from_min_max(egui::pos2(x, rect.bottom() - h), egui::pos2(x + w.max(1.0) - 0.5, rect.bottom())), 0.0, bar);
+        p.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(x, rect.bottom() - h), egui::pos2(x + w.max(1.0) - 0.5, rect.bottom())),
+            0.0,
+            bar,
+        );
     }
     let avg_y = rect.bottom() - (b.average / top) as f32 * (rect.height() - 8.0);
-    p.hline(rect.x_range(), avg_y, Stroke::new(1.0, vis.warn_fg_color));
+    p.hline(rect.x_range(), avg_y, Stroke::new(1.0_f32, vis.warn_fg_color));
     let span = n as f64 * b.step;
     for k in &b.keys {
         let x = rect.left() + (k / span) as f32 * rect.width();
-        p.vline(x, (rect.bottom() - 4.0)..=rect.bottom(), Stroke::new(1.0, vis.text_color()));
+        p.vline(x, (rect.bottom() - 4.0)..=rect.bottom(), Stroke::new(1.0_f32, vis.text_color()));
     }
     if let Some(pos) = resp.hover_pos() {
         let i = (((pos.x - rect.left()) / w) as usize).min(n - 1);
-        p.vline(pos.x, rect.y_range(), Stroke::new(1.0, Color32::from_white_alpha(80)));
-        resp.on_hover_text(format!(
-            "{} · {}",
-            clock(i as f64 * b.step),
-            bitrate_text((b.kbps[i] * 1000.0) as u64)
-        ));
+        p.vline(pos.x, rect.y_range(), Stroke::new(1.0_f32, Color32::from_white_alpha(80)));
+        resp.on_hover_text(format!("{} · {}", clock(i as f64 * b.step), bitrate_text((b.kbps[i] * 1000.0) as u64)));
     }
 }
 
@@ -383,7 +386,9 @@ fn stream_body(ui: &mut egui::Ui, st: &mut StreamUi, v: &StreamView) -> Option<S
     ui.horizontal(|ui| {
         let r = ui.add_enabled(
             !busy,
-            egui::TextEdit::singleline(&mut st.url).hint_text("https://… .m3u8, rtsp://…, rtmp://…, srt://…, udp://…").desired_width(330.0),
+            egui::TextEdit::singleline(&mut st.url)
+                .hint_text("https://… .m3u8, rtsp://…, rtmp://…, srt://…, udp://…")
+                .desired_width(330.0),
         );
         let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         r.on_hover_text("A stream address: HTTP(S) / HLS / DASH, RTMP, RTSP, SRT, UDP or RTP");
@@ -448,8 +453,12 @@ fn stream_body(ui: &mut egui::Ui, st: &mut StreamUi, v: &StreamView) -> Option<S
                 {
                     out = Some(StreamAction::Record(st.limit_on.then_some(st.limit_min * 60.0)));
                 }
-                ui.checkbox(&mut st.limit_on, "Stop after").on_hover_text("End the recording on its own after this long");
-                ui.add_enabled(st.limit_on, egui::DragValue::new(&mut st.limit_min).range(0.1..=600.0).speed(0.5).suffix(" min"));
+                ui.checkbox(&mut st.limit_on, "Stop after")
+                    .on_hover_text("End the recording on its own after this long");
+                ui.add_enabled(
+                    st.limit_on,
+                    egui::DragValue::new(&mut st.limit_min).range(0.1..=600.0).speed(0.5).suffix(" min"),
+                );
             });
         }
         Some((secs, bytes, stopping)) => {
@@ -512,7 +521,15 @@ mod tests {
                     rotation: 90,
                     ..Default::default()
                 },
-                StreamInfo { index: 1, kind: "audio".into(), codec: "aac".into(), sample_rate: 48000, channels: 2, channel_layout: "stereo".into(), ..Default::default() },
+                StreamInfo {
+                    index: 1,
+                    kind: "audio".into(),
+                    codec: "aac".into(),
+                    sample_rate: 48000,
+                    channels: 2,
+                    channel_layout: "stereo".into(),
+                    ..Default::default()
+                },
             ],
         }
     }
@@ -543,7 +560,8 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_fonts(crate::theme::test_fonts());
         let ok: Result<MediaInfo, String> = Ok(info());
-        let graph: Result<Bitrate, String> = Ok(crate::engine::media_info::buckets("0,0,1000,K\n1,1,2000,_\n2,2,500,_\n", 1.0));
+        let graph: Result<Bitrate, String> =
+            Ok(crate::engine::media_info::buckets("0,0,1000,K\n1,1,2000,_\n2,2,500,_\n", 1.0));
         let mut st = PropsUi::default();
         let views = [
             PropsView { title: "clip.mp4", info: Some(&ok), bitrate: None, io: Some(MediaIo::default()) },
@@ -566,9 +584,30 @@ mod tests {
         let recent = vec!["rtsp://cam/1".to_string()];
         let mut st = StreamUi { url: "rtsp://cam/1".into(), ..Default::default() };
         let views = [
-            StreamView { recent: &recent, probe: None, preview: None, previewing: false, preview_error: None, recording: None },
-            StreamView { recent: &recent, probe: Some(Some(&ok)), preview: None, previewing: false, preview_error: Some("the stream ended"), recording: None },
-            StreamView { recent: &[], probe: Some(Some(&ok)), preview: None, previewing: false, preview_error: None, recording: Some((12.0, 4_000_000, false)) },
+            StreamView {
+                recent: &recent,
+                probe: None,
+                preview: None,
+                previewing: false,
+                preview_error: None,
+                recording: None,
+            },
+            StreamView {
+                recent: &recent,
+                probe: Some(Some(&ok)),
+                preview: None,
+                previewing: false,
+                preview_error: Some("the stream ended"),
+                recording: None,
+            },
+            StreamView {
+                recent: &[],
+                probe: Some(Some(&ok)),
+                preview: None,
+                previewing: false,
+                preview_error: None,
+                recording: Some((12.0, 4_000_000, false)),
+            },
         ];
         for v in &views {
             let mut open = true;

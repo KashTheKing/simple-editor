@@ -190,8 +190,22 @@ mod tests {
 
     fn pair() -> Vec<Adapter> {
         vec![
-            Adapter { name: "Intel(R) UHD Graphics".into(), vendor: 0x8086, device: 1, vram_mb: 128, perf_rank: 1, power_rank: 0 },
-            Adapter { name: "NVIDIA GeForce RTX 3060 Laptop GPU".into(), vendor: 0x10DE, device: 2, vram_mb: 6144, perf_rank: 0, power_rank: 1 },
+            Adapter {
+                name: "Intel(R) UHD Graphics".into(),
+                vendor: 0x8086,
+                device: 1,
+                vram_mb: 128,
+                perf_rank: 1,
+                power_rank: 0,
+            },
+            Adapter {
+                name: "NVIDIA GeForce RTX 3060 Laptop GPU".into(),
+                vendor: 0x10DE,
+                device: 2,
+                vram_mb: 6144,
+                perf_rank: 0,
+                power_rank: 1,
+            },
         ]
     }
 

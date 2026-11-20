@@ -192,7 +192,8 @@ pub fn colour_text(st: &StreamInfo) -> String {
 
 /// Run ffprobe for the headers. Blocking (tens of ms): call it on a worker thread.
 pub fn properties(path: &str) -> Result<MediaInfo, String> {
-    let exe = crate::media::ffpipe::ffprobe_exe().ok_or("ffprobe.exe not found (Settings ▸ General ▸ FFmpeg folder)")?;
+    let exe =
+        crate::media::ffpipe::ffprobe_exe().ok_or("ffprobe.exe not found (Settings ▸ General ▸ FFmpeg folder)")?;
     let out = crate::media::ffpipe::command(&exe)
         .args(["-v", "error", "-print_format", "json", "-show_format", "-show_streams", path])
         .stdin(Stdio::null())
@@ -300,7 +301,10 @@ mod tests {
     #[test]
     fn parses_format_streams_and_colour() {
         let m = parse("C:/a.mov", &phone());
-        assert_eq!((m.format_long.as_str(), m.duration, m.size, m.bit_rate), ("QuickTime / MOV", 12.5, 31_250_000, 20_000_000));
+        assert_eq!(
+            (m.format_long.as_str(), m.duration, m.size, m.bit_rate),
+            ("QuickTime / MOV", 12.5, 31_250_000, 20_000_000)
+        );
         assert_eq!(m.tags[0], ("creation_time".into(), "2026-01-02T03:04:05Z".into()), "sorted");
         let v = &m.streams[0];
         assert_eq!((v.width, v.height, v.rotation, v.frames), (3840, 2160, 90, 749));

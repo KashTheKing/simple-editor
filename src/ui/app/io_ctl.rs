@@ -7,12 +7,13 @@
 //!  * full-range export (the static `engine::export` reads);
 //!  * GPU choice (Windows' per-app preference, written when the setting changes);
 //!  * the Contour ShuttlePRO reader (`engine::shuttle`): shuttle = rate, jog = frames, buttons = actions.
+//!
 //! Drawing is `ui::io_ui`; this file only owns state, threads and edits.
 
+use super::tools_helpers::{arg_bool, arg_f64, arg_str, arg_u64, req};
 use super::*;
 use crate::engine::media_info::{self, Bitrate, MediaInfo};
 use crate::engine::{gpu_pick, netstream, shuttle};
-use super::tools_helpers::{arg_bool, arg_f64, arg_str, arg_u64, req};
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 use crate::media::io_override::{self, MediaIo, Range};
 use crate::ui::io_ui::{self, PropsAction, PropsUi, PropsView, StreamAction, StreamUi, StreamView};
@@ -22,7 +23,10 @@ use std::collections::{BTreeMap, HashMap};
 type Slot<T> = Arc<Mutex<Option<Result<T, String>>>>;
 
 /// Run `f` on a worker thread; the slot fills (and the UI wakes) when it returns.
-fn spawn_slot<T: Send + 'static>(ctx: Option<egui::Context>, f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Slot<T> {
+fn spawn_slot<T: Send + 'static>(
+    ctx: Option<egui::Context>,
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Slot<T> {
     let slot: Slot<T> = Arc::new(Mutex::new(None));
     let s = slot.clone();
     std::thread::spawn(move || {
@@ -187,7 +191,9 @@ fn stream_tick(app: &mut App, ctx: &egui::Context) {
             let img = egui::ColorImage::from_rgba_unmultiplied([f.width as usize, f.height as usize], &f.rgba);
             match app.io.preview_tex.as_mut() {
                 Some(t) => t.set(img, egui::TextureOptions::LINEAR),
-                None => app.io.preview_tex = Some(ctx.load_texture("stream_preview", img, egui::TextureOptions::LINEAR)),
+                None => {
+                    app.io.preview_tex = Some(ctx.load_texture("stream_preview", img, egui::TextureOptions::LINEAR))
+                }
             }
         }
     }
@@ -232,7 +238,11 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 /// The Library's anchor, else the first selected clip's asset.
 fn selected_asset(app: &App) -> Option<Id> {
     app.library.selected.filter(|id| app.project.asset(*id).is_some()).or_else(|| {
-        app.selection.iter().filter_map(|c| app.project.clip(*c)).map(|c| c.asset).find(|a| app.project.asset(*a).is_some())
+        app.selection
+            .iter()
+            .filter_map(|c| app.project.clip(*c))
+            .map(|c| c.asset)
+            .find(|a| app.project.asset(*a).is_some())
     })
 }
 
@@ -436,7 +446,10 @@ fn target(app: &App, args: &Value) -> Result<(String, Option<Id>), String> {
         return Ok((a.path.clone(), Some(id)));
     }
     match arg_str(args, "path").map(str::trim).filter(|p| !p.is_empty()) {
-        Some(p) => Ok((app.project.asset_by_path(p).map_or(p.to_string(), |a| a.path.clone()), app.project.asset_by_path(p).map(|a| a.id))),
+        Some(p) => Ok((
+            app.project.asset_by_path(p).map_or(p.to_string(), |a| a.path.clone()),
+            app.project.asset_by_path(p).map(|a| a.id),
+        )),
         None => Err("give asset_id or path".into()),
     }
 }
@@ -619,7 +632,15 @@ mod tests {
 
     #[test]
     fn tools_are_registered() {
-        for t in ["media.properties", "media.bitrate", "media.set_io", "stream.open", "stream.record", "gpu.list", "shuttle.status"] {
+        for t in [
+            "media.properties",
+            "media.bitrate",
+            "media.set_io",
+            "stream.open",
+            "stream.record",
+            "gpu.list",
+            "shuttle.status",
+        ] {
             assert!(crate::mcp::tools::find(t).is_some(), "{t}");
         }
         assert!(crate::mcp::tools::leaves_project("stream.open", &json!({})), "network access waits for Allow");

@@ -16,7 +16,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// The URL schemes ffmpeg can open as a stream.
-pub const SCHEMES: &[&str] = &["http", "https", "rtmp", "rtmps", "rtsp", "rtsps", "srt", "udp", "rtp", "tcp", "mms", "mmsh"];
+pub const SCHEMES: &[&str] =
+    &["http", "https", "rtmp", "rtmps", "rtsp", "rtsps", "srt", "udp", "rtp", "tcp", "mms", "mmsh"];
 
 /// A trimmed URL ffmpeg can read, or why not. Local paths and `file:` are refused (that's Import Media).
 pub fn validate(url: &str) -> Result<String, String> {
@@ -73,8 +74,16 @@ pub fn record_args(url: &str, out: &Path, secs: Option<f64>) -> Vec<String> {
 pub fn record_path(dir: &Path, url: &str, stamp: &str) -> PathBuf {
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let authority = rest.split(['/', '?']).next().unwrap_or_default();
-    let host = authority.rsplit('@').next().unwrap_or_default().split(':').next().filter(|h| !h.is_empty()).unwrap_or("stream");
-    let host: String = host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .filter(|h| !h.is_empty())
+        .unwrap_or("stream");
+    let host: String =
+        host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
     let base = format!("{host} {stamp}");
     let mut p = dir.join(format!("{base}.mkv"));
     let mut n = 2;
@@ -103,9 +112,13 @@ impl Preview {
         let exe = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
         let h = PREVIEW_W * 9 / 16;
         let vf = format!("fps=12,scale={PREVIEW_W}:{h}:force_original_aspect_ratio=decrease,pad={PREVIEW_W}:{h}:-1:-1");
-        let mut args: Vec<String> = ["-hide_banner", "-loglevel", "error", "-fflags", "nobuffer"].map(String::from).to_vec();
+        let mut args: Vec<String> =
+            ["-hide_banner", "-loglevel", "error", "-fflags", "nobuffer"].map(String::from).to_vec();
         args.extend(input_args(url));
-        args.extend(["-map", "0:v:0", "-an", "-sn", "-vf", &vf, "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"].map(String::from));
+        args.extend(
+            ["-map", "0:v:0", "-an", "-sn", "-vf", &vf, "-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"]
+                .map(String::from),
+        );
         let mut child = ffpipe::command(&exe)
             .args(&args)
             .stdin(Stdio::null())
@@ -115,7 +128,8 @@ impl Preview {
             .map_err(|e| format!("ffmpeg: {e}"))?;
         crate::engine::html::tie_to_us(&child); // never outlives the app
         let (mut out, mut err) = (child.stdout.take().ok_or("no stdout")?, child.stderr.take());
-        let p = Preview { child: Arc::new(Mutex::new(Some(child))), latest: Default::default(), error: Default::default() };
+        let p =
+            Preview { child: Arc::new(Mutex::new(Some(child))), latest: Default::default(), error: Default::default() };
         let (latest, error) = (p.latest.clone(), p.error.clone());
         std::thread::spawn(move || {
             crate::media::bg::lower_thread();
