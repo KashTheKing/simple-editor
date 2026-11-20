@@ -28,7 +28,7 @@ function draw()
     end
     if ui.button("Nudge selection") and #selected > 0 then
       -- every edit made in one click is one undo step
-      editor.tool("timeline.move", { clip_ids = selected, dt = step })
+      editor.tool("timeline.move", { clip_ids = query.ids(selected), dt = step })
     end
   end)
 end

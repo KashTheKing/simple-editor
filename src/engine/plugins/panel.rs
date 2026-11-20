@@ -519,7 +519,9 @@ mod tests {
     use serde_json::Value;
 
     fn panel(src: &str) -> Panel {
-        let dir = std::env::temp_dir().join(format!("se-panel-{}-{}", std::process::id(), src.len()));
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("se-panel-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let script = dir.join("p.luau");
         std::fs::write(&script, src).unwrap();
@@ -623,6 +625,55 @@ mod tests {
         let mut p = panel("function draw() for i = 1, 5000 do ui.label(i) end end");
         run(&mut p, 0);
         assert!(p.error.unwrap().contains("widgets"));
+    }
+
+    /// The example plugin shipped in `examples/plugins/hello-panel` draws, and its buttons call the tools
+    /// with the arguments those tools take (the tool replies mimic the app's shapes).
+    #[test]
+    fn the_example_plugins_panel_draws_and_its_buttons_call_real_tools() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/plugins/hello-panel");
+        let mut c = ctx(Permissions::default(), Permissions::default());
+        c.dir = dir.clone();
+        let mut p = Panel::new(c, dir.join("panels/hello.luau"));
+        let mut go = |p: &mut Panel| -> Vec<(String, Value)> {
+            let mut made = Vec::new();
+            {
+                let mut call = |n: &str, a: &Value| -> Result<Value, String> {
+                    made.push((n.to_string(), a.clone()));
+                    Ok(match n {
+                        "timeline.list" => serde_json::json!({"tracks": [{"name": "V1", "clips": [{"id": 7, "start": 0.0}, {"id": 8, "start": 2.0}]}]}),
+                        "editor.context" => serde_json::json!({"playhead": 1.5, "selected_clips": [{"id": 8, "name": "b", "start": 2.0}]}),
+                        "markers.list" => serde_json::json!([{"id": 1, "t": 0.5}]),
+                        _ => serde_json::json!({"ok": true}),
+                    })
+                };
+                let base = |_: &str| true;
+                let ctx = p.ctx.clone();
+                let env = Env::new(&ctx, None, &base, &mut call);
+                p.run(&env, 0);
+            }
+            made.retain(|(n, _)| !["timeline.list", "editor.context", "markers.list"].contains(&n.as_str()));
+            made
+        };
+        assert!(go(&mut p).is_empty());
+        assert!(p.error.is_none(), "{:?}", p.error);
+        assert_eq!(p.nodes[0], Node::Label { text: "Hello from a plugin".into(), heading: true });
+        assert_eq!(p.nodes[1], Node::Label { text: "2 clips on the timeline, 1 selected".into(), heading: false });
+        assert_eq!(p.nodes[2], Node::Label { text: "1 markers".into(), heading: false });
+        p.changes.insert("Marker at playhead".into(), Change::Click);
+        let made = go(&mut p);
+        assert_eq!(made, vec![("markers.add".to_string(), serde_json::json!({"t": 1.5, "name": "Plugin marker"}))]);
+        go(&mut p);
+        p.changes.insert("Nudge selection".into(), Change::Click);
+        let made = go(&mut p);
+        assert_eq!(made, vec![("timeline.move".to_string(), serde_json::json!({"clip_ids": [8], "dt": 0.5}))]);
+        // and it draws
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = draw(ui, &p.nodes, &mut p.changes, &mut p.images);
+            });
+        });
     }
 
     #[test]
