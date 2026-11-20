@@ -26,6 +26,8 @@ impl App {
     }
 
     pub(super) fn open_project(&mut self, path: &Path) {
+        // forum-crash: a death while loading names this project on the next start
+        let _inflight = crate::crashguard::begin(crate::crashguard::Kind::Open, &path.to_string_lossy(), "");
         match Project::load(path) {
             Ok(mut project) => {
                 for m in relocate_assets(&mut project, path.parent()) {

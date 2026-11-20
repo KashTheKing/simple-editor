@@ -107,7 +107,35 @@ static DIR: OnceLock<PathBuf> = OnceLock::new();
 /// and those removals must not reach the disk).
 static FROZEN: AtomicBool = AtomicBool::new(false);
 /// Leftovers of dead processes, read once at start by `init`.
-static LEFTOVERS: OnceLock<Vec<Entry>> = OnceLock::new();
+static LEFTOVERS: OnceLock<Leftover> = OnceLock::new();
+/// The open project's file ("" = untitled), written with the entries so the next start can reopen it.
+static PROJECT: Mutex<String> = Mutex::new(String::new());
+
+/// What a dead run left: its open project and what was in flight.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Leftover {
+    #[serde(default)]
+    pub project: String,
+    #[serde(default)]
+    pub entries: Vec<Entry>,
+}
+
+/// The open project changed (`App::set_project`): cheap, no disk.
+pub fn set_project(path: Option<&Path>) {
+    let p = path.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut g = PROJECT.lock().unwrap_or_else(|e| e.into_inner());
+    if *g != p {
+        *g = p;
+        drop(g);
+        let mut t = lock();
+        t.gen += 1;
+        WAKE.notify_all();
+    }
+}
+
+fn project_now() -> String {
+    PROJECT.try_lock().map(|g| g.clone()).unwrap_or_default()
+}
 
 /// How long the writer waits after a change before writing, so short opens never hit the disk.
 const COALESCE: Duration = Duration::from_millis(150);
@@ -197,21 +225,23 @@ fn file_for(dir: &Path, pid: u32) -> PathBuf {
     dir.join(format!("inflight-{pid}.json"))
 }
 
-/// Mirror `entries` to this process's file: written when there are any, removed when there are none.
-pub fn write_to(dir: &Path, pid: u32, entries: &[Entry]) {
+/// Mirror the state to this process's file: written while anything is in flight, removed otherwise.
+pub fn write_to(dir: &Path, pid: u32, rec: &Leftover) {
     let f = file_for(dir, pid);
-    if entries.is_empty() {
+    if rec.entries.is_empty() {
         let _ = std::fs::remove_file(f);
-    } else if let Ok(json) = serde_json::to_string(entries) {
+    } else if let Ok(json) = serde_json::to_string(rec) {
         let _ = std::fs::create_dir_all(dir);
         let _ = std::fs::write(f, json);
     }
 }
 
 /// Every `inflight-<pid>.json` in `dir` except `me`'s, from processes `alive` says are gone: their
-/// entries (oldest file first), and the files are removed so the same death is reported once.
-pub fn leftovers_in(dir: &Path, me: u32, alive: impl Fn(u32) -> bool) -> Vec<Entry> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+/// entries (oldest file first) and the newest one's project; the files are removed so the same death
+/// is reported once.
+pub fn leftovers_in(dir: &Path, me: u32, alive: impl Fn(u32) -> bool) -> Leftover {
+    let mut out = Leftover::default();
+    let Ok(rd) = std::fs::read_dir(dir) else { return out };
     let mut files: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -224,10 +254,12 @@ pub fn leftovers_in(dir: &Path, me: u32, alive: impl Fn(u32) -> bool) -> Vec<Ent
         files.push((t, e.path()));
     }
     files.sort();
-    let mut out = Vec::new();
     for (_, f) in files {
-        if let Some(v) = std::fs::read_to_string(&f).ok().and_then(|j| serde_json::from_str::<Vec<Entry>>(&j).ok()) {
-            out.extend(v);
+        if let Some(r) = std::fs::read_to_string(&f).ok().and_then(|j| serde_json::from_str::<Leftover>(&j).ok()) {
+            out.entries.extend(r.entries);
+            if !r.project.is_empty() {
+                out.project = r.project;
+            }
         }
         let _ = std::fs::remove_file(f);
     }
@@ -265,16 +297,17 @@ pub fn init(dir: PathBuf) {
     install_native_filter();
 }
 
-/// What the previous run died on (empty after a clean exit). Read-only; `init` filled it.
-pub fn leftovers() -> &'static [Entry] {
-    LEFTOVERS.get().map(Vec::as_slice).unwrap_or(&[])
+/// What the previous run died on (no entries after a clean exit). Read-only; `init` filled it.
+pub fn leftovers() -> &'static Leftover {
+    static NONE: Leftover = Leftover { project: String::new(), entries: Vec::new() };
+    LEFTOVERS.get().unwrap_or(&NONE)
 }
 
 fn writer() {
     let Some(dir) = DIR.get() else { return };
     let me = std::process::id();
     let mut seen_gen = u64::MAX;
-    let mut last: Vec<Entry> = Vec::new();
+    let mut last = Leftover::default();
     loop {
         {
             let mut t = lock();
@@ -292,11 +325,12 @@ fn writer() {
         if FROZEN.load(Ordering::SeqCst) {
             return;
         }
-        let now = snapshot();
-        if now != last {
+        let now = Leftover { project: project_now(), entries: snapshot() };
+        // a project change alone, with nothing in flight, has nothing to write
+        if now != last && !(now.entries.is_empty() && last.entries.is_empty()) {
             write_to(dir, me, &now);
-            last = now;
         }
+        last = now;
     }
 }
 
@@ -311,14 +345,14 @@ pub fn flush_for_crash() {
     let now = Instant::now();
     let entries: Vec<Entry> = t.slots.iter().filter(|s| s.until.live(now)).map(|s| s.entry.clone()).collect();
     drop(t);
-    write_to(dir, std::process::id(), &entries);
+    write_to(dir, std::process::id(), &Leftover { project: project_now(), entries });
 }
 
 /// A clean exit: nothing was in flight, whatever the table says now.
 pub fn clean_exit() {
     FROZEN.store(true, Ordering::SeqCst);
     if let Some(dir) = DIR.get() {
-        write_to(dir, std::process::id(), &[]);
+        write_to(dir, std::process::id(), &Leftover::default());
     }
 }
 
@@ -411,11 +445,13 @@ mod tests {
         for (i, (e, words, offline)) in cases.into_iter().enumerate() {
             let dir = tmp(&format!("kind{i}"));
             let dead = 4_000_000 + i as u32; // the crashed run
-            write_to(&dir, dead, std::slice::from_ref(&e));
-            // next start (pid 1): the dead run's entries come back once, then the file is gone
-            let got = leftovers_in(&dir, 1, |_| false);
-            assert_eq!(got, vec![e.clone()]);
-            assert!(leftovers_in(&dir, 1, |_| false).is_empty(), "reported once");
+            let rec = Leftover { project: r"C:\p\film.sedit".into(), entries: vec![e.clone()] };
+            write_to(&dir, dead, &rec);
+            // next start (pid 1): the dead run's entries and project come back once, then the file is gone
+            let back = leftovers_in(&dir, 1, |_| false);
+            assert_eq!(back, rec);
+            assert!(leftovers_in(&dir, 1, |_| false).entries.is_empty(), "reported once");
+            let got = back.entries;
             let msg = describe(&got).unwrap();
             assert!(msg.contains(words), "{msg:?} should say {words:?}");
             assert_eq!(culprit_files(&got), offline.map(String::from).into_iter().collect::<Vec<_>>());
@@ -428,14 +464,15 @@ mod tests {
     #[test]
     fn a_running_instance_and_this_process_are_not_crashes() {
         let dir = tmp("alive");
-        write_to(&dir, 77, &[entry(Kind::Decode, "x.mp4", "")]);
-        write_to(&dir, 5, &[entry(Kind::Decode, "y.mp4", "")]);
-        assert!(leftovers_in(&dir, 5, |pid| pid == 77).is_empty(), "77 still runs, 5 is me");
-        assert_eq!(leftovers_in(&dir, 5, |_| false).len(), 1, "77 has died since");
+        let rec = |e: Entry| Leftover { project: String::new(), entries: vec![e] };
+        write_to(&dir, 77, &rec(entry(Kind::Decode, "x.mp4", "")));
+        write_to(&dir, 5, &rec(entry(Kind::Decode, "y.mp4", "")));
+        assert!(leftovers_in(&dir, 5, |pid| pid == 77).entries.is_empty(), "77 still runs, 5 is me");
+        assert_eq!(leftovers_in(&dir, 5, |_| false).entries.len(), 1, "77 has died since");
         // an empty table removes the file: a clean exit leaves nothing behind
-        write_to(&dir, 9, &[entry(Kind::Open, "p.sedit", "")]);
-        write_to(&dir, 9, &[]);
-        assert!(leftovers_in(&dir, 5, |_| false).is_empty());
+        write_to(&dir, 9, &rec(entry(Kind::Open, "p.sedit", "")));
+        write_to(&dir, 9, &Leftover::default());
+        assert!(leftovers_in(&dir, 5, |_| false).entries.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

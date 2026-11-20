@@ -47,7 +47,7 @@ pub fn decide(forced: bool, setting: bool, died_in_graphics: bool, quiet: bool) 
 
 /// `main`, before the window: settles compatibility mode for this run (may ask, may tick the setting).
 pub fn decide_compat(seed: &mut Settings) {
-    let died = crate::crashguard::leftovers().iter().any(|e| e.kind == crate::crashguard::Kind::Graphics);
+    let died = crate::crashguard::leftovers().entries.iter().any(|e| e.kind == crate::crashguard::Kind::Graphics);
     let on = match decide(compat(), seed.compat_graphics, died, crate::winpos::quiet()) {
         Decision::On => true,
         Decision::Off => false,

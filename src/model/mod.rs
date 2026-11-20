@@ -679,7 +679,7 @@ pub mod ops;
 mod path;
 mod playlist; // ws:music-burn
 mod project;
-mod repair;
+pub mod repair; // forum-crash: the safe-start helpers are used by ui::app::recovery
 mod shape;
 mod subtitle;
 mod text;

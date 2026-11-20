@@ -74,26 +74,173 @@ pub fn install_panic_hook() {
 }
 
 /// Called once from the existing first-frame `window_shown` gate (see boot.rs): queues a non-blocking
-/// Recover offer when a newer autosave exists than the currently open project.
+/// recovery prompt when the last run crashed (forum-crash: naming the file or action it died on, with
+/// that media file already offline) or a newer autosave exists than the open project. Every recover
+/// choice has a safe-start twin: without media (every file offline for this run) or without effects.
 pub(super) fn boot(app: &mut App) {
+    use crate::crashguard::{self, Kind};
+    let left = crashguard::leftovers();
+    // a graphics death was answered in `main` (compatibility mode), before the window existed
+    let crash: Vec<crashguard::Entry> = left.entries.iter().filter(|e| e.kind != Kind::Graphics).cloned().collect();
+    let culprits = crashguard::culprit_files(&crash);
+    for c in &culprits {
+        crate::media::offline::take_offline(c, true); // even on a quiet start: the file must not crash it again
+    }
     if crate::winpos::quiet() {
         return; // no prompt on a quiet launch; the autosave stays for the next normal launch
     }
-    let Some(path) = recover_candidate(app.project_path.as_deref()) else { return };
-    let path2 = path.clone();
-    crate::ui::confirm::ask_app(
-        "Recover unsaved project?",
-        format!("A newer autosave was found:\n{}\n\nLoad it?", path.display()),
-        move |app| match std::fs::read_to_string(&path2).ok().and_then(|j| Project::from_json(&j).ok()) {
-            Some(project) => {
-                app.set_project(project, app.project_path.clone());
-                app.dirty = true; // the recovered state hasn't been saved as-is yet
-                app.saved = None;
-                app.toast("Recovered the autosaved project");
+    let crash_project = (!crash.is_empty() && !left.project.is_empty()).then(|| PathBuf::from(&left.project));
+    let project_file = app.project_path.clone().or(crash_project);
+    let autosave = recover_candidate(project_file.as_deref());
+    let said = crashguard::describe(&crash);
+    let Some(plan) = RecoverPlan::new(said, culprits, autosave, project_file) else { return };
+    let (title, body) = plan.text();
+    let mut choices: Vec<(&'static str, &'static str, Box<dyn FnOnce(&mut App)>)> = Vec::new();
+    if plan.loads() {
+        for mode in [SafeStart::Normal, SafeStart::NoMedia, SafeStart::NoEffects] {
+            let p = plan.clone();
+            choices.push((mode.label(), mode.tip(), Box::new(move |app: &mut App| p.recover(app, mode))));
+        }
+    }
+    if !plan.culprits.is_empty() {
+        let files = plan.culprits.clone();
+        choices.push((
+            "Bring the File Back",
+            "Try the file again: the next time it is played or imported, Simple Editor opens it as usual",
+            Box::new(move |app: &mut App| {
+                for f in &files {
+                    crate::media::offline::bring_back(f);
+                }
+                app.player.set_project(&app.project); // decoders reopen it
+                app.toast("The file is back online");
+            }),
+        ));
+    }
+    crate::ui::confirm::ask_many(title, body, choices);
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum SafeStart {
+    Normal,
+    NoMedia,
+    NoEffects,
+}
+
+impl SafeStart {
+    fn label(self) -> &'static str {
+        match self {
+            SafeStart::Normal => "Recover",
+            SafeStart::NoMedia => "Recover Without Media",
+            SafeStart::NoEffects => "Recover Without Effects",
+        }
+    }
+    fn tip(self) -> &'static str {
+        match self {
+            SafeStart::Normal => "Open the project as it was, from the newest autosave when there is one",
+            SafeStart::NoMedia => {
+                "Open it with every media file offline for this session, so no file is decoded. \
+                 Edits still work; restart to bring the media back"
             }
-            None => app.toast("Couldn't read that autosave"),
-        },
-    );
+            SafeStart::NoEffects => "Open it with every effect switched off (one Undo turns them back on)",
+        }
+    }
+}
+
+/// What the recovery prompt offers, decided from the crash record and the autosaves (pure, testable).
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct RecoverPlan {
+    pub(super) said: Option<String>,
+    pub(super) culprits: Vec<String>,
+    pub(super) autosave: Option<PathBuf>,
+    pub(super) project_file: Option<PathBuf>,
+}
+
+impl RecoverPlan {
+    /// None when there is nothing to say or offer.
+    pub(super) fn new(
+        said: Option<String>,
+        culprits: Vec<String>,
+        autosave: Option<PathBuf>,
+        project_file: Option<PathBuf>,
+    ) -> Option<Self> {
+        (said.is_some() || autosave.is_some()).then_some(Self { said, culprits, autosave, project_file })
+    }
+
+    /// There is a project to (re)open: an autosave, or after a crash the project file itself.
+    pub(super) fn loads(&self) -> bool {
+        self.autosave.is_some() || (self.said.is_some() && self.project_file.as_deref().is_some_and(Path::is_file))
+    }
+
+    pub(super) fn text(&self) -> (String, String) {
+        let mut body = Vec::new();
+        if let Some(s) = &self.said {
+            body.push(s.clone());
+        }
+        match self.culprits.as_slice() {
+            [] => {}
+            [one] => body.push(format!(
+                "{} is offline for now, so the project opens without it.",
+                crate::crashguard::short(one)
+            )),
+            many => body.push(format!("{} files are offline for now, so the project opens without them.", many.len())),
+        }
+        if let Some(a) = &self.autosave {
+            let age = std::fs::metadata(a)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| SystemTime::now().duration_since(t).ok())
+                .map(|d| format!(" (saved {})", ago(d.as_secs())))
+                .unwrap_or_default();
+            body.push(format!("A newer autosave was found{age}:\n{}", a.display()));
+        }
+        let title = if self.said.is_some() { "Simple Editor closed unexpectedly" } else { "Recover unsaved project?" };
+        (title.to_string(), body.join("\n\n"))
+    }
+
+    fn recover(&self, app: &mut App, mode: SafeStart) {
+        let project = match &self.autosave {
+            Some(a) => std::fs::read_to_string(a).ok().and_then(|j| Project::from_json(&j).ok()),
+            None => self.project_file.as_deref().and_then(|p| Project::load(p).ok()),
+        };
+        let Some(project) = project else {
+            return app.toast("Couldn't read that autosave");
+        };
+        if mode == SafeStart::NoMedia {
+            // before set_project, so no decoder opens a file first
+            for f in crate::model::repair::media_paths(&project) {
+                crate::media::offline::take_offline(&f, false);
+            }
+        }
+        let path = app.project_path.clone().or_else(|| self.project_file.clone());
+        app.set_project(project, path);
+        if self.autosave.is_some() {
+            app.dirty = true; // the recovered state hasn't been saved as-is yet
+            app.saved = None;
+        }
+        match mode {
+            SafeStart::Normal => app.toast("Recovered the project"),
+            SafeStart::NoMedia => app.toast("Recovered with the media offline. Restart to bring it back."),
+            SafeStart::NoEffects => {
+                let before = app.project.to_json();
+                let n = crate::model::repair::disable_all_effects(&mut app.project);
+                if n > 0 {
+                    app.push_undo_labeled(before, "Switch off effects");
+                    app.after_edit();
+                }
+                app.toast_undo(format!("Recovered with {n} effects switched off"), Action::Undo);
+            }
+        }
+    }
+}
+
+/// "45 s ago", "12 min ago", "3 h ago", "2 days ago".
+pub(super) fn ago(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs} s ago"),
+        60..=3599 => format!("{} min ago", secs / 60),
+        3600..=86_399 => format!("{} h ago", secs / 3600),
+        _ => format!("{} days ago", secs / 86_400),
+    }
 }
 
 /// WINDOW_DRAWER: `Action::RestoreBackup`'s "Restore Autosave…" window - lists every autosave across
@@ -140,6 +287,39 @@ pub(super) fn restore_window(app: &mut App, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// forum-crash: the prompt names the culprit file, says it is offline, and offers the safe starts.
+    #[test]
+    fn crash_prompt_names_the_file_and_offers_safe_starts() {
+        assert_eq!(RecoverPlan::new(None, vec![], None, None), None, "nothing to say");
+        let said = crate::crashguard::describe(&[crate::crashguard::Entry {
+            kind: crate::crashguard::Kind::Decode,
+            path: r"C:\clips\bad.mkv".into(),
+            detail: String::new(),
+        }]);
+        let plan = RecoverPlan::new(said, vec![r"C:\clips\bad.mkv".into()], None, None).unwrap();
+        let (title, body) = plan.text();
+        assert_eq!(title, "Simple Editor closed unexpectedly");
+        assert!(body.contains("while playing bad.mkv"), "{body}");
+        assert!(body.contains("bad.mkv is offline for now"), "{body}");
+        assert!(!plan.loads(), "no autosave and no project file: nothing to reopen, only Bring the File Back");
+        let with_save = RecoverPlan { autosave: Some(PathBuf::from("a.sedit")), ..plan };
+        assert!(with_save.loads());
+        // a plain newer autosave keeps the old title
+        let plain = RecoverPlan::new(None, vec![], Some(PathBuf::from("b.sedit")), None).unwrap();
+        assert_eq!(plain.text().0, "Recover unsaved project?");
+        for m in [SafeStart::Normal, SafeStart::NoMedia, SafeStart::NoEffects] {
+            assert!(!m.label().contains(" - ") && !m.label().contains(':'), "plain labels");
+        }
+    }
+
+    #[test]
+    fn ages_read_plainly() {
+        assert_eq!(ago(5), "5 s ago");
+        assert_eq!(ago(125), "2 min ago");
+        assert_eq!(ago(7300), "2 h ago");
+        assert_eq!(ago(200_000), "2 days ago");
+    }
 
     #[test]
     fn recovery_prefers_newer_autosave() {

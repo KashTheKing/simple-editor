@@ -1289,6 +1289,7 @@ impl App {
         home_ctl::release_lock(self.project_path.as_deref(), path.as_deref());
         self.project = project;
         self.project_path = path;
+        crate::crashguard::set_project(self.project_path.as_deref()); // forum-crash: reopened after a crash
         assistant_ctl::project_changed(self, self.project_path.clone().as_deref());
         self.dirty = false;
         self.saved = Some(self.project.to_json());
