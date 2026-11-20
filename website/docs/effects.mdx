@@ -61,6 +61,32 @@ applied. Each row is a grip, a checkbox and the effect's name:
 **Adjustment layers** (**Clip ▸ Add ▸ Add Adjustment Layer**, <kbd>Ctrl+Alt+L</kbd>) are empty clips whose
 effects apply to everything below them on the timeline, for as long as the layer lasts.
 
+### 360° video
+
+The [online library](online-library.mdx) has six effects for 360° footage in the equirectangular (2:1)
+layout most 360 cameras export. Search the Gallery for **360**:
+
+| Effect | What it does |
+|---|---|
+| **360 Transform** | Turns the sphere: **Yaw** (left / right), **Pitch** (up / down) and **Roll**. Use it to choose which way is forward or to level a tilted horizon. |
+| **360 to Flat** | A normal camera inside the sphere: point it with Yaw / Pitch / Roll and zoom with **Fov**. Keyframe them to pan around the scene for a flat export. |
+| **360 Little Planet** | Wraps the scene into a tiny planet. Set **Pitch** to 90 to turn it inside out into a tunnel. |
+| **Fisheye to 360** | Unwraps circular fisheye footage into a 360° picture: one lens, or a dual-lens camera's two circles side by side (**Dual** on). **Fov**, **Radius** and **Center** line the circle up, **Blend** softens the seam. |
+| **Flat to 360** | Places a normal picture on the sphere at a direction and size you choose (**Hfov** / **Vfov**), transparent everywhere else: a logo or a flat clip inside a 360° video. |
+| **360 Mask** | Hides part of the sphere by direction, such as the tripod at the bottom (the default) or a slice behind you, with a soft **Feather**. Hidden parts are transparent, so a patch on the track below shows through. |
+
+**360 Stabilize**: right-click a clip's **360 Transform** effect ▸ **360 Stabilize** and pick what to hold
+steady:
+
+- **Smooth** removes shake and keeps slow, deliberate turns.
+- **Lock View** holds the first frame's direction for the whole clip.
+- **Level Horizon** holds pitch and roll and keeps every turn left and right.
+
+It measures how the camera turns between frames in the background (a toast shows the progress), then writes
+Yaw / Pitch / Roll keyframes onto the 360 Transform effect as one undo step. A yaw, pitch or roll you set by hand
+before stabilizing stays applied on top. Put any 360 to Flat or Little Planet effect **below** the 360 Transform
+in the stack so the view is steadied first. Assistants and scripts can run it with `clip.stabilize_360`.
+
 ## Transitions
 
 ![The Gallery's Transitions tab](/img/tutorial/transitions.png)

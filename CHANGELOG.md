@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### 360° video
+- **360° effects** in the online library: **360 Transform** (yaw, pitch and roll), **360 to Flat** (look around inside the sphere with a normal camera), **360 Little Planet** (and a tunnel at Pitch 90), **Fisheye to 360** (single or dual-lens fisheye footage), **Flat to 360** (place a flat picture on the sphere) and **360 Mask** (hide the tripod or any direction with a soft edge). Every setting is keyframeable.
+- **360 Stabilize**: right-click a clip's 360 Transform effect ▸ **360 Stabilize** ▸ Smooth, Lock View or Level Horizon. The camera's turn is measured frame to frame in the background and written as yaw, pitch and roll keyframes, in one undo step. MCP: `clip.stabilize_360`.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

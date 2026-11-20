@@ -235,7 +235,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `caches.clear` | Ui | - | Releases decoder file handles, clears in-memory waveform/thumb caches, deletes the on-disk cache dir; returns bytes freed. |
 | `caches.size` | Read | - | Returns the on-disk cache directory size in bytes. |
 
-**`clip.*`** (16 tools)
+**`clip.*`** (17 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -255,6 +255,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `clip.reorder_effect` | Mutate | clip_id, from, to | Move an effect to a new stack index (Project::reorder_effect). |
 | `clip.set` | Mutate | clip_id, fields | Set clip fields: name, enabled, label, speed, reverse, freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, crop_left, crop_right, crop_top, crop_bottom (0..0.5), opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …). |
 | `clip.set_mask` | Mutate | clip_id, effect, fields | Edit a mask: fields {shape, cx, cy, rx, ry, rotation, feather, expand, opacity, invert, enabled, points:[[x,y],…]} in project pixels relative to the layer centre. |
+| `clip.stabilize_360` | Job | clip_id, pitch, roll, smooth, yaw | 360 Stabilize (job): measure how a 360° equirectangular clip's camera turns frame to frame and write yaw/pitch/roll keys on its 360 Transform effect (added first in the stack if missing) that hold the view steady. smooth = seconds of motion to keep (default 1; 0 locks the view to the first frame). One undo step. |
 
 **`color.*`** (5 tools)
 
