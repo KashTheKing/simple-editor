@@ -532,6 +532,10 @@ enum Act {
     RenameMarker(Id, String),
     DelMarker(Id),
     MarkerLabel(Id, u8),
+    /// ws:zones-markers: set a marker's category ("" = none).
+    MarkerCategory(Id, String),
+    /// ws:zones-markers: lay an empty effect zone (None = whole timeline, Some = that track) and pick it.
+    AddZone(Option<Id>),
     /// Route the selected audio clips to a bus (0 = inherit the track's).
     Bus(Id),
     /// Replace media of a container clip.
@@ -551,6 +555,8 @@ enum Act {
 
 mod arm;
 mod cue_lane;
+mod zone_lane; // ws:zones-markers
+mod marker_range; // ws:zones-markers
 pub(crate) mod gallery_drop;
 mod gestures;
 mod header;
@@ -629,17 +635,20 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let id = ui.id().with("timeline");
     let content_h: f32 = row_order(c.project, state.show_kinds).map(|i| c.project.tracks[i].height).sum();
     let sub_h = if c.project.subtitles.is_empty() { 0.0 } else { state.sub_h };
+    let zone_h = zone_lane::height(c.project); // ws:zones-markers: the effect-zone lane (0 without a zone)
     // ---- ws:pro-timeline: inline overview minimap (Settings.overview). ws:timeline-surface: the
     // sequence tab strip that sat above it is gone - the Timeline pane's own tab carries the sequence. ----
     let overview_h: f32 = if c.overview { 28.0 } else { 0.0 };
     let top_strip_h = overview_h;
-    let vbar_w = if content_h > full.height() - top_strip_h - RULER_H - sub_h - HBAR_H { VBAR_W } else { 0.0 };
+    let vbar_w = if content_h > full.height() - top_strip_h - RULER_H - zone_h - sub_h - HBAR_H { VBAR_W } else { 0.0 };
     let ruler = Rect::from_min_max(
         pos2(full.left() + state.header_w, full.top() + top_strip_h),
         pos2(full.right(), full.top() + top_strip_h + RULER_H),
     );
+    let zones_lane =
+        Rect::from_min_max(pos2(ruler.left(), ruler.bottom()), pos2(full.right() - vbar_w, ruler.bottom() + zone_h));
     let subs_lane =
-        Rect::from_min_max(pos2(ruler.left(), ruler.bottom()), pos2(full.right() - vbar_w, ruler.bottom() + sub_h));
+        Rect::from_min_max(pos2(ruler.left(), zones_lane.bottom()), pos2(full.right() - vbar_w, zones_lane.bottom() + sub_h));
     let lanes =
         Rect::from_min_max(pos2(ruler.left(), subs_lane.bottom()), pos2(full.right() - vbar_w, full.bottom() - HBAR_H));
     let header = Rect::from_min_max(pos2(full.left(), lanes.top()), pos2(lanes.left(), full.bottom()));
@@ -813,6 +822,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut rename = state.rename.take();
     let mut seek_marker: Option<f64> = None;
     let labels: &[Label] = &c.project.labels;
+    let cats: &[Label] = &c.project.marker_categories; // ws:zones-markers
     let buses: &[crate::model::Bus] = &c.project.buses;
     // multi-clip right-click "Effects" quick-toggle: only offered when 2+ selected clips share a kind
     let shared_effects = shared_effect_kinds(c.project, c.selection);
@@ -1133,7 +1143,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
                 let sel = state.selected_marker == Some(m.id);
                 // ws:mcp-context: a ticked-off comment is drawn dimmed
-                let col = label_color(c.project, m.label, pal.text);
+                let col = marker_color(c.project, m, pal.text); // ws:zones-markers: label, else category
                 let col = if m.done { col.gamma_multiply(0.35) } else { col };
                 flag(&lp.with_clip_rect(vis), mx, rect.top() + 1.0, rect.bottom(), col, sel);
                 // interaction is registered after the clip bodies (below) so the small flags win hit-testing
@@ -1522,6 +1532,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             &mut rename,
             &mut seek_marker,
             labels,
+            cats,
         );
     }
 
@@ -1670,7 +1681,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             continue;
         }
         let sel = state.selected_marker == Some(m.id);
-        let col = label_color(c.project, m.label, pal.accent);
+        let col = marker_color(c.project, m, pal.accent); // ws:zones-markers: label, else category
         let col = if m.done { col.gamma_multiply(0.35) } else { col };
         if m.duration > 0.0 {
             let span = Rect::from_min_max(
@@ -1696,9 +1707,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 &mut rename,
                 &mut seek_marker,
                 labels,
+                cats,
             );
         }
     }
+    // ws:zones-markers: a range marker's ends, and a Markers panel row dropped on the timeline
+    marker_range::draw(ui, &mut c, state, &mut out, ruler, lanes, id, pointer, primary_down);
     // ---- ruler in/out handles (ws:snap-engine): draggable, snapped, clamped in <= out; right-click
     // clears that mark. Registered after the ruler markers loop so a handle wins hit-testing over a
     // marker flag sitting at the same x, and after ruler_resp/ph_resp (both registered near the top)
@@ -1739,7 +1753,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let mut pick_view = None;
     menu::context(&ruler_resp, |ui| {
         use crate::hotkeys::Action::*;
-        menus::acts(ui, &[Some(AddMarker), None, Some(MarkIn), Some(MarkOut), Some(ClearInOut)]);
+        menus::acts(ui, &[Some(AddMarker), Some(AddEffectZone), None, Some(MarkIn), Some(MarkOut), Some(ClearInOut)]);
         // ---- ws:assistant-pane ----
         crate::ui::assistant_ui::add_to_assistant_row(ui, crate::ui::assistant_data::Pin::Range);
         ui.separator();
@@ -1776,6 +1790,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         state.view_idx = i;
     }
 
+    // ---- ws:zones-markers ----
+    zone_lane::draw(ui, &mut c, state, &mut out, &painter, zones_lane, &pal, &small, thin, full, id, pointer, primary_down);
     cue_lane::draw(
         ui,
         &mut c,
@@ -2419,6 +2435,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 if let Some(m) = p.marker_mut(mid) {
                     m.label = l;
                 }
+            }
+            Act::MarkerCategory(mid, cat) => {
+                p.set_marker_category(mid, &cat);
+            }
+            Act::AddZone(track) => {
+                let (t, d) = p.zone_range(*c.playhead, c.selection, track);
+                let z = p.add_zone(t, d, track, Vec::new());
+                crate::ui::zones_ui::select(Some(z));
+                c.selection.clear();
             }
             Act::Bus(b) => {
                 for id in &ids {

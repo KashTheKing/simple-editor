@@ -681,6 +681,7 @@ mod subtitle;
 mod text;
 mod track;
 mod transition;
+mod zone; // ws:zones-markers
 
 #[cfg(test)]
 mod tests;
@@ -703,6 +704,7 @@ pub use subtitle::*;
 pub use text::*;
 pub use track::*;
 pub use transition::*;
+pub use zone::*; // ws:zones-markers
 
 thread_local! {
     // ponytail: on in unit tests, where `set_at` on an animated property has always meant "key it here"

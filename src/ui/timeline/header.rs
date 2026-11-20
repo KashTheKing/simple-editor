@@ -163,6 +163,10 @@ pub(super) fn draw_header(
         {
             *track_toggle = Some((ti, TrackFlag::Magnetic));
         }
+        // ---- ws:zones-markers ----
+        if is_video && menu::row(ui, None, "Add Effect Zone", "").on_hover_text("An effect stack over a time range of this track").clicked() {
+            act = Some(Act::AddZone(Some(track.id)));
+        }
         ui.separator();
         if menu::row(ui, Some(Glyph::Pencil), "Rename…", &menu::shortcut(Action::RenameTrack)).clicked() {
             *track_rename = Some((ti, track.name.clone()));

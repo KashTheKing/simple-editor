@@ -345,6 +345,7 @@ pub(super) fn marker_hit(
     rename: &mut Option<(Id, String)>,
     seek: &mut Option<f64>,
     labels: &[Label],
+    cats: &[Label],
 ) {
     if r.clicked() {
         *selected = Some(m.id);
@@ -362,6 +363,9 @@ pub(super) fn marker_hit(
     }
     let r = r.on_hover_ui(|ui| {
         ui.label(if m.name.is_empty() { "(unnamed marker)" } else { m.name.as_str() });
+        if !m.category.is_empty() {
+            ui.weak(m.category.as_str()); // ws:zones-markers
+        }
         // ---- ws:mcp-context ---- comments: the note, who left it, whether it is dealt with
         if !m.note.is_empty() {
             ui.label(m.note.as_str());
@@ -398,6 +402,17 @@ pub(super) fn marker_hit(
                 }
             }
         });
+        // ---- ws:zones-markers ----
+        menu::sub(ui, Some(Glyph::Flag), "Category", |ui| {
+            if menu::check(ui, m.category.is_empty(), "None", "").clicked() {
+                *act = Some(Act::MarkerCategory(m.id, String::new()));
+            }
+            for l in cats {
+                if super::menus::swatch_row(ui, &l.name, l.color).clicked() {
+                    *act = Some(Act::MarkerCategory(m.id, l.name.clone()));
+                }
+            }
+        });
     });
 }
 
@@ -410,6 +425,15 @@ pub(super) fn wave_color(body: Color32, label: u8, pal: &Palette) -> Color32 {
     }
     let target = if body.intensity() > 0.5 { Color32::BLACK } else { Color32::WHITE };
     body.lerp_to_gamma(target, 0.55)
+}
+
+// ---- ws:zones-markers ----
+/// A marker's flag colour: its label's, else its category's, else `fallback`.
+pub(super) fn marker_color(p: &Project, m: &crate::model::Marker, fallback: Color32) -> Color32 {
+    match p.label_color(m.label).or_else(|| p.category_color(&m.category)) {
+        Some([r, g, b]) => Color32::from_rgb(r, g, b),
+        None => fallback,
+    }
 }
 
 pub(super) fn label_color(p: &Project, idx: u8, fallback: Color32) -> Color32 {

@@ -503,7 +503,8 @@ impl Player {
     /// Replace the project (cheap clone; called after every edit). Re-renders the current frame.
     pub fn set_project(&mut self, project: &Project) {
         // browser zooms: the page parts drawn at the scale they are shown at (not project clips)
-        *lock(&self.shared.project) = Arc::new(crate::engine::browser::render_view(project).into_owned());
+        // ws:zones-markers: and effect zones as adjustment layers / clip effects (`engine::zones`)
+        *lock(&self.shared.project) = Arc::new(crate::engine::zones::drawn(project));
         lock(&self.shared.clock).duration = project.duration();
         self.both(Cmd::SetProject);
     }

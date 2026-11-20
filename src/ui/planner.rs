@@ -708,7 +708,7 @@ fn notes_tab(
                     } else if n.body.trim().is_empty() {
                         ui.weak("(empty - right-click the title ▸ Edit)");
                     } else {
-                        markdown::show(ui, &n.body, palette);
+                        markdown::show_timed(ui, &n.body, palette); // ws:zones-markers: timecodes seek
                     }
                 });
 

@@ -182,6 +182,7 @@ mod emulator_ctl; // ws:device-emulator
 mod audio_only; // ws:preview-audio-only
 mod media_api; // ws:assistant-luau
 mod script_ctl; // ws:assistant-luau
+mod tools_zones; // ws:zones-markers
 #[path = "windows.rs"]
 mod windows_dlg;
 mod project_match; // ws:project-color-fps
@@ -1465,7 +1466,9 @@ impl eframe::App for App {
         if self.settings.movie_mode {
             let t = self.playhead;
             let gpu_tx = self.gpu.is_some().then(|| self.gpu_export.0.clone());
-            let App { prerender, project, .. } = self;
+            // ws:zones-markers: the player's copy (effect zones + browser zoom details drawn in), not the raw project
+            let view = self.player.project();
+            let (prerender, project) = (&mut self.prerender, &*view);
             match guarded(|| (prerender.tick(project, 4.0, gpu_tx), prerender.frame(project, t))) {
                 Some((busy, ready)) => {
                     // movie mode plays every frame at the project rate: rather than let the wall clock
@@ -1891,6 +1894,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:assistant-luau ----
     media_api::TOOLS,
     script_ctl::TOOLS,
+    // ---- ws:zones-markers ----
+    tools_zones::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -1986,6 +1991,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     music_ctl::act,
     // ---- ws:preview-audio-only ----
     audio_only::act,
+    // ---- ws:zones-markers ----
+    tools_zones::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -2078,6 +2085,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     music_ctl::frame,
     // ---- ws:preview-audio-only ----
     audio_only::tick,
+    // ---- ws:zones-markers ----
+    tools_zones::frame,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -2231,6 +2240,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     music_ctl::draw,
     // ---- ws:device-emulator ----
     emulator_ctl::draw,
+    // ---- ws:zones-markers ----
+    tools_zones::draw_inspector,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

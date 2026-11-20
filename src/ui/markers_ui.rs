@@ -54,16 +54,31 @@ pub struct MarkersState {
     // ---- ws:mcp-context ----
     /// Add Comment: open this row and focus its note field (cleared once focused).
     pub focus_note: Option<Id>,
+    // ---- ws:zones-markers ----
+    /// Category filter: None = every marker, Some("") = uncategorised ones. Also the category the
+    /// Next / Previous Marker keys step through.
+    pub filter_category: Option<String>,
+    /// The row whose note is open for typing (a note with timecodes otherwise shows them as links).
+    edit_note: Option<Id>,
+    /// Right-click ▸ Category ▸ new name being typed.
+    new_category: String,
 }
 
 /// A row's right-click verbs, applied to the row's targets after the list is drawn (one undo).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, PartialEq)]
 enum RowOp {
     Label(u8),
+    Category(String), // ws:zones-markers
     Snap,
     Link,
     Delete,
 }
+
+// ---- ws:zones-markers ----
+/// What a Markers panel row carries while dragged: the timeline places that marker where it is dropped
+/// (`ui::timeline::marker_range`).
+#[derive(Clone, Copy, Debug)]
+pub struct MarkerDragId(pub Id);
 
 #[derive(Default)]
 pub struct MarkersResponse {
@@ -391,11 +406,42 @@ pub fn show(
     let bg = menu_area(ui);
 
     let rows = rows(project, state.filter_label, &state.query);
+    // ws:zones-markers: then by category
+    let rows: Vec<Row> = match &state.filter_category {
+        None => rows,
+        Some(c) => rows
+            .into_iter()
+            .filter(|r| project.marker(r.id).is_some_and(|m| m.category.eq_ignore_ascii_case(c)))
+            .collect(),
+    };
+    let cats: Vec<(String, [u8; 3])> = project.marker_categories.iter().map(|l| (l.name.clone(), l.color)).collect();
+    if state.filter_category.as_ref().is_some_and(|c| !c.is_empty() && !cats.iter().any(|(n, _)| n.eq_ignore_ascii_case(c))) {
+        state.filter_category = None; // its category went away (undo, rename)
+    }
     state.selected.retain(|id| rows.iter().any(|r| r.id == *id));
     let sel_clip = selection.iter().copied().find(|&id| project.clip(id).is_some());
 
-    // ---- the one header row: label filter · search ----
+    // ---- the one header row: category filter · label filter · search ----
     ui.horizontal(|ui| {
+        // ---- ws:zones-markers ----
+        let shown = match &state.filter_category {
+            None => "All categories".to_string(),
+            Some(c) if c.is_empty() => "Uncategorised".to_string(),
+            Some(c) => c.clone(),
+        };
+        egui::ComboBox::from_id_salt("marker_category_filter")
+            .selected_text(shown)
+            .width(110.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut state.filter_category, None, "All categories");
+                for (name, [r, g, b]) in &cats {
+                    let t = RichText::new(name.clone()).color(egui::Color32::from_rgb(*r, *g, *b));
+                    ui.selectable_value(&mut state.filter_category, Some(name.clone()), t);
+                }
+                ui.selectable_value(&mut state.filter_category, Some(String::new()), "Uncategorised");
+            })
+            .response
+            .on_hover_text("Show one category. Next / Previous Marker step through it too");
         egui::ComboBox::from_id_salt("marker_filter")
             .selected_text(if state.filter_label == 0 {
                 "All labels".to_string()
@@ -494,10 +540,19 @@ pub fn show(
                 }
                 cs.show_header(ui, |ui| {
                     // the whole row senses clicks under its widgets: click = select + seek, right-click = menu
-                    let row_r = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
+                    // ws:zones-markers: a row also drags onto the timeline (MarkerDragId), placing the marker there
+                    let row_r = ui.scope_builder(egui::UiBuilder::new().sense(egui::Sense::click_and_drag()), |ui| {
                         ui.horizontal(|ui| {
-                            let (icon, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
-                            crate::ui::tools::draw_glyph(ui.painter(), icon, marker_glyph(&m.icon), palette.text);
+                            let (icon, ir) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                            // ws:zones-markers: the icon in its category's colour
+                            let tint = match project.category_color(&m.category) {
+                                Some([r, g, b]) => egui::Color32::from_rgb(r, g, b),
+                                None => palette.text,
+                            };
+                            crate::ui::tools::draw_glyph(ui.painter(), icon, marker_glyph(&m.icon), tint);
+                            if !m.category.is_empty() {
+                                ir.on_hover_text(m.category.as_str());
+                            }
                             let color = match project.label_color(m.label) {
                                 Some([r, g, b]) => egui::Color32::from_rgb(r, g, b),
                                 None => palette.text_dim,
@@ -512,6 +567,7 @@ pub fn show(
                     });
                     let name_r = row_r.inner;
                     mark(ui, format_args!("name{}", row.id), &name_r);
+                    row_r.response.dnd_set_drag_payload(MarkerDragId(row.id));
                     let r = row_r.response.union(name_r);
                     if r.clicked() {
                         hit = Some(mods.ctrl || mods.shift);
@@ -526,6 +582,30 @@ pub fn show(
                         if n == 1 && menu::row(ui, None, "Rename", "").clicked() {
                             state.rename = Some(row.id);
                         }
+                        // ---- ws:zones-markers ----
+                        menu::sub(ui, Some(Glyph::Flag), "Category", |ui| {
+                            if menu::check(ui, m.category.is_empty(), "None", "").clicked() {
+                                row_op = Some((RowOp::Category(String::new()), targets.clone()));
+                            }
+                            for (name, [r, g, b]) in &cats {
+                                let t = RichText::new(name.clone()).color(egui::Color32::from_rgb(*r, *g, *b));
+                                if ui.selectable_label(m.category.eq_ignore_ascii_case(name), t).clicked() {
+                                    row_op = Some((RowOp::Category(name.clone()), targets.clone()));
+                                    ui.close();
+                                }
+                            }
+                            ui.separator();
+                            let te = ui.add(
+                                egui::TextEdit::singleline(&mut state.new_category)
+                                    .hint_text("New category")
+                                    .desired_width(120.0),
+                            );
+                            let enter = te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if enter && !state.new_category.trim().is_empty() {
+                                row_op = Some((RowOp::Category(std::mem::take(&mut state.new_category)), targets.clone()));
+                                ui.close();
+                            }
+                        });
                         menu::sub(ui, None, "Label", |ui| {
                             if menu::check(ui, m.label == 0, "None", "").clicked() {
                                 row_op = Some((RowOp::Label(0), targets.clone()));
@@ -578,19 +658,63 @@ pub fn show(
                             changed |= r.changed();
                         }
                     });
-                    let r = ui.add(
-                        egui::TextEdit::multiline(&mut m.note)
-                            .desired_rows(2)
-                            .desired_width(f32::INFINITY)
-                            .hint_text("note"),
-                    );
-                    // ---- ws:mcp-context ----
-                    if state.focus_note == Some(row.id) {
-                        r.request_focus();
-                        state.focus_note = None;
+                    // ---- ws:zones-markers ---- the category, in the form's own row
+                    ui.horizontal(|ui| {
+                        ui.label("Category");
+                        let shown = if m.category.is_empty() { "None".to_string() } else { m.category.clone() };
+                        let mut pick: Option<String> = None;
+                        egui::ComboBox::from_id_salt(("marker_cat", row.id)).selected_text(shown).width(120.0).show_ui(
+                            ui,
+                            |ui| {
+                                if ui.selectable_label(m.category.is_empty(), "None").clicked() {
+                                    pick = Some(String::new());
+                                }
+                                for (name, [r, g, b]) in &cats {
+                                    let t = RichText::new(name.clone()).color(egui::Color32::from_rgb(*r, *g, *b));
+                                    if ui.selectable_label(m.category.eq_ignore_ascii_case(name), t).clicked() {
+                                        pick = Some(name.clone());
+                                    }
+                                }
+                            },
+                        );
+                        if let Some(c) = pick.filter(|c| *c != m.category) {
+                            row_op = Some((RowOp::Category(c), vec![row.id]));
+                        }
+                    });
+                    // a note with timecodes shows them as links (they move the playhead) until the
+                    // pencil opens it for typing
+                    let linked = state.edit_note != Some(row.id)
+                        && state.focus_note != Some(row.id)
+                        && !crate::ui::timecode_links::find(&m.note).is_empty();
+                    if linked {
+                        ui.horizontal(|ui| {
+                            let edit =
+                                crate::ui::tools::glyph_text_button(ui, Glyph::Pencil, "").on_hover_text("Edit the note");
+                            if edit.clicked() {
+                                state.edit_note = Some(row.id);
+                                state.focus_note = Some(row.id);
+                            }
+                            crate::ui::timecode_links::label(ui, &m.note);
+                        });
+                    } else {
+                        let r = ui.add(
+                            egui::TextEdit::multiline(&mut m.note)
+                                .desired_rows(2)
+                                .desired_width(f32::INFINITY)
+                                .hint_text("note"),
+                        );
+                        // ---- ws:mcp-context ----
+                        if state.focus_note == Some(row.id) {
+                            r.request_focus();
+                            state.focus_note = None;
+                            state.edit_note = Some(row.id);
+                        }
+                        if r.lost_focus() {
+                            state.edit_note = None;
+                        }
+                        start |= r.gained_focus();
+                        changed |= r.changed();
                     }
-                    start |= r.gained_focus();
-                    changed |= r.changed();
                     ui.horizontal_wrapped(|ui| {
                         for g in ICON_CHOICES {
                             let picked = m.icon == g.name();
@@ -691,11 +815,14 @@ pub fn show(
     if let Some((op, ids)) = row_op {
         undo(project);
         for &id in &ids {
-            match op {
+            match &op {
                 RowOp::Label(l) => {
                     if let Some(m) = project.marker_mut(id) {
-                        m.label = l;
+                        m.label = *l;
                     }
+                }
+                RowOp::Category(c) => {
+                    project.set_marker_category(id, c);
                 }
                 RowOp::Snap => project.snap_marker_to_nearest_clip(id),
                 RowOp::Link => {

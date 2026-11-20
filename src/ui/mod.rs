@@ -87,6 +87,8 @@ pub mod html_ui;
 pub mod template_ui; // ws:animator-templates
 pub mod list_rows; // the shared table rows (thread viewers and the browser layer's tab rows)
 pub mod thread_ui;
+pub mod timecode_links; // ws:zones-markers: timecodes in text as playhead links
+pub mod zones_ui; // ws:zones-markers: the effect-zone Inspector card
 // ---- ws:browser-layer ----
 mod browser_ui;
 

@@ -66,7 +66,7 @@ pub fn request(rev: String, project: &Project, opts: &ExportOptions, text: &Arc<
     if let Some(job) = st.as_ref().and_then(|s| s.job.as_ref()) {
         job.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
     }
-    let project = crate::engine::browser::render_view(project).into_owned();
+    let project = crate::engine::zones::drawn(project); // ws:zones-markers: + browser::render_view
     let (opts, text, k, r) = (opts.clone(), text.clone(), key.clone(), rev.clone());
     let job = export::spawn_job("size-probe", move |prog| {
         // settle first: dragging the quality slider asks for a new key every frame

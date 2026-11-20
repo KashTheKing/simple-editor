@@ -400,17 +400,19 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `looks.apply` | Mutate | clip_id, intensity, name | Apply a Look (built-in or user-saved) to a clip, replacing its effect stack, scaled by intensity (0 = no-op, 1 = the Look unmodified). Same resolution/result as gallery.apply(tab=Looks) for the same name. |
 | `looks.list` | Read | - | Names of every Look: the 12 built-ins plus any user-saved (non-graph) Settings.effect_presets — same list gallery.list(tab=Looks) returns. |
 
-**`markers.*`** (7 tools)
+**`markers.*`** (9 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
-| `markers.add` | Mutate | author, clip_id, duration, label, name, note, t | Add a marker at a timeline time (on a clip with clip_id). author: your name, so the user sees who left it. |
+| `markers.add` | Mutate | author, category, clip_id, duration, label, name, note, t | Add a marker at a timeline time (on a clip with clip_id). author: your name, so the user sees who left it. category: a marker type (a new name adds one). |
+| `markers.categories` | Read | - | Marker categories (named types with a colour): name, color, and how many markers use each. |
+| `markers.category_set` | Mutate | color, index, name, remove | Add a marker category, or with index rename / recolour it (markers follow a rename) or remove it (its markers become uncategorised). |
 | `markers.comment` | Mutate | author, duration, note, t | Leave a comment (a marker with a note, author = you) over In/Out, else the selected clips, else the playhead - or at t / duration when given. Same as the Add Comment action. |
 | `markers.export` | Read | format, path | Write every marker in timeline order to a CSV, a YouTube-chapters or an Avid Markers text file (format: csv \| youtube_chapters \| avid, default csv). |
 | `markers.import` | Mutate | path | Add project markers from a CSV file (time,name[,note,label] — or markers.export's own header form). |
-| `markers.list` | Read | open | Every marker in timeline time (project markers + clip markers) with name, note, icon, done, author ("" = the user). Markers with notes are the user's review comments. open: only open comments (not done, with a note). |
+| `markers.list` | Read | category, open | Every marker in timeline time (project markers + clip markers) with name, note, icon, done, author ("" = the user). Markers with notes are the user's review comments. open: only open comments (not done, with a note). |
 | `markers.remove` | Mutate | id | Remove a marker by id. |
-| `markers.set` | Mutate | author, done, duration, icon, id, label, name, note, t | Edit a marker: only the fields given change (done=true ticks a comment off). t: timeline seconds (timeline markers only). |
+| `markers.set` | Mutate | author, category, done, duration, icon, id, label, name, note, t | Edit a marker: only the fields given change (done=true ticks a comment off). t: timeline seconds (timeline markers only). |
 
 **`media.*`** (19 tools)
 
@@ -450,6 +452,17 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `multicam.create` | Mutate | clip_ids, name | Sync + nest clips into a multicam sequence, one video track per angle (capped at 4 for the grid). |
 | `multicam.switch` | Mutate | angle, seq_clip_id, t | Switch the active angle from time t onward (split + enabled toggles, editable afterward). |
 | `multicam.sync` | Read | clip_ids | Dry-run: compute cross-correlation offsets for a set of clips without creating a sequence. |
+
+**`zones.*`** (4 tools)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `zones.add` | Mutate | dur, effects, name, t, track | Lay an effect zone over [t, t + dur] (default In/Out, else 5 s at the playhead) on the whole timeline or one video track (id or name). effects: kind names ("Blur") or {kind, params, start, len}. |
+| `zones.list` | Read | - | Effect zones of the open timeline with their effect stacks (keyframe times zone-local). |
+| `zones.remove` | Mutate | id | Delete an effect zone. |
+| `zones.set` | Mutate | add_effect, dur, effects, enabled, id, key, name, t, track | Edit a zone: only the fields given change; key = {effect, param, t, v} sets a keyframe. |
+
+`export.sections` (Ui; folder, preset, ext, dry_run): one export job per section between markers, named "&lt;project&gt; - &lt;marker name&gt;". `notes.get` also returns `timecodes` ({note, text, t}).
 
 **`notes.*`** (2 tools)
 

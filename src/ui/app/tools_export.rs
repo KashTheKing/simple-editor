@@ -649,6 +649,7 @@ pub(super) fn draw_pane(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if edited {
         app.after_edit();
     }
+    super::tools_zones::sections_row(app, ui); // ws:zones-markers: Export each section
     size_probe_tick(app, main);
     match choice {
         Some((c, false)) => {

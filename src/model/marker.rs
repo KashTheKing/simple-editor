@@ -29,6 +29,11 @@ pub struct Marker {
     pub done: bool,
     /// Who left it: "" = the user, otherwise an agent's name (MCP co-editing). Missing = "".
     pub author: String,
+    // ---- ws:zones-markers ----
+    /// Its type (`Project.marker_categories` name): "" = uncategorised, which is what every marker saved
+    /// before categories existed loads as.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub category: String,
 }
 
 impl Default for Marker {
@@ -45,6 +50,7 @@ impl Default for Marker {
             // ---- ws:pro-schema ----
             done: false,
             author: String::new(),
+            category: String::new(), // ws:zones-markers
         }
     }
 }
@@ -60,4 +66,19 @@ pub struct Label {
 
 pub fn default_labels() -> Vec<Label> {
     LABEL_COLORS.iter().map(|(n, c)| Label { name: (*n).to_string(), color: *c }).collect()
+}
+
+// ---- ws:zones-markers ----
+/// The marker types a new project starts with (Markers pane and right-click ▸ Category).
+pub const MARKER_CATEGORIES: [(&str, [u8; 3]); 6] = [
+    ("Todo", [235, 87, 87]),
+    ("Fix", [242, 153, 74]),
+    ("Music cue", [155, 81, 224]),
+    ("B-roll", [45, 156, 219]),
+    ("Chapter", [39, 174, 96]),
+    ("Review", [242, 201, 76]),
+];
+
+pub fn default_marker_categories() -> Vec<Label> {
+    MARKER_CATEGORIES.iter().map(|(n, c)| Label { name: (*n).to_string(), color: *c }).collect()
 }

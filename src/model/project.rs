@@ -125,6 +125,13 @@ pub struct Project {
     /// The colour space the project renders and exports in (Inspector ▸ Color). SDR in old files.
     #[serde(skip_serializing_if = "ColorSpace::is_sdr")]
     pub color: ColorSpace,
+    // ---- ws:zones-markers ----
+    /// Named marker types, each with a colour (`Marker.category` holds the name). Missing in files saved
+    /// before categories existed: the built-in set (`default_marker_categories`), every marker uncategorised.
+    pub marker_categories: Vec<Label>,
+    /// Effect zones (`ops::zones`, drawn by `engine::zones::render_view`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub zones: Vec<EffectZone>,
 }
 
 // ---- ws:project-color-fps ----
