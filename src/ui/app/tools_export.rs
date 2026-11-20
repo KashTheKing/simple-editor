@@ -166,6 +166,7 @@ pub(crate) fn swap_clip_asset(project: &mut Project, clip_id: Id, new_asset: Id,
     fresh.bus = c.bus;
     fresh.markers = std::mem::take(&mut c.markers);
     fresh.audio_role = c.audio_role;
+    fresh.keep_pitch = c.keep_pitch;
     fresh.asset = new_asset;
     fresh.src_in = ((c.start - t0) / factor.max(1e-6)).max(0.0);
     *c = fresh;
@@ -1170,6 +1171,9 @@ mod tests {
         // half-speed bake: the timeline offset lands twice as far into the (twice as long) file
         assert!(swap_clip_asset(&mut p, 3, aid, 2.0, 0.5));
         assert_eq!(p.clip(3).unwrap().src_in, 2.0);
+        p.clip_mut(3).unwrap().keep_pitch = false;
+        assert!(swap_clip_asset(&mut p, 3, aid, 2.0, 1.0));
+        assert!(!p.clip(3).unwrap().keep_pitch, "an old clip's Keep pitch setting is kept, not reset");
         assert!(!swap_clip_asset(&mut p, 999, aid, 0.0, 1.0));
         assert!(p.asset(7).is_some(), "the original asset is kept");
     }
