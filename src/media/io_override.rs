@@ -34,13 +34,6 @@ impl Range {
             _ => None,
         }
     }
-    pub fn name(self) -> &'static str {
-        match self {
-            Range::Auto => "auto",
-            Range::Limited => "limited",
-            Range::Full => "full",
-        }
-    }
 }
 
 /// One source's overrides. The default (nothing overridden) is never stored.

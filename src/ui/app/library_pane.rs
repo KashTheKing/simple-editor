@@ -194,6 +194,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
             media_sync::start_relink(app, &resp.relink, &dir);
         }
     }
+    // ---- ws:parity-io ----
+    if let Some(id) = resp.properties {
+        io_ctl::open_props_for_asset(app, id);
+    }
 }
 
 impl App {

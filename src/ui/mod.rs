@@ -38,6 +38,7 @@ pub mod home_page; // ws:home-page
 pub mod hud; // ws:perf-baseline
 pub mod perf_ui; // ws:perf-window
 pub mod import_ui;
+pub mod io_ui; // ws:parity-io: Media Properties, Open Network Stream
 pub mod inspector;
 pub mod inspector_audio;
 pub mod inspector_text;

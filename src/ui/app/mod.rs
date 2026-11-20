@@ -189,6 +189,7 @@ mod windows_dlg;
 mod project_match; // ws:project-color-fps
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
+mod io_ctl; // ws:parity-io
 mod os_paste; // Ctrl+V of a screenshot / copied files
 
 enum ExportKind {
@@ -599,6 +600,9 @@ pub struct App {
     // ---- ws:timeline-tabs ----
     /// The background timeline tabs' views and the Rename Sequence window.
     tabs: timeline_tabs::TabsState,
+    // ---- ws:parity-io ----
+    /// Media Properties, Open Network Stream, decode overrides, GPU choice, the ShuttlePRO.
+    io: io_ctl::IoState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -1177,6 +1181,7 @@ impl App {
             emulator_tex: None,
             match_offer: None, // ws:project-color-fps
             tabs: Default::default(), // ws:timeline-tabs
+            io: Default::default(), // ws:parity-io
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -2042,7 +2047,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     media_api::TOOLS,
     // ---- ws:home-page ----
     home_ctl::TOOLS,
-    script_ctl::TOOLS,
+    script_ctl::TOOLS,    // ---- ws:parity-io ----
+    io_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2141,7 +2147,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:timeline-tabs ----
     timeline_tabs::act,
     // ---- ws:home-page ----
-    home_ctl::act,
+    home_ctl::act,    // ---- ws:parity-io ----
+    io_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -2234,7 +2241,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:music-burn ----
     music_ctl::frame,
     // ---- ws:preview-audio-only ----
-    audio_only::tick,
+    audio_only::tick,    // ---- ws:parity-io ----
+    io_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -2315,7 +2323,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:project-color-fps ----
     project_match::window,
     // ---- ws:timeline-tabs ----
-    timeline_tabs::windows,
+    timeline_tabs::windows,    // ---- ws:parity-io ----
+    io_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
