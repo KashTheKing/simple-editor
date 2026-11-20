@@ -307,6 +307,21 @@ pub struct Settings {
     /// Start/stop screen recording automatically when the editor loses/gains focus.
     pub capture_on_blur: bool,
     pub capture_dir: String,
+    // ---- parity-webcam ----
+    /// The webcam (DirectShow name; "" = the first one found), for the Webcam source and the bubble.
+    pub cam_device: String,
+    /// Its capture format (`webcam::CamFormat::key`; "" = what the camera starts with).
+    pub cam_format: String,
+    /// Flip the webcam left-right, like a mirror.
+    pub cam_mirror: bool,
+    /// Composite a round webcam picture into screen recordings.
+    pub cam_bubble: bool,
+    /// The bubble's diameter in pixels of the captured screen.
+    pub cam_bubble_size: u32,
+    /// The bubble's corner (`webcam::Corner::key`).
+    pub cam_bubble_corner: String,
+    /// Seconds Screen Snapshot waits before it takes the picture.
+    pub snapshot_delay: u32,
     /// Voiceover defaults.
     pub voice_device: String,
     pub voice_channels: u32,
@@ -811,6 +826,14 @@ impl Default for Settings {
             capture_folds: BTreeMap::new(),
             capture_on_blur: false,
             capture_dir: String::new(),
+            // ---- parity-webcam ----
+            cam_device: String::new(),
+            cam_format: String::new(),
+            cam_mirror: false,
+            cam_bubble: false,
+            cam_bubble_size: 280,
+            cam_bubble_corner: "br".into(),
+            snapshot_delay: 0,
             voice_device: String::new(),
             voice_channels: 1,
             frame_resolution: "project".into(),

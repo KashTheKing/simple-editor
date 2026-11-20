@@ -157,7 +157,36 @@ impl App {
             deadline: Instant::now() + Duration::from_secs(3),
             done,
             recovered: false,
+            snapshot: false,
         });
+    }
+
+    /// parity-webcam: Screen Snapshot of the pane's source on a background thread (with Hide on Record
+    /// our windows step aside first; a webcam never needs that), imported like a recording. False when it
+    /// can't start (no ffmpeg, a snapshot already running).
+    pub(super) fn take_snapshot(&mut self) -> bool {
+        if self.ffmpeg_missing() || self.pending_recordings.iter().any(|r| r.snapshot && r.done.as_ref().is_some_and(|p| !p.is_done())) {
+            return false;
+        }
+        let src = capture_ui::source_of(&self.capture_ui, &self.screens.monitors);
+        let webcam = matches!(src, crate::engine::capture::CaptureSource::Webcam(_));
+        if webcam {
+            self.capture_ui.preview = None; // lets go of the camera now; `feed_preview` keeps it closed
+            self.capture_ui.snapping = true;
+        }
+        let hide = if self.settings.capture_hide && !webcam { crate::engine::rec_pill::our_windows() } else { Vec::new() };
+        let out = capture_ui::snapshot_path(&self.settings, &self.capture_ui);
+        let delay = self.settings.snapshot_delay.min(60) as f64;
+        let p = crate::engine::capture::snapshot(src, self.settings.capture_cursor, out.clone(), delay, hide);
+        self.pending_recordings.push(PendingRecording {
+            out,
+            at: None,
+            deadline: Instant::now() + Duration::from_secs(3),
+            done: Some(p),
+            recovered: false,
+            snapshot: true,
+        });
+        true
     }
 
     /// Screen recordings a crash or power cut left as pieces in the capture folder: finish each on a
@@ -175,6 +204,7 @@ impl App {
                 deadline: Instant::now(),
                 done: Some(p),
                 recovered: true,
+                snapshot: false,
             });
         }
     }
@@ -266,7 +296,8 @@ impl App {
             None => {
                 self.library.tab = 0;
                 self.library.selected = ids.last().copied();
-                self.toast(format!("Recording imported: {}", out.file_name().unwrap_or_default().to_string_lossy()));
+                let what = if out.extension().is_some_and(|e| e.eq_ignore_ascii_case("png")) { "Snapshot" } else { "Recording" };
+                self.toast(format!("{what} imported: {}", out.file_name().unwrap_or_default().to_string_lossy()));
             }
         }
     }
@@ -497,6 +528,8 @@ pub(super) struct PendingRecording {
     pub(super) done: Option<Arc<Progress>>,
     /// Finished from a crash's leftover pieces (`recover_recordings`).
     pub(super) recovered: bool,
+    /// parity-webcam: a Screen Snapshot (a PNG), not a recording.
+    pub(super) snapshot: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

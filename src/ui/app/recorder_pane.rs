@@ -6,6 +6,9 @@
 //! (`screen_grab::Preview`). The preview runs only while it is looked at - the pane on screen
 //! (`App::update` puts it to sleep otherwise), its window not minimised, and not paused from its
 //! right-click menu - and then repaints at its 30 fps.
+//!
+//! parity-webcam: the cameras and the picked camera's formats are probed in the background (`sync_cam`),
+//! Snapshot runs `capture::snapshot` on its own thread and the picture is imported like a recording.
 
 use super::*;
 use crate::engine::audio_tap::{self, AudioTap, TapSource};
@@ -20,6 +23,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         app.capture_ui.mics = Some(guarded(audio_tap::input_names).unwrap_or_default());
     }
     app.capture_ui.live = true;
+    sync_cam(app);
     let recording = app.screen_rec.is_some();
     feed_meters(app, recording);
     let minimized = ui.ctx().input(|i| i.viewport().minimized.unwrap_or(false));
@@ -43,6 +47,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if let Some(o) = r.screen {
         app.start_screen_capture(o);
     }
+    if r.snapshot {
+        app.take_snapshot();
+    }
     if r.open_folder {
         let dir = capture_ui::capture_dir(&app.settings);
         let _ = std::process::Command::new("explorer").arg(dir).spawn();
@@ -59,8 +66,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
 /// The preview's frames: the recording's own, else a preview-only producer for the picked source.
 /// Nothing runs while it isn't looked at. True when frames are coming.
 fn feed_preview(app: &mut App, recording: bool, minimized: bool) -> bool {
-    let wanted = app.settings.capture_preview && !minimized;
     let st = &mut app.capture_ui;
+    // a webcam opens for one program at a time: the preview lets go of it while a photo is taken
+    st.snapping = app.pending_recordings.iter().any(|r| r.snapshot && r.done.as_ref().is_some_and(|p| !p.is_done()));
+    let wanted = app.settings.capture_preview && !minimized && !(st.snapping && st.area == "webcam");
     if let Some((c, _)) = &app.screen_rec {
         st.preview = None; // one capture at a time: the recording's frames replace the idle preview
         st.slot = c.preview();
@@ -72,6 +81,7 @@ fn feed_preview(app: &mut App, recording: bool, minimized: bool) -> bool {
         let pickable = match st.area.as_str() {
             "window" => !st.window.is_empty(),
             "app" => st.app.is_some(),
+            "webcam" => !st.cam.device.is_empty(),
             _ => true,
         };
         let cursor = app.settings.capture_cursor;
@@ -98,6 +108,20 @@ fn feed_preview(app: &mut App, recording: bool, minimized: bool) -> bool {
         st.preview_rate = None;
     }
     wanted && st.slot.is_some()
+}
+
+/// The cameras (probed once in the background), the picked camera's formats, and the camera the
+/// settings resolve to, into the pane's state.
+pub(super) fn sync_cam(app: &mut App) {
+    use crate::engine::webcam;
+    let st = &mut app.capture_ui;
+    if st.cams.is_none() {
+        st.cams = webcam::devices_nonblocking(super::panes::wake_ui);
+    }
+    st.cam = capture_ui::cam_spec(&app.settings, st.cams.as_deref());
+    if st.cam_formats.is_none() && !st.cam.device.is_empty() {
+        st.cam_formats = webcam::formats_nonblocking(&st.cam.device, super::panes::wake_ui);
+    }
 }
 
 /// Show the pane in its own window; the first time it gets a size that fits the preview and every row.
@@ -174,6 +198,10 @@ fn status_json(app: &App) -> Value {
         "state": state,
         "elapsed": app.capture_ui.elapsed,
         "audio": app.settings.capture_audio_mode().key(),
+        "source": app.capture_ui.area,
+        "camera": app.capture_ui.cam.device,
+        "bubble": app.settings.cam_bubble,
+        "snapping": app.capture_ui.snapping,
         "preview_fps": app.capture_ui.preview_rate.map(|r| r.2),
         "hidden": app.capture_ui.pill.as_ref().is_some_and(|_| app.settings.capture_hide),
         "file": app.screen_rec.as_ref().map(|(_, p)| p.to_string_lossy().into_owned()),
@@ -185,17 +213,38 @@ pub const TOOLS: &[ToolDef] = &[ToolDef {
     name: "capture.screen",
     desc: "Screen recording (the Screen Recording pane). action 'open' shows the pane, 'start' records with the \
            pane's source and audio choice, 'stop' finishes it (the mp4 is checked, then imported into the \
-           library; poll with 'status' until state is 'idle'). 'audio' sets the remembered choice first.",
+           library; poll with 'status' until state is 'idle'). 'snapshot' takes a still of the source into the \
+           library; 'devices' lists the webcams and the picked one's formats. 'audio' sets the remembered choice first.",
     args: &[
-        "action:string:true:'open' | 'start' | 'stop' | 'status'",
+        "action:string:true:'open' | 'start' | 'stop' | 'status' | 'snapshot' | 'devices'",
         "audio:string:false:'system' | 'mic' | 'both' | 'none'",
-        "source:string:false:'screen:<n>' (0 = main) | 'desktop' | 'window' | 'region' | 'app'",
+        "source:string:false:'screen:<n>' (0 = main) | 'desktop' | 'window' | 'region' | 'app' | 'webcam'",
+        "camera:string:false:webcam name for source 'webcam' and the bubble ('' = the first found), remembered",
+        "format:string:false:webcam format key from 'devices' (e.g. 'mjpeg 1280x720 30'; '' = camera default), remembered",
+        "bubble:boolean:false:put a round webcam picture in a corner of screen recordings, remembered",
         "preview:boolean:false:show (true) or pause (false) the live preview, remembered",
         "dock:boolean:false:with 'open': true docks the pane into the current page, false pops it out",
         "window:string:false:window title for source 'window'; for 'app' part of the title, the program name (RobloxStudioBeta.exe) or pid:<process id>",
     ],
     kind: ToolKind::Ui,
     run: |app, args| {
+        if let Some(c) = arg_str(args, "camera") {
+            app.settings.cam_device = c.into();
+            app.settings.cam_format.clear();
+            app.capture_ui.cam_formats = None;
+            app.settings.save();
+        }
+        if let Some(f) = arg_str(args, "format") {
+            if !f.is_empty() && crate::engine::webcam::CamFormat::from_key(f).is_none() {
+                return Err("format: a key from action 'devices', like 'mjpeg 1280x720 30'".into());
+            }
+            app.settings.cam_format = f.into();
+            app.settings.save();
+        }
+        if let Some(on) = args.get("bubble").and_then(Value::as_bool) {
+            app.settings.cam_bubble = on;
+            app.settings.save();
+        }
         if let Some(a) = arg_str(args, "audio") {
             let m = crate::engine::capture::AudioMode::from_key(a).ok_or("audio: system | mic | both | none")?;
             app.settings.capture_audio = m.key().into();
@@ -231,7 +280,31 @@ pub const TOOLS: &[ToolDef] = &[ToolDef {
                 None if !app.layout.is_visible(Pane::ScreenRecording) => open(app),
                 None => {}
             },
+            "devices" => {
+                // blocking here is fine: an MCP call, not a frame; the pane's lists fill from the same probes
+                let cams = crate::engine::webcam::devices();
+                app.capture_ui.cams = Some(cams.clone());
+                sync_cam(app);
+                let formats = if app.capture_ui.cam.device.is_empty() {
+                    Vec::new()
+                } else {
+                    crate::engine::webcam::formats(&app.capture_ui.cam.device)
+                };
+                let list: Vec<Value> = formats.iter().map(|f| json!({ "key": f.key(), "label": f.label() })).collect();
+                app.capture_ui.cam_formats = Some(formats);
+                return Ok(ToolOutcome::Done(json!({ "webcams": cams, "camera": app.capture_ui.cam.device, "formats": list })));
+            }
+            "snapshot" => {
+                sync_cam(app);
+                if app.capture_ui.snapping {
+                    return Err("a snapshot is already being taken".into());
+                }
+                if !app.take_snapshot() {
+                    return Err("the snapshot didn't start (see the toast)".into());
+                }
+            }
             "start" => {
+                sync_cam(app);
                 if app.screen_rec.is_some() {
                     return Err("already recording".into());
                 }
