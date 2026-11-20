@@ -171,6 +171,7 @@ impl App {
                     || self.settings.palette != palette_before
                 {
                     theme::apply(ctx, &self.settings.theme, &self.settings.palette, &self.settings.ui_look);
+                    theme::clear_borders(ctx, self.settings.clear_borders); // ws:forum-ui
                 }
                 if self.settings.ffmpeg_dir != ffdir_before {
                     media::ffpipe::set_dir(&self.settings.ffmpeg_dir);

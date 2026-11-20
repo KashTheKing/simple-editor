@@ -57,6 +57,7 @@ pub mod nodes;
 // ---- ws:layout-modes-onboarding ----
 pub mod onboarding;
 pub mod palette;
+pub mod tasks; // ws:forum-ui: the palette's plain-phrase task rows
 pub mod paste_ui;
 pub mod planner;
 pub mod preview;
@@ -440,6 +441,17 @@ pub(crate) fn key_menu(
         }
         g.click();
     }
+    // ws:forum-ui: one tick for "stop smoothly": every key eases in and out (off = linear again)
+    let smooth = is_smooth(a);
+    if ui
+        .add_enabled_ui(a.keys.len() >= 2, |ui| menu::check(ui, smooth, "Smooth", ""))
+        .inner
+        .on_hover_text("Ease in and out of every keyframe, so the motion starts and stops gently")
+        .clicked()
+    {
+        set_smooth(a, !smooth);
+        g.click();
+    }
     // ws:keyframe-blocks: ease the key at the playhead (or the segment the playhead is in), or every key
     let seg = a.keys.iter().rposition(|k| k.t <= lt + EPS);
     for (text, one) in [("Ease this key", true), ("Ease all keys", false)] {
@@ -533,6 +545,17 @@ pub(crate) fn key_menu(
         a.unlink();
         g.click();
     }
+}
+
+/// ws:forum-ui: every segment of `a` eases in and out (the keyframe menu's Smooth tick).
+pub(crate) fn is_smooth(a: &Animated) -> bool {
+    a.keys.len() >= 2 && a.keys[..a.keys.len() - 1].iter().all(|k| k.ease == crate::model::Ease::EaseInOut)
+}
+
+/// Smooth on: every key eases in and out; off: back to linear.
+pub(crate) fn set_smooth(a: &mut Animated, on: bool) {
+    let e = if on { crate::model::Ease::EaseInOut } else { crate::model::Ease::Linear };
+    a.keys.iter_mut().for_each(|k| k.ease = e);
 }
 
 /// A Polygon/Path mask is drawn from `points`; with fewer than 3 vertices the rasteriser reports
@@ -819,6 +842,22 @@ pub fn encoder_options(encoders: &[String]) -> Vec<&str> {
 
 #[cfg(test)]
 mod tests {
+    // ---- ws:forum-ui ----
+    #[test]
+    fn smooth_toggles_ease_in_out_on_every_key() {
+        let mut a = crate::model::Animated::new(0.0);
+        a.key_at(0.0, 0.0);
+        a.key_at(1.0, 10.0);
+        a.key_at(2.0, 0.0);
+        assert!(!super::is_smooth(&a));
+        super::set_smooth(&mut a, true);
+        assert!(super::is_smooth(&a));
+        assert!(a.at(0.1) < 1.0, "eases out of the first key: {}", a.at(0.1));
+        super::set_smooth(&mut a, false);
+        assert!(!super::is_smooth(&a));
+        assert!((a.at(0.5) - 5.0).abs() < 1e-9, "linear again");
+    }
+
     use super::*;
 
     #[test]

@@ -171,6 +171,7 @@ mod perf_ctl; // ws:perf-window
 mod quick_export; // ws:quick-export
 mod animator_ctl; // ws:animator
 mod tools_animate_bulk; // ws:animator: animate.audit, keyblocks.convert_all, animate.spans_from_transitions
+mod tools_findability; // ws:forum-ui: track.duplicate, clip.layout, clip.censor
 // ---- ws:panels-multiscreen ----
 mod render_pane;
 mod screens_ctl;
@@ -955,6 +956,7 @@ impl App {
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
         media::ytdlp::set_dir(&settings.ytdlp_dir);
         theme::apply(ctx, &settings.theme, &settings.palette, &settings.ui_look);
+        theme::clear_borders(ctx, settings.clear_borders); // ws:forum-ui
         crate::perf::startup_mark("app: theme + fonts");
         let backend = Backend::parse(&settings.decoder);
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
@@ -1226,6 +1228,11 @@ impl App {
         crate::perf::startup_mark("app: presets");
         app.player.set_project(&app.project);
         app.gallery = crate::ui::gallery::GalleryState::from_settings(&app.settings); // ws:gallery-audio
+        // ws:forum-ui: the track-name column keeps the width it was dragged to
+        if app.settings.timeline_header_w > 0.0 {
+            let (lo, hi) = (timeline::HEADER_W, timeline::HEADER_MAX_W);
+            app.timeline.header_w = app.settings.timeline_header_w.clamp(lo, hi);
+        }
         crate::perf::startup_mark("app: built");
         app
     }
@@ -2063,6 +2070,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     export_fix::TOOLS,
     // ---- ws:forum-preview ----
     health_ctl::TOOLS,
+    // ---- ws:forum-ui ----
+    tools_findability::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[

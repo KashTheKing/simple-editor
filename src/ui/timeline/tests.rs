@@ -2449,7 +2449,7 @@ fn clip_menu_rows_dispatch_actions_and_acts() {
     let base = test_clip_menu(&p.labels, &p.buses, &[]);
     assert_eq!(run(&base, &["Join Through Edit"]).2, vec![Action::JoinThroughEdit]);
     assert_eq!(run(&base, &["Split at Playhead"]).2, vec![Action::Split]);
-    assert_eq!(run(&base, &["Delete (Leave Gap)"]).2, vec![Action::Delete]);
+    assert_eq!(run(&base, &["Delete and Leave Gap"]).2, vec![Action::Delete]);
     assert_eq!(run(&base, &["Replace with Library Selection"]), (false, None, vec![]), "greyed: no Library pick");
     let lib = ClipMenu { library_selected: Some(7), ..test_clip_menu(&p.labels, &p.buses, &[]) };
     assert_eq!(run(&lib, &["Replace with Library Selection"]), (true, Some(1), vec![]), "the clicked clip's Act");
@@ -3214,4 +3214,30 @@ fn track_waveform_override_beats_the_setting() {
     // and it survives a save
     let p = Project::from_json(&h.project.to_json()).unwrap();
     assert_eq!(p.tracks[ai].wave_detailed, Some(true));
+}
+
+// ---- ws:forum-ui ----
+/// The track-name column widens by dragging its right edge, never narrower than the default (room for
+/// ~10 characters), and reports the new width once, on release, for the pane to save.
+#[test]
+fn header_column_resizes_by_dragging_its_edge() {
+    let mut h = Harness::new();
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let y = lanes.top() + 10.0;
+    let edge = pos2(lanes.left() - 2.0, y);
+    h.press(edge);
+    h.frame(vec![Event::PointerMoved(pos2(edge.x + 30.0, y))]);
+    h.frame(vec![Event::PointerMoved(pos2(edge.x + 60.0, y))]);
+    h.release(pos2(edge.x + 60.0, y));
+    assert!((h.state.header_w - (HEADER_W + 60.0)).abs() < 1.0, "widened: {}", h.state.header_w);
+    assert_eq!(h.state.header_w_done.take().map(|w| w.round()), Some((HEADER_W + 60.0).round()));
+    assert_eq!(h.undos, 0, "a view change, not an edit");
+    // dragging far left stops at the minimum
+    h.frame(vec![]);
+    let edge = pos2(h.state.lanes_rect.left() - 2.0, y);
+    h.press(edge);
+    h.frame(vec![Event::PointerMoved(pos2(edge.x - 400.0, y))]);
+    h.release(pos2(edge.x - 400.0, y));
+    assert_eq!(h.state.header_w, HEADER_W);
 }

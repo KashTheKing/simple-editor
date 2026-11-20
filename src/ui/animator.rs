@@ -129,6 +129,9 @@ pub struct AnimState {
     pub win: Option<(f64, f64)>,
     /// The clips `win` was framed for: another selection frames its own blocks again.
     win_for: Vec<Id>,
+    /// ws:forum-ui: the playhead last frame - when it moves out of `win` (a seek, playback), the window
+    /// pages after it (`follow_playhead`); a pan alone never moves it, so panning away is not fought.
+    last_ph: Option<f64>,
     /// Blocks: the lanes' row height (Alt+wheel); `None` = `LANE_H`.
     pub lane_h: Option<f32>,
     /// Curves / Flow / Speed: a clip's graph height (Alt+wheel, or drag a row's bottom edge in the label
@@ -1115,6 +1118,18 @@ fn range(project: &Project, ids: &[Id]) -> (f64, f64) {
 }
 
 /// `w` kept inside `fit`: no longer than it, and slid back in when it hangs over an end.
+/// ws:forum-ui: the shown window after the playhead moved from `last` to `ph`: unchanged while the
+/// playhead stays in view or did not move; else paged so the playhead sits a tenth in from the left.
+pub(crate) fn follow_playhead(w: (f64, f64), last: Option<f64>, ph: f64) -> (f64, f64) {
+    let moved = last.is_some_and(|l| (l - ph).abs() > 1e-9);
+    if !moved || (w.0..=w.1).contains(&ph) {
+        return w;
+    }
+    let len = w.1 - w.0;
+    let a = ph - len * 0.1;
+    (a, a + len)
+}
+
 fn clamp_win(w: (f64, f64), fit: (f64, f64)) -> (f64, f64) {
     let len = (w.1 - w.0).min(fit.1 - fit.0);
     let a = w.0.clamp(fit.0, (fit.1 - len).max(fit.0));
@@ -1370,6 +1385,10 @@ fn lanes_view(
         }
         st.win = st.win.filter(|w| w.1 > fit.0 && w.0 < fit.1).or_else(|| Some(block_fit(project, rows, fit)));
         st.win = st.win.map(|w| clamp_win(w, fit)); // zoomed all the way out = exactly the range
+        if let Some(w) = st.win {
+            st.win = Some(clamp_win(follow_playhead(w, st.last_ph, *playhead), fit));
+        }
+        st.last_ph = Some(*playhead);
         // on the right: the range toggle, then the zoom
         if zoom_bar(ui, pal, &mut st.win, fit, *playhead, &mut st.whole) {
             fit = range_of(st.whole, project);
@@ -4337,6 +4356,18 @@ fn block_controls(
 
 #[cfg(test)]
 mod tests {
+    // ---- ws:forum-ui ----
+    #[test]
+    fn lanes_follow_a_playhead_that_leaves_the_view() {
+        use super::follow_playhead;
+        let w = (10.0, 20.0);
+        assert_eq!(follow_playhead(w, Some(12.0), 15.0), w, "still in view");
+        assert_eq!(follow_playhead(w, Some(30.0), 30.0), w, "did not move: a pan away stays put");
+        assert_eq!(follow_playhead(w, None, 30.0), w, "first frame");
+        let f = follow_playhead(w, Some(19.0), 31.0);
+        assert!((f.1 - f.0 - 10.0).abs() < 1e-9 && (f.0..=f.1).contains(&31.0), "{f:?}");
+    }
+
     use super::*;
 
     struct H {

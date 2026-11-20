@@ -68,6 +68,14 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     {
         app.cmd_palette.open = true;
     }
+    // ws:forum-ui: Shift+Delete also deletes and closes the gap (what other editors use), unless bound
+    let shift_del = egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Delete);
+    if !ctx.wants_keyboard_input()
+        && app.hotkeys.conflict(shift_del).is_none()
+        && ctx.input_mut(|i| crate::hotkeys::consume_exact(i, &shift_del))
+    {
+        app.pending_actions.push(crate::hotkeys::Action::RippleDelete);
+    }
     if !ctx.wants_keyboard_input() {
         let hit = ctx.input_mut(|i| extra.iter().find(|pair| crate::hotkeys::consume_exact(i, &pair.1)).cloned());
         if let Some((name, _)) = hit {
@@ -94,7 +102,11 @@ pub(super) fn palette_rows(app: &mut App, query: &str) -> Vec<palette::Row> {
     match palette::mode(query) {
         palette::Mode::GoTo(q) => {
             index_for(app);
-            palette::goto_rows(&app.cmd_palette.index, &app.settings.palette_recent, q)
+            // ws:forum-ui: "cut out a part", "blur", "beep"… lead with the action that does it
+            let snap = MenuSnapshot::new(&app.hotkeys, &app.settings.icon_overrides, |a| app.enabled(a));
+            let mut rows = crate::ui::tasks::task_rows(&snap, q);
+            rows.extend(palette::goto_rows(&app.cmd_palette.index, &app.settings.palette_recent, q));
+            rows
         }
         palette::Mode::Commands(q) => {
             refresh_if_stale(&mut app.script_meta_cache);
@@ -220,6 +232,21 @@ fn dispatch(app: &mut App, cmd: Command, alt: bool, arg_form: Option<(&'static s
             }
         }
         Command::Complete(_) => {} // handled inside the window
+        Command::Task(i) => run_task(app, i),
+    }
+}
+
+/// ws:forum-ui: run `ui::tasks::TASKS[i]`.
+fn run_task(app: &mut App, i: usize) {
+    use crate::ui::tasks::{Do, TASKS};
+    let Some(task) = TASKS.get(i) else { return };
+    match task.what {
+        Do::Act(a) => dispatch(app, Command::Action(a), false, None),
+        Do::Tool(name, args) => run_user_tool(app, name, &serde_json::from_str(args).unwrap_or(json!({}))),
+        Do::Gallery(tab) => {
+            tools_gallery::open_tab(app, tab);
+            app.surface(Pane::Presets);
+        }
     }
 }
 

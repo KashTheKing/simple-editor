@@ -46,8 +46,8 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 |---|---|
 | Undo | <kbd>Ctrl+Z</kbd> |
 | Redo | <kbd>Ctrl+Shift+Z</kbd> |
-| Delete (Leave Gap) | <kbd>Backspace</kbd> |
-| Ripple Delete | <kbd>Delete</kbd> |
+| Delete and Leave Gap | <kbd>Backspace</kbd> |
+| Delete and Close Gap | <kbd>Delete</kbd> |
 | Select All | <kbd>Ctrl+A</kbd> |
 | Deselect All | <kbd>Ctrl+Shift+A</kbd> |
 | Copy Attributes | <kbd>Ctrl+Alt+C</kbd> |

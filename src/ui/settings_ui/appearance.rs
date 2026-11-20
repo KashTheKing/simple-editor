@@ -25,6 +25,19 @@ pub(super) fn appearance(ui: &mut egui::Ui, s: &mut Settings) -> bool {
         .checkbox(&mut s.start_maximized, "Open maximised")
         .on_hover_text("Fill the screen when the app starts. Off: reopen where and how big the window was left.")
         .changed();
+    // ---- ws:forum-ui ----
+    changed |= ui
+        .checkbox(&mut s.clear_borders, "Clear borders")
+        .on_hover_text("Thicker, brighter lines between panels, for themes where they blend together")
+        .changed();
+    ui.horizontal(|ui| {
+        ui.label("Playhead width").on_hover_text("The timeline playhead's line, in points");
+        let mut w = if s.playhead_w > 0.0 { s.playhead_w } else { 1.5 };
+        if ui.add(egui::DragValue::new(&mut w).range(1.0..=4.0).speed(0.05).suffix(" pt")).changed() {
+            s.playhead_w = w;
+            changed = true;
+        }
+    });
     ui.add_space(4.0);
     let has_overrides =
         s.palette != crate::theme::PaletteOverride { mode: s.palette.mode.clone(), ..Default::default() };

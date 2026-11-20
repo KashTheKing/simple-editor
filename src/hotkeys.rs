@@ -76,8 +76,9 @@ actions! {
     NextCut => "next_cut", "Next Cut", sc(NONE, Key::ArrowDown);
     Split => "split", "Split at Playhead", sc(CTRL, Key::B);
     // Resolve-style: Backspace lifts (leaves the gap), Delete ripple-deletes (closes it)
-    Delete => "delete", "Delete (Leave Gap)", sc(NONE, Key::Backspace);
-    RippleDelete => "ripple_delete", "Ripple Delete", sc(NONE, Key::Delete);
+    Delete => "delete", "Delete and Leave Gap", sc(NONE, Key::Backspace);
+    // ws:forum-ui: named for what it does (was "Ripple Delete"; the id stays for saved bindings)
+    RippleDelete => "ripple_delete", "Delete and Close Gap", sc(NONE, Key::Delete);
     SelectAll => "select_all", "Select All", sc(CTRL, Key::A);
     Deselect => "deselect", "Deselect All", sc(CTRL_SHIFT, Key::A);
     MarkIn => "mark_in", "Mark In", sc(NONE, Key::I);

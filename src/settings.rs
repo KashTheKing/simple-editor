@@ -735,6 +735,13 @@ pub struct Settings {
     pub export_mpx_rate: f64,
     /// The preset card each project file last exported with (project path -> preset name).
     pub export_tile_by_project: BTreeMap<String, String>,
+    // ---- ws:forum-ui ----
+    /// Width of the timeline's track-name column in points (0 = the default); drag its right edge.
+    pub timeline_header_w: f32,
+    /// Stronger lines between panels (Settings ▸ Appearance ▸ Clear borders).
+    pub clear_borders: bool,
+    /// The timeline playhead's line width in points (0 = the default 1.5).
+    pub playhead_w: f32,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1039,6 +1046,9 @@ impl Default for Settings {
             // ---- ws:forum-export ----
             export_mpx_rate: 0.0,
             export_tile_by_project: BTreeMap::new(),
+            timeline_header_w: 0.0, // ws:forum-ui
+            clear_borders: false,
+            playhead_w: 0.0,
         }
     }
 }

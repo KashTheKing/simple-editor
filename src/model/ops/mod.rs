@@ -10,6 +10,8 @@ mod editing;
 // ---- ws:inspector-gallery ----
 mod effects;
 mod graph;
+// ws:forum-ui: `Layout` / `Censor` are named by the tools and menus
+pub mod findability;
 mod keyblocks;
 mod linked_bins;
 pub mod convert; // ws:animator: whole-timeline audit, keys -> blocks, transitions -> spans
