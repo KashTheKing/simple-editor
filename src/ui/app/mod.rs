@@ -191,6 +191,7 @@ mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
 mod plugins_ctl; // feat/plugins: the Plugins pane, plugin panels, Install from URL
 mod os_paste; // Ctrl+V of a screenshot / copied files
+mod scripts_ctl; // feat/scripts-editor: the Scripts menu, the Script Editor pane, scripts.create/rename/delete/open
 
 enum ExportKind {
     File { path: PathBuf },
@@ -557,6 +558,11 @@ pub struct App {
     emulator: crate::ui::emulator::EmuState,
     /// The Platform Emulator's own copy of the picture when the Preview pane is hidden (nobody else uploads it).
     emulator_tex: Option<egui::TextureHandle>,
+    // ---- feat/scripts-editor ----
+    /// The Script Editor pane's open file, its text and the menu's Rename… box (`scripts_ctl`).
+    script_editor: crate::ui::script_editor::ScriptEditor,
+    /// The pane's Run was pressed: `scripts_ctl::tick` runs it next frame, outside the pane draw.
+    script_editor_run: bool,
     // ---- ws:project-color-fps ----
     /// "Match project to this video?" waiting for an answer (`project_match`).
     match_offer: Option<project_match::MatchOffer>,
@@ -1178,6 +1184,8 @@ impl App {
             path_armed: false,
             emulator: Default::default(), // ws:device-emulator
             emulator_tex: None,
+            script_editor: Default::default(), // feat/scripts-editor
+            script_editor_run: false,
             match_offer: None, // ws:project-color-fps
             tabs: Default::default(), // ws:timeline-tabs
             plugins: Default::default(), // feat/plugins
@@ -2047,6 +2055,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:home-page ----
     home_ctl::TOOLS,
     script_ctl::TOOLS,
+    // ---- feat/scripts-editor ----
+    scripts_ctl::TOOLS,
     // ---- feat/plugins ----
     plugins_ctl::TOOLS,
 ];
@@ -2148,6 +2158,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     timeline_tabs::act,
     // ---- ws:home-page ----
     home_ctl::act,
+    // ---- feat/scripts-editor ----
+    scripts_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -2241,6 +2253,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     music_ctl::frame,
     // ---- ws:preview-audio-only ----
     audio_only::tick,
+    // ---- feat/scripts-editor ----
+    scripts_ctl::tick,
     // ---- feat/plugins ----
     plugins_ctl::tick,
 ];
@@ -2324,6 +2338,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     project_match::window,
     // ---- ws:timeline-tabs ----
     timeline_tabs::windows,
+    // ---- feat/scripts-editor ----
+    scripts_ctl::windows,
     // ---- feat/plugins ----
     plugins_ctl::windows,
 ];
@@ -2400,6 +2416,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     music_ctl::draw,
     // ---- ws:device-emulator ----
     emulator_ctl::draw,
+    // ---- feat/scripts-editor ----
+    scripts_ctl::draw,
     // ---- feat/plugins ----
     plugins_ctl::draw,
 ];

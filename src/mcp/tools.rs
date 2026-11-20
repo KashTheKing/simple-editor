@@ -66,7 +66,13 @@ pub fn leaves_project(tool: &str, args: &Value) -> bool {
                 | "skills.delete"
                 // ws:home-page: closes the project
                 | "home.show"
+                // feat/scripts-editor: write, rename or bin a file in the scripts folder
+                | "scripts.create"
+                | "scripts.rename"
+                | "scripts.delete"
         )
+        // feat/scripts-editor: launches another program
+        || (tool == "scripts.open" && args.get("external").and_then(Value::as_bool) == Some(true))
         // ws:home-page: renames a project file / edits the recents list
         || (tool == "project.recent" && args.get("action").and_then(Value::as_str).is_some_and(|a| a != "list"))
         || (tool == "ui.action" && args.get("id").and_then(Value::as_str).is_some_and(|id| LEAVING_ACTIONS.contains(&id)))

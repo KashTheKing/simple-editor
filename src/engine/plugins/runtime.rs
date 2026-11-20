@@ -246,7 +246,7 @@ local function ns(prefix, names)
     local key = prefix .. "." .. n
     t[n] = function(...)
       local f = host[key]
-      if f == nil then error(key .. " is not available here (ui.* works in panels only)", 2) end
+      if f == nil then error(key .. " is not available here (ui.* works inside a panel's draw() only)", 2) end
       return f(...)
     end
   end
@@ -548,7 +548,7 @@ pub(crate) mod tests {
         assert!(r.unwrap_err().contains("mcp_tools") && made.is_empty());
         assert!(run(&c, r#"fs.read("notes.txt")"#).0.unwrap_err().contains("\"files\""));
         assert!(run(&c, r#"programs.run("notepad.exe", {})"#).0.unwrap_err().contains("run_programs"));
-        assert!(run(&c, r#"ui.button("x")"#).0.unwrap_err().contains("panels only"));
+        assert!(run(&c, r#"ui.button("x")"#).0.unwrap_err().contains("panel's draw()"));
         // the sandbox: no io / require / load
         for code in ["io.open('x')", "require('x')", "load('return 1')", "os.execute('x')", "debug.getinfo(1)"] {
             assert!(run(&c, code).0.is_err(), "{code} must fail");

@@ -149,19 +149,60 @@ fn with_env<R>(app: &mut App, ctx: &runtime::Ctx, label: &str, f: impl FnOnce(&r
 pub(super) fn run_script(app: &mut App, plugin_id: &str, rel: &str) {
     ensure_loaded(app);
     let Some(p) = app.plugins.plugin(plugin_id).cloned() else { return app.toast(format!("No plugin '{plugin_id}' is installed")) };
-    if !p.runnable() {
-        return app.toast(format!("{} is turned off", p.manifest.name));
-    }
     let Some(path) = plugins::zip::safe_name(rel).map(|r| p.dir.join(r)) else { return };
-    let src = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(e) => return app.toast(format!("{}: {e}", path.display())),
-    };
-    let name = plugins::stem(rel);
-    let ctx = runtime::Ctx::of(&p);
+    match std::fs::read_to_string(&path) {
+        Ok(src) => {
+            let _ = run_src(app, &p, &src, &plugins::stem(rel));
+        }
+        Err(e) => app.toast(format!("{}: {e}", path.display())),
+    }
+}
+
+/// The installed plugin a file belongs to, and the file's path inside it (`/` separators).
+fn owner_of(app: &App, path: &Path) -> Option<(Plugin, String)> {
+    let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    let file = path.to_string_lossy().replace('\\', "/");
+    app.plugins.list.iter().find_map(|p| {
+        let dir = norm(&p.dir);
+        let rest = file.get(dir.len()..).filter(|_| file.to_ascii_lowercase().starts_with(&format!("{dir}/")))?;
+        Some((p.clone(), rest.trim_start_matches('/').to_string()))
+    })
+}
+
+/// The Script Editor's Run on a file inside a plugin: a plugin script runs in the plugin's sandbox (never
+/// with the full access of the user's own scripts), a panel script reloads its panel. None = not a plugin file.
+pub(super) fn run_if_plugin_file(app: &mut App, path: &Path, src: &str) -> Option<Result<(), String>> {
+    ensure_loaded(app);
+    let (p, rel) = owner_of(app, path)?;
+    let same = |f: &str| f.replace('\\', "/").trim_start_matches("./").eq_ignore_ascii_case(&rel);
+    if let Some(d) = p.manifest.contents.panels.iter().find(|d| same(&d.script)) {
+        let key = plugins::panel_key(&p.manifest.id, &d.id);
+        app.plugins.panels.remove(&key);
+        if !p.runnable() {
+            return Some(Err(format!("{} is turned off", p.manifest.name)));
+        }
+        if !panel_open(app, &p.manifest.id, &d.id) {
+            toggle_panel(app, &p.manifest.id, &d.id);
+        }
+        return Some(Ok(()));
+    }
+    if p.manifest.contents.scripts.iter().any(|f| same(f)) {
+        return Some(run_src(app, &p, src, &plugins::stem(&rel)));
+    }
+    Some(Err(format!("{rel} belongs to the plugin {} but isn't one of its scripts or panels (plugin.json)", p.manifest.name)))
+}
+
+fn run_src(app: &mut App, p: &Plugin, src: &str, name: &str) -> Result<(), String> {
+    if !p.runnable() {
+        let e = format!("{} is turned off", p.manifest.name);
+        app.toast(e.clone());
+        return Err(e);
+    }
+    let name = name.to_string();
+    let ctx = runtime::Ctx::of(p);
     let label = format!("{}: {name}", p.manifest.name);
     let r = with_env(app, &ctx, &label, |env| {
-        let r = runtime::run_script(env, &src, &name);
+        let r = runtime::run_script(env, src, &name);
         let ok = r.is_ok();
         (r, ok)
     });
@@ -172,8 +213,13 @@ pub(super) fn run_script(app: &mut App, plugin_id: &str, rel: &str) {
                 app.toast(format!("{name}: {l}"));
             }
         }
-        Err(e) => app.toast(format!("{name}: {}", e.lines().next().unwrap_or("failed"))),
+        Err(e) => {
+            let line = e.lines().next().unwrap_or("failed").to_string();
+            app.toast(format!("{name}: {line}"));
+            return Err(line);
+        }
     }
+    Ok(())
 }
 
 /// Open (or close) a plugin panel: its pane slot is assigned the first time.
@@ -339,11 +385,6 @@ fn ask_uninstall(app: &mut App, id: &str) {
         "Removes the plugin's folder and everything it added to the library. Your projects are not touched.",
         move |app| uninstall(app, &id),
     );
-}
-
-/// Show `path` selected in Explorer.
-fn reveal(path: &Path) {
-    let _ = std::process::Command::new("explorer").arg(format!("/select,{}", path.display())).spawn();
 }
 
 pub(super) fn windows(app: &mut App, ctx: &egui::Context) {
@@ -579,7 +620,7 @@ fn manager(app: &mut App, ui: &mut egui::Ui) {
                     check_update(app, &id);
                 }
             }
-            2 => reveal(&p.dir.join(plugins::MANIFEST)),
+            2 => crate::contextmenu::reveal(&p.dir.join(plugins::MANIFEST)),
             3 => match plugins::update_source(p) {
                 Some(s) => crate::engine::browsers::open_url(&s.repo_url()),
                 None if p.manifest.homepage.starts_with("https://") => crate::engine::browsers::open_url(&p.manifest.homepage),
@@ -628,6 +669,20 @@ fn body(app: &mut App, ui: &mut egui::Ui, p: &Plugin) {
                     }
                 });
             }
+        }
+        // the plugin's Luau, for its author: opens in the Script Editor (Run there stays sandboxed)
+        let code: Vec<String> = p.manifest.contents.panels.iter().map(|d| d.script.clone()).chain(p.manifest.contents.scripts.iter().cloned()).collect();
+        if !code.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.weak("Edit:");
+                for f in &code {
+                    if ui.small_button(f.as_str()).on_hover_text("Open in the Script Editor").clicked() {
+                        if let Some(r) = plugins::zip::safe_name(f) {
+                            scripts_ctl::open(app, &p.dir.join(r), app.settings.scripts_external);
+                        }
+                    }
+                }
+            });
         }
         let lines = p.manifest.content_lines();
         if !lines.is_empty() {
@@ -679,6 +734,7 @@ fn draw_panel(app: &mut App, ui: &mut egui::Ui, n: u16) {
         let c = ui.ctx().clone();
         *panel.ctx.net.wake.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(move || c.request_repaint()));
     }
+    panel.poll_script(std::time::Instant::now());
     let rev = revision(app);
     if panel.needs_run(rev) {
         let ctx = panel.ctx.clone();
@@ -689,7 +745,11 @@ fn draw_panel(app: &mut App, ui: &mut egui::Ui, n: u16) {
         });
         // its own edits changed the revision: don't run again for them
         panel.drawn_for = revision(app);
+        if panel.needs_run(panel.drawn_for) {
+            ui.ctx().request_repaint(); // the one follow-up run after a click
+        }
     }
+    let mut edit = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         if let Some(e) = panel.error.clone() {
             ui.colored_label(ui.visuals().warn_fg_color, format!("{} stopped: {e}", decl.title));
@@ -697,8 +757,11 @@ fn draw_panel(app: &mut App, ui: &mut egui::Ui, n: u16) {
                 if ui.button("Retry").clicked() {
                     panel.reload();
                 }
+                if ui.button("Edit Script").on_hover_text("Open the panel's script in the Script Editor").clicked() {
+                    edit = Some(panel.script.clone());
+                }
                 if ui.button("Open Folder").on_hover_text("Show the plugin's files").clicked() {
-                    reveal(&panel.script);
+                    crate::contextmenu::reveal(&panel.script);
                 }
             });
         } else {
@@ -715,6 +778,9 @@ fn draw_panel(app: &mut App, ui: &mut egui::Ui, n: u16) {
         }
     });
     app.plugins.panels.insert(key, panel);
+    if let Some(path) = edit {
+        scripts_ctl::open(app, &path, app.settings.scripts_external);
+    }
 }
 
 /// Window ▸ Plugins: the Plugins pane, Install from URL, then each enabled plugin's panels and scripts.

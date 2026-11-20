@@ -177,6 +177,10 @@ pub enum Pane {
     /// Screen recording: live preview, source, audio choice, meters, Record / Stop (was the Screen
     /// Recording popup; `ui::capture_ui`, `ui::app::recorder_pane`).
     ScreenRecording,
+    // ---- feat/scripts-editor ----
+    /// One Luau script in a code editor: Save, Run, Open Externally, the run's result (`ui::script_editor`,
+    /// `ui::app::scripts_ctl`). Tab-stacked hidden in every preset (`stack_unplaced`).
+    ScriptEditor,
     // ---- feat/plugins ----
     /// Installed plugins: enable, update, uninstall, permissions, Install from URL (`ui::app::plugins_ctl`).
     Plugins,
@@ -269,6 +273,8 @@ impl Pane {
         Pane::Emulator,
         // ---- fix/screen-record ----
         Pane::ScreenRecording,
+        // ---- feat/scripts-editor ----
+        Pane::ScriptEditor,
         // ---- feat/plugins ---- (plugin panels are not listed: they come and go with their plugins)
         Pane::Plugins,
     ];
@@ -313,6 +319,7 @@ impl Pane {
             Pane::Playlists => Glyph::MusicNote,
             Pane::Emulator => Glyph::Guides,
             Pane::ScreenRecording => Glyph::Record,
+            Pane::ScriptEditor => Glyph::Terminal,
             Pane::Plugins => Glyph::Wrench,
             Pane::Plugin(n) => crate::engine::plugins::panel::slot_icon(n).and_then(Glyph::from_name).unwrap_or(Glyph::Bolt),
         }
@@ -366,6 +373,7 @@ impl Pane {
             Pane::Playlists => "Playlists",
             Pane::Emulator => "Platform Emulator",
             Pane::ScreenRecording => "Screen Recording",
+            Pane::ScriptEditor => "Script Editor",
             Pane::Plugins => "Plugins",
             Pane::Plugin(n) => crate::engine::plugins::panel::slot_title(n),
         }

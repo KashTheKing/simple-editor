@@ -310,7 +310,7 @@ pub struct Installed {
     pub granted: Permissions,
     /// Folders the user picked for a `files: pick` plugin.
     pub folders: Vec<String>,
-    /// Library items it installed: "kind/id" (`library::full_id`), taken back out on Disable / Uninstall.
+    /// Library items it installed: "luts/hello-teal" (`library::full_id`), taken back out on Disable / Uninstall.
     pub registered: Vec<String>,
 }
 
@@ -747,7 +747,7 @@ pub(crate) mod tests {
         // its LUT went into the library, under its own name
         let lut = roots.library.join("luts/hello-teal.cube");
         assert!(lut.is_file());
-        assert_eq!(p.state.registered, vec!["lut/hello-teal".to_string()]);
+        assert_eq!(p.state.registered, vec!["luts/hello-teal".to_string()]);
         // disable takes the library content back out; enable puts it back
         set_enabled(&roots, "hello-panel", false).unwrap();
         assert!(!lut.exists());
@@ -777,7 +777,7 @@ pub(crate) mod tests {
         std::fs::write(&mine, "mine").unwrap();
         let staged = stage_zip(&roots, &example_zip("1.0.0"), "", "", "").unwrap();
         let p = commit(&roots, &staged, &Permissions::default(), true).unwrap();
-        assert_eq!(p.state.registered, vec!["lut/hello-panel-hello-teal".to_string()]);
+        assert_eq!(p.state.registered, vec!["luts/hello-panel-hello-teal".to_string()]);
         uninstall(&roots, "hello-panel").unwrap();
         assert_eq!(std::fs::read_to_string(&mine).unwrap(), "mine", "the user's item is untouched");
     }

@@ -106,11 +106,14 @@ pub struct Panel {
     pub last_ms: f32,
     /// The plugin's PNGs, decoded once.
     pub images: HashMap<PathBuf, Option<eframe::egui::TextureHandle>>,
+    /// The script's modified time when loaded, and when it was last looked at (`poll_script`).
+    mtime: Option<std::time::SystemTime>,
+    polled: Option<Instant>,
 }
 
 impl Panel {
     pub fn new(ctx: Ctx, script: PathBuf) -> Panel {
-        Panel { ctx, script, vm: None, nodes: Vec::new(), changes: HashMap::new(), error: None, log: Vec::new(), stale: true, drawn_for: u64::MAX, last_ms: 0.0, images: HashMap::new() }
+        Panel { ctx, script, vm: None, nodes: Vec::new(), changes: HashMap::new(), error: None, log: Vec::new(), stale: true, drawn_for: u64::MAX, last_ms: 0.0, images: HashMap::new(), mtime: None, polled: None }
     }
 
     /// Throw the VM away: the next draw loads the script again (Reload, or Retry after an error).
@@ -123,6 +126,20 @@ impl Panel {
         self.images.clear();
         self.ctx.net.clear();
         self.stale = true;
+    }
+
+    /// A saved change to the script (the Script Editor, another editor) reloads the panel. Looks at the
+    /// file at most once a second, and only while the panel is drawn.
+    pub fn poll_script(&mut self, now: Instant) {
+        if self.polled.is_some_and(|t| now.duration_since(t) < Duration::from_secs(1)) {
+            return;
+        }
+        self.polled = Some(now);
+        let m = std::fs::metadata(&self.script).and_then(|m| m.modified()).ok();
+        if self.mtime.is_some() && m != self.mtime {
+            self.reload();
+        }
+        self.mtime = m;
     }
 
     /// Should `draw()` run now? Only when something it shows could have changed.
@@ -139,7 +156,9 @@ impl Panel {
         self.last_ms = t0.elapsed().as_secs_f32() * 1000.0;
         self.log = env.log.borrow().iter().rev().take(20).rev().cloned().collect();
         self.changes.clear();
-        self.stale = false;
+        // a run that answered a click drew the widgets above that button before the click changed anything:
+        // run once more (on the next frame, with nothing to answer) so the whole panel shows the new state
+        self.stale = acting;
         self.drawn_for = revision;
         match r {
             Ok(nodes) => self.nodes = nodes,
@@ -551,17 +570,21 @@ mod tests {
         let Node::Row(kids) = &p.nodes[2] else { panic!("{:?}", p.nodes[2]) };
         assert_eq!(kids[0], Node::Button { id: "Add".into(), label: "Add".into() });
         assert!(matches!(&p.nodes[3], Node::Text { value, .. } if value == "Ann"));
-        // the user clicks Add and types a name: the next run sees both
+        // the user clicks Add and types a name: the next run sees both, and the one after shows the label
+        // above the button up to date (immediate-mode: it was drawn before the click was handled)
         p.changes.insert("Add".into(), Change::Click);
         p.changes.insert("Name".into(), Change::Text("Bo".into()));
         assert!(p.needs_run(0));
         run(&mut p, 0);
+        assert!(p.needs_run(0), "one follow-up run after a click");
+        run(&mut p, 0);
+        assert!(!p.needs_run(0), "and only one");
         assert_eq!(p.nodes[1], Node::Label { text: "n = 1".into(), heading: false });
         assert!(matches!(&p.nodes[3], Node::Text { value, .. } if value == "Bo"));
         // a click on Marker runs the tool, once
         p.changes.insert("Marker".into(), Change::Click);
         assert_eq!(run(&mut p, 0), vec!["markers.add".to_string()]);
-        assert_eq!(run(&mut p, 1), Vec::<String>::new());
+        assert_eq!(run(&mut p, 0), Vec::<String>::new(), "the follow-up run doesn't click again");
     }
 
     #[test]
@@ -573,7 +596,7 @@ mod tests {
         assert!(p.nodes.is_empty() && !p.needs_run(5), "a stopped panel does not rerun on its own");
         p.reload();
         assert!(p.needs_run(5));
-        let mut p = panel("ui.label('no draw')");
+        let mut p = panel("local x = 1");
         run(&mut p, 0);
         assert!(p.error.unwrap().contains("draw()"));
         let mut p = panel("function draw() editor.tool('export.video', {}) end");
