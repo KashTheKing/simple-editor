@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **faster-whisper transcription add-on** (optional, about 600 MB with the base.en model, installed from the Transcript panel or Settings ▸ General ▸ Transcription; no Python needed): faster transcription with **Precise word timing**, which pins every word to the audio (WhisperX-style wav2vec2 alignment), so captions, Cut words and Remove fillers land on the spoken word. Pick the **Engine** (whisper.cpp or faster-whisper); MCP `transcribe.run` / `media.transcribe` take `engine` and `align`, and `transcribe.status` reports the add-on.
+
 ## 1.4.0
 
 ### Media player

@@ -706,6 +706,13 @@ pub struct Settings {
     // ---- ws:player-metadata ----
     /// Saved tag sets (Settings ▸ Metadata), applied in one click in the player, the Library and Export.
     pub metadata_presets: Vec<crate::engine::tags::MetaPreset>,
+    // ---- ws:addon-faster-whisper ----
+    /// Settings ▸ General ▸ Transcription: "whisper.cpp" | "faster-whisper"; "" = faster-whisper once the
+    /// add-on is installed (`engine::fast_whisper::resolve`).
+    pub transcribe_engine: String,
+    /// faster-whisper's "Precise word timing": pin each word to the audio with the aligner (on by default).
+    #[serde(default = "default_true")]
+    pub transcribe_align: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1002,6 +1009,9 @@ impl Default for Settings {
             emulator: BTreeMap::new(),
             match_import: true, // ws:project-color-fps
             metadata_presets: Vec::new(), // ws:player-metadata
+            // ---- ws:addon-faster-whisper ----
+            transcribe_engine: String::new(),
+            transcribe_align: true,
         }
     }
 }
