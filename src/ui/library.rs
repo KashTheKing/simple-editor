@@ -1239,6 +1239,28 @@ fn dur_cell(a: &crate::model::Asset) -> String {
 // ---------- the browser ----------
 
 #[allow(clippy::too_many_arguments)]
+/// ws:forum-ui: "N files missing" with Relink… beside it, above the list, while any item's file is
+/// gone (`LibraryState.offline`, scanned off the frame by the app). Nothing at all while healthy.
+fn health_line(ui: &mut egui::Ui, state: &LibraryState, project: &Project, resp: &mut LibraryResponse) {
+    let Some(text) = health_text(state.offline.len()) else { return };
+    ui.horizontal(|ui| {
+        ui.colored_label(ui.visuals().warn_fg_color, text)
+            .on_hover_text("These items' files were moved, renamed or deleted: their clips show as offline and cannot export");
+        if ui.small_button("Relink…").on_hover_text("Pick the folder the files are in now").clicked() {
+            resp.relink = project.assets.iter().map(|a| a.id).filter(|id| state.offline.contains(id)).collect();
+        }
+    });
+}
+
+/// The health line's text for `missing` offline items (None = healthy, no line).
+fn health_text(missing: usize) -> Option<String> {
+    match missing {
+        0 => None,
+        1 => Some("1 file missing".into()),
+        n => Some(format!("{n} files missing")),
+    }
+}
+
 fn browser(
     ui: &mut egui::Ui,
     state: &mut LibraryState,
@@ -1261,6 +1283,10 @@ fn browser(
     }
     let mut columns_changed = false;
     header(ui, state, settings, labels, palette, resp, &mut columns_changed);
+    // ---- ws:forum-ui: the project's health, only while something needs fixing ----
+    if imported {
+        health_line(ui, state, project, resp);
+    }
 
     // ponytail: both walk every clip / plan item per frame. Upgrade: cache them behind a generation
     // counter bumped by App::after_edit() if a big project ever shows it.
@@ -3566,6 +3592,14 @@ pub(crate) fn reuse_ui(
 
 #[cfg(test)]
 mod tests {
+    // ---- ws:forum-ui ----
+    #[test]
+    fn health_line_only_while_files_are_missing() {
+        assert_eq!(super::health_text(0), None);
+        assert_eq!(super::health_text(1).as_deref(), Some("1 file missing"));
+        assert_eq!(super::health_text(3).as_deref(), Some("3 files missing"));
+    }
+
     use super::*;
     use crate::model::Asset;
 
