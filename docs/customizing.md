@@ -493,6 +493,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `playback.scrub` | Ui | t | Emit one BLOCK (~21ms) of audio at t without moving the clock (paused only). |
 | `playback.seek` | Read | t | Move the playhead. |
 | `playback.status` | Read | - | Current rate, time, dropped and published frame counts, longest wait between two frames since the last call (ms), state (playing / buffering / paused), `buffering` with `buffer_fraction` (0..1 or null) and `waiting_on` while Play waits for the frames ahead or the player refills after a stall, `settled` (true when nothing is buffering: poll for it), `start_wait_ms` / `start_capped` (how the last Play started), `audio_start_lag_ms`, loop range, and the performance HUD's numbers (UI frame avg/p95, GL composite, texture upload, decode avg/worst ms, cache hit rate). |
+| `playback.health` | Ui | `fix` (bool) | Playback health as the Preview's chip shows it: `level` green / amber (frames dropped in the last few seconds of play), the one `advice` (a proxy for the video at the playhead that is slow to decode, with `proxy_bytes`, or a lower playback resolution), `sources_at_playhead` with their decode cost, and `vfr_sources` playing from a constant-rate proxy. `fix: true` applies the advice. |
 | `playback.step` | Ui | frames | Step the playhead by N frames (negative = back); pauses first. |
 
 **`playhead.*`** (2 tools)

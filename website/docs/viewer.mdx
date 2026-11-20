@@ -92,6 +92,31 @@ Frame**, **Crop Handles**, **Add Mask to Selection** and **Add Text Here**. Alwa
   real device. See [Platform guides & profiles](social-guides.mdx).
 - **Show / Hide Scopes**, **Background** (checkerboard, black, white or a colour) and **Snap to Canvas**.
 
+## When playback is choppy
+
+While a video plays, a small green dot in the Preview's top-left corner means playback is keeping up.
+If frames start to drop, it turns into an amber **Choppy** chip with one fix next to it:
+
+- **Make proxy**: one video file under the playhead is too heavy for this PC to decode in real time
+  (4K, 10-bit HEVC from a phone, a codec Windows can't decode in hardware). Hover the button to see
+  which file and about how much disk the proxy takes. It's built in the background; playback switches to
+  it when it's ready, and export still uses the original.
+- **Lower resolution**: nothing under the playhead needs a proxy, so playback drops to the next lower
+  **Playback Resolution** instead. Export isn't affected.
+
+Click **Choppy** to open the Performance pane, which shows what costs the most. The **✕** hides the chip
+until playback drops frames again. Changing a playback setting is never needed to "wake up" smooth
+playback: the editor applies every playback setting as soon as it starts and whenever it changes.
+
+### Phone and screen recordings
+
+Phones and screen recorders often record at a **variable frame rate**: the gap between frames changes,
+which makes other editors drift out of sync after cuts. Simple Editor reads each frame at its own time,
+so sound and picture stay together, and with **Proxies** on it plays such a file from a constant-rate
+proxy so stepping and scrubbing land on even frames. The first time you import one, a note says
+"Fixed phone footage timing". HDR clips from phones are shown as standard colour; see
+[Project settings](project-settings.mdx) to keep HDR.
+
 ## Multicam angles
 
 When the selected clip (or the clip under the playhead) is a multicam clip, an **Angles** list appears
