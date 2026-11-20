@@ -168,3 +168,29 @@ Hook into mixed-footage's proxy offer rather than duplicating it.
 
 ### size-diet: deferred
 Needs Windows release builds, so the coordinator runs it locally after everything is merged.
+
+### retro-pack: `claude/feat-retro-2000s-pack` (new from develop)
+The user's request, verbatim: "Add legacy windows movie maker effects/transitions and stuff. Remake them. Blue background white text
+comic sans type stuff with the slideshow stuff."
+Build a "Classic 2000s" pack: our own remakes of that early-2000s home-movie editor look. Don't use Microsoft's
+assets, names or logos; call it "Classic 2000s" or "Retro Slideshow", not "Movie Maker".
+- **Transitions** (shaders in the library format; check `library/` for how existing transitions are packaged):
+  - fade/dissolve, fade through black or white, wipes (bars, blinds, checkerboard, diagonal, clock)
+  - circle, diamond, heart, star, keyhole, iris
+  - page curl/peel, pixelate, rectangle zoom, flip, roll, shatter-in, sweep, whirlwind, ripple, spiral, zig-zag, bow tie
+- **Effects:** sepia, black and white, old film (grain, scratches, flicker), blur, posterize, watercolour, 3D ripple,
+  mirror, edge detect, film age, slow and fast "speed up/slow down" presets, and fade in/out from black/white.
+- **Titles** (native text clips plus presets):
+  - The signature card: a solid royal-blue background, white text, Comic Sans style font. Use Comic Sans MS when
+    it's installed on the PC; never bundle it. Bundle "Comic Neue" (OFL) as the fallback.
+  - Title animations: fade in/out, fly in, typewriter, news banner, scroll credits, zoom, spin, "moving titles"
+    and "basic title" with a drop shadow.
+  - Credits roll presets: "Directed by / Starring / ...".
+- **Slideshow / AutoMovie:**
+  - Select photos and clips, then Make Slideshow: a pan-and-zoom (Ken Burns) on each photo, a chosen or random
+    classic transition between each, a blue title card at the start and a credits card at the end.
+  - An option to fit to the length of the background music.
+  - One undo step. Expose it as an MCP tool (`slideshow.make`) and in the Gallery under a "Classic 2000s" category
+    with thumbnails.
+- Everything goes in the Gallery under one "Classic 2000s" category, with previews.
+- Tests: preset parse, slideshow timing (fit to music), font fallback when Comic Sans is missing.
