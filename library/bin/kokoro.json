@@ -1,0 +1,23 @@
+{
+  "name": "Kokoro voices (Kokoro-82M on sherpa-onnx)",
+  "version": "sherpa-onnx 2.0.2, kokoro-int8-multi-lang-v1_0",
+  "license": "sherpa-onnx: Apache-2.0 (https://github.com/k2-fsa/sherpa-onnx/blob/master/LICENSE); onnxruntime: MIT; Kokoro-82M weights and voices: Apache-2.0 (https://huggingface.co/hexgrad/Kokoro-82M); lexicons (from misaki): Apache-2.0. No espeak-ng: sherpa-onnx 2.x phonemises from the lexicons only.",
+  "files": [
+    {
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.2/sherpa-onnx-v2.0.2-win-x64-shared-MT-Release.tar.bz2",
+      "sha256": "55ada3f155344355c4b07445a10f4d96708a96bc483d69641fafc4966b6578ef",
+      "size": 28075706,
+      "unpack": true,
+      "pick": ["sherpa-onnx-offline-tts.exe", "onnxruntime.dll", "onnxruntime_providers_shared.dll"],
+      "to": ""
+    },
+    {
+      "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-int8-multi-lang-v1_0.tar.bz2",
+      "sha256": "72c347230107ef8a31098ec4d468a605244beef5f1ed00db97efa13518800653",
+      "size": 132353410,
+      "unpack": true,
+      "pick": ["model.int8.onnx", "voices.bin", "tokens.txt", "lexicon-us-en.txt", "lexicon-gb-en.txt", "LICENSE"],
+      "to": "model"
+    }
+  ]
+}

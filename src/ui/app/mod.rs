@@ -172,6 +172,7 @@ mod stems_ctl; // ws:addon-demucs
 mod object_mask_ctl; // ws:addon-sam2: Object Mask (the SAM 2 add-on)
 pub(crate) use object_mask_ctl::active_clip as object_mask_clip; // ws:addon-sam2: the Inspector lights its button
 pub(crate) mod bgremove_ctl; // ws:addon-bg-removal
+mod speech_ctl; // ws:addon-voice
 mod whatsnew;
 mod perf_ctl; // ws:perf-window
 mod quick_export; // ws:quick-export
@@ -521,6 +522,8 @@ pub struct App {
     /// Background whisper / tracking / TTS jobs started outside the Subtitles pane (clip menu, MCP),
     /// the clip-menu model download and the "View transcript" window - see transcript_ctl.rs.
     transcript: transcript_ctl::TranscriptState,
+    /// ws:addon-voice: the Voiceover pane's Speech section (speech_ctl.rs).
+    speech: speech_ctl::SpeechState,
     // ---- ws:pro-monitor ----
     /// Dynamic-trim arming, the dual-frame trim view's decode slots, Scopes open/closed and the
     /// eyedropper's armed (clip, target) - see `monitor.rs`'s `MonitorState` doc comment.
@@ -637,6 +640,11 @@ pub struct App {
 /// of `app`, so it can't reach `caches::cache_bytes` directly) reads this for its "Clear Caches" row.
 pub fn caches_bytes_for_ui() -> u64 {
     caches::cache_bytes()
+}
+
+/// ws:addon-voice: Settings ▸ General's Install / Remove row for a voice add-on.
+pub fn speech_addon_row(ui: &mut egui::Ui, addon: crate::engine::tts_addon::Addon) {
+    speech_ctl::addon_row(ui, addon)
 }
 
 /// Marker in the undo stack for "a pane was dragged somewhere else". The arrangement itself lives in
@@ -1171,6 +1179,7 @@ impl App {
             offline_scan_at: None,
             // ---- ws:transcript-captions ----
             transcript: transcript_ctl::TranscriptState::default(),
+            speech: speech_ctl::SpeechState::default(),
             // ---- ws:pro-monitor ----
             monitor: monitor::MonitorState::default(),
             // ---- ws:jobs-panel ----
@@ -2067,6 +2076,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     object_mask_ctl::TOOLS,
     // ---- ws:addon-bg-removal ----
     bgremove_ctl::TOOLS,
+    // ---- ws:addon-voice ----
+    speech_ctl::TOOLS,
     // ---- ws:perf-window ----
     perf_ctl::TOOLS,
     // ---- ws:quick-export ----
@@ -2307,6 +2318,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     object_mask_ctl::tick,
     // ---- ws:addon-bg-removal ----
     bgremove_ctl::tick,
+    // ---- ws:addon-voice ----
+    speech_ctl::tick,
     // ---- ws:perf-window ----
     perf_ctl::tick,
     // ---- ws:animator ----

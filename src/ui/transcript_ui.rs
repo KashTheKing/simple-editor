@@ -19,7 +19,7 @@ use crate::model::{Id, Project};
 use crate::theme::Palette;
 use crate::ui::tools::Glyph;
 use crate::ui::{duration_text, menu, once};
-use eframe::egui::{self, Button, DragValue, RichText, TextEdit};
+use eframe::egui::{self, DragValue, RichText, TextEdit};
 
 /// Word count above which the section stops laying out every word (a long interview would cost a
 /// widget per word per frame) and asks for the search box / window instead.
@@ -46,16 +46,10 @@ pub struct TranscriptUiState {
     pub status: String,
     /// "Transcribe selected clip" - drained by the app.
     pub want_transcribe: Option<Id>,
-    /// (text, voice) from the Speech panel's Speak - drained by the app.
-    pub tts_request: Option<(String, Option<String>)>,
-    pub show_tts: bool,
+    /// ⋯ ▸ Speak text…: open the Voiceover pane's Speech section - drained by the app (ws:addon-voice).
+    pub want_speech: bool,
     /// ⋯ ▸ Edit filler words…: the chip editor is shown.
     show_fillers: bool,
-    tts_text: String,
-    tts_voice: String,
-    /// Installed voices, filled by the app the first time the Speech panel is open (`engine::tts::
-    /// voices()` is a one-second powershell call - never at startup, never here).
-    pub tts_voices: Option<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -193,10 +187,8 @@ pub fn show(
                     st.show_fillers = !st.show_fillers;
                 }
                 ui.separator();
-                let r = menu::check(ui, st.show_tts, "Speak text…", "")
-                    .on_hover_text("Windows' own voices, via System.Speech");
-                if r.clicked() {
-                    st.show_tts = !st.show_tts;
+                if menu::row(ui, None, "Speak text…", "").on_hover_text("Opens Speech in the Voiceover pane").clicked() {
+                    st.want_speech = true;
                 }
                 menu::action_item(ui, Action::ExportTranscript);
             })
@@ -247,9 +239,6 @@ pub fn show(
     }
     if st.show_fillers {
         fillers_editor(ui, st);
-    }
-    if st.show_tts {
-        tts_panel(ui, st);
     }
 
     let Some(clip) = st.clip else {
@@ -451,36 +440,6 @@ fn fillers_editor(ui: &mut egui::Ui, st: &mut TranscriptUiState) {
     });
 }
 
-/// ⋯ ▸ Speak text…: a line of text, an installed SAPI voice, Speak → the app synthesizes a WAV and
-/// places it at the playhead (linked to the selected text clip, if any).
-fn tts_panel(ui: &mut egui::Ui, st: &mut TranscriptUiState) {
-    ui.horizontal_wrapped(|ui| {
-        ui.add(TextEdit::singleline(&mut st.tts_text).desired_width(220.0).hint_text("Text to speak…"));
-        let shown = if st.tts_voice.is_empty() { "(default voice)".to_string() } else { st.tts_voice.clone() };
-        egui::ComboBox::from_id_salt("tts_voice").selected_text(shown).show_ui(ui, |ui| {
-            ui.selectable_value(&mut st.tts_voice, String::new(), "(default voice)");
-            match &st.tts_voices {
-                Some(v) => {
-                    for name in v {
-                        ui.selectable_value(&mut st.tts_voice, name.clone(), name);
-                    }
-                }
-                None => {
-                    ui.weak("listing voices…");
-                }
-            }
-        });
-        if ui
-            .add_enabled(!st.tts_text.trim().is_empty(), Button::new("Speak at playhead"))
-            .on_hover_text("Writes a WAV with an OS voice and imports it at the playhead")
-            .clicked()
-        {
-            let voice = (!st.tts_voice.is_empty()).then(|| st.tts_voice.clone());
-            st.tts_request = Some((st.tts_text.trim().to_string(), voice));
-        }
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,7 +517,7 @@ mod tests {
         assert!(!ctx.has_requested_repaint(), "idle Transcript section requested a repaint");
         assert_eq!(st.clip, Some(id), "the selected clip's transcript is shown");
         assert_eq!(p.transcript(id).unwrap().words.len(), 5);
-        assert!(st.want_transcribe.is_none() && st.tts_request.is_none());
+        assert!(st.want_transcribe.is_none() && !st.want_speech);
     }
 
     /// Clicking a word seeks to it; Delete over a selected word ripple-cuts it out of the clip (and

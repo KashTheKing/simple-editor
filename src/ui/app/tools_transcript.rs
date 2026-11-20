@@ -412,10 +412,15 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "tts.speak",
-        desc: "Windows SAPI text-to-speech (job): writes a WAV and imports it at `at` (default: the playhead), linked to the text clip `clip_id` when given. OS voices only - see the Speech panel for names.",
+        desc: "Text to speech (job): writes a cached WAV and places it on the Voiceover track at `at` (default: the playhead), linked to the text clip `clip_id` when given. engine windows | kokoro | chatterbox (default: the Voiceover pane's pick); an add-on that is not installed falls back to a Windows voice and says so. voice = an id from tts.voices. Chatterbox: intensity (0.25-2, 0.5 neutral) and clone_ref (an audio file of a voice the user has permission to clone, 5-15 s).",
         args: &[
             "text:string:true:",
-            "voice:string:false:installed SAPI voice name",
+            "engine:string:false:windows|kokoro|chatterbox",
+            "voice:string:false:an id from tts.voices",
+            "speed:number:false:0.5-2, default the pane's",
+            "pitch:number:false:semitones -12..12",
+            "intensity:number:false:Chatterbox emotion 0.25-2",
+            "clone_ref:string:false:Chatterbox: audio file whose voice to use",
             "clip_id:integer:false:text clip to link the audio to",
             "at:number:false:timeline seconds, default playhead",
         ],
@@ -428,7 +433,27 @@ pub const TOOLS: &[ToolDef] = &[
                 app.project.clip(c).ok_or("no such clip")?;
             }
             let at = a.t_or_playhead("at", app);
-            let prog = app.speak(&text, a.str("voice"), link_to, at)?;
+            // ws:addon-voice: the pane's choices, overridden per call
+            let mut sp = super::speech_ctl::speech_from_settings(&app.settings, &text);
+            if let Some(e) = a.str("engine") {
+                sp.engine = crate::engine::tts::Engine::parse(e).ok_or_else(|| format!("unknown engine '{e}'"))?;
+                sp.voice = app.settings.tts_voices.get(sp.engine.id()).filter(|v| !v.is_empty()).cloned();
+            }
+            if let Some(v) = a.str("voice") {
+                sp.voice = Some(v.to_string()).filter(|v| !v.is_empty());
+            }
+            let num = |k: &str| args.get(k).and_then(|v| v.as_f64()).map(|v| v as f32);
+            sp.speed = num("speed").unwrap_or(sp.speed).clamp(0.5, 2.0);
+            sp.pitch = num("pitch").unwrap_or(sp.pitch).clamp(-12.0, 12.0);
+            sp.intensity = num("intensity").unwrap_or(sp.intensity).clamp(0.25, 2.0);
+            if let Some(r) = a.str("clone_ref") {
+                let p = PathBuf::from(r);
+                if !p.is_file() {
+                    return Err(format!("clone_ref: no file at {r}"));
+                }
+                sp.clone_ref = Some(p);
+            }
+            let prog = app.speak(sp, link_to, at)?;
             Ok(ToolOutcome::Job(prog, PathBuf::new()))
         },
     },

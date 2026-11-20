@@ -74,6 +74,7 @@ pub(super) fn progress_jobs(app: &App) -> Vec<ProgJob> {
     v.extend(stems_ctl::progress_jobs()); // ws:addon-demucs
     v.extend(object_mask_ctl::progress_jobs()); // ws:addon-sam2
     v.extend(bgremove_ctl::progress_jobs()); // ws:addon-bg-removal
+    v.extend(speech_ctl::install_jobs()); // ws:addon-voice
     v.extend(caches::move_jobs()); // ws:neutral-web: Settings ▸ General ▸ Cache folder
     v.extend(music_ctl::progress_jobs()); // ws:music-burn: burns, erases, visualizer video prep
     v.extend(export_fix::progress_jobs(app)); // ws:forum-export: Find the problem
@@ -449,9 +450,8 @@ pub(super) mod tests {
             assert_eq!(r.can_cancel, k.can_cancel(), "{k:?}");
             assert_eq!(r.can_reorder, k == JobKind::QueuedExport, "{k:?}");
         }
-        // the table: tts / tracking greyed out, caches + probes + queued proxies never cancellable
+        // the table: tracking greyed out, caches + probes + queued proxies never cancellable
         for k in [
-            JobKind::Tts,
             JobKind::Tracking,
             JobKind::Waveforms,
             JobKind::Thumbnails,
@@ -470,6 +470,7 @@ pub(super) mod tests {
             JobKind::Proxy,
             JobKind::Download,
             JobKind::Transcribe,
+            JobKind::Tts, // ws:addon-voice: neural speech can take a while
             JobKind::ModelDownload,
             JobKind::ScreenRec,
             JobKind::VoiceRec,
@@ -495,8 +496,8 @@ pub(super) mod tests {
         assert!(jobs[1].2.is_cancelled() && !jobs[0].2.is_cancelled(), "exactly the addressed row");
         assert_eq!(cancel_core(&jobs, &mut q, "queue:1"), Ok(None));
         assert_eq!(q, VecDeque::from(vec![1, 3]));
-        assert!(cancel_core(&jobs, &mut q, "tts:0").is_err(), "tts is not cancellable");
-        assert!(!jobs[2].2.is_cancelled());
+        assert_eq!(cancel_core(&jobs, &mut q, "tts:0"), Ok(None), "speech can be cancelled");
+        assert!(jobs[2].2.is_cancelled());
         assert_eq!(
             cancel_core(&jobs, &mut q, "screen-rec:0"),
             Ok(Some(JobKind::ScreenRec)),

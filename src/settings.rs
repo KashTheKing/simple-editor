@@ -503,6 +503,14 @@ pub struct Settings {
     pub filler_words: Vec<String>,
     /// Padding (ms) added on both sides of every filler hit before it is cut.
     pub filler_pad_ms: u32,
+    // ---- ws:addon-voice ----
+    /// Text to speech (Voiceover pane ▸ Speech): the engine, the voice picked per engine (engine id ->
+    /// voice id), speed (0.5..2), pitch (semitones) and Chatterbox's intensity.
+    pub tts_engine: crate::engine::tts::Engine,
+    pub tts_voices: std::collections::BTreeMap<String, String>,
+    pub tts_speed: f32,
+    pub tts_pitch: f32,
+    pub tts_intensity: f32,
     // ---- ws:pro-monitor ----
     /// Preview shows the dual-frame trim view when an edit point is selected.
     #[serde(default)]
@@ -933,6 +941,12 @@ impl Default for Settings {
             // ---- ws:transcript-captions ----
             filler_words: crate::engine::transcribe::FILLER_WORDS.iter().map(|s| s.to_string()).collect(),
             filler_pad_ms: 120,
+            // ---- ws:addon-voice ----
+            tts_engine: Default::default(),
+            tts_voices: Default::default(),
+            tts_speed: 1.0,
+            tts_pitch: 0.0,
+            tts_intensity: 0.5,
             // ---- ws:pro-monitor ----
             trim_view: false,
             scopes: Vec::new(),

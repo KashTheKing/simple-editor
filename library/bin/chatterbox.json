@@ -1,0 +1,95 @@
+{
+  "name": "Chatterbox voices (Resemble AI Chatterbox, ONNX export)",
+  "version": "chatterbox-ONNX 3cab09a, onnxruntime-directml 1.24.4, Python 3.12.10",
+  "license": "Chatterbox code and weights: MIT (https://github.com/resemble-ai/chatterbox, https://huggingface.co/onnx-community/chatterbox-ONNX); the runner script: MIT (Simple Editor); Python embeddable: PSF-2.0; onnxruntime-directml: MIT (DirectML.dll inside it: Microsoft DirectML licence, redistributable); numpy: BSD-3-Clause; tokenizers: Apache-2.0.",
+  "files": [
+    {
+      "url": "https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip",
+      "sha256": "4acbed6dd1c744b0376e3b1cf57ce906f9dc9e95e68824584c8099a63025a3c3",
+      "size": 11133606,
+      "unpack": true,
+      "to": "py"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/88/ea/33814eb0ec96775eda4c1d30b0d86e91d7d2cd0d84c66d3915aef0e06fa3/onnxruntime_directml-1.24.4-cp312-cp312-win_amd64.whl",
+      "sha256": "f2ecb68b7b7b259d2ef3112ae760149f9b5a1e7c0fbb73d539da6250a648a614",
+      "size": 25111930,
+      "unpack": true,
+      "to": "py/Lib/site-packages"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/d1/71/b1ce51834c21020d189332979d38ba7350eb6cd7ca8c8ec424a663b0ca6f/numpy-2.5.5-cp312-cp312-win_amd64.whl",
+      "sha256": "919eb420662b0b4ba34889df503f3d5329775b0c1d5f7e5f5af4fba8315b1e30",
+      "size": 12580189,
+      "unpack": true,
+      "to": "py/Lib/site-packages"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/d1/6c/24f074c9a0efb98e61b20aafe6b2641922d5db24e447d5d6daffd9e17555/tokenizers-0.23.3-cp310-abi3-win_amd64.whl",
+      "sha256": "1f0823bb00c5fdc98e487354d54dd55a03848d61a1a0bf29a68c77f24f3b26c3",
+      "size": 2872101,
+      "unpack": true,
+      "to": "py/Lib/site-packages"
+    },
+    {
+      "url": "https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/3cab09af388d3f02bba43443fce88c1f4525ac43/tokenizer.json",
+      "sha256": "ecddf6aaae85e271610a2743409f7e447886957d0b0836687c1eaec5ccac2891",
+      "size": 28543,
+      "to": "models/tokenizer.json"
+    },
+    {
+      "url": "https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/3cab09af388d3f02bba43443fce88c1f4525ac43/default_voice.wav",
+      "sha256": "3ebc531cdaba358a327099c1c4f0448026719957bcf4d8e9868767f227e02f4e",
+      "size": 714320,
+      "to": "models/default_voice.wav"
+    },
+    {
+      "url": "https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/3cab09af388d3f02bba43443fce88c1f4525ac43/onnx/embed_tokens.onnx",
+      "sha256": "160722ec14789f616abdb1e31916cbbf9223c03fde0ab546d64ca74fb72e430b",
+      "size": 13286,
+      "to": "models/onnx/embed_tokens.onnx"
+    },
+    {
+      "url": "https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/3cab09af388d3f02bba43443fce88c1f4525ac43/onnx/embed_tokens.onnx_data",
+      "sha256": "898c563c3a5ca1b9ea10ce89b0cdcf252b0bb5ab460dfc4eadea003b56e5d2ee",
+      "size": 61640704,
+      "to": "models/onnx/embed_tokens.onnx_data"
+    },
+    {
+      "url": "https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/3cab09af388d3f02bba43443fce88c1f4525ac43/onnx/language_model_q4.onnx",
+      "sha256": "7f8cdca83b2493536cbf3acf421199808a3d68736f55f4eabd20ef8a99da4313",
+      "size": 227911,
+      "to": "models/onnx/language_model_q4.onnx"
+    },
+    {
+      "url": "https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/3cab09af388d3f02bba43443fce88c1f4525ac43/onnx/language_model_q4.onnx_data",
+      "sha256": "5203d1e83c159316f9923c5c83759f6a34f87be1322ce4ad0facd9fc4aef4790",
+      "size": 353621248,
+      "to": "models/onnx/language_model_q4.onnx_data"
+    },
+    {
+      "url": "https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/3cab09af388d3f02bba43443fce88c1f4525ac43/onnx/speech_encoder.onnx",
+      "sha256": "8f1c8a0f89b77bf9cd5dd8f2e034eb2c79dc00fe70d41196b28c257643b00ccb",
+      "size": 1184608,
+      "to": "models/onnx/speech_encoder.onnx"
+    },
+    {
+      "url": "https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/3cab09af388d3f02bba43443fce88c1f4525ac43/onnx/speech_encoder.onnx_data",
+      "sha256": "04431dcef6325c54b02de2219845888b464bcd1f1ac2f8839c2fecd1ed2ef294",
+      "size": 591274880,
+      "to": "models/onnx/speech_encoder.onnx_data"
+    },
+    {
+      "url": "https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/3cab09af388d3f02bba43443fce88c1f4525ac43/onnx/conditional_decoder.onnx",
+      "sha256": "1656d0d31332bae1854839959a3139300ebb67c178651dfa3f8c5fbfa5351351",
+      "size": 6350448,
+      "to": "models/onnx/conditional_decoder.onnx"
+    },
+    {
+      "url": "https://huggingface.co/onnx-community/chatterbox-ONNX/resolve/3cab09af388d3f02bba43443fce88c1f4525ac43/onnx/conditional_decoder.onnx_data",
+      "sha256": "51d58345a272747665ec9d5bb61e01835258a940e321a288582ac4c18cf01b5a",
+      "size": 533970816,
+      "to": "models/onnx/conditional_decoder.onnx_data"
+    }
+  ]
+}

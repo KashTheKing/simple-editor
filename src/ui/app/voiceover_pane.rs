@@ -38,5 +38,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         app.project.delete_clips(&[id], false);
         app.after_edit();
     }
+    // ---- ws:addon-voice ----
+    ui.separator();
+    egui::CollapsingHeader::new("Speech").id_salt("vo_speech").default_open(true).show(ui, |ui| super::speech_ctl::draw(app, ui));
     true
 }
