@@ -86,28 +86,36 @@ def force_align(em, tokens, blank=0):
     if J == 0 or T < J:
         return None
     tok = np.asarray(tokens)
+    # trellis[t, j]: best score with j tokens emitted after frames 0..t-1. Staying on token j costs its
+    # own score or a blank, whichever is likelier (CTC repeats a character over a held sound).
     trellis = np.full((T + 1, J + 1), -np.inf, dtype=np.float32)
     trellis[0, 0] = 0.0
     trellis[1:, 0] = np.cumsum(em[:, blank])
     for t in range(T):
-        stay = trellis[t, 1:] + em[t, blank]
-        step = trellis[t, :-1] + em[t, tok]
+        own = em[t, tok]
+        stay = trellis[t, 1:] + np.maximum(em[t, blank], own)
+        step = trellis[t, :-1] + own
         trellis[t + 1, 1:] = np.maximum(stay, step)
-    # backtrack from the frame the last token is best emitted at (the frames after it are left free, as
-    # in the tutorial); every frame belongs to the latest token emitted by then, so a character holds
-    # the blank frames after it until the next one starts
-    j = J
-    f = int(np.argmax(trellis[J:, J])) + J - 1
+    if not np.isfinite(trellis[T, J]):
+        return None
+    # backtrack from the window's last frame, so every frame counts (stopping at the first frame where
+    # all tokens fit ignores the frames after it and squeezes the last words together). A token's span
+    # runs from the frame it is emitted to the last frame it is still heard; the blank frames after it
+    # belong to nobody.
     spans = [[None, None] for _ in range(J)]
-    while j > 0 and f >= 0:
-        owner = j - 1
-        if trellis[f, j - 1] + em[f, tok[j - 1]] >= trellis[f, j] + em[f, blank]:
+    j = J
+    for f in range(T - 1, -1, -1):
+        if j == 0:
+            break
+        tk = tok[j - 1]
+        s = spans[j - 1]
+        if trellis[f, j - 1] + em[f, tk] >= trellis[f, j] + max(em[f, blank], em[f, tk]):
+            s[0] = f
+            if s[1] is None:
+                s[1] = f
             j -= 1
-        s = spans[owner]
-        s[0] = f
-        if s[1] is None:
+        elif s[1] is None and em[f, tk] > em[f, blank]:
             s[1] = f
-        f -= 1
     if j > 0:
         return None
     return [(a, b + 1) for a, b in spans]
