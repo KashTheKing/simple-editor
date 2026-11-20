@@ -308,7 +308,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `export.stabilize` | Job | clip_ids | Bake the clip(s) through ffmpeg deshake, then swap them onto the result. |
 | `export.status` | Read | - | Current export progress (fraction, status, ETA seconds) and the queue / bake counts. |
 | `export.xml` | Read | path | Write the main timeline as Final Cut Pro 7 XML (xmeml v5) for Premiere / Resolve: clips, audio level/pan, A/V links, cross dissolves and sequence + clip markers (track names are not part of xmeml). |
-| `export.video` | Job | audio, captions, crf, encoder, guide, height, path, scaler, stem_by, width | Export the timeline to a file (blocks until done, up to 30 min); encoder/crf/audio/stem_by default to settings. audio=streams adds one audio track per stem after the mix (mp4/mov/mkv/m4v, else one mix); audio=stems writes '<name> stems/NN <stem>.wav' beside the file. `guide` / `captions` burn in the social guide / subtitles (default: the Export settings). |
+| `export.video` | Job | audio, captions, chapters, crf, encoder, guide, height, path, scaler, stem_by, width | Export the timeline to a file (blocks until done, up to 30 min); encoder/crf/audio/stem_by default to settings. audio=streams adds one audio track per stem after the mix (mp4/mov/mkv/m4v, else one mix); audio=stems writes '<name> stems/NN <stem>.wav' beside the file. `guide` / `captions` burn in the social guide / subtitles (default: the Export settings). `chapters` embeds the timeline markers as chapters (mp4/mov/mkv/webm). |
 
 **`frame.*`** (2 tools)
 
@@ -650,6 +650,7 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
+| `timeline.montage` | Mutate | asset_ids, at, clip_secs, fit_music, ken_burns, music_id, photo_secs, transition | Make a montage / slideshow: the photos and clips end to end on one video track, a pan-and-zoom on each photo, a cross dissolve between them, and optional music the photos stretch to fit. One undo step. |
 | `timeline.add_clip` | Mutate | asset_id, at, duration, sequence_id, text, track | Place an asset, a sequence, or a new text clip at a time. |
 | `timeline.add_transition` | Mutate | duration, kind, right_clip_id | Transition at the cut on the left of a clip (a fade-in from nothing when no clip abuts there). |
 | `timeline.auto_cut` | Mutate | clip_ids, keep_quiet, min_silence, min_speech, padding, ripple, threshold_db | Silence-based auto-cut of audio clips (+ linked video). |

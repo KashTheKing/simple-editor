@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Editing (Shotcut parity)
+- **Clip comments**: a Comment box under the clip's name in the Inspector. A commented clip shows a folded corner on the timeline, and hovering it shows the note. MCP: `clip.set` `comment`.
+- **Time display**: Settings ▸ General ▸ Time display shows times as timecode (00:01:02:15), a clock (00:01:02.500) or frames (1875) across the transport, Inspector, markers and menus. With Frames, typing a whole number in the transport jumps to that frame. MCP: `settings.set time_format`.
+- **Chapters in the export**: Export ▸ Advanced ▸ Chapters from markers (on by default) embeds each timeline marker as a chapter in MP4, MOV, MKV and WebM files, so players show chapters. Review comments are left out, and an In/Out export keeps the chapters inside the range. MCP: `export.video chapters`.
+- **Library sorts by date**: Sort by Date Created (when the file came onto this PC) and Date Recorded (the camera's date inside MP4 / MOV and JPEG files, else the file's modified date). The dates are read in the background. MCP: `media.list sort=created|recorded`.
+- **Nudge 10 frames**: Shift+, and Shift+. move the selected clips (and what they are linked to) 10 frames; , and . still move 1.
+- **Save Clip as File…** (clip right-click): writes just the part of the source the clip uses as its own file, then adds it to the Library.
+- **Per-filter presets**: right-click an effect ▸ Presets loads the settings of an effect you saved with Save to Gallery ▸ This effect, with its settings, into that effect, keeping its place, on/off, mask and timing on the clip.
+- **Export Each As** (Library right-click on a selection): writes every selected file to a folder you pick, in one format, one file after another, with the export settings. A subclip writes only its part.
+- **Make Montage** (Library right-click on a selection): the photos and clips end to end at the end of the timeline, with a slow pan-and-zoom on each photo and a dissolve between neighbours. A song in the selection plays underneath, and the photos stretch so the montage lasts as long as the song. One undo step. MCP: `timeline.montage`.
+- **Import Shotcut projects**: File ▸ Import Timeline reads `.mlt` files: tracks, clips and gaps, each video clip's sound, speed, hidden tracks, transitions (as dissolves), gain, clip names and timeline markers. Anything else is listed in the import report.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.
