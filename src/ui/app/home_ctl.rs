@@ -24,6 +24,25 @@ pub(crate) struct HomeState {
     /// Paths handed to a worker already (so each is read once per visit).
     asked: HashSet<String>,
     rename: Option<RenameDlg>,
+    /// The startup recovery offer, shown as Home's Recover tab (`recovery::boot`; a dialog when Home isn't up).
+    pub(crate) recover: Option<RecoverOffer>,
+}
+
+pub(crate) type Choice = (&'static str, &'static str, Box<dyn FnOnce(&mut App)>);
+
+pub(crate) struct RecoverOffer {
+    pub(crate) title: String,
+    pub(crate) body: String,
+    pub(crate) choices: Vec<Choice>,
+}
+
+/// After launch: an offer with no Home page to sit on is the old dialog.
+pub(super) fn recover_fallback(app: &mut App) {
+    if !app.home.open {
+        if let Some(r) = app.home.recover.take() {
+            crate::ui::confirm::ask_many(r.title, r.body, r.choices);
+        }
+    }
 }
 
 struct RenameDlg {
@@ -89,7 +108,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) -> bool {
     let rows: Vec<RowView> =
         recents.iter().zip(&thumbs).map(|(r, th)| RowView { path: r, info: infos.get(r), thumb: *th }).collect();
     let cards = home_page::cards(&app.settings);
-    let action = home_page::show(ui, &cards, &rows);
+    let labels: Vec<(&str, &str)> =
+        app.home.recover.iter().flat_map(|r| r.choices.iter().map(|c| (c.0, c.1))).collect();
+    let view = app.home.recover.as_ref().map(|r| home_page::RecoverView { title: &r.title, body: &r.body, choices: &labels });
+    let action = home_page::show(ui, &cards, &rows, view.as_ref());
     rename_window(app, &ctx);
     if let Some(a) = action {
         handle(app, a);
@@ -198,6 +220,14 @@ fn handle(app: &mut App, a: PageAction) {
         }
         PageAction::Browse => app.pending_actions.push(Action::OpenProject),
         PageAction::OpenMedia => app.pending_actions.push(Action::OpenFile),
+        PageAction::Recover(i) => {
+            if let Some(mut r) = app.home.recover.take() {
+                if i < r.choices.len() {
+                    (r.choices.swap_remove(i).2)(app);
+                }
+            }
+        }
+        PageAction::DismissRecover => app.home.recover = None,
     }
 }
 

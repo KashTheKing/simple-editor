@@ -293,17 +293,67 @@ impl ScriptEditor {
 }
 
 /// What the user asked the pane for; the app does it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Act {
     Save,
     Run,
     OpenExternally,
     OpenFolder,
     AddScript,
+    /// The script list or the toolbar's Rename… / Delete…: the same as the Scripts menu's rows.
+    Menu(MenuAct),
 }
 
-/// Draw the pane. Saving happens here only as an `Act` (the app shows the result).
-pub fn show(ui: &mut egui::Ui, st: &mut ScriptEditor) -> Vec<Act> {
+/// Draw the pane: the script list on the left, the open script beside it. Saving happens here only as an
+/// `Act` (the app shows the result).
+pub fn show(ui: &mut egui::Ui, st: &mut ScriptEditor, metas: &[ScriptMeta]) -> Vec<Act> {
+    let mut acts = Vec::new();
+    egui::SidePanel::left("se-script-browser")
+        .resizable(true)
+        .default_width(170.0)
+        .width_range(110.0..=360.0)
+        .show_inside(ui, |ui| browser(ui, st, metas, &mut acts));
+    acts.extend(editor(ui, st));
+    acts
+}
+
+/// The script list: every script in the scripts folder, the open one highlighted. A click opens it here,
+/// right-click has Run / Open Folder / Rename… / Delete…, "+" adds one.
+fn browser(ui: &mut egui::Ui, st: &ScriptEditor, metas: &[ScriptMeta], acts: &mut Vec<Act>) {
+    ui.horizontal(|ui| {
+        ui.strong("Scripts");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("+").on_hover_text("Add Script").clicked() {
+                acts.push(Act::AddScript);
+            }
+        });
+    });
+    ui.separator();
+    if metas.is_empty() {
+        ui.weak("No scripts yet");
+    }
+    egui::ScrollArea::vertical().id_salt("se-script-browser-list").auto_shrink([false, false]).show(ui, |ui| {
+        for m in metas {
+            let open = st.path.as_deref() == Some(m.path.as_path());
+            let r = ui.add(egui::Button::selectable(open, &m.name).truncate()).on_hover_text(if m.desc.is_empty() {
+                m.path.display().to_string()
+            } else {
+                m.desc.clone()
+            });
+            if r.clicked() && !open {
+                acts.push(Act::Menu(MenuAct::Open(m.path.clone())));
+            }
+            menu::context(&r, |ui| {
+                if let Some(a) = script_rows(ui, m, false) {
+                    acts.push(Act::Menu(a));
+                }
+            });
+        }
+    });
+}
+
+/// The open script: its toolbar, the code and the result line.
+fn editor(ui: &mut egui::Ui, st: &mut ScriptEditor) -> Vec<Act> {
     let mut acts = Vec::new();
     if st.poll_disk(Instant::now()) {
         st.output = "Reloaded: the file changed on disk".into();
@@ -318,7 +368,7 @@ pub fn show(ui: &mut egui::Ui, st: &mut ScriptEditor) -> Vec<Act> {
                 acts.push(Act::AddScript);
             }
             ui.add_space(4.0);
-            ui.weak("Or pick one in Window ▸ Scripts ▸ <script> ▸ Open");
+            ui.weak("Or pick one on the left");
         });
         return acts;
     }
@@ -345,6 +395,15 @@ pub fn show(ui: &mut egui::Ui, st: &mut ScriptEditor) -> Vec<Act> {
             }
             if ui.button("Open Folder").on_hover_text("Show the file in File Explorer").clicked() {
                 acts.push(Act::OpenFolder);
+            }
+            if let Some(p) = st.path.clone() {
+                if ui.button("Delete…").on_hover_text("Move it to the Recycle Bin").clicked() {
+                    acts.push(Act::Menu(MenuAct::Delete(p.clone())));
+                }
+                let r = ui.button("Rename…");
+                if r.clicked() {
+                    acts.push(Act::Menu(MenuAct::Rename(p, r.rect.left_bottom())));
+                }
             }
             if ui.button("Run").on_hover_text("Save, then run it against the project as one undo step").clicked() {
                 acts.push(Act::Run);
@@ -1068,7 +1127,7 @@ mod tests {
             for _ in 0..2000 {
                 frame(&ctx, &mut |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        assert!(show(ui, &mut st).is_empty());
+                        assert!(show(ui, &mut st, &[]).is_empty());
                     });
                 });
                 if !st.intel.busy() {
@@ -1080,7 +1139,7 @@ mod tests {
             for _ in 0..30 {
                 frame(&ctx, &mut |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
-                        assert!(show(ui, &mut st).is_empty());
+                        assert!(show(ui, &mut st, &[]).is_empty());
                     });
                 });
             }
@@ -1098,7 +1157,7 @@ mod tests {
         };
         let _ = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                let _ = show(ui, st);
+                let _ = show(ui, st, &[]);
             });
         });
     }

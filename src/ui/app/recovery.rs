@@ -95,7 +95,7 @@ pub(super) fn boot(app: &mut App) {
     let said = crashguard::describe(&crash);
     let Some(plan) = RecoverPlan::new(said, culprits, autosave, project_file) else { return };
     let (title, body) = plan.text();
-    let mut choices: Vec<(&'static str, &'static str, Box<dyn FnOnce(&mut App)>)> = Vec::new();
+    let mut choices: Vec<super::home_ctl::Choice> = Vec::new();
     if plan.loads() {
         for mode in [SafeStart::Normal, SafeStart::NoMedia, SafeStart::NoEffects] {
             let p = plan.clone();
@@ -116,7 +116,8 @@ pub(super) fn boot(app: &mut App) {
             }),
         ));
     }
-    crate::ui::confirm::ask_many(title, body, choices);
+    // shown as Home's Recover tab; `home_ctl::recover_fallback` makes it the dialog when Home isn't up
+    app.home.recover = Some(super::home_ctl::RecoverOffer { title, body, choices });
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]

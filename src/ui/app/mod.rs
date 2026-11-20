@@ -1403,6 +1403,7 @@ impl App {
         let lib = &mut self.library;
         (lib.selected, lib.sel_seq, lib.seen_selected) = (None, None, None);
         lib.sel_ids.clear();
+        lib.sel_seqs.clear();
         self.playhead = 0.0;
         self.player.pause();
         // ws:browser-layer: zoom details are per project (and old builds' picture clips go)

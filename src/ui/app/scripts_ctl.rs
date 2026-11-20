@@ -100,12 +100,15 @@ fn delete_now(app: &mut App, path: &Path) {
 pub(super) fn menu(app: &mut App, ui: &mut egui::Ui) {
     let metas = app.script_metas().to_vec();
     let Some(act) = script_editor::scripts_menu(ui, &metas, app.settings.scripts_external) else { return };
+    let external = app.settings.scripts_external;
+    menu_act(app, act, external);
+}
+
+/// A Scripts row's ask, from the menu or the Script Editor's list (`external` = where Open goes).
+fn menu_act(app: &mut App, act: MenuAct, external: bool) {
     match act {
         MenuAct::Run(p) => app.run_script_path = Some(p),
-        MenuAct::Open(p) => {
-            let external = app.settings.scripts_external;
-            open(app, &p, external);
-        }
+        MenuAct::Open(p) => open(app, &p, external),
         MenuAct::OpenFolder(p) => crate::contextmenu::reveal(&p),
         MenuAct::Rename(p, at) => {
             let name = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -136,8 +139,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if pane != Pane::ScriptEditor {
         return false;
     }
-    for act in script_editor::show(ui, &mut app.script_editor) {
+    let metas = app.script_metas().to_vec();
+    for act in script_editor::show(ui, &mut app.script_editor, &metas) {
         match act {
+            // the pane's own list opens in the pane
+            Act::Menu(m) => menu_act(app, m, false),
             Act::Save => {
                 save(app);
             }

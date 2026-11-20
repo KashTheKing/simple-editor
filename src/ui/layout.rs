@@ -1556,10 +1556,12 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         let mut insert_x = None; // a tab being dragged: where it would land
         for (i, &(_, hit, close_r)) in spots.iter().enumerate() {
             let r = ui.interact(hit, id.with(("tl_tab", i)), egui::Sense::click_and_drag());
-            let c = closable
+            // the main timeline (`names[i].1` false) never closes
+            let closes = closable && names[i].1;
+            let c = closes
                 .then(|| ui.interact(close_r, id.with(("tl_close", i)), egui::Sense::click()).on_hover_text("Close"));
             hot[i] = (r.hovered(), c.as_ref().is_some_and(|c| c.hovered()));
-            if c.as_ref().is_some_and(|c| c.clicked() || c.middle_clicked()) || (closable && r.middle_clicked()) {
+            if c.as_ref().is_some_and(|c| c.clicked() || c.middle_clicked()) || (closes && r.middle_clicked()) {
                 cmds.push(TabCmd::Close(i));
             } else if r.clicked() {
                 if !names[i].2 {
@@ -1584,7 +1586,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
             }
             let (renamable, n) = (names[i].1, strip.len());
             menu::context(&r, |ui| {
-                if ui.add_enabled_ui(n > 1, |ui| menu::row(ui, Some(Glyph::Cross), "Close", "")).inner.clicked() {
+                if ui.add_enabled_ui(n > 1 && renamable, |ui| menu::row(ui, Some(Glyph::Cross), "Close", "")).inner.clicked() {
                     cmds.push(TabCmd::Close(i));
                 }
                 if ui.add_enabled_ui(n > 1, |ui| menu::row(ui, None, "Close Others", "")).inner.clicked() {
@@ -1678,7 +1680,7 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
                     text_color
                 };
                 ui.painter().galley(egui::pos2(x, inner.center().y - g.size().y / 2.0), g, color);
-                if closable && hovered {
+                if closable && names[i].1 && hovered {
                     if hot[i].1 {
                         let fill = color.gamma_multiply(0.2);
                         ui.painter().rect_filled(close_r.shrink2(egui::vec2(1.0, 5.0)), 3.0, fill);
@@ -3008,7 +3010,8 @@ mod tests {
         assert_eq!(click(&mut l, at(tab.with(("tl_tab", 1))), primary, &mut t), vec![TabCmd::Switch(1)]);
         let active = click(&mut l, at(tab.with(("tl_tab", 0))), primary, &mut t);
         assert_eq!(active, vec![], "the active tab: nothing to do");
-        assert_eq!(click(&mut l, at(tab.with(("tl_close", 0))), primary, &mut t), vec![TabCmd::Close(0)]);
+        assert!(ctx.read_response(tab.with(("tl_close", 0))).is_none(), "Main has no ×");
+        assert_eq!(click(&mut l, at(tab.with(("tl_close", 1))), primary, &mut t), vec![TabCmd::Close(1)]);
         let middle = click(&mut l, at(tab.with(("tl_tab", 2))), egui::PointerButton::Middle, &mut t);
         assert_eq!(middle, vec![TabCmd::Close(2)]);
         assert_eq!(click(&mut l, at(tab.with("tl_new")), primary, &mut t), vec![TabCmd::New]);

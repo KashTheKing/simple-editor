@@ -28,6 +28,8 @@ pub(crate) struct TabsState {
     views: HashMap<Option<Id>, TabView>,
     /// Rename Sequence window: the sequence and the name field.
     rename: Option<(Id, Option<String>)>,
+    /// Sequences made by "+" and the undo depth right after: closed with nothing done since, they go away.
+    fresh: HashMap<Id, usize>,
 }
 
 /// The tab's label: "Main", or the sequence's name.
@@ -98,9 +100,11 @@ pub(crate) fn switch(app: &mut App, to: Option<Id>) -> bool {
     true
 }
 
-/// Hide a tab (the sequence stays). The only tab left can't be closed. Closing the active one moves to
-/// its neighbour.
+/// Hide a tab (the sequence stays). The main timeline never closes. Closing the active one moves to its
+/// neighbour. A sequence just made by "+" that is still empty with no edit since goes away with its
+/// creation's undo step, as if it was never made.
 pub(crate) fn close(app: &mut App, tab: Option<Id>) -> bool {
+    let Some(id) = tab else { return false };
     let mut tabs = app.project.timeline_tabs();
     let Some(i) = tabs.iter().position(|t| *t == tab).filter(|_| tabs.len() > 1) else { return false };
     tabs.remove(i);
@@ -109,16 +113,25 @@ pub(crate) fn close(app: &mut App, tab: Option<Id>) -> bool {
     }
     app.project.timeline_tabs = tabs;
     app.tabs.views.remove(&tab);
+    let untouched = app.tabs.fresh.remove(&id) == Some(app.undo.len())
+        && app.project.sequence(id).is_some_and(|s| s.tracks.iter().all(|t| t.clips.is_empty()));
+    if untouched {
+        app.project.sequences.retain(|s| s.id != id);
+        app.undo.pop(); // the "+"'s own step: nothing is left for it to undo
+    }
     true
 }
 
-/// Keep only `tab`.
+/// Keep only `tab` (and the main timeline, which never closes).
 pub(crate) fn close_others(app: &mut App, tab: Option<Id>) -> bool {
     if !switch(app, tab) {
         return false;
     }
-    app.project.timeline_tabs = vec![tab];
-    app.tabs.views.clear();
+    for t in app.project.timeline_tabs() {
+        if t != tab {
+            close(app, t);
+        }
+    }
     true
 }
 
@@ -152,6 +165,7 @@ pub(crate) fn new_tab(app: &mut App) -> Id {
     let id = app.project.new_sequence(format!("Sequence {n}"), w, h, fps);
     app.after_edit();
     switch(app, Some(id));
+    app.tabs.fresh.insert(id, app.undo.len());
     id
 }
 
@@ -220,7 +234,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
         Action::NewTimeline => drop(new_tab(app)),
         Action::CloseTimeline => {
             if !close(app, app.project.editing) {
-                app.toast("The only open timeline stays open");
+                app.toast("The main timeline stays open");
             }
         }
         _ => return false,
@@ -252,7 +266,7 @@ pub const TOOLS: &[ToolDef] = &[ToolDef {
     name: "timeline.tabs",
     desc: "The timelines open as tabs above the timeline (id null = the main timeline). op: list (default), \
            open (adds a tab for sequence `id` and shows it, or shows its tab), switch (same as open), close \
-           (hides tab `id`; the sequence stays; the only tab can't close), new (a new empty sequence in a tab \
+           (hides tab `id`; the sequence stays; the main timeline never closes; an empty sequence just made by new goes away), new (a new empty sequence in a tab \
            of its own). Tabs are a view: no undo step, except new. Returns the tabs and the active one.",
     args: &[
         "op:string:false:list | open | switch | close | new",
@@ -370,17 +384,30 @@ mod tests {
         assert_eq!(app.project.timeline_tabs(), vec![None, Some(b)]);
         assert_eq!(app.project.editing, Some(b), "the neighbour takes over");
         assert!(app.project.sequence(a).is_some_and(|s| s.duration() == 20.0), "the sequence and its clip stay");
-        assert!(close(&mut app, None), "Main can close while another tab is open");
-        assert_eq!(app.project.timeline_tabs(), vec![Some(b)]);
-        assert!(!close(&mut app, Some(b)), "the only tab stays");
-        // Back to Parent Timeline brings Main back
-        app.act(Action::OpenParentSequence);
-        assert_eq!((app.project.editing, app.project.timeline_tabs()), (None, vec![Some(b), None]));
-        move_tab(&mut app, 1, 0);
-        assert_eq!(app.project.timeline_tabs(), vec![None, Some(b)]);
+        assert!(!close(&mut app, None), "Main never closes");
+        assert!(close(&mut app, Some(b)));
+        assert_eq!((app.project.editing, app.project.timeline_tabs()), (None, vec![None]));
+        move_tab(&mut app, 0, 0);
         app.enter_sequence(a);
+        switch(&mut app, Some(b));
         assert!(close_others(&mut app, Some(b)));
-        assert_eq!((app.project.editing, app.project.timeline_tabs()), (Some(b), vec![Some(b)]));
+        assert_eq!((app.project.editing, app.project.timeline_tabs()), (Some(b), vec![None, Some(b)]), "Main stays");
+    }
+
+    /// User report: a sequence made by "+" and closed straight away stayed in the project. Closed empty with
+    /// nothing done since, it goes away with its undo step; once edited, closing only hides it.
+    #[test]
+    fn closing_an_untouched_new_sequence_deletes_it() {
+        let mut app = app();
+        let depth = app.undo.len();
+        let n = app.project.sequences.len();
+        let id = new_tab(&mut app);
+        assert!(close(&mut app, Some(id)));
+        assert_eq!((app.project.sequences.len(), app.undo.len()), (n, depth), "as if never made");
+        let id = new_tab(&mut app);
+        app.push_undo(); // an edit since
+        assert!(close(&mut app, Some(id)));
+        assert!(app.project.sequence(id).is_some(), "edited: closing only hides it");
     }
 
     /// User report: switching to another timeline showed the start-up cards ("Simple Editor": Open, Import,

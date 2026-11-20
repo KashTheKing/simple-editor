@@ -259,6 +259,17 @@ pub enum PageAction {
     Browse,
     /// Open Media…: a video or sound file opened as a new project (File ▸ Open Video / Media).
     OpenMedia,
+    /// The Recover tab: run the offer's choice at this index.
+    Recover(usize),
+    /// The Recover tab's Dismiss: drop the offer (the autosave stays, File ▸ Restore Autosave… lists it).
+    DismissRecover,
+}
+
+/// The startup recovery offer, shown as the Recover tab instead of a dialog: title, text, (label, tip) choices.
+pub struct RecoverView<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+    pub choices: &'a [(&'a str, &'a str)],
 }
 
 /// One row of the Projects list.
@@ -279,8 +290,11 @@ pub const BUTTONS: [(&str, f32); 3] = [("Rename", 76.0), ("Open Folder", 96.0), 
 const MAX_W: f32 = 980.0;
 
 /// The page, centred in `ui` (the whole space the panes would take). `Some` on a click.
-pub fn show(ui: &mut egui::Ui, cards: &[CardInfo], rows: &[RowView]) -> Option<PageAction> {
+pub fn show(ui: &mut egui::Ui, cards: &[CardInfo], rows: &[RowView], recover: Option<&RecoverView>) -> Option<PageAction> {
     let mut out = None;
+    // Projects | Recover (the tab only while there is something to recover)
+    let tid = egui::Id::new("home_recover_tab");
+    let mut on_recover: bool = recover.is_some() && ui.data(|d| d.get_temp(tid)).unwrap_or(false);
     // ws:parity-io: the Projects search (kept in egui's memory for the visit)
     let qid = egui::Id::new("home_recent_search");
     let mut query: String = ui.data(|d| d.get_temp(qid)).unwrap_or_default();
@@ -306,7 +320,21 @@ pub fn show(ui: &mut egui::Ui, cards: &[CardInfo], rows: &[RowView]) -> Option<P
                 ui.separator();
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.heading("Projects");
+                    if recover.is_none() {
+                        ui.heading("Projects");
+                    } else {
+                        let big = |t: &str| egui::RichText::new(t).heading();
+                        if ui.selectable_label(!on_recover, big("Projects")).clicked() {
+                            on_recover = false;
+                        }
+                        if ui.selectable_label(on_recover, big("Recover")).on_hover_text("Unsaved work from the last session").clicked() {
+                            on_recover = true;
+                        }
+                        ui.data_mut(|d| d.insert_temp(tid, on_recover));
+                    }
+                    if on_recover {
+                        return;
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // right to left: Open Project… sits right-most, Open Media… on its left
                         if ui.button("Open Project…").on_hover_text("Open a project that isn't in the list").clicked() {
@@ -324,6 +352,25 @@ pub fn show(ui: &mut egui::Ui, cards: &[CardInfo], rows: &[RowView]) -> Option<P
                     });
                 });
                 ui.add_space(6.0);
+                if let Some(r) = recover.filter(|_| on_recover) {
+                    ui.strong(r.title);
+                    ui.add_space(4.0);
+                    ui.label(r.body);
+                    ui.add_space(8.0);
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, (label, tip)) in r.choices.iter().enumerate() {
+                            if ui.button(*label).on_hover_text(*tip).clicked() {
+                                out = Some(PageAction::Recover(i));
+                            }
+                        }
+                        let tip = "Keep the autosave without opening it (File ▸ Restore Autosave… lists it)";
+                        if ui.button("Dismiss").on_hover_text(tip).clicked() {
+                            out = Some(PageAction::DismissRecover);
+                        }
+                    });
+                    ui.add_space(20.0);
+                    return;
+                }
                 if rows.is_empty() {
                     ui.weak("No recent projects");
                 } else if !rows.iter().any(|r| matches_recent(r.path, &query)) {

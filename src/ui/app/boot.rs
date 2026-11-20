@@ -24,6 +24,7 @@ pub(crate) fn run(app: &mut App) {
     first_run(app);
     // ---- ws:home-page ----
     home_ctl::boot(app);
+    home_ctl::recover_fallback(app);
 }
 
 /// `SE_BENCH_FIRST_FRAME=<file>`: write launch -> first painted frame (ms since the process was created)

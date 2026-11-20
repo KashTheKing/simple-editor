@@ -71,8 +71,10 @@ pub struct LibraryState {
     pub sel_paths: Vec<String>,
     /// Project folders in the selection (their full "a/b" name).
     pub sel_folders: Vec<String>,
-    /// A sequence picked with a single click (double-click opens it); exclusive with the rows above.
+    /// The selection anchor when it is a sequence (double-click opens it).
     pub sel_seq: Option<Id>,
+    /// Sequences in the selection (click, Ctrl / Shift click, rubber band).
+    pub sel_seqs: Vec<Id>,
     /// `selected` as of the end of the last frame - the only way to tell app.rs's write from ours.
     pub seen_selected: Option<Id>,
     pub search: String,
@@ -377,6 +379,7 @@ fn drag_payload(st: &LibraryState, pick: Pick) -> DragPayload {
         }
 
         Pick::Path(p) | Pick::Folder(p) => DragPayload::Path(p),
+        Pick::Seq(id) => DragPayload::Sequence(id),
     }
 }
 
@@ -472,6 +475,7 @@ enum Pick {
     Asset(Id),
     Path(String),
     Folder(String),
+    Seq(Id),
 }
 
 /// Project mutations collected during the frame, applied after all widgets (one undo per gesture).
@@ -559,6 +563,7 @@ impl LibraryState {
         self.sel_ids.clear();
         self.sel_paths.clear();
         self.sel_folders.clear();
+        self.sel_seqs.clear();
     }
 
     /// The Media Browser pane's state: the disk view.
@@ -571,11 +576,15 @@ impl LibraryState {
             Pick::Asset(id) => self.sel_ids.contains(id),
             Pick::Path(s) => self.sel_paths.iter().any(|x| x == s),
             Pick::Folder(s) => self.sel_folders.iter().any(|x| x == s),
+            Pick::Seq(id) => self.sel_seqs.contains(id),
         }
     }
 
     /// The selection anchor: the item Shift-click ranges from.
     fn anchor(&self) -> Option<Pick> {
+        if let Some(id) = self.sel_seq {
+            return Some(Pick::Seq(id));
+        }
         match (self.selected, &self.sel_path) {
             (Some(id), _) => Some(Pick::Asset(id)),
             (None, Some(p)) => Some(p.strip_prefix('\0').map_or(Pick::Path(p.clone()), |f| Pick::Folder(f.into()))),
@@ -589,6 +598,7 @@ impl LibraryState {
             Pick::Path(s) => (self.selected, self.sel_path) = (None, Some(s.clone())),
             // ponytail: a folder anchor rides in sel_path behind a NUL (no path contains one)
             Pick::Folder(s) => (self.selected, self.sel_path) = (None, Some(format!("\0{s}"))),
+            Pick::Seq(id) => (self.selected, self.sel_path, self.sel_seq) = (None, None, Some(*id)),
         }
         self.seen_selected = self.selected;
     }
@@ -601,6 +611,7 @@ impl LibraryState {
             Pick::Asset(id) => self.sel_ids.push(*id),
             Pick::Path(s) => self.sel_paths.push(s.clone()),
             Pick::Folder(s) => self.sel_folders.push(s.clone()),
+            Pick::Seq(id) => self.sel_seqs.push(*id),
         }
     }
 
@@ -609,6 +620,7 @@ impl LibraryState {
             Pick::Asset(id) => self.sel_ids.retain(|x| x != id),
             Pick::Path(s) => self.sel_paths.retain(|x| x != s),
             Pick::Folder(s) => self.sel_folders.retain(|x| x != s),
+            Pick::Seq(id) => self.sel_seqs.retain(|x| x != id),
         }
     }
 
@@ -627,14 +639,18 @@ impl LibraryState {
 /// The set is ordered: click order, and a Shift range is the anchor then the rest in display order -
 /// "Add to timeline" places in exactly this order.
 fn apply_click(state: &mut LibraryState, rows: &[(Pick, egui::Rect)], pick: &Pick, ctrl: bool, shift: bool) {
-    state.sel_seq = None;
     let at = |p: &Pick| rows.iter().position(|(q, _)| q == p);
+    let anchor = state.anchor();
+    state.sel_seq = None;
     if shift {
-        if let (Some(a), Some(i), Some(j)) = (state.anchor(), state.anchor().as_ref().and_then(&at), at(pick)) {
+        if let (Some(a), Some(i), Some(j)) = (anchor.clone(), anchor.as_ref().and_then(&at), at(pick)) {
             state.clear_set();
             state.add_sel(&a);
             for (q, _) in &rows[i.min(j)..=i.max(j)] {
                 state.add_sel(q);
+            }
+            if let Pick::Seq(id) = a {
+                state.sel_seq = Some(id); // the anchor stays put
             }
             return;
         }
@@ -1965,7 +1981,7 @@ fn info_window(
     let title = match &pick {
         Pick::Asset(id) => project.asset(*id).map(|a| display_name(project, a)),
         Pick::Path(p) => Some(split_path(p).0.to_string()),
-        Pick::Folder(_) => None,
+        Pick::Folder(_) | Pick::Seq(_) => None,
     };
     let Some(title) = title else {
         state.info = None; // the asset is gone (removed, undone)
@@ -1984,7 +2000,7 @@ fn info_window(
             match &pick {
                 Pick::Asset(id) => asset_info(ui, state, project, *id, labels, palette, resp, ops, op_start),
                 Pick::Path(p) => path_info(ui, state, settings, resp, p),
-                Pick::Folder(_) => {}
+                Pick::Folder(_) | Pick::Seq(_) => {}
             }
         });
     if !open {
@@ -2802,9 +2818,10 @@ impl Tree<'_, '_> {
                 let tag = kind_tag(ClipKind::Sequence);
                 let (text, palette) = (self.palette.text, self.palette);
                 let art = Art::Icon(Glyph::Sequence);
-                let sel = self.state.sel_seq == Some(*id);
+                let sel = self.state.has(&Pick::Seq(*id));
                 let (r, _) =
                     tile(ui, egui::Id::new(("seq_tile", *id)), payload, sel, tag, name, text, palette, art, w, None);
+                self.hit(ui, &r, Pick::Seq(*id), "");
                 self.sequence_menu(&r, *id, name);
             });
         } else {
@@ -2835,7 +2852,7 @@ impl Tree<'_, '_> {
         let (palette, h, columns) = (self.palette, ROW_H * self.state.zoom, &self.settings.library_columns);
         let dur = duration_text(self.project.sequence_duration(id));
         let editing = self.project.editing == Some(id);
-        let sel = self.state.sel_seq == Some(id);
+        let sel = self.state.has(&Pick::Seq(id));
         let (r, _) = row(ui, egui::Id::new(("seq", id)), DragPayload::Sequence(id), sel, None, |ui| {
             ui.add_space(indent(depth) + ARROW);
             let (rect, _) = ui.allocate_exact_size(egui::vec2(h * 16.0 / 9.0, h), egui::Sense::hover());
@@ -2850,16 +2867,13 @@ impl Tree<'_, '_> {
                 };
             }
         });
+        self.hit(ui, &r, Pick::Seq(id), "");
         self.sequence_menu(&r, id, name);
     }
 
     /// A click selects a sequence, a double-click opens it; its right-click menu.
     // ponytail: the Source monitor plays files only, so a selected sequence previews nothing there
     fn sequence_menu(&mut self, r: &egui::Response, id: Id, name: &str) {
-        if r.clicked() {
-            self.state.clear_sel();
-            self.state.sel_seq = Some(id);
-        }
         if r.double_clicked() {
             self.resp.open_sequence = Some(id);
         }
@@ -2878,7 +2892,12 @@ impl Tree<'_, '_> {
                 .on_hover_text("Also removes its clips - Undo brings both back")
                 .clicked()
             {
-                self.ops.push(LibOp::SeqDelete(id));
+                // every selected sequence when this one is among them
+                let all = match self.state.sel_seqs.contains(&id) {
+                    true => self.state.sel_seqs.clone(),
+                    false => vec![id],
+                };
+                self.ops.extend(all.into_iter().map(LibOp::SeqDelete));
                 *self.op_start = true;
             }
         });
