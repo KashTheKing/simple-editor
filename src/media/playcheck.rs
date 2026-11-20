@@ -27,8 +27,8 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 pub struct Traits {
     /// Variable frame rate: the gaps between frames are not all the same.
     pub vfr: bool,
-    /// The rate a constant-rate copy is made at: the stream's average rate snapped to a standard one
-    /// (`model::snap_fps`). 0 when unknown.
+    /// The rate a constant-rate copy is made at, snapped to a standard one (`model::snap_fps`): the
+    /// nominal rate of a VFR phone clip, else the measured average. 0 when unknown.
     pub fps: f64,
 }
 
@@ -92,12 +92,14 @@ pub fn traits_from_json(v: &serde_json::Value) -> Traits {
         .filter_map(|p| p.get("pts_time").and_then(|t| t.as_str()).and_then(|t| t.parse().ok()))
         .collect();
     let vfr = vfr_from_pts(&pts) || vfr_from_rates(nominal, avg);
-    let base = if avg > 0.0 { avg } else { nominal };
+    // a phone's nominal rate is what it meant to record (30 / 60); its average sags in the dark. A screen
+    // recorder's nominal is its time base (1000), so the average it is.
+    let base = if vfr && nominal > 0.0 && nominal <= 120.0 { nominal } else if avg > 0.0 { avg } else { nominal };
     Traits { vfr, fps: if base > 0.0 { crate::model::snap_fps(base) } else { 0.0 } }
 }
 
 /// One ffprobe run over the first 20 s of packets (no decode: it reads timestamps only, a few ms).
-fn probe(path: &str) -> Traits {
+pub(crate) fn probe(path: &str) -> Traits {
     let Some(exe) = super::ffpipe::ffprobe_exe() else { return Traits::default() };
     let out = super::ffpipe::command(&exe)
         .args(["-v", "error", "-select_streams", "v:0", "-read_intervals", "%+20"])
@@ -234,7 +236,7 @@ pub enum Level {
 }
 
 /// Rolling playback health from the player's cumulative counters. Fed ~twice a second while playing;
-/// turns Amber when the last few seconds dropped 3+ frames and at least 2 % of them, and back to Green
+/// turns Amber when the last few seconds dropped 3+ frames and at least 1 % of them, and back to Green
 /// after `CLEAR_S` seconds of playing with nothing dropped (or on `reset`, after a fix). It stays Amber
 /// while paused, so the fix is still there to click.
 #[derive(Clone, Debug, Default)]
@@ -283,7 +285,7 @@ impl Meter {
         self.win.retain(|s| now - s.0 <= WINDOW_S + 1e-9);
         let (first, lastw) = (self.win[0], self.win[self.win.len() - 1]);
         let (p, d) = (lastw.1.saturating_sub(first.1), lastw.2.saturating_sub(first.2));
-        if d >= 3 && d as f64 >= (p + d) as f64 * 0.02 {
+        if d >= 3 && d as f64 >= (p + d) as f64 * 0.01 {
             self.level = Level::Amber;
         } else if self.level == Level::Amber && self.clean >= CLEAR_S {
             self.level = Level::Green;
@@ -338,9 +340,76 @@ pub fn advise(cands: &[Candidate], frame_ms: f32, quality: u32, qualities: &[u32
 }
 
 #[cfg(test)]
+#[path = "playcheck_bench.rs"]
+mod bench;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Session D's sync check, through the app's own decoders: a VFR clip (every 4th frame of a 30 fps
+    /// count missing, timestamps kept) is found VFR by the real probe, its proxy built with the proxy
+    /// encoder + `cfr_args` is constant 30 fps, and at 20 random cut points the proxy shows the very
+    /// source frame the original shows (each frame's grey level is its number). Skipped without ffmpeg.
+    #[test]
+    fn vfr_proxy_shows_the_original_frame_at_20_cuts() {
+        use crate::media::{ffpipe, Backend, Frame};
+        let (Some(ff), Some(_)) = (ffpipe::ffmpeg_exe(), ffpipe::ffprobe_exe()) else {
+            return eprintln!("skipped: no ffmpeg / ffprobe");
+        };
+        let dir = std::env::temp_dir().join(format!("se-vfr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (src, proxy) = (dir.join("phone.mp4"), dir.join("proxy.mp4"));
+        let graph = "nullsrc=s=64x64:r=30,geq=lum='mod(N\\,50)*5':cb=128:cr=128,select='not(eq(mod(n\\,4)\\,1))'";
+        let ok = ffpipe::command(&ff)
+            .args(["-y", "-v", "error", "-f", "lavfi", "-i", graph, "-t", "10", "-fps_mode", "passthrough"])
+            .args(["-c:v", "libx264", "-crf", "0", "-pix_fmt", "yuv420p"])
+            .arg(&src)
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "ffmpeg made the VFR clip");
+        let src_s = src.to_string_lossy().into_owned();
+        let t = probe(&src_s);
+        assert_eq!(t, Traits { vfr: true, fps: 30.0 }, "the probe finds it VFR");
+        remember(&src_s, t);
+        let cfr = crate::media::proxy::cfr_args(&src_s);
+        assert_eq!(cfr, ["-fps_mode", "cfr", "-r", "30"]);
+        let ok = ffpipe::command(&ff)
+            .args(["-y", "-v", "error", "-i"])
+            .arg(&src)
+            .args(["-vf", "scale=-2:64"])
+            .args(crate::media::proxy::ENCODE)
+            .args(&cfr)
+            .arg(&proxy)
+            .status()
+            .is_ok_and(|s| s.success());
+        assert!(ok, "the proxy encode ran");
+        let proxy_s = proxy.to_string_lossy().into_owned();
+        assert!(!probe(&proxy_s).vfr, "the proxy is constant-rate");
+        let mut a = crate::media::open_video(&src_s, Backend::Auto).expect("opens the original");
+        let mut b = crate::media::open_video(&proxy_s, Backend::Auto).expect("opens the proxy");
+        let (mut fa, mut fb) = (Frame::default(), Frame::default());
+        let mut seed = 0x2545_f491_u64;
+        let mut cuts: Vec<f64> = (0..20)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                (seed % 9_800) as f64 / 1000.0 + 0.05
+            })
+            .collect();
+        cuts.sort_by(|x, y| x.total_cmp(y));
+        for &t in cuts.iter().rev().chain(&cuts) {
+            // backwards then forwards: both seek paths
+            assert!(a.frame_at(t, 64, 64, &mut fa) && b.frame_at(t, 64, 64, &mut fb), "frames at {t}");
+            let at = (32 * 64 + 32) * 4;
+            let (ga, gb) = (fa.rgba[at] as i32, fb.rgba[at] as i32);
+            // neighbouring frames differ by ~6 levels after the range expansion: 3 tells them apart
+            assert!((ga - gb).abs() <= 3, "cut at {t:.3}: original grey {ga}, proxy grey {gb}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn rates_parse_and_ntsc_is_not_vfr() {
@@ -392,9 +461,15 @@ mod tests {
         let pkts: Vec<_> = (0..40).map(|i| json!({"pts_time": format!("{:.6}", i as f64 / 25.0)})).collect();
         let v = json!({"streams": [{"r_frame_rate": "25/1", "avg_frame_rate": "25/1"}], "packets": pkts});
         assert_eq!(traits_from_json(&v), Traits { vfr: false, fps: 25.0 });
+        // a phone that sagged to 26 fps in the dark: VFR, conformed at the 30 it meant
+        let v = json!({"streams": [{"r_frame_rate": "30/1", "avg_frame_rate": "2343/90"}], "packets": []});
+        assert_eq!(traits_from_json(&v), Traits { vfr: true, fps: 30.0 });
+        // a screen recorder: millisecond time base, the average is the rate
+        let v = json!({"streams": [{"r_frame_rate": "1000/1", "avg_frame_rate": "5994/100"}], "packets": []});
+        assert_eq!(traits_from_json(&v), Traits { vfr: true, fps: 59.94 });
+        // 30 vs 29.99: not VFR by the rates alone
         let v = json!({"streams": [{"r_frame_rate": "30/1", "avg_frame_rate": "16313/544"}], "packets": []});
-        let t = traits_from_json(&v);
-        assert!(t.vfr && t.fps == 29.97, "{t:?}");
+        assert!(!traits_from_json(&v).vfr);
         assert_eq!(traits_from_json(&json!({})), Traits::default());
     }
 
@@ -448,9 +523,10 @@ mod tests {
             assert_eq!(step(&mut m, 30, 0, true), Level::Green, "smooth");
         }
         assert_eq!(step(&mut m, 30, 1, true), Level::Green, "one drop is not choppy");
-        assert_eq!(step(&mut m, 28, 2, true), Level::Amber, "3 in the window, over 2 %");
+        assert_eq!(step(&mut m, 28, 2, true), Level::Amber, "3 in the window, over 1 %");
         assert_eq!(step(&mut m, 0, 0, false), Level::Amber, "paused: the fix stays offered");
-        for _ in 0..15 {
+        // (the first sample after the pause only restarts the clock: the pause is not clean play)
+        for _ in 0..16 {
             step(&mut m, 30, 0, true);
         }
         assert_eq!(m.level(), Level::Amber, "7.5 s clean is not yet 8");
