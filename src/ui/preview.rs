@@ -1220,8 +1220,18 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
                     }
                 });
             }
+            // guides / the device frame on: one click turns them off, no submenu to dig through
+            if c.settings.guide.is_some()
+                && menu::row(ui, Some(Glyph::Guides), "Hide Platform Guides", "")
+                    .on_hover_text("Turn off the safe zones, platform UI or device frame on the Preview")
+                    .clicked()
+            {
+                r.set_guide = Some(crate::ui::social::Set::Platform(None));
+            }
             menu::sub(ui, Some(Glyph::Guides), "Platform Emulator", |ui| {
-                r.set_guide = crate::ui::social::menu_rows(ui, c.settings);
+                if let Some(set) = crate::ui::social::menu_rows(ui, c.settings) {
+                    r.set_guide = Some(set);
+                }
             });
             menu::action_item(ui, Action::ToggleScopes);
             // ---- ws:parity-preview-tools ----
