@@ -2,6 +2,63 @@
   "version": 1,
   "items": [
     {
+      "id": "effects/alpha-adjust",
+      "kind": "effect",
+      "name": "Alpha Adjust",
+      "desc": "Grows, shrinks, softens or hardens a clip's transparency edge, or inverts it.",
+      "tags": [
+        "alpha",
+        "matte",
+        "choke",
+        "spread",
+        "feather",
+        "edge",
+        "transparency",
+        "key"
+      ],
+      "file": "effects/alpha-adjust.glsl",
+      "size": 1196,
+      "credit": "",
+      "thumb": "thumbs/effects-alpha-adjust.jpg"
+    },
+    {
+      "id": "effects/alpha-strobe",
+      "kind": "effect",
+      "name": "Alpha Strobe",
+      "desc": "Blinks the clip on and off, so whatever is below shows through on the off beats.",
+      "tags": [
+        "strobe",
+        "blink",
+        "flash",
+        "alpha",
+        "transparency",
+        "flicker"
+      ],
+      "file": "effects/alpha-strobe.glsl",
+      "size": 435,
+      "credit": "",
+      "thumb": "thumbs/effects-alpha-strobe.jpg"
+    },
+    {
+      "id": "effects/alpha-view",
+      "kind": "effect",
+      "name": "Alpha View",
+      "desc": "Shows the clip's transparency as black and white (white = opaque), to check a key or a cut-out.",
+      "tags": [
+        "alpha",
+        "matte",
+        "transparency",
+        "view",
+        "key",
+        "check",
+        "mask"
+      ],
+      "file": "effects/alpha-view.glsl",
+      "size": 626,
+      "credit": "",
+      "thumb": "thumbs/effects-alpha-view.jpg"
+    },
+    {
       "id": "effects/anamorphic-streak",
       "kind": "effect",
       "name": "Anamorphic Streak",
@@ -77,6 +134,41 @@
       "thumb": "thumbs/effects-cartoon.jpg"
     },
     {
+      "id": "effects/choppy",
+      "kind": "effect",
+      "name": "Choppy",
+      "desc": "Stop-motion look: the picture holds for a beat before catching up, like footage at a much lower frame rate.",
+      "tags": [
+        "choppy",
+        "stutter",
+        "stop motion",
+        "frame rate",
+        "hold",
+        "low fps"
+      ],
+      "file": "effects/choppy.glsl",
+      "size": 599,
+      "credit": "",
+      "thumb": "thumbs/effects-choppy.jpg"
+    },
+    {
+      "id": "effects/chroma-hold",
+      "kind": "effect",
+      "name": "Chroma Hold",
+      "desc": "Keeps one colour and turns the rest of the picture black and white.",
+      "tags": [
+        "chroma hold",
+        "color pop",
+        "color splash",
+        "selective color",
+        "black and white"
+      ],
+      "file": "effects/chroma-hold.glsl",
+      "size": 678,
+      "credit": "",
+      "thumb": "thumbs/effects-chroma-hold.jpg"
+    },
+    {
       "id": "effects/chromatic-aberration",
       "kind": "effect",
       "name": "Chromatic Aberration",
@@ -92,6 +184,44 @@
       "size": 782,
       "credit": "",
       "thumb": "thumbs/effects-chromatic-aberration.jpg"
+    },
+    {
+      "id": "effects/circle-crop",
+      "kind": "effect",
+      "name": "Circle Crop",
+      "desc": "Crops the picture to a circle or oval, with a soft edge and a transparent or coloured outside.",
+      "tags": [
+        "circle",
+        "crop",
+        "oval",
+        "round",
+        "frame",
+        "mask",
+        "vignette"
+      ],
+      "file": "effects/circle-crop.glsl",
+      "size": 777,
+      "credit": "",
+      "thumb": "thumbs/effects-circle-crop.jpg"
+    },
+    {
+      "id": "effects/color-gradient",
+      "kind": "effect",
+      "name": "Color Gradient",
+      "desc": "Lays a two-colour linear or radial gradient over the picture, blended softly or as a colour wash.",
+      "tags": [
+        "gradient",
+        "color",
+        "overlay",
+        "wash",
+        "tint",
+        "sky",
+        "sunset"
+      ],
+      "file": "effects/color-gradient.glsl",
+      "size": 1231,
+      "credit": "",
+      "thumb": "thumbs/effects-color-gradient.jpg"
     },
     {
       "id": "effects/crt",
@@ -146,6 +276,43 @@
       "thumb": "thumbs/effects-cutout-shadow.jpg"
     },
     {
+      "id": "effects/deband",
+      "kind": "effect",
+      "name": "Deband",
+      "desc": "Smooths the stepped bands in skies and gradients from heavy compression, leaving real detail alone.",
+      "tags": [
+        "deband",
+        "banding",
+        "gradient",
+        "compression",
+        "smooth",
+        "cleanup"
+      ],
+      "file": "effects/deband.glsl",
+      "size": 1070,
+      "credit": "",
+      "thumb": "thumbs/effects-deband.jpg"
+    },
+    {
+      "id": "effects/dither",
+      "kind": "effect",
+      "name": "Dither",
+      "desc": "Reduces the picture to a few levels per channel with an ordered dither pattern, like old computer graphics.",
+      "tags": [
+        "dither",
+        "bayer",
+        "retro",
+        "8-bit",
+        "pixel",
+        "posterize",
+        "low color"
+      ],
+      "file": "effects/dither.glsl",
+      "size": 912,
+      "credit": "",
+      "thumb": "thumbs/effects-dither.jpg"
+    },
+    {
       "id": "effects/duotone",
       "kind": "effect",
       "name": "Duotone",
@@ -182,6 +349,43 @@
       "thumb": "thumbs/effects-echo-trails.jpg"
     },
     {
+      "id": "effects/elastic-scale",
+      "kind": "effect",
+      "name": "Elastic Scale",
+      "desc": "Stretches the sides more than the middle, so 4:3 footage fills a wide frame without fattening faces.",
+      "tags": [
+        "elastic",
+        "stretch",
+        "scale",
+        "aspect",
+        "4:3",
+        "widescreen",
+        "nonlinear"
+      ],
+      "file": "effects/elastic-scale.glsl",
+      "size": 808,
+      "credit": "",
+      "thumb": "thumbs/effects-elastic-scale.jpg"
+    },
+    {
+      "id": "effects/emboss",
+      "kind": "effect",
+      "name": "Emboss",
+      "desc": "Raises the picture's edges like a stamped metal or paper relief.",
+      "tags": [
+        "emboss",
+        "relief",
+        "stamp",
+        "metal",
+        "edges",
+        "3d"
+      ],
+      "file": "effects/emboss.glsl",
+      "size": 631,
+      "credit": "",
+      "thumb": "thumbs/effects-emboss.jpg"
+    },
+    {
       "id": "effects/film-grain",
       "kind": "effect",
       "name": "Film Grain",
@@ -197,6 +401,25 @@
       "size": 1290,
       "credit": "",
       "thumb": "thumbs/effects-film-grain.jpg"
+    },
+    {
+      "id": "effects/film-projector",
+      "kind": "effect",
+      "name": "Film Projector",
+      "desc": "An old projector slipping out of frame: the picture jumps and rolls, with the dark frame line between frames.",
+      "tags": [
+        "projector",
+        "film",
+        "old film",
+        "frame slip",
+        "vintage",
+        "jitter",
+        "roll"
+      ],
+      "file": "effects/film-projector.glsl",
+      "size": 966,
+      "credit": "",
+      "thumb": "thumbs/effects-film-projector.jpg"
     },
     {
       "id": "effects/fire",
@@ -305,6 +528,24 @@
       "thumb": "thumbs/effects-gradient-map.jpg"
     },
     {
+      "id": "effects/grid-lines",
+      "kind": "effect",
+      "name": "Grid Lines",
+      "desc": "Draws a grid of lines over the picture, for a blueprint, notebook or layout look.",
+      "tags": [
+        "grid",
+        "lines",
+        "blueprint",
+        "graph paper",
+        "notebook",
+        "overlay"
+      ],
+      "file": "effects/grid-lines.glsl",
+      "size": 621,
+      "credit": "",
+      "thumb": "thumbs/effects-grid-lines.jpg"
+    },
+    {
       "id": "effects/halation",
       "kind": "effect",
       "name": "Halation",
@@ -396,6 +637,24 @@
       "thumb": "thumbs/effects-kaleidoscope.jpg"
     },
     {
+      "id": "effects/key-spill",
+      "kind": "effect",
+      "name": "Key Spill",
+      "desc": "Removes the green or blue fringe a chroma key leaves on hair and edges. Hue 0.33 is green, 0.66 blue.",
+      "tags": [
+        "key spill",
+        "despill",
+        "green screen",
+        "blue screen",
+        "chroma key",
+        "fringe"
+      ],
+      "file": "effects/key-spill.glsl",
+      "size": 984,
+      "credit": "",
+      "thumb": "thumbs/effects-key-spill.jpg"
+    },
+    {
       "id": "effects/lens-flare",
       "kind": "effect",
       "name": "Lens Flare",
@@ -467,6 +726,24 @@
       "size": 3300,
       "credit": "",
       "thumb": "thumbs/effects-neon-orb.jpg"
+    },
+    {
+      "id": "effects/nervous",
+      "kind": "effect",
+      "name": "Nervous",
+      "desc": "Jittery time: the picture keeps jumping between the current frame and the last few.",
+      "tags": [
+        "nervous",
+        "jitter",
+        "stutter",
+        "glitch",
+        "time",
+        "frames"
+      ],
+      "file": "effects/nervous.glsl",
+      "size": 556,
+      "credit": "",
+      "thumb": "thumbs/effects-nervous.jpg"
     },
     {
       "id": "effects/night-vision",
@@ -541,6 +818,24 @@
       "thumb": "thumbs/effects-pixel-sort.jpg"
     },
     {
+      "id": "effects/posterize",
+      "kind": "effect",
+      "name": "Posterize",
+      "desc": "Flattens the picture into a few bands of colour, like a screen print.",
+      "tags": [
+        "posterize",
+        "bands",
+        "levels",
+        "poster",
+        "flat",
+        "pop art"
+      ],
+      "file": "effects/posterize.glsl",
+      "size": 367,
+      "credit": "",
+      "thumb": "thumbs/effects-posterize.jpg"
+    },
+    {
       "id": "effects/radial-blur",
       "kind": "effect",
       "name": "Spin Blur",
@@ -577,6 +872,64 @@
       "thumb": "thumbs/effects-rain-on-glass.jpg"
     },
     {
+      "id": "effects/rutt-etra",
+      "kind": "effect",
+      "name": "Rutt-Etra",
+      "desc": "Analogue video-synth scan lines lifted by brightness, so the picture becomes a glowing 3D landscape of lines.",
+      "tags": [
+        "rutt etra",
+        "scanlines",
+        "synth",
+        "analog",
+        "glitch",
+        "3d",
+        "retro",
+        "lines"
+      ],
+      "file": "effects/rutt-etra.glsl",
+      "size": 1132,
+      "credit": "",
+      "thumb": "thumbs/effects-rutt-etra.jpg"
+    },
+    {
+      "id": "effects/scan-lines",
+      "kind": "effect",
+      "name": "Scan Lines",
+      "desc": "Dark horizontal lines across the picture, like an old TV or monitor, optionally rolling.",
+      "tags": [
+        "scan lines",
+        "scanlines",
+        "tv",
+        "crt",
+        "monitor",
+        "retro",
+        "lines"
+      ],
+      "file": "effects/scan-lines.glsl",
+      "size": 497,
+      "credit": "",
+      "thumb": "thumbs/effects-scan-lines.jpg"
+    },
+    {
+      "id": "effects/sepia",
+      "kind": "effect",
+      "name": "Sepia",
+      "desc": "A warm brown sepia tone, like an old photograph.",
+      "tags": [
+        "sepia",
+        "vintage",
+        "old",
+        "photo",
+        "warm",
+        "brown",
+        "tone"
+      ],
+      "file": "effects/sepia.glsl",
+      "size": 439,
+      "credit": "",
+      "thumb": "thumbs/effects-sepia.jpg"
+    },
+    {
       "id": "effects/sketch",
       "kind": "effect",
       "name": "Pencil Sketch",
@@ -593,6 +946,25 @@
       "size": 3807,
       "credit": "",
       "thumb": "thumbs/effects-sketch.jpg"
+    },
+    {
+      "id": "effects/smart-blur",
+      "kind": "effect",
+      "name": "Smart Blur",
+      "desc": "Real-time noise reduction: smooths grain and flat areas while keeping edges sharp.",
+      "tags": [
+        "denoise",
+        "noise reduction",
+        "smart blur",
+        "bilateral",
+        "smooth",
+        "clean",
+        "grain"
+      ],
+      "file": "effects/smart-blur.glsl",
+      "size": 855,
+      "credit": "",
+      "thumb": "thumbs/effects-smart-blur.jpg"
     },
     {
       "id": "effects/snow",
@@ -666,6 +1038,45 @@
       "thumb": "thumbs/effects-speed-lines.jpg"
     },
     {
+      "id": "effects/spot-remover",
+      "kind": "effect",
+      "name": "Spot Remover",
+      "desc": "Hides a small blemish, logo or dust spot by filling a rectangle from the picture around it.",
+      "tags": [
+        "spot",
+        "remove",
+        "blemish",
+        "logo",
+        "dust",
+        "patch",
+        "cleanup",
+        "heal"
+      ],
+      "file": "effects/spot-remover.glsl",
+      "size": 1465,
+      "credit": "",
+      "thumb": "thumbs/effects-spot-remover.jpg"
+    },
+    {
+      "id": "effects/technicolor",
+      "kind": "effect",
+      "name": "Technicolor",
+      "desc": "Two-strip and three-strip early colour film: rich reds and cyans, deep blacks.",
+      "tags": [
+        "technicolor",
+        "film",
+        "vintage",
+        "old film",
+        "color",
+        "two strip",
+        "retro"
+      ],
+      "file": "effects/technicolor.glsl",
+      "size": 892,
+      "credit": "",
+      "thumb": "thumbs/effects-technicolor.jpg"
+    },
+    {
       "id": "effects/thermal",
       "kind": "effect",
       "name": "Thermal Camera",
@@ -700,6 +1111,43 @@
       "thumb": "thumbs/effects-tilt-shift.jpg"
     },
     {
+      "id": "effects/unpremultiply",
+      "kind": "effect",
+      "name": "Unpremultiply Alpha",
+      "desc": "Fixes dark fringes on clips whose colours were stored premultiplied by their transparency.",
+      "tags": [
+        "alpha",
+        "unpremultiply",
+        "premultiplied",
+        "fringe",
+        "transparency",
+        "fix"
+      ],
+      "file": "effects/unpremultiply.glsl",
+      "size": 382,
+      "credit": "",
+      "thumb": "thumbs/effects-unpremultiply.jpg"
+    },
+    {
+      "id": "effects/vertigo",
+      "kind": "effect",
+      "name": "Vertigo",
+      "desc": "Dizzy spinning feedback: each frame is laid over a slightly rotated and zoomed copy of the frames before it.",
+      "tags": [
+        "vertigo",
+        "spin",
+        "feedback",
+        "trippy",
+        "dizzy",
+        "psychedelic",
+        "echo"
+      ],
+      "file": "effects/vertigo.glsl",
+      "size": 972,
+      "credit": "",
+      "thumb": "thumbs/effects-vertigo.jpg"
+    },
+    {
       "id": "effects/vhs-pro",
       "kind": "effect",
       "name": "VHS Tape",
@@ -715,6 +1163,23 @@
       "size": 2726,
       "credit": "",
       "thumb": "thumbs/effects-vhs-pro.jpg"
+    },
+    {
+      "id": "effects/vibrance",
+      "kind": "effect",
+      "name": "Vibrance",
+      "desc": "Boosts dull colours more than already-saturated ones, so skin tones stay natural.",
+      "tags": [
+        "vibrance",
+        "saturation",
+        "color",
+        "vivid",
+        "punch"
+      ],
+      "file": "effects/vibrance.glsl",
+      "size": 479,
+      "credit": "",
+      "thumb": "thumbs/effects-vibrance.jpg"
     },
     {
       "id": "effects/voxel-blocks",
@@ -736,6 +1201,23 @@
       "size": 11716,
       "credit": "",
       "thumb": "thumbs/effects-voxel-blocks.jpg"
+    },
+    {
+      "id": "effects/wave",
+      "kind": "effect",
+      "name": "Wave",
+      "desc": "Ripples the picture with moving sine waves, horizontally, vertically or both.",
+      "tags": [
+        "wave",
+        "ripple",
+        "distort",
+        "water",
+        "wobble"
+      ],
+      "file": "effects/wave.glsl",
+      "size": 682,
+      "credit": "",
+      "thumb": "thumbs/effects-wave.jpg"
     },
     {
       "id": "effects/waveform",
@@ -843,23 +1325,6 @@
       "thumb": "thumbs/transitions-clock-wipe.jpg"
     },
     {
-      "id": "transitions/color-swipe",
-      "kind": "transition",
-      "name": "Color Swipe",
-      "desc": "A solid colour panel with a slanted edge sweeps across, covers the outgoing picture, then sweeps off to reveal the incoming one.",
-      "tags": [
-        "swipe",
-        "color",
-        "panel",
-        "wipe",
-        "slant"
-      ],
-      "file": "transitions/color-swipe.glsl",
-      "size": 1231,
-      "credit": "",
-      "thumb": "thumbs/transitions-color-swipe.jpg"
-    },
-    {
       "id": "transitions/color-swipe-double",
       "kind": "transition",
       "name": "Color Swipe Double",
@@ -875,6 +1340,23 @@
       "size": 2067,
       "credit": "",
       "thumb": "thumbs/transitions-color-swipe-double.jpg"
+    },
+    {
+      "id": "transitions/color-swipe",
+      "kind": "transition",
+      "name": "Color Swipe",
+      "desc": "A solid colour panel with a slanted edge sweeps across, covers the outgoing picture, then sweeps off to reveal the incoming one.",
+      "tags": [
+        "swipe",
+        "color",
+        "panel",
+        "wipe",
+        "slant"
+      ],
+      "file": "transitions/color-swipe.glsl",
+      "size": 1231,
+      "credit": "",
+      "thumb": "thumbs/transitions-color-swipe.jpg"
     },
     {
       "id": "transitions/cross-warp",
@@ -1054,6 +1536,25 @@
       "size": 1552,
       "credit": "",
       "thumb": "thumbs/transitions-glitch.jpg"
+    },
+    {
+      "id": "transitions/gradient-wipe",
+      "kind": "transition",
+      "name": "Gradient Wipe",
+      "desc": "The incoming picture fills in from the dark parts of a gradient to the light parts: a built-in pattern, or any greyscale image you pick.",
+      "tags": [
+        "wipe",
+        "gradient",
+        "luma",
+        "matte",
+        "custom",
+        "image",
+        "pattern"
+      ],
+      "file": "transitions/gradient-wipe.glsl",
+      "size": 2235,
+      "credit": "",
+      "thumb": "thumbs/transitions-gradient-wipe.jpg"
     },
     {
       "id": "transitions/hexagonalize",
