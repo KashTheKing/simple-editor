@@ -101,6 +101,10 @@ impl Project {
             let target =
                 if t > c.start + MIN_CLIP { self.split_at(t, Some(&[id])).first().copied().unwrap_or(id) } else { id };
             if let Some(c) = self.clip_mut(target) {
+                // ws:time-remap: a still has no timing of its own, so the map goes (it would win over `freeze`)
+                if c.time_map.take().is_some() {
+                    (c.speed, c.speed_curve, c.reverse) = (1.0, a1(), false);
+                }
                 c.freeze = Some(src);
                 frozen.push(target);
             }
@@ -474,7 +478,10 @@ impl Project {
             let Some((ti, ci)) = self.find(id) else { continue };
             let mut c = self.tracks[ti].clips[ci].clone();
             c.set_speed(speed);
-            c.reverse = reverse;
+            if c.time_map.is_none() {
+                // ws:time-remap: a remapped clip's direction lives in its keys (Reverse there plays a stretch back)
+                c.reverse = reverse;
+            }
             if !self.tracks[ti].fits(c.start, c.duration, &ids) {
                 return false;
             }

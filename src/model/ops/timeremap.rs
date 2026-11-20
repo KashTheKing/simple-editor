@@ -256,6 +256,40 @@ mod tests {
     }
 
     #[test]
+    fn freeze_frame_on_a_remapped_clip_shows_the_frame() {
+        let (mut p, v, _, _) = proj();
+        p.time_remap_hold(v, 1.0, 0.5).unwrap();
+        let want = p.clip(v).unwrap().src_time(2.5);
+        let frozen = p.freeze_at(2.5, &[v]);
+        let c = frozen.iter().filter_map(|&f| p.clip(f)).find(|c| c.kind == ClipKind::Video).unwrap();
+        assert!(c.time_map.is_none() && c.freeze == Some(want));
+        assert_eq!(c.src_time(c.start + 0.7).to_bits(), want.to_bits(), "a still, not the map");
+    }
+
+    #[test]
+    fn retime_reverse_leaves_a_remapped_clip_alone() {
+        let (mut p, v, _, _) = proj();
+        p.time_remap_enable(v);
+        let before = p.clip(v).unwrap().src_time(1.0);
+        assert!(p.set_speed(&[v], 1.0, true));
+        let c = p.clip(v).unwrap();
+        assert!(!c.reverse && (c.src_time(1.0) - before).abs() < 1e-9);
+    }
+
+    #[test]
+    fn paste_speed_from_a_plain_clip_drops_the_map_and_sizes_the_clip() {
+        let (mut p, v, _, next) = proj();
+        p.time_remap_hold(v, 1.0, 0.5).unwrap();
+        p.set_speed(&[next], 2.0, false);
+        let src = p.copy_attributes(next).unwrap();
+        let set = AttrSet { speed: true, ..Default::default() };
+        p.paste_attributes(&src, &[v], set);
+        let c = p.clip(v).unwrap();
+        assert!(c.time_map.is_none() && (c.speed - 2.0).abs() < 1e-9);
+        assert!((c.duration * c.speed - c.src_len()).abs() < 1e-9, "length matches the source window at 2x");
+    }
+
+    #[test]
     fn locked_track_refuses() {
         let (mut p, v, _, _) = proj();
         let ti = p.track_of(v).unwrap();

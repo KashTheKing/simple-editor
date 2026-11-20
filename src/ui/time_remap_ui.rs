@@ -178,7 +178,7 @@ pub fn section(ui: &mut Ui, project: &mut Project, id: Id, playhead: f64, pal: &
     let hold_id = egui::Id::new("time_remap_hold_len");
     let mut hold = ui.ctx().data(|dd| dd.get_temp::<f64>(hold_id)).unwrap_or(1.0);
     ui.horizontal(|ui| {
-        let r = ui.button("◆").on_hover_text("Add a key at the playhead (changes nothing until you move it)");
+        let r = ui.button("Add Key").on_hover_text("Add a key at the playhead (changes nothing until you move it)");
         super::inspector::mark(ui, "time_remap_key", &r);
         if r.clicked() {
             undo(project);
