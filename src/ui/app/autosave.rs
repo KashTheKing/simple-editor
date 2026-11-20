@@ -100,7 +100,8 @@ pub(super) fn tick_pure(
 
 /// FRAME_HOOK.
 pub(super) fn autosave_tick(app: &mut App, ctx: &egui::Context) {
-    if should_skip(app.export.is_some(), app.project_path.is_some(), app.project.is_empty()) {
+    // (ws:timeline-tabs: clips on any timeline, not just the tab in front)
+    if should_skip(app.export.is_some(), app.project_path.is_some(), app.project.no_clips_anywhere()) {
         return;
     }
     let (due, fire) = tick_pure(app.dirty, app.autosave.due, Instant::now(), app.settings.autosave_secs);

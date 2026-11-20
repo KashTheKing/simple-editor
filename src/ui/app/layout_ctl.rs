@@ -763,7 +763,7 @@ fn finish_onboarding(app: &mut App, st: &Onboarding) {
 /// screen both gate on that), as one labelled undo step like the inspector's own format buttons.
 fn apply_format(app: &mut App, i: usize) {
     let Some(p) = crate::ui::guides::PRESETS.get(i) else { return };
-    if !(app.project.is_empty() && app.project.assets.is_empty()) {
+    if !app.project.is_blank() {
         return;
     }
     let before = app.project.to_json();
@@ -783,7 +783,8 @@ fn home_window(app: &mut App, ctx: &egui::Context) {
     if app.onboarding.is_some() {
         return; // the wizard comes first; the cards appear once it is done
     }
-    let empty = app.project.is_empty() && app.project.assets.is_empty();
+    // ws:timeline-tabs: the whole project, not the timeline in front (an empty sequence tab showed the cards)
+    let empty = app.project.is_blank();
     let Some(action) = home::show(ctx, &app.settings, &app.hotkeys, empty, app.home_dismissed) else { return };
     match action {
         home::HomeAction::Open => app.pending_actions.push(Action::OpenFile),

@@ -276,6 +276,10 @@ pub(super) fn context_of(p: &Project, v: &View) -> Value {
         "fps": p.fps,
         "page": v.page,
         "sequence": sequence, // null = the main timeline
+        // ws:timeline-tabs: the open tabs in order (id null = main); `sequence` is the active one
+        "timeline_tabs": (p.timeline_tabs().into_iter())
+            .map(|t| json!({"id": t, "name": super::timeline_tabs::tab_name(p, t)}))
+            .collect::<Vec<_>>(),
         "selected_clips": clips,
         "selected_transitions": v.transitions,
         "selected_cues": cues,
