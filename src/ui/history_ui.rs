@@ -221,9 +221,7 @@ pub fn show(
                 let text = export_markdown(undo, &visible, |e| label_of(state, e));
                 if std::fs::write(&out, &text).is_ok() {
                     // best-effort convenience, matching the app's other "reveal the saved file" spots
-                    let mut cmd = std::process::Command::new("explorer");
-                    cmd.arg("/select,").arg(&out);
-                    let _ = cmd.spawn();
+                    crate::contextmenu::reveal(&out);
                 }
             }
         }
