@@ -95,4 +95,21 @@ pub const TOOLS: &[ToolDef] = &[
             Ok(ToolOutcome::Done(json!({"rotated": n})))
         },
     },
+    ToolDef {
+        name: "media.replace",
+        desc: "Replace a library item's media with another file: the item (and its subclips) points at `path`; every clip using it keeps its cuts, effects and keyframes.",
+        args: &["id:integer:true:asset id", "path:string:true:the new file"],
+        kind: ToolKind::Mutate,
+        run: |app, args| {
+            let id = req(arg_u64(args, "id"), "id")? as Id;
+            let path = req(arg_str(args, "path"), "path")?;
+            if !std::path::Path::new(path).is_file() {
+                return Err(format!("{path} is not a file"));
+            }
+            if !app.project.replace_asset_path(id, path) {
+                return Err("no such item, or it already uses that file".into());
+            }
+            Ok(ToolOutcome::Done(json!({"ok": true, "id": id, "path": path})))
+        },
+    },
 ];

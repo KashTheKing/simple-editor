@@ -188,6 +188,19 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
             _ => app.toast("Select another clip to copy this node graph onto"),
         }
     }
+    // ---- ws:forum-ui ----
+    if let Some(id) = resp.replace_media {
+        if let Some(path) = rfd::FileDialog::new().set_title("Replace media").pick_file() {
+            let args = serde_json::json!({"id": id, "path": path.to_string_lossy()});
+            match app.run_tool_undoable("media.replace", &args) {
+                Ok(_) => {
+                    app.offline_scan_at = None;
+                    app.toast("Media replaced; the clips keep their cuts");
+                }
+                Err(e) => app.toast(format!("Replace media: {e}")),
+            }
+        }
+    }
     // ---- ws:media-library ----
     if !resp.relink.is_empty() {
         if let Some(dir) = rfd::FileDialog::new().set_title("Relink media: pick the folder").pick_folder() {

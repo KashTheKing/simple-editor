@@ -83,6 +83,7 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("duplicate_track", "track.duplicate"),
     ("apply_layout", "clip.layout"),
     ("censor", "clip.censor"),
+    ("replace_asset_path", "media.replace"),
     ("ripple_trim", "timeline.ripple_trim"),
     ("roll_edit", "timeline.roll"),
     ("slip", "timeline.slip"),

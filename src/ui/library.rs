@@ -222,6 +222,9 @@ pub struct LibraryResponse {
     pub convert_bin: Option<String>,
     /// Files from a linked bin to make assets now (menu ▸ Add to the project) - never opened as the project.
     pub import_paths: Vec<PathBuf>,
+    // ---- ws:forum-ui ----
+    /// Item menu ▸ Replace Media…: the app asks for a file, then `media.replace` repoints the asset.
+    pub replace_media: Option<Id>,
 }
 
 /// The bulk menu's placement verbs.
@@ -3110,6 +3113,15 @@ impl Tree<'_, '_> {
             menu::action_item(ui, Action::NewSubclip);
             if offline {
                 menu::action_item(ui, Action::RelinkMedia);
+            }
+            // ---- ws:forum-ui: swap the footage, keep every cut that uses it ----
+            if ids.len() == 1
+                && first.kind != ClipKind::Sequence
+                && menu::row(ui, None, "Replace Media…", "")
+                    .on_hover_text("Point this item at another file; the clips that use it keep their cuts")
+                    .clicked()
+            {
+                self.resp.replace_media = Some(first.id);
             }
             if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
                 crate::contextmenu::reveal(std::path::Path::new(&first.path));

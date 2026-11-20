@@ -172,6 +172,19 @@ impl Project {
         changed
     }
 
+    /// Point asset `id` (and the subclips sharing its file) at the file `path`. Every clip using it keeps
+    /// its cuts, effects and keyframes. False when the asset is missing or already there.
+    pub fn replace_asset_path(&mut self, id: Id, path: &str) -> bool {
+        let Some(old) = self.asset(id).map(|a| a.path.clone()) else { return false };
+        if old == path || path.is_empty() {
+            return false;
+        }
+        for a in self.assets.iter_mut().filter(|a| a.path == old) {
+            a.path = path.to_string();
+        }
+        true
+    }
+
     /// The range Censor acts on: In→Out when both are marked, else the span of the clips `ids`.
     pub fn censor_range(&self, ids: &[Id]) -> Option<(f64, f64)> {
         if let (Some(a), Some(b)) = (self.in_point, self.out_point) {
@@ -356,6 +369,25 @@ mod tests {
         assert_eq!(p.censor_range(&[]), Some((1.0, 3.0)), "In/Out wins");
         p.out_point = None;
         assert_eq!(p.censor_range(&[id]), Some((2.0, 4.0)), "else the selection's span");
+    }
+
+    #[test]
+    fn replace_asset_path_repoints_the_file_and_its_subclips() {
+        let mut p = project();
+        // the JSON form fills every other field with its default
+        let mut mk = |path: &str| {
+            let id = p.new_id();
+            let a: Asset = serde_json::from_value(serde_json::json!({"id": id, "path": path, "kind": "Video", "duration": 10.0, "width": 1280, "height": 720, "fps": 30.0})).unwrap();
+            p.assets.push(a);
+            id
+        };
+        let (a, sub, other) = (mk("C:/old.mp4"), mk("C:/old.mp4"), mk("C:/other.mp4"));
+        assert!(p.replace_asset_path(a, "C:/new.mp4"));
+        assert_eq!(p.asset(a).unwrap().path, "C:/new.mp4");
+        assert_eq!(p.asset(sub).unwrap().path, "C:/new.mp4", "the subclip follows its file");
+        assert_eq!(p.asset(other).unwrap().path, "C:/other.mp4");
+        assert!(!p.replace_asset_path(a, "C:/new.mp4"), "already there");
+        assert!(!p.replace_asset_path(999, "C:/x.mp4"));
     }
 
     #[test]
