@@ -2,10 +2,16 @@
 
 ## Unreleased
 
+### Scripts are plain Luau
+- **`tool(name, args)` and `tools()` are globals**, and a hook's payload is the global `event`, in your scripts, hooks, Assistant scripts and plugins alike. The `editor` table is gone from the docs and completion.
+- **`print` shows up in the app**: in a script or hook it is what `editor.log` was (a toast, and the run's log), in an Assistant script or plugin it is the output, as before. Tables print as compact JSON.
+- **`warn(...)` shows a warning** (a warning toast, or a warning line in a plugin panel and in Assistant output), and **`error(...)` stops the script** with its message, as in any Luau.
+- Scripts, tasks and plugins written with `editor.tool`, `editor.log` and `editor.event` keep working; the Script Editor shows a quiet hint with the new name.
+
 ### Script Editor IntelliSense
-- **Completion while you type**: names, keywords and the file's own locals as you type a word, a table's members after `.` or `:` (`editor.`, `math.`, `s:`), tool names inside `editor.tool("…`, and Ctrl+Space anywhere. Prefix matches come first, then fuzzy ones. Each row shows its kind, name and signature, with the doc underneath. Up/Down pick, Tab or Enter accept, Esc closes.
+- **Completion while you type**: names, keywords and the file's own locals as you type a word, a table's members after `.` or `:` (`math.`, `s:`), tool names inside `tool("…`, and Ctrl+Space anywhere. Prefix matches come first, then fuzzy ones. Each row shows its kind, name and signature, with the doc underneath. Up/Down pick, Tab or Enter accept, Esc closes.
 - **Signature help** inside a call's parentheses, with the current argument highlighted (nested calls, strings and tables count correctly).
-- **Hover docs** on any API name, and on a tool name in `editor.tool`.
+- **Hover docs** on any API name, and on a tool name in `tool`.
 - **Problems underlined as you type**: Luau's own compiler checks the script 300 ms after you stop typing (on a background thread, never running it), and unknown globals get a warning underline. The message shows on hover and in the status line.
 - The API is described once (`src/scripting_api.rs`), checked against what the scripting runtimes really register, and published as `docs/scripting-api.md`.
 ### Procedural motion blocks

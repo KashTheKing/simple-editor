@@ -711,8 +711,7 @@ fn code(ui: &mut egui::Ui, st: &mut ScriptEditor, id: egui::Id, code_h: f32) {
         let b = rect_at(r1);
         let x1 = if (a.top() - b.top()).abs() < 1.0 { b.left() } else { a.left() + char_w * 3.0 };
         let x1 = x1.max(a.left() + char_w);
-        let c = if d.error { ui.visuals().error_fg_color } else { ui.visuals().warn_fg_color };
-        squiggle(&painter, a.left(), x1, a.bottom() - 1.0, c);
+        squiggle(&painter, a.left(), x1, a.bottom() - 1.0, diag_colour(ui, d.error, d.hint));
         let zone = egui::Rect::from_min_max(a.left_top(), egui::pos2(x1, a.bottom()));
         if pointer.is_some_and(|p| zone.contains(p)) {
             hover_diag = Some(d);
@@ -730,12 +729,11 @@ fn code(ui: &mut egui::Ui, st: &mut ScriptEditor, id: egui::Id, code_h: f32) {
         st.intel.hover.as_ref().and_then(|(_, h)| h.clone())
     });
     if hover_diag.is_some() || hover.is_some() {
-        let diag = hover_diag.map(|d| (d.msg.clone(), d.error));
+        let diag = hover_diag.map(|d| (d.msg.clone(), d.error, d.hint));
         out.response.clone().on_hover_ui_at_pointer(|ui| {
             ui.set_max_width(420.0);
-            if let Some((msg, err)) = &diag {
-                let c = if *err { ui.visuals().error_fg_color } else { ui.visuals().warn_fg_color };
-                ui.colored_label(c, msg);
+            if let Some((msg, err, hint)) = &diag {
+                ui.colored_label(diag_colour(ui, *err, *hint), msg);
             }
             if let Some((sig, doc)) = &hover {
                 ui.label(egui::RichText::new(sig).monospace());
@@ -853,13 +851,25 @@ fn code(ui: &mut egui::Ui, st: &mut ScriptEditor, id: egui::Id, code_h: f32) {
     }
 }
 
+/// A diagnostic's colour: errors red, unknown globals in the warning colour, a hint (old code that still
+/// runs, such as `editor.tool`) quiet.
+fn diag_colour(ui: &egui::Ui, error: bool, hint: bool) -> egui::Color32 {
+    if error {
+        ui.visuals().error_fg_color
+    } else if hint {
+        ui.visuals().weak_text_color()
+    } else {
+        ui.visuals().warn_fg_color
+    }
+}
+
 /// The line under the code: the first problem (its line and message, counted), then the last run's result.
 fn status_line(ui: &mut egui::Ui, st: &ScriptEditor) {
     ui.horizontal(|ui| {
         let d = &st.intel.diags;
-        let first = d.iter().find(|d| d.error).or(d.first());
+        let first = d.iter().find(|d| d.error).or(d.iter().find(|d| !d.hint)).or(d.first());
         if let Some(f) = first {
-            let c = if f.error { ui.visuals().error_fg_color } else { ui.visuals().warn_fg_color };
+            let c = diag_colour(ui, f.error, f.hint);
             let more = if d.len() > 1 { format!("  (+{} more)", d.len() - 1) } else { String::new() };
             let tip: Vec<String> = d.iter().take(20).map(|d| format!("Line {}: {}", d.line, d.msg)).collect();
             ui.add(egui::Label::new(egui::RichText::new(format!("Line {}: {}{more}", f.line, f.msg)).color(c)).truncate())
@@ -1021,10 +1031,11 @@ mod tests {
 
     #[test]
     fn luau_tokens() {
-        let k = kinds("local x = editor.tool(\"a\", {n = 0x1F}) -- hi\n");
+        let k = kinds("local x = tool(\"a\", {n = math.floor(0x1F)}) -- hi\n");
         assert!(k.contains(&("local", Kind::Keyword)));
-        assert!(k.contains(&("editor", Kind::Tag)));
-        assert!(k.contains(&("tool", Kind::Func)));
+        assert!(k.contains(&("tool", Kind::Tag)));
+        assert!(k.contains(&("math", Kind::Tag)));
+        assert!(k.contains(&("floor", Kind::Func)));
         assert!(k.contains(&("\"a\"", Kind::Str)));
         assert!(k.contains(&("0x1F", Kind::Num)));
         assert!(k.contains(&("-- hi", Kind::Comment)));
@@ -1179,18 +1190,18 @@ mod tests {
         keys(&ctx, &mut st, vec![]);
         ctx.memory_mut(|m| m.request_focus(id));
         keys(&ctx, &mut st, vec![]);
-        keys(&ctx, &mut st, vec![egui::Event::Text("editor.".into())]);
+        keys(&ctx, &mut st, vec![egui::Event::Text("utf8.".into())]);
         let labels: Vec<String> = st.intel.list.as_ref().map(|(c, _)| c.items.iter().map(|i| i.label.clone()).collect()).unwrap_or_default();
-        assert_eq!(labels, ["log", "tool", "tools"], "the list after `editor.`");
+        assert_eq!(labels[..2], ["char", "charpattern"], "the list after `utf8.`: {labels:?}");
         // Down, Enter: the second row goes in and the list closes
         keys(&ctx, &mut st, vec![key(Key::ArrowDown)]);
         keys(&ctx, &mut st, vec![key(Key::Enter)]);
-        assert_eq!(st.text, "editor.tool");
+        assert_eq!(st.text, "utf8.charpattern");
         assert!(st.intel.list.is_none());
         // `(` opens signature help on the first parameter
-        keys(&ctx, &mut st, vec![egui::Event::Text("(".into())]);
+        keys(&ctx, &mut st, vec![egui::Event::Text(" .. tool(".into())]);
         let (sig, arg, _) = st.intel.sig.clone().expect("signature help");
-        assert_eq!((sig.name.as_str(), arg), ("editor.tool", 0));
+        assert_eq!((sig.name.as_str(), arg), ("tool", 0));
         // Esc closes the list; a later word opens it again
         keys(&ctx, &mut st, vec![egui::Event::Text("\"x\", pa".into())]);
         assert!(st.intel.list.as_ref().is_some_and(|(c, _)| c.items[0].label == "pairs"));

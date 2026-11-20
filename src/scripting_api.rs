@@ -19,7 +19,7 @@ pub const PLUGIN: Ctx = 8;
 pub const ALL: Ctx = SCRIPT | HOOK | AGENT | PLUGIN;
 /// The user's own scripts and hooks: the full Luau sandbox, nothing removed.
 const OWN: Ctx = SCRIPT | HOOK;
-/// The Assistant's runner and plugins: `library` / `project` / `query`, `print`, `editor.json`.
+/// The Assistant's runner and plugins: `library` / `project` / `query`, `json`.
 const LIB: Ctx = AGENT | PLUGIN;
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -28,16 +28,16 @@ pub const CONTEXTS: [(Ctx, &str); 4] =
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ItemKind {
-    /// A library / namespace table (`editor`, `math`).
+    /// A library / namespace table (`library`, `math`).
     Table,
     Function,
-    /// A field that holds a value (`math.pi`, `editor.event`).
+    /// A field that holds a value (`math.pi`, `event`).
     Value,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct ApiItem {
-    /// The full dotted name: `print`, `editor.tool`, `math.pi`.
+    /// The full dotted name: `print`, `library.get`, `math.pi`.
     pub name: &'static str,
     pub kind: ItemKind,
     /// `name: type` pairs separated by `, ` (`...: any` for a variadic); a value's type for `Value`.
@@ -49,12 +49,12 @@ pub struct ApiItem {
 }
 
 impl ApiItem {
-    /// The last part of the name (`tool` of `editor.tool`).
+    /// The last part of the name (`get` of `library.get`).
     pub fn short(&self) -> &'static str {
         self.name.rsplit('.').next().unwrap_or(self.name)
     }
 
-    /// The table it belongs to (`editor` of `editor.tool`), or `None` for a global.
+    /// The table it belongs to (`library` of `library.get`), or `None` for a global.
     pub fn parent(&self) -> Option<&'static str> {
         self.name.rsplit_once('.').map(|(p, _)| p)
     }
@@ -67,7 +67,7 @@ impl ApiItem {
         self.params.split(", ").map(|p| p.split_once(": ").unwrap_or((p, "any"))).collect()
     }
 
-    /// `editor.tool(name: string, args: table?) -> any`, `math.pi: number`, `math` (a table).
+    /// `tool(name: string, args: table?) -> any`, `math.pi: number`, `math` (a table).
     pub fn signature(&self) -> String {
         match self.kind {
             ItemKind::Table => format!("{}: table", self.name),
@@ -103,22 +103,17 @@ pub const TYPES: &[&str] = &[
 
 /// One row per name. Rows that share a name have disjoint `ctx` (a test checks it).
 pub const API: &[ApiItem] = &[
-    // ---- the editor bridge (scripting::run / run_hook / run_api, plugins' BOOT) ----
-    t("editor", "The bridge to Simple Editor: tools, logging", ALL),
-    f(
-        "editor.tool",
-        "name: string, args: table?",
-        "any",
-        "Call a tool by name (the MCP catalogue) and return its result",
-        ALL,
-    ),
-    f("editor.tools", "", "table", "List the tools this script may call, as {name, description} rows", ALL),
-    f("editor.log", "text: string", "", "Show a short toast", OWN),
-    f("editor.log", "...: any", "", "Print a line (the same as print)", LIB),
-    v("editor.event", "table", "The payload of the event that fired this -- @on hook", HOOK),
-    f("editor.json", "value: any", "string", "The value as compact JSON (tables) or text", LIB),
-    v("editor.purpose", "string", "What the Assistant said this script is for", AGENT),
+    // ---- the app's globals (scripting::run / run_hook / run_api, plugins' BOOT) ----
+    // The hidden `editor` alias table (editor.tool / tools / log / event / json / purpose) that keeps scripts
+    // written before these were globals working is left out on purpose: see `api_matches_the_registered_names`.
+    f("tool", "name: string, args: table?", "any", "Call a tool by name (the MCP catalogue) and return its result", ALL),
+    f("tools", "", "table", "List the tools this script may call, as {name, description} rows", ALL),
+    f("print", "...: any", "", "Show a line in the script's output and log, as a toast (tables as JSON)", OWN),
     f("print", "...: any", "", "Print a line into the script's output (tables as JSON)", LIB),
+    f("warn", "...: any", "", "Show a line as a warning in the script's output and log (tables as JSON)", ALL),
+    v("event", "table", "The payload of the event that fired this -- @on hook", HOOK),
+    f("json", "value: any", "string", "The value as compact JSON (tables) or text", LIB),
+    v("purpose", "string", "What the Assistant said this script is for", AGENT),
     // ---- the prelude (scripting::PRELUDE): library ----
     t("library", "The media library: assets, bins, tags", LIB),
     f(
@@ -277,7 +272,6 @@ pub const API: &[ApiItem] = &[
         "Call fn; an error goes through handler",
         ALL,
     ),
-    f("print", "...: any", "", "Write to the console (not shown in the app: use editor.log)", OWN),
     f("rawequal", "a: any, b: any", "boolean", "a == b without metamethods", ALL),
     f("rawget", "t: table, key: any", "any", "t[key] without metamethods", ALL),
     f("rawset", "t: table, key: any, value: any", "table", "t[key] = value without metamethods", ALL),
@@ -546,7 +540,7 @@ pub fn find(name: &str, ctx: Ctx) -> Option<&'static ApiItem> {
     items(ctx).find(|i| i.name == name)
 }
 
-/// The members of table `parent` in `ctx` (`editor` -> tool, tools, log...).
+/// The members of table `parent` in `ctx` (`library` -> assets, get, summary...).
 pub fn members(parent: &str, ctx: Ctx) -> impl Iterator<Item = &'static ApiItem> + '_ {
     items(ctx).filter(move |i| i.parent() == Some(parent))
 }
@@ -574,8 +568,8 @@ pub fn markdown() -> String {
          What a Simple Editor script can call. The Script Editor's completion, signature help and hover read the same\n\
          table. The *Where* column says which scripts have a name:\n\n\
          - **Script**: a script in the Scripts folder (Run, a hotkey, `scripts.run`).\n\
-         - **Hook**: the same script fired by a `-- @on <event>` header (adds `editor.event`).\n\
-         - **Assistant script**: `scripts.eval`, the Assistant's runner (adds `library`, `project`, `query`, `print`).\n\
+         - **Hook**: the same script fired by a `-- @on <event>` header (adds `event`).\n\
+         - **Assistant script**: `scripts.eval`, the Assistant's runner (adds `library`, `project`, `query`, `json`, `purpose`).\n\
          - **Plugin**: a plugin's script or panel (`docs/plugins.md`).\n\n",
     );
     let mut tables: Vec<&str> = Vec::new();
@@ -625,7 +619,8 @@ local out, seen = {}, {}
 local function add(name) if not seen[name] then seen[name] = true; table.insert(out, name) end end
 local function walk(k, v)
   add(k)
-  if type(v) == "table" and k ~= "_G" then
+  -- `event` is a hook's payload: its fields are the event's, not the API's
+  if type(v) == "table" and k ~= "_G" and k ~= "event" then
     for k2 in pairs(v) do if type(k2) == "string" then add(k .. "." .. k2) end end
   end
 end
@@ -682,7 +677,7 @@ for k, v in pairs(_G) do if type(k) == "string" then walk(k, v) end end
     /// What each context's VM really registers, started the way the app starts it.
     pub(crate) fn registered(ctx: Ctx) -> BTreeSet<String> {
         let walk = walker(&candidates());
-        let as_log = format!("editor.log((function() {walk} end)())");
+        let as_log = format!("print((function() {walk} end)())");
         match ctx {
             SCRIPT => {
                 let mut logs = Vec::new();
@@ -730,7 +725,12 @@ for k, v in pairs(_G) do if type(k) == "string" then walk(k, v) end end
     #[test]
     fn api_matches_the_registered_names() {
         for (c, label) in CONTEXTS {
-            let real = registered(c);
+            // `editor` is the hidden alias table (tool / tools / log / event / json / purpose) that keeps
+            // saved scripts, Assistant tasks and plugins written before those were globals running. It is
+            // registered on purpose but must stay out of the API (no docs, no completion), so it is not
+            // compared here.
+            let real: BTreeSet<String> =
+                registered(c).into_iter().filter(|n| n != "editor" && !n.starts_with("editor.")).collect();
             let described: BTreeSet<String> = items(c).map(|i| i.name.to_string()).collect();
             let missing: Vec<_> = real.difference(&described).collect();
             let extra: Vec<_> = described.difference(&real).collect();

@@ -791,11 +791,11 @@ mod tests {
         let a = task_writing(&mut t, "Cut the ums");
         assert_eq!(t[0].status, TaskStatus::Writing);
         assert!(!t[0].runnable(), "nothing to run while it is being written");
-        assert_eq!(task_hand_over(&mut t, Some(a), "Cut ums", "editor.log('a')", "cuts them"), a);
+        assert_eq!(task_hand_over(&mut t, Some(a), "Cut ums", "print('a')", "cuts them"), a);
         assert_eq!((t[0].status, t[0].title.as_str()), (TaskStatus::Ready, "Cut ums"));
         // the slot is filled: a second hand-over queues a new task
         let b = task_hand_over(&mut t, Some(a), "Fail", "error('x')", "");
-        let c = task_hand_over(&mut t, None, "Never", "editor.log('c')", "");
+        let c = task_hand_over(&mut t, None, "Never", "print('c')", "");
         assert_eq!((t.len(), b, c), (3, a + 1, a + 2));
         let mut ran = Vec::new();
         let (n, err) = run_queue(&mut t, None, &mut |task| {
@@ -812,7 +812,7 @@ mod tests {
         assert_eq!((t[1].status, t[1].error.as_str()), (TaskStatus::Failed, "boom"));
         assert_eq!(t[2].status, TaskStatus::Ready);
         // fixing the code makes it Ready again; a single Run reruns a Done task too
-        task_set(&mut t, b, None, Some("editor.log('ok')")).unwrap();
+        task_set(&mut t, b, None, Some("print('ok')")).unwrap();
         assert_eq!((t[1].status, t[1].error.as_str()), (TaskStatus::Ready, ""));
         assert_eq!(run_queue(&mut t, Some(a), &mut |_| Ok(())), (1, None));
         // order and removal
@@ -824,7 +824,7 @@ mod tests {
         assert!(task_set(&mut t, 77, None, None).is_err());
         // "Save to Scripts": a header the Scripts menu reads, and a free file name
         let s = task_script(&t[0]);
-        assert!(s.starts_with("-- @name Cut ums\n-- @desc cuts them\n\n") && s.ends_with("editor.log('a')\n"), "{s}");
+        assert!(s.starts_with("-- @name Cut ums\n-- @desc cuts them\n\n") && s.ends_with("print('a')\n"), "{s}");
         let dir = std::env::temp_dir().join(format!("se-assistant-scripts-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = script_path(&dir, "Cut ums!");

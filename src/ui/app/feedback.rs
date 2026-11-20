@@ -86,6 +86,15 @@ impl App {
         self.push_toast(Toast::new(msg).undo(undo));
     }
 
+    /// One `print` / `warn` line of a script run by `who`: a `warn` line (`scripting::WARN`) is a warning
+    /// toast, a `print` line a plain one.
+    pub(super) fn script_line_toast(&mut self, who: &str, line: &str) {
+        match crate::scripting::warning(line) {
+            Some(w) => self.push_toast(Toast::new(format!("{who}: {w}")).kind(ToastKind::Warn)),
+            None => self.toast(format!("{who}: {line}")),
+        }
+    }
+
     /// Push a toast, deduping by (msg, kind) via `dedupe_push` below.
     pub(super) fn push_toast(&mut self, t: Toast) {
         dedupe_push(&mut self.toasts, t);

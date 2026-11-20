@@ -511,7 +511,7 @@ fn compound_assign(text: &str, toks: &[Tok], i: usize) -> bool {
 pub struct Item {
     pub label: String,
     pub kind: SymKind,
-    /// The signature (`editor.tool(name: string, args: table?) -> any`), or the kind's name.
+    /// The signature (`tool(name: string, args: table?) -> any`), or the kind's name.
     pub detail: String,
     pub doc: String,
     score: i32,
@@ -598,7 +598,7 @@ fn rank(items: Vec<Item>, typed: &str, force: bool) -> Vec<Item> {
     out
 }
 
-/// The dotted name ending at token `i` (`editor`, `a.b`), and the index of its first token.
+/// The dotted name ending at token `i` (`tool`, `a.b`), and the index of its first token.
 fn chain_before(an: &Analysis, i: usize) -> Option<(String, usize)> {
     let toks = &an.toks;
     let k = toks.get(i).filter(|k| k.t == T::Name)?;
@@ -612,7 +612,12 @@ fn chain_before(an: &Analysis, i: usize) -> Option<(String, usize)> {
     Some((parts.join("."), j))
 }
 
-/// What a tool string (`editor.tool("…`) completes to.
+/// A call to `tool` (or the old `editor.tool` of scripts written before it was a global).
+fn is_tool_call(callee: &str) -> bool {
+    callee == "tool" || callee == "editor.tool"
+}
+
+/// What a tool string (`tool("…`) completes to.
 fn tool_items() -> Vec<Item> {
     crate::mcp::tools::all()
         .map(|d| Item {
@@ -626,20 +631,20 @@ fn tool_items() -> Vec<Item> {
 }
 
 /// The list at byte `cursor` of `an.text`: members after `x.` / `x:`, the names in scope while typing a
-/// word, tool names inside `editor.tool("…`. `force` is Ctrl+Space (a list even before anything is typed).
+/// word, tool names inside `tool("…`. `force` is Ctrl+Space (a list even before anything is typed).
 pub fn complete(an: &Analysis, cursor: usize, force: bool, ctx: Ctx) -> Option<Completion> {
     let text = an.text;
     let cursor = cursor.min(text.len());
     if !text.is_char_boundary(cursor) {
         return None;
     }
-    // in a string or a comment: only a tool name in editor.tool("…
+    // in a string or a comment: only a tool name in tool("…
     if let Some(k) = an.all.iter().find(|k| inside(text, k, cursor)) {
         if k.t != T::Str || !matches!(text.as_bytes()[k.r.start], b'"' | b'\'') {
             return None;
         }
         let call = call_at(an, k.r.start)?;
-        if call.callee != "editor.tool" || call.arg != 0 {
+        if !is_tool_call(&call.callee) || call.arg != 0 {
             return None;
         }
         let start = k.r.start + 1;
@@ -727,7 +732,7 @@ fn types(an: &Analysis) -> Vec<Item> {
 // ---------------------------------------------------------------------------------------------------
 // signature help
 
-/// The call whose parentheses hold byte `cursor`: the callee (`editor.tool`, `s:sub`), which argument the
+/// The call whose parentheses hold byte `cursor`: the callee (`tool`, `s:sub`), which argument the
 /// cursor is in (0-based), and where its `(` is.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Call {
@@ -861,10 +866,10 @@ pub fn hover(an: &Analysis, at: usize, ctx: Ctx) -> Option<(String, String)> {
     let i = an.all.iter().position(|k| k.r.start <= at && at < k.r.end)?;
     let k = &an.all[i];
     if k.t == T::Str {
-        // a tool name inside editor.tool("…")
+        // a tool name inside tool("…")
         let call = call_at(an, k.r.start)?;
         let name = an.text[k.r.clone()].trim_matches(['"', '\'']);
-        if call.callee == "editor.tool" && call.arg == 0 {
+        if is_tool_call(&call.callee) && call.arg == 0 {
             let d = crate::mcp::tools::find(name)?;
             return Some((d.name.to_string(), d.desc.to_string()));
         }
@@ -901,6 +906,8 @@ pub struct Diag {
     pub msg: String,
     /// An error (red); otherwise a warning.
     pub error: bool,
+    /// A quiet hint (weak text, no warning colour): old code that still runs, such as `editor.tool`.
+    pub hint: bool,
 }
 
 /// Byte range of 1-based `line`, without its indent and trailing space (the whole line if blank).
@@ -940,7 +947,7 @@ pub fn syntax(text: &str) -> Option<Diag> {
     let msg = rest[digits.len()..].trim_start_matches(':').trim().to_string();
     let lines = text.lines().count().max(1);
     let line = line.clamp(1, lines);
-    Some(Diag { range: line_range(text, line), line, msg, error: true })
+    Some(Diag { range: line_range(text, line), line, msg, error: true, hint: false })
 }
 
 /// Names read as globals that neither the API (for `ctx`) nor the file declares.
@@ -988,12 +995,22 @@ pub fn unknown_globals(an: &Analysis, ctx: Ctx) -> Vec<Diag> {
                 let member = op(text, prev, ".") || op(text, prev, ":");
                 let key = braces > 0 && op(text, toks.get(i + 1), "=");
                 if !member && !key && !known.contains(name) && !an.scan.declared.contains(name) {
-                    out.push(Diag {
-                        range: k.r.clone(),
-                        line: line_of(text, k.r.start),
-                        msg: format!("Unknown global '{name}'"),
-                        error: false,
-                    });
+                    // the hidden `editor` alias still runs: a quiet hint, not an unknown global
+                    let field = (name == "editor" && op(text, toks.get(i + 1), "."))
+                        .then(|| toks.get(i + 2).filter(|n| n.t == T::Name))
+                        .flatten();
+                    let (range, msg, hint) = match field {
+                        Some(f) => {
+                            let x = an.s(f);
+                            let now = if x == "log" { "print" } else { x };
+                            (k.r.start..f.r.end, format!("editor.{x} is now {now}"), true)
+                        }
+                        None if name == "editor" => {
+                            (k.r.clone(), "editor is gone: use tool, tools, print, warn".to_string(), true)
+                        }
+                        None => (k.r.clone(), format!("Unknown global '{name}'"), false),
+                    };
+                    out.push(Diag { range, line: line_of(text, k.r.start), msg, error: false, hint });
                 }
             }
             _ => {}
@@ -1070,7 +1087,9 @@ mod tests {
         assert!(labels("loc|", false, SCRIPT).contains(&"local".to_string()));
         // nothing typed: nothing unless asked (Ctrl+Space)
         assert!(labels("x = |", false, SCRIPT).is_empty());
-        assert!(labels("x = |", true, SCRIPT).contains(&"editor".to_string()));
+        let all = labels("x = |", true, SCRIPT);
+        assert!(all.contains(&"tool".to_string()) && all.contains(&"warn".to_string()), "{all:?}");
+        assert!(!all.contains(&"editor".to_string()), "the old editor table is never offered");
         // a word typed out in full closes the list, so Enter stays a new line
         assert!(labels("if x then\nend|", false, SCRIPT).is_empty());
         // not in strings, comments or numbers
@@ -1085,12 +1104,12 @@ mod tests {
 
     #[test]
     fn member_completion_after_a_dot() {
-        // the bridge table every script has (the API has no `video` global: `editor` is the video bridge)
-        let l = labels("editor.|", false, SCRIPT);
-        assert_eq!(l, vec!["log", "tool", "tools"], "{l:?}");
-        let l = labels("editor.t|", false, SCRIPT | crate::scripting_api::HOOK);
+        // the old `editor` table still runs but is never completed; its members are globals now
+        assert!(labels("editor.|", false, SCRIPT).is_empty());
+        let l = labels("too|", false, SCRIPT | crate::scripting_api::HOOK);
         assert_eq!(l, vec!["tool", "tools"]);
-        assert!(labels("editor.|", false, SCRIPT | crate::scripting_api::HOOK).contains(&"event".to_string()));
+        assert!(labels("eve|", false, SCRIPT | crate::scripting_api::HOOK).contains(&"event".to_string()));
+        assert!(!labels("eve|", false, SCRIPT).contains(&"event".to_string()), "event is a hook's only");
         let l = labels("local c = project.cl|", false, AGENT);
         assert_eq!(l, vec!["clips"]);
         assert!(labels("math.fl|", false, SCRIPT).contains(&"floor".to_string()));
@@ -1105,9 +1124,10 @@ mod tests {
         assert_eq!(l, vec!["render", "size"]);
         // a type annotation after `local x:` offers types, not string methods
         assert!(labels("local n: nu|", false, SCRIPT).contains(&"number".to_string()));
-        // a tool name inside editor.tool("…
-        let l = labels("editor.tool(\"timeline.li|", false, SCRIPT);
+        // a tool name inside tool("… (and the old editor.tool("…)
+        let l = labels("tool(\"timeline.li|", false, SCRIPT);
         assert!(l.contains(&"timeline.list".to_string()), "{l:?}");
+        assert!(labels("editor.tool(\"timeline.li|", false, SCRIPT).contains(&"timeline.list".to_string()));
         assert!(labels("print(\"timeline.li|", false, AGENT).is_empty(), "only the tool's first argument");
     }
 
@@ -1150,11 +1170,11 @@ mod tests {
 
     #[test]
     fn signature_arg_index_for_nested_calls_and_strings() {
-        assert_eq!(call("editor.tool(|"), Some(("editor.tool".into(), 0)));
-        assert_eq!(call("editor.tool(\"a\", |"), Some(("editor.tool".into(), 1)));
+        assert_eq!(call("tool(|"), Some(("tool".into(), 0)));
+        assert_eq!(call("tool(\"a\", |"), Some(("tool".into(), 1)));
         // a comma inside a string or a nested call does not count
-        assert_eq!(call("editor.tool(\"a, b\", |"), Some(("editor.tool".into(), 1)));
-        assert_eq!(call("editor.tool(\"a\", {x = f(1, 2), y = 3|"), Some(("editor.tool".into(), 1)));
+        assert_eq!(call("tool(\"a, b\", |"), Some(("tool".into(), 1)));
+        assert_eq!(call("tool(\"a\", {x = f(1, 2), y = 3|"), Some(("tool".into(), 1)));
         assert_eq!(call("string.sub(s, math.max(1, |"), Some(("math.max".into(), 1)));
         assert_eq!(call("string.sub(s, math.max(1, 2), |"), Some(("string.sub".into(), 2)));
         assert_eq!(call("print('(', |"), Some(("print".into(), 1)), "a ( in a string is not a call");
@@ -1184,14 +1204,14 @@ mod tests {
 
     #[test]
     fn hover_docs_on_api_names() {
-        let src = "local r = editor.tool(\"timeline.list\", {})\nlocal s = math.floor(1.5)\nlocal u = s:upper()";
+        let src = "local r = tool(\"timeline.list\", {})\nlocal s = math.floor(1.5)\nlocal u = s:upper()";
         let an = Analysis::new(src);
         let (sig, doc) = hover(&an, src.find("tool(").unwrap() + 1, SCRIPT).unwrap();
-        assert!(sig.starts_with("editor.tool(name: string") && !doc.is_empty(), "{sig}");
+        assert!(sig.starts_with("tool(name: string") && !doc.is_empty(), "{sig}");
         assert!(hover(&an, src.find("floor").unwrap(), SCRIPT).unwrap().0.starts_with("math.floor("));
         assert!(hover(&an, src.find("math").unwrap(), SCRIPT).unwrap().0.starts_with("math"));
         assert!(hover(&an, src.find("upper").unwrap(), SCRIPT).unwrap().0.starts_with("string.upper("));
-        assert!(hover(&an, src.find("timeline.list").unwrap() + 2, SCRIPT).is_some(), "a tool name in editor.tool");
+        assert!(hover(&an, src.find("timeline.list").unwrap() + 2, SCRIPT).is_some(), "a tool name in tool");
         assert_eq!(hover(&an, src.find("local").unwrap(), SCRIPT), None);
         assert_eq!(hover(&an, src.find(" r ").unwrap() + 1, SCRIPT), None);
     }
@@ -1214,12 +1234,12 @@ mod tests {
     fn unknown_globals_are_warnings() {
         let src = "local x: number = 1\nfunction f(a: string?): boolean return a ~= nil end\n\
                    type P = { name: string, size: number }\nlocal t = { key = 1 }\ng = 2\n\
-                   print(x, t.key, g, editor.tool, mystery, s:upper())\nlocal y = (x :: any)\n";
+                   print(x, t.key, g, tool, mystery, s:upper())\nlocal y = (x :: any)\n";
         let an = Analysis::new(src);
         let d = unknown_globals(&an, SCRIPT);
         let names: Vec<&str> = d.iter().map(|d| &src[d.range.clone()]).collect();
         assert_eq!(names, vec!["mystery", "s"], "{d:?}");
-        assert!(d.iter().all(|d| !d.error && d.line == 6));
+        assert!(d.iter().all(|d| !d.error && !d.hint && d.line == 6));
         // the context decides what is known
         assert!(unknown_globals(&Analysis::new("library.assets()"), SCRIPT).len() == 1);
         assert!(unknown_globals(&Analysis::new("library.assets()"), AGENT).is_empty());
@@ -1228,6 +1248,27 @@ mod tests {
             "{:?}",
             check(crate::scripting::TEMPLATE, SCRIPT)
         );
+    }
+
+    /// Old code written with the `editor` table still runs (a hidden alias): a quiet hint names the new
+    /// global instead of an unknown-global warning.
+    #[test]
+    fn old_editor_code_gets_a_quiet_hint() {
+        let src = "local r = editor.tool(\"timeline.list\", {})\neditor.log(#r)\nlocal e = editor.event\nlocal x = editor\n";
+        let d = unknown_globals(&Analysis::new(src), SCRIPT | crate::scripting_api::HOOK);
+        let got: Vec<(&str, &str, bool)> = d.iter().map(|d| (&src[d.range.clone()], d.msg.as_str(), d.hint)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("editor.tool", "editor.tool is now tool", true),
+                ("editor.log", "editor.log is now print", true),
+                ("editor.event", "editor.event is now event", true),
+                ("editor", "editor is gone: use tool, tools, print, warn", true),
+            ]
+        );
+        assert!(d.iter().all(|d| !d.error));
+        // a file that declares its own `editor` is left alone
+        assert!(unknown_globals(&Analysis::new("local editor = {}\neditor.tool = 1\n"), SCRIPT).is_empty());
     }
 
     #[test]
@@ -1246,8 +1287,8 @@ mod tests {
         let mut src = String::new();
         for i in 0..400 {
             src.push_str(&format!(
-                "do local v{i} = editor.tool(\"timeline.list\", {{ n = {i} }})\nif v{i} and #v{i} > 0 then\n  \
-                 editor.log(\"track \" .. tostring(v{i}[1]) .. string.format(\"%d\", {i}))\nend end\n\n"
+                "do local v{i} = tool(\"timeline.list\", {{ n = {i} }})\nif v{i} and #v{i} > 0 then\n  \
+                 print(\"track \" .. tostring(v{i}[1]) .. string.format(\"%d\", {i}))\nend end\n\n"
             ));
         }
         assert_eq!(src.lines().count(), 2000);

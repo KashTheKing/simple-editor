@@ -5,7 +5,7 @@
 //! local count = 0
 //! function draw()
 //!   ui.heading("Hello")
-//!   if ui.button("Add a marker") then editor.tool("markers.add", {}) end
+//!   if ui.button("Add a marker") then tool("markers.add", {}) end
 //!   count = ui.slider("Count", count, 0, 10)
 //! end
 //! ```
@@ -568,7 +568,7 @@ mod tests {
           ui.label("n = " .. n)
           ui.row(function()
             if ui.button("Add") then n = n + 1 end
-            if ui.button("Marker") then editor.tool("markers.add", {}) end
+            if ui.button("Marker") then tool("markers.add", {}) end
           end)
           name = ui.text("Name", name)
           local v = ui.slider("Size", 5, 0, 10)
@@ -619,7 +619,7 @@ mod tests {
         let mut p = panel("local x = 1");
         run(&mut p, 0);
         assert!(p.error.unwrap().contains("draw()"));
-        let mut p = panel("function draw() editor.tool('export.video', {}) end");
+        let mut p = panel("function draw() tool('export.video', {}) end");
         run(&mut p, 0);
         assert!(p.error.unwrap().contains("mcp_tools"), "panels get the same permission checks");
         let mut p = panel("function draw() for i = 1, 5000 do ui.label(i) end end");

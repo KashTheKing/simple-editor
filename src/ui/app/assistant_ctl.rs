@@ -27,9 +27,10 @@ const TASK_BRIEF: &str = "Write a Luau script for the task below instead of edit
 any tool that changes the project. Read what you need first (editor.context, project.summary, the list / get tools, \
 transcript.get, render.frame), then hand the script over with tasks.add{title, code, note} - title: a few words; note: \
 one line on what it does; code: the script. The user reviews it and runs it later, as one undo step.\n\
-Script API (Luau, sandboxed - no io, os or require): editor.tool(name, args) calls one of this editor's tools - the \
+Script API (Luau, sandboxed - no io, os or require): tool(name, args) calls one of this editor's tools - the \
 same names and arguments as your MCP tools - and returns its JSON result as a table (a failing call raises an error \
-and stops the script); editor.tools() lists {name, description}; editor.log(text) shows the user a message. A run has \
+and stops the script); tools() lists {name, description}; print(...) shows the user a message, warn(...) a warning, \
+error(...) stops the script with its message. A run has \
 a 5 second budget. Tools that start background jobs (export.*, media.convert, assistant.wait) can't be called from a \
 script. Times are seconds, ids are integers; several cuts or deletes go back to front. Take every tool name and \
 argument from your tool list - never guess one.";
@@ -1644,7 +1645,7 @@ pub const TOOLS: &[ToolDef] = &[
         name: "tasks.add",
         desc: "Hand a Luau script over to the Assistant's Tasks queue for the user to review and run (it is not \
                run now). title: a few words; note: one line on what it does.",
-        args: &["title:string:true:", "code:string:true:the Luau script (editor.tool(name, args) calls tools)", "note:string:false:"],
+        args: &["title:string:true:", "code:string:true:the Luau script (tool(name, args) calls tools)", "note:string:false:"],
         kind: ToolKind::Ui,
         run: |app, args| {
             no_reentry(app)?;
@@ -1949,7 +1950,7 @@ mod tests {
         ] {
             assert_eq!(mcp::tools::find(name).map(|d| d.kind), Some(kind), "{name}");
         }
-        assert!(TASK_BRIEF.contains("tasks.add{title, code, note}") && TASK_BRIEF.contains("editor.tool(name, args)"));
+        assert!(TASK_BRIEF.contains("tasks.add{title, code, note}") && TASK_BRIEF.contains("tool(name, args)") && !TASK_BRIEF.contains("editor.tool"));
         let r = comment_req(json!({"note": "trim this", "marker_id": 4}), 4, 7, "");
         assert!(r.full.contains("Comment: trim this") && r.kind == Kind::Comment(4) && r.label == "Comment: trim this");
     }

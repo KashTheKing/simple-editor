@@ -75,7 +75,7 @@ impl App {
             }
         }
         for l in &logs {
-            self.toast(format!("{name}: {l}"));
+            self.script_line_toast(name, l);
         }
         match result {
             Ok(()) if logs.is_empty() => {

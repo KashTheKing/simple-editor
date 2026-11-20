@@ -109,10 +109,12 @@ They get the project API the user's scripts have:
 
 | API | |
 |---|---|
-| `editor.tool(name, args)` | Call an app tool. Any project / library read or edit is allowed (the same list `scripts.eval` uses); other tools only if named in `mcp_tools` and granted. |
-| `editor.tools()` | The tools this plugin may call, with descriptions. |
-| `editor.log(...)` / `print(...)` | A line for the user: toasts for scripts, under the panel for panels. |
-| `editor.json(v)` | A value as JSON text. |
+| `tool(name, args)` | Call an app tool. Any project / library read or edit is allowed (the same list `scripts.eval` uses); other tools only if named in `mcp_tools` and granted. |
+| `tools()` | The tools this plugin may call, with descriptions. |
+| `print(...)` | A line for the user: toasts for scripts, under the panel for panels (tables as JSON). |
+| `warn(...)` | The same as a warning: a warning toast, or a line in the warning colour under the panel. |
+| `error(...)` | Plain Luau: stops the script (or the panel's draw) with its message. |
+| `json(v)` | A value as JSON text. |
 | `library.*`, `project.*`, `query.*` | The helpers from `scripting::PRELUDE` (`project.clips()`, `library.assets(filter)`, `query.filter`, ...). |
 | `plugin.id`, `plugin.name`, `plugin.version` | Who is running. |
 
@@ -160,7 +162,7 @@ Widgets are identified by their label; repeats get `#2`, `#3`, and `"Label##key"
 local size = 0.5
 function draw()
   size = ui.slider("Size", size, 0, 1)
-  if ui.button("Apply") then editor.tool("clip.set", { clip_id = 1, fields = { scale = size } }) end
+  if ui.button("Apply") then tool("clip.set", { clip_id = 1, fields = { scale = size } }) end
 end
 ```
 

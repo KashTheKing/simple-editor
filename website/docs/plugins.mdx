@@ -113,7 +113,7 @@ local count_markers = true
 
 function draw()
   local clips = project.clips()
-  local ctx = editor.tool("editor.context", {})
+  local ctx = tool("editor.context", {})
   local selected = ctx.selected_clips or {}
 
   ui.heading("Hello from a plugin")
@@ -129,11 +129,11 @@ function draw()
 
   ui.row(function()
     if ui.button("Marker at playhead") then
-      editor.tool("markers.add", { t = ctx.playhead or 0, name = note })
+      tool("markers.add", { t = ctx.playhead or 0, name = note })
     end
     if ui.button("Nudge selection") and #selected > 0 then
       -- every edit made in one click is one undo step
-      editor.tool("timeline.move", { clip_ids = query.ids(selected), dt = step })
+      tool("timeline.move", { clip_ids = query.ids(selected), dt = step })
     end
   end)
 end
@@ -156,7 +156,7 @@ for _, c in ipairs(project.clips()) do
   local t = math.floor(c.start * 1000 + 0.5) / 1000
   if not seen[t] then
     seen[t] = true
-    editor.tool("markers.add", { t = t, name = "Cut" })
+    tool("markers.add", { t = t, name = "Cut" })
   end
 end
 print("Added " .. #query.keys(seen) .. " markers")
@@ -166,8 +166,9 @@ Plugin scripts run from **Window ▸ Plugins ▸ Hello Panel**, as one undo step
 
 ### What your Luau can use
 
-Panels and scripts get what your own scripts get (see [Scripting & MCP](scripting)): `editor.tool(name, args)`
-for any project or library tool, and the `project.*`, `library.*` and `query.*` helpers. With the matching
+Panels and scripts get what your own scripts get (see [Scripting & MCP](scripting)): `tool(name, args)`
+for any project or library tool, `tools()`, `print`, `warn` and `error`, and the `project.*`, `library.*` and
+`query.*` helpers. With the matching
 permission they also get `net.get(url)` (returns `nil` until the download is done, then `{ok, status, body}`),
 `fs.read`, `fs.write`, `fs.list` and `fs.exists`, and `programs.run(exe, {args})`. The full reference is
 `docs/plugins.md` in the repository.

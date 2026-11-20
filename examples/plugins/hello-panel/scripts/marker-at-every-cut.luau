@@ -5,7 +5,7 @@ for _, c in ipairs(project.clips()) do
   local t = math.floor(c.start * 1000 + 0.5) / 1000
   if not seen[t] then
     seen[t] = true
-    editor.tool("markers.add", { t = t, name = "Cut" })
+    tool("markers.add", { t = t, name = "Cut" })
   end
 end
 print("Added " .. #query.keys(seen) .. " markers")

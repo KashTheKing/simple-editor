@@ -220,7 +220,7 @@ fn run_src(app: &mut App, p: &Plugin, src: &str, name: &str) -> Result<(), Strin
         Ok(lines) if lines.is_empty() => app.toast(format!("{name}: done")),
         Ok(lines) => {
             for l in lines.iter().take(5) {
-                app.toast(format!("{name}: {l}"));
+                app.script_line_toast(&name, l);
             }
         }
         Err(e) => {
@@ -804,7 +804,10 @@ fn draw_panel(app: &mut App, ui: &mut egui::Ui, n: u16) {
         if !panel.log.is_empty() {
             ui.separator();
             for l in &panel.log {
-                ui.weak(l);
+                match crate::scripting::warning(l) {
+                    Some(w) => ui.colored_label(ui.visuals().warn_fg_color, w),
+                    None => ui.weak(l),
+                };
             }
         }
     });
