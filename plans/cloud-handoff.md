@@ -221,3 +221,43 @@ Today: Window ▸ Scripts lists each script (`script_metas`, `run_script_path`, 
 - **Settings ▸ General:** "Open scripts externally" (off by default). When on, Open and Add Script launch the external editor instead.
 - MCP: `scripts.create`, `scripts.rename`, `scripts.delete` and `scripts.open` next to the existing `scripts.list`/`scripts.run`.
 - Tests: create, rename and delete on a scratch scripts dir; the template parses; the menu shows Add Script with zero scripts.
+
+### plugins: `claude/feat-plugins` (new from develop; do it after scripts-editor lands, or merge that branch in first)
+The user's request, verbatim: "Make it so people can make their own plugins that creates panels/scripts and stuff and can be
+installed easily with a github link."
+
+Build on what exists: Luau scripting with hooks and expressions (`src/scripting.rs`), skills, the online library
+(effects, shaders, transitions, LUTs, HTML templates, icons), and the Gallery. A plugin is a folder that bundles these,
+plus a new panel API.
+
+- **Format:** a folder or zip with `plugin.json`:
+  - id, name, version, author, description, min app version, homepage, icon
+  - `contents`: scripts, panels, skills, effects/shaders/transitions/LUTs/templates/fonts (OFL only)
+  - `permissions`: see below
+  Write a `docs/plugins.md` spec and a `website/docs/plugins.mdx` guide with a complete example plugin, and add the
+  example plugin under `examples/plugins/hello-panel/`.
+- **Panels from Luau:**
+  - A small immediate-mode UI API (`ui.label`, `ui.button`, `ui.slider`, `ui.text`, `ui.checkbox`, `ui.dropdown`,
+    `ui.row`/`ui.column`, `ui.separator`, `ui.image`), drawn natively with the app's widgets and `ui::list_rows` style.
+  - The panel's Luau gets the same project API scripts have (read the selection, run edit commands as one undo step).
+  - A panel becomes a dockable pane, listed in Window ▸ Plugins with its own toggle button, highlighted while open.
+  - It runs on the UI thread with a strict time budget per frame. Abort and show an error if a panel's draw
+    exceeds it; playback must never stutter.
+- **Install from GitHub:**
+  - Plugins ▸ Install from URL. Paste `https://github.com/owner/repo` (or a release, tag or subfolder URL).
+  - Download the latest release's zip asset if there is one, else the default branch archive from codeload.
+  - Unpack into `%APPDATA%\SimpleEditor\plugins\<id>`.
+  - Before installing, show a confirm with the name, author, version, contents and permissions, and the source URL.
+- **Plugins manager:** a pane listing installed plugins, each with Enable, Disable, Update (checks GitHub for a newer
+  version), Uninstall (removes the folder and everything it registered), Open Folder (`contextmenu::reveal`) and
+  View on GitHub.
+- **Security:** plugins are community code.
+  - Luau is sandboxed: no `os`/`io` except through the app API.
+  - Permissions are declared and granted at install: `network` (allowlisted hosts), `files` (the project folder only,
+    or folders the user picks), `run_programs` (off by default; a big warning), and `mcp_tools` (which app tools).
+  - Anything undeclared is refused at runtime with a clear message.
+  - Never auto-run on install. Show "Only install plugins from people you trust".
+- MCP: `plugins.list`, `plugins.install(url)` (still shows the confirm; never installs silently), `plugins.uninstall`
+  and `plugins.enable`.
+- Tests: manifest parse and validation; permission enforcement (a script without `network` can't fetch); install,
+  uninstall and update from a local zip fixture and a mocked GitHub API response; the example plugin's panel draws.
