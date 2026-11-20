@@ -247,6 +247,9 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `clip.bypass` | Mutate | clip_ids, on | Enable/disable every colour-grade effect (Color/Primaries/Curves/Levels/HueShift/Qualifier/Lut) on the given clips in one step. |
 | `clip.connect_nodes` | Mutate | clip_id, from, port, to | Wire one node's output into another node's input port (cycles are refused). |
 | `clip.crop` | Mutate | at, bottom, clip_id, left, right, top | Set the clip's built-in crop (Crop Left / Right / Top / Bottom, the share of the layer cut off each edge, 0..0.5) at time `at`. Keys it when that property is already keyframed. |
+| `clip.censor` | Mutate | clip_ids, end, start, what | Hide something over a time range. what=blur adds a blur layer with a movable box over the range; what=mute silences the clips' sound over it. Range: start/end, else In to Out, else the clips' span. |
+| `clip.layout` | Mutate | clip_ids, layout | Arrange visual clips into a split screen: each is moved, scaled to cover its cell and cropped to it. layout: 2up, 3up, 2x2, 3x2 or pip. |
+| `clip.rotate` | Mutate | clip_ids, degrees | Turn the selected (or given) visual clips by `degrees` (default 90, clockwise), keyframes included. |
 | `clip.effects_bulk` | Mutate | clip_ids, index, params | Set one stack-index effect's params on every listed clip whose effect at that index shares its kind (Project::bulk_set_effect_params). |
 | `clip.fit` | Mutate | clip_id, mode | Fit (contain, native aspect) or stretch (fill canvas, non-uniform) the clip. |
 | `clip.keyframe` | Mutate | clip_id, ease, property, remove, t, value | Set (or remove with remove=true) a keyframe of a property at clip-local time t. |
@@ -428,6 +431,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `media.list` | Read | kind, folder, nested, used, query, tags, label, ext, untagged, ids, fields, sort, limit, offset | No arguments on a library of up to 100 assets: the plain array of every asset. Otherwise a page `{total, offset, count, next_offset, assets, note?}` of the matching assets with just `fields` (default id, name, kind, folder, duration, used, tags, label; `"all"` adds path, ext, width, height, fps, codec, size, audio_streams, description, uses, parent, range, proxy). |
 | `media.summary` | Read | - | The library in a few KB: counts by kind, extension, bin and used / unused, untagged / unlabelled, top tags, the bin tree `{bin, assets, total}`, linked folders, smart bins, sequences. |
 | `media.relink` | Mutate | dir, ids | Relink offline assets: by file name, then by duration within one frame, inside dir (+ one level of subfolders); returns {relinked, still_missing}. |
+| `media.replace` | Mutate | id, path | Replace a library item's media with another file: the item (and its subclips) points at `path`; every clip using it keeps its cuts, effects and keyframes. |
 | `media.scene_cuts` | Mutate | as_markers, clip_id, split, threshold | ffmpeg select='gt(scene,T)' shot-change detection over the clip's source. Neither flag: pure detection, returns cut times (source secs). as_markers adds one point marker (duration 0) per cut and fires marker_added; split cuts the clip at each one. Synchronous (blocks the UI thread for the ffmpeg pass) — documented ceiling. A cut reported at the very first frame is dropped. |
 | `media.set` | Mutate | description, folder, id, label, tags | Edit asset metadata. |
 | `media.set_effects` | Mutate | asset_id, effects | Replace an Asset's master effects (applied to every clip using it, prepended before clip-local effects). Effects: [{kind:string,params:object}], same shape as clip.add_effect. |
@@ -713,6 +717,7 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 |---|---|---|---|
 | `track.list` | Read | - | Every track: index, kind, name, locked, ripple, magnetic, color, clip count. |
 | `track.move` | Mutate | index, up | Reorder a track one slot up/down within its own kind (video tracks / audio tracks stay contiguous). |
+| `track.duplicate` | Mutate | track | Duplicate a track (its clips, transitions and settings) right next to it. Returns the new track's index. |
 | `track.set` | Mutate | color, index, locked, magnetic, name, ripple | Edit one track's flags/name/colour. |
 | `track.volume_key` | Mutate | db, remove, t, track_index | Set (db) or remove (remove=true) a keyframe on a track's volume automation at t. |
 
