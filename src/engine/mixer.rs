@@ -189,7 +189,7 @@ fn mix_tracks(
             if !clip.enabled || clip.freeze.is_some() {
                 continue;
             }
-            let ext = clip_edges(track, clip);
+            let ext = clip_edges(track, clip, (t, t_end));
             let (estart, eend) = play_range(clip, &ext);
             if eend <= t || estart >= t_end {
                 continue;
@@ -405,11 +405,17 @@ fn clip_transitions<'a>(track: &'a Track, clip: &Clip) -> [Option<(f64, f64, &'a
 }
 
 // ---- ws:parity-audio ----
-/// `clip_transitions` plus the track's auto-fade and seams (see `Ext`).
-fn clip_edges<'a>(track: &'a Track, clip: &Clip) -> Ext<'a> {
+/// `clip_transitions` plus the track's auto-fade and seams (see `Ext`). The neighbour scan for seams
+/// only runs for a clip that can sound in `block` (timeline seconds), so a long Smooth Seams track
+/// costs a scan per audible clip, not one per clip.
+fn clip_edges<'a>(track: &'a Track, clip: &Clip, block: (f64, f64)) -> Ext<'a> {
     let tr = clip_transitions(track, clip);
     let mut seam = [false; 2];
-    if track.seam {
+    let near = || {
+        let (s, e) = play_range(clip, &Ext { tr, fade: 0.0, seam: [true; 2] });
+        e > block.0 && s < block.1
+    };
+    if track.seam && near() {
         let touching = |t: f64| {
             track.clips.iter().any(|o| {
                 o.id != clip.id
