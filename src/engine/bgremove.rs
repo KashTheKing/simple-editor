@@ -103,12 +103,6 @@ pub fn version() -> Option<String> {
     parse_manifest(&text).ok().map(|m| m.version)
 }
 
-/// The one call an add-on list needs: install folder, what is in it, and the installed version.
-/// "Installed" means `available(Fast) || available(Best)`.
-pub fn addon_status() -> (PathBuf, Installed, Option<String>) {
-    (dir(), installed(), version())
-}
-
 // ---------------------------------------------------------------------------------------------------
 // install / uninstall
 

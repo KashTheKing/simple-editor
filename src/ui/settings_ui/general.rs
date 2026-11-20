@@ -292,7 +292,7 @@ fn bgremove_row(ui: &mut egui::Ui) {
     let i = bgremove::installed();
     let tip = |q: BgQuality| match q {
         BgQuality::Fast => "MODNet: fast, made for people. About 45 MB with the runtime.",
-        BgQuality::Best => "BiRefNet: slower, any subject, finer edges. About 225 MB.",
+        BgQuality::Best => "BiRefNet: slower, any subject, finer edges. About 240 MB with the runtime.",
     };
     for (q, have) in [(BgQuality::Fast, i.helper && i.runtime && i.fast), (BgQuality::Best, i.helper && i.runtime && i.best)] {
         if have {

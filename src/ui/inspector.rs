@@ -1217,7 +1217,7 @@ fn clip_section(
     let mut bg_changed = false;
     if !audio && !multi && crate::ui::app::bgremove_ctl::refusal(project, id).is_none() {
         let st = crate::ui::bgremove_ui::State {
-            coverage: crate::ui::app::bgremove_ctl::clip_coverage(project, id),
+            coverage: crate::ui::app::bgremove_ctl::clip_coverage_cached(project, id),
             job: crate::ui::app::bgremove_ctl::job_for(project, id),
         };
         fold(ui, &mut folds, "bg_removal", "Remove Background", None, |ui| {

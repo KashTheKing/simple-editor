@@ -12,6 +12,7 @@ use super::*;
 use crate::engine::bgremove;
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 use crate::model::{BgQuality, BgRemoval};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Source seconds computed each side of what a clip shows (room for trims and transitions).
@@ -154,6 +155,9 @@ pub(super) fn start(app: &mut App, clip: Id, quality: BgQuality, ep: &str) -> Re
 /// FRAME_HOOKS: tell the preview about new matte frames (only while it is not playing - an eviction
 /// mid-play would make it re-decode under the playhead) and toast the jobs that end.
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
+    if CTX.get().is_none() {
+        let _ = CTX.set(ctx.clone());
+    }
     let (finished, landed) = {
         let mut list = jobs();
         if list.is_empty() {
@@ -209,11 +213,61 @@ pub(crate) fn job_for(project: &Project, clip: Id) -> Option<Arc<Progress>> {
     jobs().iter().find(|j| &j.src == path && j.quality == q && !j.prog.is_done()).map(|j| j.prog.clone())
 }
 
-/// (cached, total) matte frames of what `clip` shows.
+/// (cached, total) matte frames of what `clip` shows, counted now (a folder listing: MCP, not per frame).
 pub(crate) fn clip_coverage(project: &Project, clip: Id) -> Option<(usize, usize)> {
     let q = project.clip(clip)?.bg_removal.as_ref()?.quality;
     let r = request(project, clip, q, "auto")?;
     Some(bgremove::coverage(&r.src, q, r.frames.0, r.frames.1))
+}
+
+/// What a coverage count is of: (source, quality, first frame, end frame).
+type CovKey = (String, BgQuality, i64, i64);
+
+struct Cov {
+    at: Instant,
+    val: Option<(usize, usize)>,
+    busy: bool,
+}
+
+static COVERAGE: Mutex<Option<HashMap<CovKey, Cov>>> = Mutex::new(None);
+/// The UI's context, so a background count can ask for a repaint when it lands.
+static CTX: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+
+/// How old a count may be before it is redone: often while a job writes frames, rarely otherwise.
+fn cov_ttl(busy_job: bool) -> Duration {
+    Duration::from_millis(if busy_job { 400 } else { 3000 })
+}
+
+/// `clip_coverage` for the Inspector, which draws every frame: the folder listing (thousands of files
+/// for a long clip) runs on a short-lived thread and this returns the last count (None until the first
+/// lands), so the UI thread never lists a folder.
+pub(crate) fn clip_coverage_cached(project: &Project, clip: Id) -> Option<(usize, usize)> {
+    let q = project.clip(clip)?.bg_removal.as_ref()?.quality;
+    let r = request(project, clip, q, "auto")?;
+    let busy_job = job_for(project, clip).is_some();
+    let key: CovKey = (r.src.clone(), q, r.frames.0, r.frames.1);
+    let mut g = COVERAGE.lock().unwrap_or_else(|e| e.into_inner());
+    let map = g.get_or_insert_with(HashMap::new);
+    if map.len() > 64 && !map.contains_key(&key) {
+        map.retain(|_, c| c.busy);
+    }
+    let e = map.entry(key.clone()).or_insert(Cov { at: Instant::now(), val: None, busy: false });
+    let stale = e.val.is_none() || e.at.elapsed() >= cov_ttl(busy_job);
+    if stale && !e.busy {
+        e.busy = true;
+        std::thread::spawn(move || {
+            let val = bgremove::coverage(&key.0, key.1, key.2, key.3);
+            let mut g = COVERAGE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(c) = g.get_or_insert_with(HashMap::new).get_mut(&key) {
+                *c = Cov { at: Instant::now(), val: Some(val), busy: false };
+            }
+            drop(g);
+            if let Some(ctx) = CTX.get() {
+                ctx.request_repaint();
+            }
+        });
+    }
+    e.val
 }
 
 /// Install offer for a click before the add-on (or that quality's model) is there.
@@ -442,6 +496,26 @@ mod tests {
         let p = project("Z:/nowhere/offline.mp4");
         assert!(refusal(&p, 10).unwrap().contains("offline"));
         assert!(refusal(&p, 99).unwrap().contains("no clip"));
+    }
+
+    #[test]
+    fn the_inspector_count_lands_off_the_ui_thread() {
+        let mut p = project("Z:/nowhere/coverage.mp4");
+        p.clip_mut(10).unwrap().bg_removal = Some(BgRemoval::default());
+        // the first call only starts the count; it lands on its own thread
+        let t0 = Instant::now();
+        let got = loop {
+            if let Some(v) = clip_coverage_cached(&p, 10) {
+                break v;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(5), "the count never landed");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(got, (0, 76));
+        assert_eq!(clip_coverage(&p, 10), Some(got));
+        // a clip without background removal has no count
+        p.clip_mut(10).unwrap().bg_removal = None;
+        assert_eq!(clip_coverage_cached(&p, 10), None);
     }
 
     #[test]
