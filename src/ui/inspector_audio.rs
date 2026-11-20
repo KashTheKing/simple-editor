@@ -232,7 +232,7 @@ pub(super) fn speed_rows(
     let mut keep_pitch = c.keep_pitch;
     crate::ui::prop_field(ui, "Keep pitch", |ui| {
         let r = ui.checkbox(&mut keep_pitch, "").on_hover_text(
-            "Time-stretch the sound so a speed change keeps its pitch. Off: the pitch follows the speed.              Above 400 % such a clip is muted: the stretch would skip most of the sound.",
+            "Time-stretch the sound so a speed change keeps its pitch. Off: the pitch follows the speed. Above 400 % such a clip is muted: the stretch would skip most of the sound.",
         );
         mark(ui, "keep_pitch", &r);
         g.note(&r);

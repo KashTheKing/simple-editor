@@ -228,6 +228,55 @@ mod tests {
         }
     }
 
+    /// Share of `x`'s energy at `hz` (Goertzel over whole cycles): 1.0 is a pure tone at that pitch.
+    fn purity(x: &[f32], hz: f64) -> f64 {
+        let n = ((x.len() as f64 * hz / SR).floor() * SR / hz) as usize;
+        let w = std::f64::consts::TAU * hz / SR;
+        let (mut s1, mut s2) = (0.0f64, 0.0f64);
+        for &v in &x[..n] {
+            let s = v as f64 + 2.0 * w.cos() * s1 - s2;
+            (s2, s1) = (s1, s);
+        }
+        let power = (s1 * s1 + s2 * s2 - 2.0 * w.cos() * s1 * s2) * 2.0 / n as f64;
+        let total = x[..n].iter().map(|v| (*v as f64).powi(2)).sum::<f64>();
+        power / total
+    }
+
+    /// The sine test with a spectrum check: at every speed from 0.25x to 4x nearly all the energy stays at
+    /// the tone's own frequency (a resample would move it; seams between grains would spread it).
+    #[test]
+    fn stretch_is_clean_from_quarter_to_4x() {
+        for hz in [150.0, 440.0, 1000.0] {
+            for rate in [0.25, 0.5, 0.8, 1.25, 2.0, 3.0, 4.0] {
+                let sine = move |f: i64| (std::f64::consts::TAU * hz * f as f64 / SR).sin() as f32;
+                let mut g = Grains::default();
+                let mut y = Vec::new();
+                let mut block = vec![0f32; 2048];
+                for b in 0..60 {
+                    let nominal = |k: i64| (k as f64 * HOP as f64 * rate).round() as i64;
+                    g.render(1, b * 1024, &mut block, 1, nominal, |f0, buf| {
+                        for (i, s) in buf.chunks_exact_mut(2).enumerate() {
+                            let v = sine(f0 + i as i64);
+                            s[0] += v;
+                            s[1] += v;
+                        }
+                    });
+                    y.extend(block.chunks_exact(2).map(|s| s[0]));
+                }
+                // in ~170 ms windows: a seam may land a fraction of a frame off, a phase slip of well under a
+                // cent that a whole-signal measure would count as lost energy
+                for w in y[GRAIN as usize..].chunks_exact(8192) {
+                    let p = purity(w, hz);
+                    assert!(p > 0.95, "{hz} Hz at {rate}x: {:.1} % of the energy at the tone", p * 100.0);
+                    // and nowhere near where a resample would have put it
+                    if (rate - 1.0f64).abs() > 0.2 {
+                        assert!(purity(w, hz * rate) < 0.2, "{hz} Hz at {rate}x sounds resampled");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn reverse_keeps_the_pitch() {
         let mut g = Grains::default();
