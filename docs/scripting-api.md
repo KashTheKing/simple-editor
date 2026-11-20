@@ -7,28 +7,22 @@ What a Simple Editor script can call. The Script Editor's completion, signature 
 table. The *Where* column says which scripts have a name:
 
 - **Script**: a script in the Scripts folder (Run, a hotkey, `scripts.run`).
-- **Hook**: the same script fired by a `-- @on <event>` header (adds `editor.event`).
-- **Assistant script**: `scripts.eval`, the Assistant's runner (adds `library`, `project`, `query`, `print`).
+- **Hook**: the same script fired by a `-- @on <event>` header (adds `event`).
+- **Assistant script**: `scripts.eval`, the Assistant's runner (adds `library`, `project`, `query`, `json`, `purpose`).
 - **Plugin**: a plugin's script or panel (`docs/plugins.md`).
-
-## `editor`
-
-| Name | Where | Description |
-|---|---|---|
-| `editor: table` | all | The bridge to Simple Editor: tools, logging |
-| `editor.tool(name: string, args: table?) -> any` | all | Call a tool by name (the MCP catalogue) and return its result |
-| `editor.tools() -> table` | all | List the tools this script may call, as {name, description} rows |
-| `editor.log(text: string)` | Script, Hook | Show a short toast |
-| `editor.log(...: any)` | Assistant script, Plugin | Print a line (the same as print) |
-| `editor.event: table` | Hook | The payload of the event that fired this -- @on hook |
-| `editor.json(value: any) -> string` | Assistant script, Plugin | The value as compact JSON (tables) or text |
-| `editor.purpose: string` | Assistant script | What the Assistant said this script is for |
 
 ## Globals
 
 | Name | Where | Description |
 |---|---|---|
+| `tool(name: string, args: table?) -> any` | all | Call a tool by name (the MCP catalogue) and return its result |
+| `tools() -> table` | all | List the tools this script may call, as {name, description} rows |
+| `print(...: any)` | Script, Hook | Show a line in the script's output and log, as a toast (tables as JSON) |
 | `print(...: any)` | Assistant script, Plugin | Print a line into the script's output (tables as JSON) |
+| `warn(...: any)` | all | Show a line as a warning in the script's output and log (tables as JSON) |
+| `event: table` | Hook | The payload of the event that fired this -- @on hook |
+| `json(value: any) -> string` | Assistant script, Plugin | The value as compact JSON (tables) or text |
+| `purpose: string` | Assistant script | What the Assistant said this script is for |
 | `_G: table` | all | The global environment |
 | `_VERSION: string` | all | The Luau version |
 | `assert(value: any, message: string?) -> any` | all | Raise an error when value is false or nil; otherwise return it |
@@ -45,7 +39,6 @@ table. The *Where* column says which scripts have a name:
 | `newproxy(mt: boolean?) -> userdata` | all | An empty userdata, with a metatable if asked |
 | `pcall(fn: function, ...: any) -> boolean, ...any` | all | Call fn and catch its error: true and its results, or false and the error |
 | `xpcall(fn: function, handler: function, ...: any) -> boolean, ...any` | all | Call fn; an error goes through handler |
-| `print(...: any)` | Script, Hook | Write to the console (not shown in the app: use editor.log) |
 | `rawequal(a: any, b: any) -> boolean` | all | a == b without metamethods |
 | `rawget(t: table, key: any) -> any` | all | t[key] without metamethods |
 | `rawset(t: table, key: any, value: any) -> table` | all | t[key] = value without metamethods |

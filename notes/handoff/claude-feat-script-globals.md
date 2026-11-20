@@ -42,7 +42,19 @@ either, its useless. just make tools and tool globals, use print, warn, error li
   - New: `script_intel::old_editor_code_gets_a_quiet_hint`.
 
 ## Verified here (Linux container)
-See the results section at the bottom (filled in after the runs).
+- `cargo check --target x86_64-pc-windows-gnu --all-targets`: clean, and no warnings in the touched files.
+- The crate's tests don't build on Linux (winit), so they ran in a scratch harness crate. It compiles the
+  **real** `scripting.rs`, `scripting_api.rs`, `engine/plugins/runtime.rs` (the real plugin `Vm` and BOOT)
+  and `ui/script_intel.rs`, plus the token part of `ui/script_editor.rs`. The rest is shims: an 11-row
+  `mcp::tools`, `Settings::dir` and the plugin types. **32/32 pass**, covering:
+  - every `scripting`, `scripting_api` and `script_intel` test, the plugin runtime tests and `luau_tokens`
+  - the new cross-context test and the hint test
+- One condition on that run: `api_matches_the_registered_names` passed only with `package.cpath` masked.
+  mlua registers that name on Linux but not on Windows (develop's last commit removed it from the API for that
+  reason). The mask was for that one run and is not committed.
+- The same run caught a real bug, now fixed: `event` is a global table now, so the name walker listed the hook
+  payload's own keys (`event.clip_ids`). The walker skips `event`'s fields.
+- `docs/scripting-api.md` was regenerated through the harness (`SE_WRITE_API_DOCS=1`) and is current.
 
 ## Not verified / for the coordinator
 - I couldn't run the app here: a live check on Windows is still needed.
@@ -50,8 +62,11 @@ See the results section at the bottom (filled in after the runs).
   - Fire a hook.
   - Open the hello-panel plugin.
   - Open an old `editor.tool` script in the Script Editor: the hint should be grey, not orange.
-- `script_editor.rs` UI tests (`typing_a_member_opens_the_list_and_enter_takes_it`, `luau_tokens`) were changed
-  from `editor.` to `utf8.` / `tool(`. They only run where the UI test target builds.
+- `script_editor.rs`'s headless typing test (`typing_a_member_opens_the_list_and_enter_takes_it`) now types
+  `utf8.`, then Down, then Enter (giving `utf8.charpattern`), then ` .. tool(` for signature help. It was not
+  run here (it needs egui), so run it on Windows.
+- Run `cargo test` on Windows, mainly `api_matches_the_registered_names` (real `mcp::tools`) and the
+  `globals_tests` test.
 
 ## Risks
 - Inside the Script/Hook VM, `print` used to write to stdout. It now goes to toasts, so a script that prints

@@ -619,7 +619,8 @@ local out, seen = {}, {}
 local function add(name) if not seen[name] then seen[name] = true; table.insert(out, name) end end
 local function walk(k, v)
   add(k)
-  if type(v) == "table" and k ~= "_G" then
+  -- `event` is a hook's payload: its fields are the event's, not the API's
+  if type(v) == "table" and k ~= "_G" and k ~= "event" then
     for k2 in pairs(v) do if type(k2) == "string" then add(k .. "." .. k2) end end
   end
 end
