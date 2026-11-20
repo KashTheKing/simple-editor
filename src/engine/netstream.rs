@@ -158,6 +158,9 @@ impl Drop for Preview {
 
 // ----------------------------------------------------------------------------------------- recording
 
+/// Below this a recording holds no media (a Matroska header is about 0.5 KB).
+const MIN_BYTES: u64 = 4096;
+
 /// A stream being copied to disk.
 pub struct Recording {
     pub url: String,
@@ -205,11 +208,16 @@ impl Recording {
     pub fn stopping(&self) -> bool {
         self.stdin.is_none()
     }
-    /// Some(Ok) once the file is complete, Some(Err) when ffmpeg failed (a file with data is still kept).
+    /// Some(Ok) once the file is complete, Some(Err) when ffmpeg failed or nothing arrived (a live source
+    /// is probed for a few seconds before the first packet is written: Stop before that leaves only a
+    /// header). A failed run that still wrote media is kept.
     pub fn finished(&self) -> Option<Result<(), String>> {
         let d = self.done.lock().unwrap_or_else(|e| e.into_inner()).clone()?;
-        let has_data = std::fs::metadata(&self.out).map(|m| m.len() > 0).unwrap_or(false);
-        Some(if d.is_empty() || has_data { Ok(()) } else { Err(d) })
+        Some(match self.bytes() >= MIN_BYTES {
+            true => Ok(()),
+            false if d.is_empty() => Err("nothing was received from the stream before it stopped".into()),
+            false => Err(d),
+        })
     }
     pub fn bytes(&self) -> u64 {
         std::fs::metadata(&self.out).map(|m| m.len()).unwrap_or(0)

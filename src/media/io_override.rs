@@ -143,8 +143,12 @@ mod tests {
         assert_eq!(turn.display_size((1920, 1080), 0), (1080, 1920));
     }
 
+    /// The override map is process-wide: tests that sync it take turns.
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn sync_reports_changes_and_drops_defaults() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
         let mut m = BTreeMap::new();
         m.insert("C:/sync_a.mp4".to_string(), MediaIo { range: Range::Full, ..Default::default() });
         assert_eq!(sync(&m), vec!["C:/sync_a.mp4".to_string()]);
@@ -153,6 +157,56 @@ mod tests {
         m.clear();
         assert_eq!(sync(&m), vec!["C:/sync_a.mp4".to_string()]);
         assert_eq!(get("C:/sync_a.mp4"), None);
+    }
+
+    /// The real decode path: a file flagged 90 degrees (red top half, blue bottom), opened through
+    /// `media::open_video` with each override - upright ignores the flag, 180 flips it.
+    #[test]
+    fn overridden_source_decodes_through_ffmpeg_turned() {
+        use crate::media::{ffpipe, open_video, Backend, Frame};
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(exe) = ffpipe::ffmpeg_exe() else {
+            eprintln!("ffmpeg missing; skipped");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("se-io-override-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (flat, rot) = (dir.join("flat.mp4"), dir.join("rot.mp4"));
+        let ok = ffpipe::command(&exe)
+            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "color=red:s=320x240:d=1,drawbox=y=120:h=120:color=blue:t=fill"])
+            .args(["-pix_fmt", "yuv420p", "-c:v", "libx264"])
+            .arg(&flat)
+            .status()
+            .is_ok_and(|s| s.success())
+            && ffpipe::command(&exe)
+                .args(["-v", "error", "-y", "-display_rotation", "90", "-i"])
+                .arg(&flat)
+                .args(["-c", "copy"])
+                .arg(&rot)
+                .status()
+                .is_ok_and(|s| s.success());
+        assert!(ok, "test media");
+        let path = rot.to_string_lossy().into_owned();
+        let red = |p: &[u8]| p[0] > 200 && p[1] < 70 && p[2] < 70;
+        let blue = |p: &[u8]| p[0] < 70 && p[1] < 70 && p[2] > 200;
+        let px = |f: &Frame, x: u32, y: u32| f.rgba[((y * f.width + x) * 4) as usize..][..4].to_vec();
+        for (io, size, top_red) in [
+            (MediaIo { rotate: Some(0), range: Range::Auto }, (320, 240), true),
+            (MediaIo { rotate: Some(180), range: Range::Full }, (320, 240), false),
+        ] {
+            let mut m = BTreeMap::new();
+            m.insert(path.clone(), io);
+            sync(&m);
+            let mut v = open_video(&path, Backend::Auto).expect("opens");
+            assert_eq!(v.size(), size, "{io:?}");
+            let mut f = Frame::default();
+            assert!(v.frame_at(0.5, size.0, size.1, &mut f), "{io:?} decodes");
+            let (top, bottom) = (px(&f, 160, 20), px(&f, 160, 220));
+            assert_eq!((red(&top), blue(&bottom)), (top_red, top_red), "{io:?}: top {top:?} bottom {bottom:?}");
+            assert_eq!((red(&bottom), blue(&top)), (!top_red, !top_red), "{io:?}: top {top:?} bottom {bottom:?}");
+        }
+        sync(&BTreeMap::new());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
