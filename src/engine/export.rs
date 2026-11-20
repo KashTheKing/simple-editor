@@ -636,7 +636,12 @@ const MIX_BLOCK: usize = 1024;
 pub fn start_export(project: Project, opts: ExportOptions, text: Arc<Mutex<TextRasterizer>>) -> Arc<Progress> {
     // browser zooms: the page parts drawn at the scale they are shown at (not project clips)
     let project = crate::engine::browser::render_view(&project).into_owned();
-    spawn_job("export", move |prog| run_export(&project, &opts, &text, prog))
+    let prog = spawn_job("export", {
+        let (project, opts) = (project.clone(), opts.clone());
+        move |prog| run_export(&project, &opts, &text, prog)
+    });
+    crate::engine::export_doctor::remember(&prog, project, opts); // ws:forum-export
+    prog
 }
 
 /// Run `job` on a named thread; any Err (or panic) lands in `Progress::finish`.

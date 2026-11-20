@@ -178,6 +178,23 @@ pub fn retry_note(encoder: &str, early: bool) -> String {
     }
 }
 
+// ---------- what the last export was ----------
+
+type Remembered = (Arc<Progress>, Project, ExportOptions);
+static LAST: Mutex<Option<Remembered>> = Mutex::new(None);
+
+/// `export::start_export` keeps what it was asked for, so Retry in Software and Find the Problem can
+/// re-run the same export (one at a time: the newest replaces the last).
+pub fn remember(prog: &Arc<Progress>, project: Project, opts: ExportOptions) {
+    *LAST.lock().unwrap_or_else(|e| e.into_inner()) = Some((prog.clone(), project, opts));
+}
+
+/// The project and options of the export `prog` belongs to, while it is the newest one started.
+pub fn recall(prog: &Arc<Progress>) -> Option<(Project, ExportOptions)> {
+    let last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    last.as_ref().filter(|(p, ..)| Arc::ptr_eq(p, prog)).map(|(_, project, opts)| (project.clone(), opts.clone()))
+}
+
 // ---------- stuck-job watchdog ----------
 
 /// No progress for this long: the Jobs row says so and offers "Retry in Software".

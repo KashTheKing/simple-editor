@@ -190,7 +190,9 @@ mod project_match; // ws:project-color-fps
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
 mod os_paste; // Ctrl+V of a screenshot / copied files
+mod export_fix; // ws:forum-export
 
+#[derive(Clone)]
 enum ExportKind {
     File { path: PathBuf },
     Overwrite { original: PathBuf, temp: PathBuf },
@@ -599,6 +601,9 @@ pub struct App {
     // ---- ws:timeline-tabs ----
     /// The background timeline tabs' views and the Rename Sequence window.
     tabs: timeline_tabs::TabsState,
+    // ---- ws:forum-export ----
+    /// Retry in Software / Find the Problem / Play for exports (`export_fix`).
+    export_fix: export_fix::ExportFix,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -1203,6 +1208,8 @@ impl App {
             // ---- ws:skills ----
             // ---- ws:online-library ----
             online: Default::default(),
+            // ---- ws:forum-export ----
+            export_fix: Default::default(),
         };
         if let Some(reason) = settings_bad {
             app.toast(format!("Settings file was corrupt (saved as settings.json.bad): {reason}"));
@@ -2042,6 +2049,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:home-page ----
     home_ctl::TOOLS,
     script_ctl::TOOLS,
+    // ---- ws:forum-export ----
+    export_fix::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2141,6 +2150,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     timeline_tabs::act,
     // ---- ws:home-page ----
     home_ctl::act,
+    // ---- ws:forum-export ----
+    export_fix::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -2234,6 +2245,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     music_ctl::frame,
     // ---- ws:preview-audio-only ----
     audio_only::tick,
+    // ---- ws:forum-export ----
+    export_fix::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[

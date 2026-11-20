@@ -72,6 +72,7 @@ pub(super) fn progress_jobs(app: &App) -> Vec<ProgJob> {
     v.extend(enhance_ctl::progress_jobs()); // ws:ai-enhancer
     v.extend(caches::move_jobs()); // ws:neutral-web: Settings ▸ General ▸ Cache folder
     v.extend(music_ctl::progress_jobs()); // ws:music-burn: burns, erases, visualizer video prep
+    v.extend(export_fix::progress_jobs(app)); // ws:forum-export: Find the problem
     if let Some((c, out)) = &app.screen_rec {
         v.push((JobKind::ScreenRec, format!("Recording screen · {}", file_name(out)), c.progress()));
     }
@@ -112,10 +113,20 @@ pub(super) fn rows_from(h: &Holders) -> Vec<JobRow> {
         } else if !p.is_done() {
             JobState::Running
         } else if let Some(e) = p.error() {
-            JobState::Failed(e)
+            // ws:forum-export: an export's failure reads as the plain sentence, not ffmpeg's tail
+            JobState::Failed(if *kind == JobKind::Export { crate::engine::export_doctor::classify(&e).sentence } else { e })
         } else {
             JobState::Done
         };
+        // ws:forum-export: a running export that stopped moving says so and offers the software retry
+        if *kind == JobKind::Export && r.state == JobState::Running {
+            let idle = p.idle_for();
+            if crate::engine::export_doctor::stalled(idle, p.is_done()) {
+                r.status = export_fix::stall_note(idle);
+                r.eta = None;
+                r.stalled = true;
+            }
+        }
         rows.push(r);
     }
     for (i, name) in h.export_queue.iter().enumerate() {
@@ -317,6 +328,9 @@ pub(super) fn proxy_next(app: &mut App, src: &str) -> Result<(), String> {
 }
 
 pub(super) fn apply(app: &mut App, resp: JobsResponse) {
+    if resp.retry_software.is_some() {
+        app.act(Action::ExportRetrySoftware); // ws:forum-export
+    }
     for id in &resp.cancel {
         if let Err(e) = cancel(app, id) {
             app.toast(e);
