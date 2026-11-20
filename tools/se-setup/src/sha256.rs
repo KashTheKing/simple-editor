@@ -111,21 +111,6 @@ impl Sha256 {
     }
 }
 
-/// The SHA-256 of a whole file.
-pub fn file_hex(path: &std::path::Path) -> std::io::Result<String> {
-    use std::io::Read;
-    let mut f = std::fs::File::open(path)?;
-    let mut h = Sha256::new();
-    let mut buf = vec![0u8; 1 << 16];
-    loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            return Ok(h.hex());
-        }
-        h.update(&buf[..n]);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::Sha256;

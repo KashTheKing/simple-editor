@@ -87,6 +87,7 @@ pub const ADDONS: &[AddOn] = &[
     },
 ];
 
+#[cfg(test)]
 pub fn by_id(id: &str) -> Option<&'static AddOn> {
     ADDONS.iter().chain(std::iter::once(&FFMPEG)).find(|a| a.id == id)
 }
@@ -107,6 +108,7 @@ pub fn installed(a: &AddOn, p: &Paths) -> bool {
 }
 
 /// The two exes out of an FFmpeg build zip (`<build>/bin/ffmpeg.exe`), flattened.
+#[cfg(test)]
 pub fn ffmpeg_map(e: &zip::Entry) -> Option<PathBuf> {
     let n = e.file_name();
     ["ffmpeg.exe", "ffprobe.exe"].iter().any(|w| n.eq_ignore_ascii_case(w)).then(|| PathBuf::from(n))

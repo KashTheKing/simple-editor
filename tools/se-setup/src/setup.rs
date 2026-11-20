@@ -218,6 +218,7 @@ pub enum AppSource {
 }
 
 /// The `simple-editor.exe` next to the setup program, if there is one (an offline install).
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn local_app(setup_exe: &Path) -> Option<PathBuf> {
     let p = setup_exe.parent()?.join(APP_EXE);
     (p.is_file() && p != setup_exe).then_some(p)

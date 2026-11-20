@@ -1,7 +1,7 @@
 //! Every folder the installer touches, in one struct, so tests point all of them at a scratch folder.
 
 use crate::json::{self, Json};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 pub const APP_EXE: &str = "simple-editor.exe";
 pub const UPDATE_EXE: &str = "update.exe";
@@ -27,8 +27,9 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// Everything under one root (tests, and a dry run).
-    pub fn under(root: &Path) -> Paths {
+    /// Everything under one root (tests).
+    #[cfg(test)]
+    pub fn under(root: &std::path::Path) -> Paths {
         Paths {
             install: root.join("LocalAppData").join("Programs").join("Simple Editor"),
             app_data: root.join("AppData").join("SimpleEditor"),
@@ -41,6 +42,7 @@ impl Paths {
     }
 
     /// The real folders, from the environment. `desktop` is the caller's (a known-folder lookup on Windows).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn from_env(desktop: Option<PathBuf>) -> Paths {
         let var = |k: &str| std::env::var_os(k).map(PathBuf::from);
         let home = var("USERPROFILE").unwrap_or_else(|| PathBuf::from("."));

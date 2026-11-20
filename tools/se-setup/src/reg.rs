@@ -1,6 +1,7 @@
 //! The registry, behind a trait: the real HKCU (optionally redirected under a test root key) on Windows,
 //! an in-memory tree in tests. All key paths are relative to HKCU.
 
+#[cfg(test)]
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -12,8 +13,6 @@ pub enum Val {
 pub trait Reg {
     fn set(&mut self, key: &str, name: &str, v: Val) -> Result<(), String>;
     fn get(&self, key: &str, name: &str) -> Option<Val>;
-    /// Create the key (no values).
-    fn create(&mut self, key: &str) -> Result<(), String>;
     fn exists(&self, key: &str) -> bool;
     /// Delete the key and everything under it; a missing key is fine.
     fn delete_tree(&mut self, key: &str) -> Result<(), String>;
@@ -33,15 +32,18 @@ pub trait Reg {
 }
 
 /// An in-memory registry (tests). Key names compare case-insensitively, as in Windows.
+#[cfg(test)]
 #[derive(Default, Debug)]
 pub struct MemReg {
     pub keys: BTreeMap<String, BTreeMap<String, Val>>,
 }
 
+#[cfg(test)]
 fn norm(k: &str) -> String {
     k.trim_matches('\\').to_ascii_lowercase()
 }
 
+#[cfg(test)]
 impl MemReg {
     fn ensure(&mut self, key: &str) {
         // every ancestor exists too, like the real registry
@@ -62,6 +64,7 @@ impl MemReg {
     }
 }
 
+#[cfg(test)]
 impl Reg for MemReg {
     fn set(&mut self, key: &str, name: &str, v: Val) -> Result<(), String> {
         self.ensure(key);
@@ -70,10 +73,6 @@ impl Reg for MemReg {
     }
     fn get(&self, key: &str, name: &str) -> Option<Val> {
         self.keys.get(&norm(key))?.get(&name.to_ascii_lowercase()).cloned()
-    }
-    fn create(&mut self, key: &str) -> Result<(), String> {
-        self.ensure(key);
-        Ok(())
     }
     fn exists(&self, key: &str) -> bool {
         self.keys.contains_key(&norm(key))
