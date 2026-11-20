@@ -191,6 +191,7 @@ mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
 mod os_paste; // Ctrl+V of a screenshot / copied files
 mod export_fix; // ws:forum-export
+mod health_ctl; // ws:forum-preview
 
 #[derive(Clone)]
 enum ExportKind {
@@ -604,6 +605,9 @@ pub struct App {
     // ---- ws:forum-export ----
     /// Retry in Software / Find the Problem / Play for exports (`export_fix`).
     export_fix: export_fix::ExportFix,
+    // ---- ws:forum-preview ----
+    /// Playback health chip and the VFR notice (`health_ctl`).
+    health: health_ctl::State,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -1181,6 +1185,7 @@ impl App {
             emulator_tex: None,
             match_offer: None, // ws:project-color-fps
             tabs: Default::default(), // ws:timeline-tabs
+            health: Default::default(), // ws:forum-preview
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -2056,6 +2061,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     script_ctl::TOOLS,
     // ---- ws:forum-export ----
     export_fix::TOOLS,
+    // ---- ws:forum-preview ----
+    health_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2252,6 +2259,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     audio_only::tick,
     // ---- ws:forum-export ----
     export_fix::tick,
+    // ---- ws:forum-preview ----
+    health_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[

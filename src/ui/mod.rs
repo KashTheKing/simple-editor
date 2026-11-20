@@ -36,6 +36,7 @@ pub mod audio_card; // ws:audio-visualizer
 pub mod home;
 pub mod home_page; // ws:home-page
 pub mod hud; // ws:perf-baseline
+pub mod health_chip; // ws:forum-preview
 pub mod perf_ui; // ws:perf-window
 pub mod import_ui;
 pub mod inspector;

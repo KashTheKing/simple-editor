@@ -412,6 +412,21 @@ pub struct Player {
     ctx: eframe::egui::Context,
     /// The quarter second of timeline last sent as a `hint`.
     hinted: i64,
+    /// ws:forum-preview: the settings this player was last given (`applied`).
+    applied: Applied,
+}
+
+// ---- ws:forum-preview ----
+/// The settings a player has been given, as its setters recorded them: `None` = never set. The App
+/// compares this with what its settings say every frame (`health_ctl::reconcile`) and pushes only what
+/// differs, so a player made later (the Source monitor) or a setting changed by any path (Settings, the
+/// menu, MCP, a script) reaches the player without anyone remembering to - the "it plays smoothly once
+/// I touch a playback setting" class of bug.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Applied {
+    pub backend: Option<Backend>,
+    pub gpu: Option<bool>,
+    pub cache_bytes: Option<usize>,
 }
 
 impl Player {
@@ -465,7 +480,7 @@ impl Player {
         let (audio, rx) = mpsc::channel();
         let s = shared.clone();
         let _ = std::thread::Builder::new().name("audio".into()).spawn(move || audio_thread(s, rx, backend));
-        Self { shared, render, audio, ctx, hinted: -1 }
+        Self { shared, render, audio, ctx, hinted: -1, applied: Applied { backend: Some(backend), ..Default::default() } }
     }
     /// The newest frame of `Shared::ahead` that the clock has reached, layers or composited as
     /// asked. Whatever sat in the plain slots is older and goes; the next one still waiting gets
@@ -513,16 +528,28 @@ impl Player {
         lock(&self.shared.project).clone()
     }
     pub fn set_backend(&mut self, b: Backend) {
+        self.applied.backend = Some(b);
         self.both(Cmd::Backend(b));
+    }
+    /// What this player was last given (ws:forum-preview).
+    pub fn applied(&self) -> &Applied {
+        &self.applied
+    }
+    /// Frames published so far, read without consuming anything (`publish_stats` / `perf_sample` reset
+    /// their gap measures; the health chip must not steal those).
+    pub fn published_frames(&self) -> u64 {
+        self.shared.published.load(Ordering::Relaxed)
     }
     /// GPU preview: the render thread publishes decoded layers (`take_layers`) instead of a composited
     /// frame. Switching back to false resumes the CPU compositor on the next render.
     pub fn set_gpu(&mut self, on: bool) {
+        self.applied.gpu = Some(on);
         let _ = self.send_render(Cmd::Gpu(on));
     }
     /// Byte budget for the render thread's caches (see `cache_budget_bytes`). Render-only, like
     /// `set_gpu`/`set_proxies` - the audio thread caches nothing.
     pub fn set_cache_bytes(&mut self, bytes: usize) {
+        self.applied.cache_bytes = Some(bytes);
         let _ = self.send_render(Cmd::CacheBudget(bytes));
     }
     /// Preview canvas size in pixels (the Player clamps width to `max_width`, keeping aspect).
