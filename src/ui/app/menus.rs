@@ -212,7 +212,7 @@ impl App {
                 self.act_export_style();
             }
         });
-        menu::sub(ui, Some(tools::Glyph::Record), "Record", |ui| acts(ui, &[Some(Voiceover), Some(ScreenCapture)]));
+        menu::sub(ui, Some(tools::Glyph::Record), "Record", |ui| acts(ui, &[Some(Voiceover), Some(ScreenCapture), Some(ScreenSnapshot)]));
         acts(ui, &[None, Some(Settings), None]);
         if menu::row(ui, None, "Exit", "").clicked() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);

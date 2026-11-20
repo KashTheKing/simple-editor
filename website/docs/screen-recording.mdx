@@ -1,6 +1,6 @@
 ---
 title: Screen recording
-description: Record a screen, a window, a region or one game or app, with its sound on separate audio tracks.
+description: Record a screen, a window, a region, one game or app, or a webcam, with its sound on separate audio tracks, a webcam bubble and snapshots.
 ---
 
 ![The Screen Recording window](/img/tutorial/screen-recording.png)
@@ -9,18 +9,21 @@ description: Record a screen, a window, a region or one game or app, with its so
 in its own window; drag its tab into any page to dock it like any other panel. At the top is a live preview of
 exactly what will be recorded, cursor included, at 30 frames a second. Right-click it for **Pause preview** /
 **Show preview**; it also pauses by itself whenever you can't see it. Under the preview are the level meters and
-the big **Record** button, which becomes **Stop** with the time recorded.
+the big **Record** button, which becomes **Stop** with the time recorded, and **Snapshot** (see below).
 
-The settings sit in four sections that remember whether they are open:
+The settings sit in five sections that remember whether they are open:
 
-- **Sources**: **Screen** (one screen or all of them), **Window**, **Region**, or **Application / Game**. Application
+- **Sources**: **Screen** (one screen or all of them), **Window**, **Region**, **Application / Game**, or **Webcam**. Application
   capture records one program's own picture (Roblox, Roblox Studio, games and other GPU apps), even when other
   windows cover it, and can record just that program's sound. **Audio** picks what **All audio** mixes: **System
   audio only** (what your computer plays, no microphone), **Microphone only**, **Both** or **None** (no "Stereo Mix"
   needed). **Audio tracks** lists the separate sound streams the file gets (by default All audio, Microphone and App
   audio), each with a name, an on/off switch and a meter; on the timeline each stream is its own audio track.
+- **Webcam**: the **Camera** (the first one found unless you pick one; **Refresh** lists them again after you plug
+  one in), its **Format** (size, frame rate and type, or the camera's default), **Mirror** (flips it left-right), and
+  **Bubble**: a round webcam picture in a **Corner** of your screen recordings, at the **Size** you choose.
 - **Quality**: frame rate, bitrate, scale and the encoder (CPU or graphics card).
-- **Misc**: show the cursor; **Hide on Record**, which hides Simple Editor while you record and puts a small Stop pill
+- **Misc**: show the cursor; the **Snapshot delay**; **Hide on Record**, which hides Simple Editor while you record and puts a small Stop pill
   at the top of the screen (it never shows in the recording); the **Stop hotkey** (Ctrl+Shift+F9 by default), which
   works in any app; and starting a recording when the editor loses focus.
 - **Output**: the folder (**Open** shows it in Explorer), the **Library bin** the recording goes into (Recordings by
@@ -30,6 +33,22 @@ When you stop, the recording is finished, checked, and then added to the Library
 can't be lost: if Simple Editor or the PC stops mid-recording, the pieces stay in the folder and are finished into
 the mp4 the next time Simple Editor starts.
 
+## Webcam
+
+Pick **Webcam** as the source to record the camera on its own, with the microphone and the same audio tracks as a
+screen recording; the preview shows the camera. To put your face on a screen recording instead, keep a screen,
+window or app as the source and turn on **Webcam ▸ Bubble**: the camera is drawn in a circle in the corner you pick,
+in time with the screen and your voice. The bubble is part of the recorded picture (the preview before you press
+Record shows the screen without it).
+
+## Screen Snapshot
+
+**Snapshot** (or **File ▸ Record ▸ Screen Snapshot**) takes a still picture of the source: a screen, window,
+region or app as a PNG, or a photo from the webcam. With **Hide on Record** on, Simple Editor steps out of the way
+first; **Snapshot delay** gives you 3, 5 or 10 seconds to get the screen ready. The picture goes into the same
+Library bin as recordings.
+
 Recordings land in the Library as soon as they are finished, each sound stream on its own audio track when you
 put the recording on the timeline. The Assistant can record too, with the `capture.screen` tool (open, start,
-stop, status).
+stop, status, snapshot, and devices to list the webcams and their formats; `camera`, `format` and `bubble` set the
+webcam).

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Webcam and Screen Snapshot
+- **Webcam recording**: the Screen Recording panel has a **Webcam** source with a camera and format pick, Mirror and a live preview. It records with your microphone and audio tracks like a screen recording, is crash-safe the same way, and goes into the Library.
+- **Webcam bubble**: turn on **Webcam ▸ Bubble** to put a round webcam picture in a corner of your screen recordings, in time with the screen and your voice. Pick the corner and the size.
+- **Screen Snapshot**: a **Snapshot** button (and **File ▸ Record ▸ Screen Snapshot**) takes a still of the screen, window, region or app, or a photo from the webcam, into the Library; an optional 3, 5 or 10 second delay. MCP: `capture.screen` gains `snapshot`, `devices`, source `webcam` and `camera` / `format` / `bubble`.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

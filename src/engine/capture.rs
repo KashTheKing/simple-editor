@@ -897,8 +897,9 @@ pub(crate) fn video_args_with(o: &ScreenCaptureOptions, video: &Path, app: Optio
             a.extend(crate::engine::webcam::input_args(&b.cam, o.fps));
             a.insert(0, s("-copyts"));
             let pv = preview.then(crate::engine::screen_grab::preview_filter);
-            let scale = if gpu { 100 } else { o.scale };
-            a.extend([s("-filter_complex"), crate::engine::webcam::bubble_graph(base.as_deref(), b, scale, pv.as_deref())]);
+            // the GPU path's frames are already at the recording's scale, gdigrab's are scaled in `base`: the
+            // bubble follows the same scale either way
+            a.extend([s("-filter_complex"), crate::engine::webcam::bubble_graph(base.as_deref(), b, o.scale, pv.as_deref())]);
             a.extend([s("-map"), s("[v]")]);
         }
         None => {
