@@ -3,8 +3,8 @@
 ## Unreleased
 
 ### Export
-- **Transparent background**: export with alpha as ProRes 4444, PNG or QuickTime Animation `.mov`, VP9 WebM, or PNG / TIFF sequences, with nothing drawn behind the clips and clean soft edges. A new **Overlay (ProRes 4444)** preset card sets it up; other formats export on the background and say why.
-- **Image sequences**: PNG, JPEG or TIFF, one `<name>_00001.png` per frame in a folder, every frame or every Nth, whole timeline or In/Out, as an export job with progress and Cancel. MCP: `export.video` takes `alpha`, `format: "png_sequence" | "jpg_sequence" | "tiff_sequence"`, `every` and `in_out`.
+- **Transparent background**: export with alpha as ProRes 4444, PNG or QuickTime Animation `.mov`, VP9 WebM, or PNG / TIFF sequences, with nothing drawn behind the clips (letterbox bars included) and clean soft edges. A new **Overlay (ProRes 4444)** preset card sets it up; other formats export on the background and say why.
+- **Image sequences**: PNG, JPEG or TIFF, one `<name>_00001.png` per frame in a folder, every frame or every Nth, whole timeline or In/Out, as an export job with progress and Cancel. Exporting again into the same folder replaces the old frames. MCP: `export.video` takes `alpha`, `format: "png_sequence" | "jpg_sequence" | "tiff_sequence"`, `every` and `in_out`.
 
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
