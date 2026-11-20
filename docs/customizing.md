@@ -197,7 +197,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `assistant.stop` | Ui | - | Stop the Assistant pane's running request (its edits so far stay, as one undo step). |
 | `assistant.wait` | Job | timeout_s | Block until the user sends a request from the Assistant pane or adds a comment (a marker with a note); returns {request, context}, or {timeout: true}. Loop on it for live mode. timeout_s: default 300, max 1500. |
 
-**`audio.*`** (13 tools)
+**`audio.*`** (16 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -210,6 +210,9 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `audio.filter_add` | Mutate | bus_id, kind, params | Append a filter to a bus's chain (any FilterKind incl. DeHum\|Limiter\|DeEsser) with optional {param name: value} overrides. |
 | `audio.match_loudness` | Mutate | clip_ids, dry_run | Scale every listed clip's gain toward the selection's average (bucket-)RMS. |
 | `audio.normalize` | Mutate | clip_ids, dry_run, mode, target_dbfs | Set each clip's constant gain so its own peak/RMS reaches target_dbfs. Clips with keyframed volume are skipped (reported, not silently ignored). |
+| `audio.normalize_loudness` | Mutate | clip_ids, target_lufs | Two-pass loudness normalize: give each clip a Normalize filter (or retarget its own) and measure it in the background; the measurement lands as its own undo step. |
+| `audio.scopes` | Read | - | The Audio Scopes pane's numbers for what is playing: spectrum (dB per band), L/R correlation, peaks. |
+| `audio.tone` | Job | at, hz, level_db, seconds, wave | Tone generator: a sine/square/sawtooth/triangle tone or white/pink noise as a WAV, added and placed at `at`. |
 | `audio.repair` | Mutate | clip_ids, preset | Route clips through a one-click DSP chain (a named bus + filters), left fully editable in the Mixer; re-applying reuses the bus. Returns the bus id. |
 | `audio.role` | Mutate | clip_ids, role | Tag clips with an Essential-Sound role; drives the inspector's audio defaults and future ducking target selection. |
 | `audio.route` | Mutate | bus, clip_id, from_bus, track | Send a clip, a track or a bus into a bus (bus 0 = Main / inherit). |
@@ -235,11 +238,15 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `caches.clear` | Ui | - | Releases decoder file handles, clears in-memory waveform/thumb caches, deletes the on-disk cache dir; returns bytes freed. |
 | `caches.size` | Read | - | Returns the on-disk cache directory size in bytes. |
 
-**`clip.*`** (16 tools)
+**`clip.*`** (20 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `clip.add_effect` | Mutate | clip_id, kind, params | Append an effect with optional params {name: value}. Kinds: Blur, Motion Blur, Pixelate, JPEG Compression, VHS, Chroma Key, Color Replace, Threshold, Edge Glow, Color Tint, Color Correction, Color Curves, Levels, Hue / Saturation, Black & White, Invert, Vignette, Sharpen, Flip, Crop, 3D Plane, Camera Shake, Blob Tracking, Security Camera REC, Primaries, Qualifier, LUT, Frame Blend, Custom Shader. |
+| `clip.audio_filter_add` | Mutate | clip_ids, kind, params | Add an audio filter to each clip's own chain (runs before the clip's volume, pan and fades). Every Mixer filter kind. |
+| `clip.audio_filter_remove` | Mutate | clip_id, index | Remove one of a clip's own audio filters, or all with index omitted. |
+| `clip.audio_filter_set` | Mutate | clip_id, enabled, index, params, t | Change one of a clip's own audio filters: parameters by name and/or enabled. |
+| `clip.audio_filters` | Read | clip_id | A clip's own audio filter chain: kind, enabled, parameters, which are keyed. |
 | `clip.add_lut` | Mutate | clip_id, intensity, path | Add an EffectKind::Lut effect (a .cube 3D LUT) to a clip; parses the file to validate before pushing. |
 | `clip.add_mask` | Mutate | clip_id, effect, shape | Add a mask to a clip (or to one of its effects with `effect`). |
 | `clip.add_node` | Mutate | clip_id, kind, x, y | Add a node to the clip's node graph (created from its effect stack on first use). |
@@ -707,10 +714,11 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 | `titles.list` | Read | - | List placeable title/text templates: builtin_titles() + Settings.templates filtered by is_text_template. Returns [{name, clip_count, exposed: [string]}]. |
 | `titles.place` | Mutate | at, name | Decode the named title template (builtin or Settings.templates) and place it at `at` (or the playhead). Returns {clip_ids, exposed}. |
 
-**`track.*`** (4 tools)
+**`track.*`** (5 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
+| `track.audio_edges` | Mutate | fade_ms, seam, track_index | An audio track's automatic clip-edge fades (fade_ms, 0 = off) and/or smooth seams (touching clips cross-fade over 10 ms). |
 | `track.list` | Read | - | Every track: index, kind, name, locked, ripple, magnetic, color, clip count. |
 | `track.move` | Mutate | index, up | Reorder a track one slot up/down within its own kind (video tracks / audio tracks stay contiguous). |
 | `track.set` | Mutate | color, index, locked, magnetic, name, ripple | Edit one track's flags/name/colour. |

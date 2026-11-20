@@ -1,7 +1,7 @@
 //! ---- ws:parity-audio ----
 //! Shotcut-parity audio, App side:
 //! - MCP tools over a clip's own filters (`Clip.audio_filters`) and a track's auto-fade / seams;
-//! - the two-pass Normalize's analysis pass (a filter's Analyze button or `audio.normalize`): a worker
+//! - the two-pass Normalize's analysis pass (a filter's Analyze button or `audio.normalize_loudness`): a worker
 //!   measures the clip, `tick` writes "Measured LUFS" back as one undo step;
 //! - the tone generator (Clip ▸ Add ▸ Tone Generator… / `audio.tone`): a worker writes the WAV, `tick`
 //!   adds it to the Library and places it at the playhead;
@@ -362,7 +362,7 @@ pub const TOOLS: &[ToolDef] = &[
                then the clip goes to its bus). Kinds: every Mixer filter - Eq, Eq15, HighPass, LowPass, \
                BandPass, Notch, Compressor, Expander, NoiseGate, Limiter, DeEsser, DeHum, Declick, MidSide, \
                StereoWidth, Channels (Mode 0 copy L>R, 1 copy R>L, 2 swap, 3 invert L, 4 invert R, 5 invert \
-               both), Downmix, Normalize (two-pass; see audio.normalize), Reverb, Echo, Pitch, Gain, ...",
+               both), Downmix, Normalize (two-pass; see audio.normalize_loudness), Reverb, Echo, Pitch, Gain, ...",
         args: &[
             "clip_ids:array:true:clip ids",
             "kind:string:true:filter kind (name or variant, any case)",
@@ -461,7 +461,7 @@ pub const TOOLS: &[ToolDef] = &[
         },
     },
     ToolDef {
-        name: "audio.normalize",
+        name: "audio.normalize_loudness",
         desc: "Two-pass loudness normalize: give each clip a Normalize filter (or retarget the one it has)                and measure the clip in the background; when the measurement lands, the filter applies                target - measured (capped by its Max gain) as its own undo step. Read the result with                clip.audio_filters. Audio clips only (a nested sequence has no file to measure).",
         args: &["clip_ids:array:true:", "target_lufs:number:false:-40..-5, default -16 (streaming); -23 for broadcast"],
         kind: ToolKind::Mutate,

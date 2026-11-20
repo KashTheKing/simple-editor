@@ -553,12 +553,16 @@ fn filter_body(
                 }
                 // ---- ws:parity-audio ----
                 "Measured LUFS" => {
-                    let r = ui.label(if v >= NORMALIZE_UNMEASURED - 1e-6 { "not analysed".to_string() } else { format!("{v:.1}") });
-                    let r = r.on_hover_text("Written by Analyze: the clip's loudness before this filter");
-                    if ui.small_button("Analyze").on_hover_text("Measure the clip's loudness (runs in the background)").clicked() {
-                        request_analyze(bus_id, i);
-                    }
-                    r
+                    let text = if v >= NORMALIZE_UNMEASURED - 1e-6 { "not analysed".to_string() } else { format!("{v:.1}") };
+                    ui.horizontal(|ui| {
+                        let r = ui.label(text).on_hover_text("Written by Analyze: the clip's loudness before this filter");
+                        let b = ui.small_button("Analyze");
+                        if b.on_hover_text("Measure the clip's loudness (runs in the background)").clicked() {
+                            request_analyze(bus_id, i);
+                        }
+                        r
+                    })
+                    .inner
                 }
                 _ => ui.add(
                     DragValue::new(&mut v)
