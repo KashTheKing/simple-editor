@@ -74,6 +74,8 @@ impl Project {
             max_duration: None,
             // ---- ws:project-color-fps ----
             color: ColorSpace::Sdr,
+            // ---- feat/styles-context ----
+            context: String::new(),
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);

@@ -348,6 +348,12 @@ fn send(app: &mut App) {
     if prompt.is_empty() {
         return;
     }
+    // feat/styles-context: `/style <name>` sets the project's style here, it is not a request
+    if let Some(arg) = crate::engine::styles::parse_command(&prompt) {
+        let arg = arg.to_string();
+        super::styles_ctl::slash(app, &arg);
+        return;
+    }
     let Some(skill) = resolve_skill(app, &prompt, false) else {
         app.assistant.prompt = prompt; // waits for the library skill's Run / Cancel
         return;
@@ -394,7 +400,13 @@ fn send(app: &mut App) {
         return;
     }
     // ws:animator: a request in plain words that a skill covers (e.g. "convert my keyframes to blocks") finds it
-    let full = format!("{}{}\n\nRequest: {request}", preamble(&ctx, &images), skills_hint(&skills::all()));
+    // feat/styles-context: Project Context (the user's rules and style guide) and the digest, every request
+    let full = format!(
+        "{}{}{}\n\nRequest: {request}",
+        preamble(&ctx, &images),
+        skills_hint(&skills::all()),
+        crate::model::context::for_request(&app.project)
+    );
     let skill = skill.map(|(s, _)| s.name);
     let conv = app.assistant.conv_mut().id;
     enqueue(app, Req { kind: Kind::Chat, conv, label: prompt, full, images, skill });
@@ -441,17 +453,17 @@ fn add_task(app: &mut App) {
     st.push(Line::User(format!("Task: {desc}")));
     st.dirty = true;
     let ctx = compose_context(live_context(app), &[], &[]);
-    let full = format!("{}\n\n{TASK_BRIEF}\n\nTask: {what}", preamble(&ctx, &[]));
+    let full = format!("{}{}\n\n{TASK_BRIEF}\n\nTask: {what}", preamble(&ctx, &[]), crate::model::context::for_request(&app.project));
     let conv = app.assistant.conv_mut().id;
     enqueue(app, Req { kind: Kind::Task(id), conv, label: format!("Task: {desc}"), full, images: Vec::new(), skill });
 }
 
 /// "Handle my comments": a settled new comment becomes a background request.
-fn comment_req(comment: Value, id: Id, conv: u64) -> Req {
+fn comment_req(comment: Value, id: Id, conv: u64, project_ctx: &str) -> Req {
     let note = comment["note"].as_str().unwrap_or("").to_string();
     let ctx = json!({"comment": comment});
     let full = format!(
-        "{}\n\nThe user left this comment on the timeline (marker {id}). Do what it asks; the editor marks the \
+        "{}{project_ctx}\n\nThe user left this comment on the timeline (marker {id}). Do what it asks; the editor marks the \
          comment done when you finish, so don't mark it yourself.\nComment: {note}",
         preamble(&ctx, &[])
     );
@@ -1093,6 +1105,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     let all = skills::all();
     let panes: Vec<Pane> = app.layout.rects.iter().map(|(p, _)| *p).filter(|p| *p != Pane::Assistant).collect();
     let asks = chat_asks(app);
+    let styles_all = crate::engine::styles::all(); // feat/styles-context
+    let applied = super::styles_ctl::applied(app);
     let out = {
         let s = &app.settings;
         let v = View {
@@ -1108,6 +1122,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             panes: &panes,
             full_access: perms::full_access(),
             asks: &asks,
+            styles: &styles_all,
+            applied_style: applied.as_deref(),
+            context_open: app.pane_drawn(Pane::Context),
         };
         aui::draw(ui, &mut app.assistant, &v)
     };
@@ -1156,6 +1173,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             }
         }
         Out::Skill(o) => skill_out(app, o),
+        Out::Styles(o) => super::styles_ctl::styles_out(app, o), // feat/styles-context
         Out::None => {}
     }
     if app.assistant_rt.shots.iter().any(|s| !s.asked) {
@@ -1286,7 +1304,8 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
         if let Some((v, id)) = tools_context::settled_comment(&app.project, since, Instant::now(), &mut rt.comment_slot) {
             rt.comment_since = Some(id);
             let conv = app.assistant.conv_mut().id;
-            enqueue(app, comment_req(v, id, conv));
+            let pc = crate::model::context::for_request(&app.project); // feat/styles-context
+            enqueue(app, comment_req(v, id, conv, &pc));
         }
         if let Some((_, _, at)) = app.assistant_rt.comment_slot {
             app.animate_until(ctx, at + tools_context::COMMENT_SETTLE);
@@ -1923,7 +1942,7 @@ mod tests {
             assert_eq!(mcp::tools::find(name).map(|d| d.kind), Some(kind), "{name}");
         }
         assert!(TASK_BRIEF.contains("tasks.add{title, code, note}") && TASK_BRIEF.contains("editor.tool(name, args)"));
-        let r = comment_req(json!({"note": "trim this", "marker_id": 4}), 4, 7);
+        let r = comment_req(json!({"note": "trim this", "marker_id": 4}), 4, 7, "");
         assert!(r.full.contains("Comment: trim this") && r.kind == Kind::Comment(4) && r.label == "Comment: trim this");
     }
 }

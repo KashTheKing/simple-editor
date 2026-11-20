@@ -64,6 +64,10 @@ pub fn leaves_project(tool: &str, args: &Value) -> bool {
                 // ws:skills: a skill is instructions for the assistant - writing or removing one is held
                 | "skills.save"
                 | "skills.delete"
+                // feat/styles-context: writing the styles library, and the describer's download
+                | "styles.save"
+                | "styles.delete"
+                | "styles.install_describer"
         )
         || (tool == "ui.action" && args.get("id").and_then(Value::as_str).is_some_and(|id| LEAVING_ACTIONS.contains(&id)))
 }

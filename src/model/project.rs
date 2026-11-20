@@ -125,6 +125,11 @@ pub struct Project {
     /// The colour space the project renders and exports in (Inspector ▸ Color). SDR in old files.
     #[serde(skip_serializing_if = "ColorSpace::is_sdr")]
     pub color: ColorSpace,
+    // ---- feat/styles-context ----
+    /// Project Context (`model::context`): the user's Markdown document about the project - About, Rules,
+    /// Style guide, Links - which every Assistant request carries. An applied editing style sits inside it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub context: String,
 }
 
 // ---- ws:project-color-fps ----

@@ -675,6 +675,8 @@ pub mod ops;
 mod path;
 mod playlist; // ws:music-burn
 mod project;
+// ---- feat/styles-context ----: Project Context document + digest (pure text)
+pub mod context;
 mod repair;
 mod shape;
 mod subtitle;

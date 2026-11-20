@@ -53,6 +53,10 @@ pub mod shapes;
 // ---- ws:export-audio-tracks ----
 pub mod stems;
 pub mod style;
+// ---- feat/styles-context ----: Editing Styles library, Learn this style, the SmolVLM2 describer add-on
+pub mod style_learn;
+pub mod styles;
+pub mod vlm;
 pub mod subtitles;
 pub mod text;
 // ---- ws:thread-viewers ----

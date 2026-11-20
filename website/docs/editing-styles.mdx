@@ -1,0 +1,96 @@
+---
+title: Editing Styles
+description: A library of editing styles - measurable rules plus guidance - that you set for a project with /style, and that can be learned from a reference video.
+---
+
+:::caution Experimental
+Still being worked on; things may change or break.
+:::
+
+An **editing style** is a short Markdown file: the measurable rules at the top (average shot length, how many
+cuts land on the beat, transitions, caption look, loudness, grade, how the pacing changes) and plain
+guidance below. Set one for a project and the [Assistant](assistant.mdx) follows it in every request: it is
+written into the project's [Project Context](project-context.mdx).
+
+![The Editing Styles tab](/img/tutorial/editing-styles.png)
+
+## Browse the library
+
+In the Assistant, **⋯ ▸ Editing Styles**. Each row shows a style and whether it is built in, yours, or
+applied to this project; the buttons on the right apply, duplicate and delete it. Click a row to preview its
+rules and guidance, with **Apply** (or **Remove**), **Duplicate**, **Rename**, **Export…** and **Delete**.
+**Import…** adds a `.md` file; **Open folder** shows where yours live (`%APPDATA%\SimpleEditor\styles`).
+
+The built-in styles are **vlog**, **trailer**, **documentary**, **music-video**, **podcast-clips** and
+**shorts**. They match the [style skills](editing-skills.mdx) (`/style-vlog` and the rest), which do the
+whole editing pass. A built-in can't be changed: duplicate it to make your own.
+
+## /style
+
+Type `/style` and a name in the Assistant's box (it completes the name as you type) and press Enter:
+
+- `/style trailer` writes the trailer style into this project's Style guide and Rules, as one undo step,
+- `/style off` takes it out again,
+- `/style` alone opens the library.
+
+Nothing is sent to the agent; the next request you make carries the style.
+
+## The file
+
+```markdown
+---
+name: gym-vlog
+title: Gym vlog
+description: Fast, loud and bright.
+avg_shot: 1.6
+cut_on_beat: 0.5
+transitions: [cut, whip 0.2]
+captions: Big Impact, pop, 2 words per cue
+loudness: -14
+grade: punchy, warm
+pacing: [1.4, 1.6, 1.8, 1.5]
+words_per_minute: 180
+---
+Open on the heaviest lift. Cut on the beat in the training montage.
+```
+
+`avg_shot` is in seconds; `cut_on_beat` is the share of cuts on a beat (0 to 1, or a percentage);
+`transitions` lists kinds with a typical length in seconds; `pacing` is the average shot length in each
+quarter of the video. Every field is optional, and keys the app does not know are kept as they are.
+
+## Learn this style
+
+**Learn this style…** in the library measures a reference video and writes a draft style for you to
+review. The video is only read, never changed.
+
+![Learn a style, with a draft](/img/tutorial/learn-style.png)
+
+1. **Choose…** the video and give the draft a name.
+2. Measured every time: the cuts (hard cuts, dissolves and dips to black), every shot's length, the average
+   and the pacing by quarter, the share of cuts on the music's beat (when it has a steady one), the
+   loudness, and the colour of each shot (level, contrast, saturation, warm or cool). **Words per minute**
+   needs speech-to-text, which **Transcript ▸ Get captions** installs.
+3. **Describe** (optional): the video describer, an add-on, looks at three frames of each shot and writes its
+   framing (close-up, medium, wide), subject, camera move and any text on screen. The first time, the
+   window offers to install it: **SmolVLM2 256M** (about 300 MB), or the larger **SmolVLM2 2.2B** (about
+   1.7 GB, better and slower), running on this computer through llama.cpp. **Measure only** skips it. Long
+   videos are sampled: at most the number of shots you set are described.
+4. Click **Learn**. The draft opens when it is done: the rules, a summary, and a table of every shot. Edit
+   anything, then **Save to styles** or **Save and apply**.
+
+The describer only describes: every number in a learned style comes from the measurements.
+
+## For agents (MCP)
+
+| Tool | What it does |
+|---|---|
+| `styles.list` / `styles.get` | the library; one style's rules, body and file text |
+| `styles.save` / `styles.delete` | write or remove one of the user's styles (asks the user first) |
+| `styles.apply` / `styles.remove` | set the project's style / take it out (one undo step) |
+| `styles.learn` + `styles.learn_status` | learn from a video in the background; the status carries the draft |
+| `styles.describer` / `styles.install_describer` | the describer add-on's state / install it (a download: asks first) |
+
+## Licences
+
+The describer is optional and downloaded on demand, never part of the app: llama.cpp is MIT, the SmolVLM2
+models are Apache-2.0.

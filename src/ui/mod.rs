@@ -78,6 +78,7 @@ pub mod transitions_ui;
 pub mod jobs_ui;
 // ---- ws:pro-schema ----
 pub mod assistant_ui;
+pub mod styles_ui; // feat/styles-context: Editing Styles tab, Learn a style, Project Context pane
 // ---- ws:assistant-pane ----
 pub mod assistant_data;
 // ---- ws:html-layer ----

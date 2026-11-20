@@ -179,6 +179,7 @@ mod template_ctl; // ws:animator-templates
 mod beats_ctl; // ws:beat-aligner
 mod music_ctl; // ws:music-burn
 mod emulator_ctl; // ws:device-emulator
+mod styles_ctl; // feat/styles-context: Project Context pane, Editing Styles, /style, Learn a style
 mod audio_only; // ws:preview-audio-only
 mod media_api; // ws:assistant-luau
 mod script_ctl; // ws:assistant-luau
@@ -541,6 +542,11 @@ pub struct App {
     emulator: crate::ui::emulator::EmuState,
     /// The Platform Emulator's own copy of the picture when the Preview pane is hidden (nobody else uploads it).
     emulator_tex: Option<egui::TextureHandle>,
+    // ---- feat/styles-context ----
+    /// The Project Context pane's edit buffer and typing-burst undo snapshot (`styles_ctl`).
+    styles_ctx: crate::ui::styles_ui::CtxState,
+    /// Speech-to-text was installed when the Learn a style window opened (words per minute).
+    styles_ctx_can_transcribe: bool,
     // ---- ws:project-color-fps ----
     /// "Match project to this video?" waiting for an answer (`project_match`).
     match_offer: Option<project_match::MatchOffer>,
@@ -1065,6 +1071,8 @@ impl App {
             path_armed: false,
             emulator: Default::default(), // ws:device-emulator
             emulator_tex: None,
+            styles_ctx: Default::default(), // feat/styles-context
+            styles_ctx_can_transcribe: false,
             match_offer: None, // ws:project-color-fps
             // ---- ws:pro-schema ----
             assistant: Default::default(),
@@ -1891,6 +1899,7 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:assistant-luau ----
     media_api::TOOLS,
     script_ctl::TOOLS,
+    styles_ctl::TOOLS, // feat/styles-context
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2157,6 +2166,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     music_ctl::windows,
     // ---- ws:project-color-fps ----
     project_match::window,
+    // ---- feat/styles-context ----
+    styles_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -2231,6 +2242,7 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     music_ctl::draw,
     // ---- ws:device-emulator ----
     emulator_ctl::draw,
+    styles_ctl::draw, // feat/styles-context
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

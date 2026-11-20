@@ -33,6 +33,8 @@ pub enum Tab {
     Tasks,
     /// ws:skills: every skill, with Run / Edit / Duplicate / Delete and New skill (the `⋯` menu).
     Skills,
+    /// feat/styles-context: the Editing Styles library (`ui::styles_ui::styles_tab`).
+    Styles,
 }
 
 /// The composer's prompt box (fixed, so the app can tell when it has the keyboard: image paste).
@@ -155,6 +157,8 @@ pub struct AssistantState {
     /// Attachment thumbnails by file (None = unreadable), loaded once; the preview's full image.
     thumbs: HashMap<std::path::PathBuf, Option<egui::TextureHandle>>,
     preview_tex: Option<(std::path::PathBuf, Option<egui::TextureHandle>)>,
+    /// feat/styles-context: the Editing Styles tab and the Learn a style window.
+    pub styles: crate::ui::styles_ui::StylesState,
 }
 
 impl AssistantState {
@@ -306,6 +310,12 @@ pub struct View<'a> {
     pub full_access: bool,
     /// The running chat's access questions: (held call index, question, reason).
     pub asks: &'a [(usize, String, String)],
+    // ---- feat/styles-context ----
+    /// Every editing style (`engine::styles::all`), the one applied to this project, and whether the
+    /// Project Context pane is on screen (its button is lit).
+    pub styles: &'a [crate::engine::styles::Style],
+    pub applied_style: Option<&'a str>,
+    pub context_open: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -335,6 +345,8 @@ pub enum Out {
     Answer(usize, u8),
     /// The shown chat's permission mode.
     Mode(Mode),
+    /// feat/styles-context: the Editing Styles tab / Project Context button.
+    Styles(crate::ui::styles_ui::Out),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -396,6 +408,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
             Tab::Chat => chat_tab(ui, state, v, &pal, &mut out),
             Tab::Tasks => tasks_tab(ui, state, v, &pal, &mut out),
             Tab::Skills => skills_tab(ui, state, v, &mut out),
+            Tab::Styles => {
+                let sv = crate::ui::styles_ui::View { styles: v.styles, applied: v.applied_style, context_open: v.context_open };
+                match crate::ui::styles_ui::styles_tab(ui, &mut state.styles, &sv) {
+                    crate::ui::styles_ui::Out::None => {}
+                    o => out = Out::Styles(o),
+                }
+            }
         }
     });
     out
@@ -515,7 +534,11 @@ fn top_bar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, wide: bool, 
             if ui.button("← Chat").clicked() {
                 state.tab = Tab::Chat;
             }
-            ui.strong(if state.tab == Tab::Tasks { "Tasks" } else { "Skills" });
+            ui.strong(match state.tab {
+                Tab::Tasks => "Tasks",
+                Tab::Styles => "Editing Styles",
+                _ => "Skills",
+            });
         }
         if state.tab == Tab::Chat {
             // the title takes what the two buttons on the right leave, and truncates
@@ -532,6 +555,11 @@ fn top_bar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, wide: bool, 
             }
             if glyph_text_button(ui, Glyph::Letter('+'), "").on_hover_text("New chat").clicked() {
                 state.new_chat();
+            }
+            // feat/styles-context: the Project Context pane, lit while it is open
+            let pal = crate::theme::palette(ui.ctx());
+            if crate::ui::styles_ui::context_button(ui, &pal, v.context_open) {
+                *out = Out::Styles(crate::ui::styles_ui::Out::ToggleContext);
             }
         });
     });
@@ -566,6 +594,15 @@ fn more_menu(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mut 
         }
         if menu::row(ui, Some(Glyph::Bolt), "Skills", "").on_hover_text("Saved instructions you run in chat as /name").clicked() {
             state.tab = Tab::Skills;
+        }
+        // feat/styles-context
+        let styles_tip = "Editing styles you set for a project with /style name, or learn from a video";
+        if menu::row(ui, Some(Glyph::Star), "Editing Styles", "").on_hover_text(styles_tip).clicked() {
+            state.tab = Tab::Styles;
+        }
+        let ctx_tip = "The project's notes, rules and style guide the assistant reads with every request";
+        if menu::check(ui, v.context_open, "Project Context", "").on_hover_text(ctx_tip).clicked() {
+            *out = Out::Styles(crate::ui::styles_ui::Out::ToggleContext);
         }
         let external = v.backend == "external";
         let label = if v.queued > 0 { format!("Handle my comments ({} waiting)", v.queued) } else { "Handle my comments".into() };
@@ -683,7 +720,7 @@ fn tasks_tab(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Pale
     let external = v.backend == "external";
     // ws:skills: `/name` works here too
     let tid = ui.id().with("assistant_task_prompt");
-    let (slash, done) = slash_list(ui, &mut state.task_prompt, &mut state.slash_sel, v.skills, tid);
+    let (slash, done) = slash_list(ui, &mut state.task_prompt, &mut state.slash_sel, v.skills, &[], tid);
     ui.horizontal(|ui| {
         let w = (ui.available_width() - 48.0).max(80.0);
         let r = ui.add(
@@ -1562,7 +1599,7 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
                 ui.add_space(2.0);
             }
             let id = prompt_id();
-            let (slash, done) = slash_list(ui, &mut state.prompt, &mut state.slash_sel, v.skills, id);
+            let (slash, done) = slash_list(ui, &mut state.prompt, &mut state.slash_sel, v.skills, v.styles, id);
             if done {
                 (state.cursor_end, state.focus_prompt) = (true, true);
             }
@@ -1709,12 +1746,41 @@ fn attach_menu(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &mu
 /// ws:skills: the `/` list above a prompt box (`text`, widget `id`) while a skill name is typed:
 /// filtered as the user types; Up / Down pick (`sel`), Enter / Tab / a click complete to `/name `.
 /// Returns (open, completed this frame); the caller focuses the box and moves its cursor on a completion.
-pub fn slash_list(ui: &mut egui::Ui, text: &mut String, sel: &mut usize, all: &[Skill], id: egui::Id) -> (bool, bool) {
-    let Some(q) = slash_query(text) else {
+pub fn slash_list(
+    ui: &mut egui::Ui,
+    text: &mut String,
+    sel: &mut usize,
+    all: &[Skill],
+    styles: &[crate::engine::styles::Style],
+    id: egui::Id,
+) -> (bool, bool) {
+    // (what a pick puts in the box, the row's text, its tooltip)
+    let hits: Vec<(String, String, String)> = if let Some(q) = style_query(text, styles) {
+        // feat/styles-context: `/style ` then a style's name
+        crate::engine::styles::filter(styles, q, 8)
+            .into_iter()
+            .map(|s| (format!("/style {}", s.name), format!("/style {}  ·  {}", s.name, s.title), s.description.clone()))
+            .collect()
+    } else if let Some(q) = slash_query(text) {
+        let mut v = Vec::new();
+        if !styles.is_empty() && !q.is_empty() && "style".starts_with(q) {
+            v.push(("/style ".to_string(), "/style [name]  ·  Set this project's editing style".to_string(), STYLE_TIP.to_string()));
+        }
+        v.extend(skills::filter(all, q, 8 - v.len()).into_iter().map(|s| {
+            let mut text = format!("/{}", s.name);
+            if !s.args.is_empty() {
+                text += &format!(" {}", s.args);
+            }
+            if !s.description.is_empty() {
+                text += &format!("  ·  {}", s.description);
+            }
+            (format!("/{} ", s.name), text, s.description.clone())
+        }));
+        v
+    } else {
         *sel = 0;
         return (false, false);
     };
-    let hits = skills::filter(all, q, 8);
     if hits.is_empty() {
         return (false, false);
     }
@@ -1740,25 +1806,27 @@ pub fn slash_list(ui: &mut egui::Ui, text: &mut String, sel: &mut usize, all: &[
             pick = Some(*sel);
         }
     }
-    for (i, s) in hits.iter().enumerate() {
-        let mut text = format!("/{}", s.name);
-        if !s.args.is_empty() {
-            text += &format!(" {}", s.args);
-        }
-        if !s.description.is_empty() {
-            text += &format!("  ·  {}", s.description);
-        }
-        let r = ui.add(egui::Button::selectable(i == *sel, text).truncate());
-        if r.on_hover_text(s.description.as_str()).clicked() {
+    for (i, (_, label, tip)) in hits.iter().enumerate() {
+        let r = ui.add(egui::Button::selectable(i == *sel, label.as_str()).truncate());
+        if r.on_hover_text(tip.as_str()).clicked() {
             pick = Some(i);
         }
     }
     ui.separator();
     if let Some(i) = pick {
-        *text = format!("/{} ", hits[i].name);
+        *text = hits[i].0.clone();
         *sel = 0;
     }
     (true, pick.is_some())
+}
+
+/// feat/styles-context: what `/style` does (its row's tooltip).
+const STYLE_TIP: &str = "Writes a style from your Editing Styles into this project's Style guide and Rules; /style off takes it out";
+
+/// The name being typed after `/style ` (None once it is a whole style's name, so Enter sends).
+fn style_query<'a>(prompt: &'a str, styles: &[crate::engine::styles::Style]) -> Option<&'a str> {
+    let q = prompt.strip_prefix("/style ")?;
+    (!q.contains(char::is_whitespace) && !styles.iter().any(|s| s.name == q)).then_some(q)
 }
 
 /// Put a TextEdit's cursor at the end of `text`.
@@ -1812,6 +1880,9 @@ mod tests {
             panes: &[],
             full_access: false,
             asks: &[],
+            styles: &[],
+            applied_style: None,
+            context_open: false,
         };
         state.images.push(Attachment::file(std::path::Path::new("C:\\notes.txt")));
         for tab in [Tab::Tasks, Tab::Chat, Tab::Skills] {
@@ -1898,6 +1969,9 @@ mod tests {
             panes: &[],
             full_access: false,
             asks: &[],
+            styles: &[],
+            applied_style: None,
+            context_open: false,
         }
     }
 
