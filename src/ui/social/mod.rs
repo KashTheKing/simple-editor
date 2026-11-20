@@ -605,33 +605,39 @@ impl Set {
     }
 }
 
-/// The "Platform Emulator" menu (the Preview's right-click): the platforms (the one ticked is the pick the
-/// Preview's guide and the Platform Emulator pane share), Show Guides on Preview, Open Platform Emulator, and
-/// the guide's options.
+/// The "Platform Emulator" menu (the Preview's right-click), one level deep for the common choices:
+/// Off + the platforms (a radio list: picking one shows its guide; the tick is the pick the Preview and the
+/// Platform Emulator pane share), the guide style (Safe zone / UI / Device), Open Platform Emulator, and
+/// the rarely used options under More.
 pub fn menu_rows(ui: &mut eframe::egui::Ui, s: &crate::settings::Settings) -> Option<Set> {
     use crate::ui::menu;
     let d = data();
     let mut out = None;
     let cur = platform(s);
+    let shown = s.guide.is_some();
+    if menu::check(ui, !shown, "Off", "").on_hover_text("No guide on the Preview").clicked() {
+        out = Some(Set::Platform(None));
+    }
     for p in &d.platforms {
-        if menu::check(ui, cur == p.id, &p.n, "").clicked() {
+        if menu::check(ui, shown && cur == p.id, &p.n, "").clicked() {
             out = Some(Set::Platform(Some(p.id.clone())));
         }
     }
     ui.separator();
-    let shown = s.guide.is_some();
-    if menu::check(ui, shown, "Show Guides on Preview", "").on_hover_text("Draw the platform's safe zones, UI or device over the Preview").clicked() {
-        out = Some(Set::Platform((!shown).then(|| cur.to_string())));
+    let mode = Mode::from_id(&s.guide_mode);
+    for m in Mode::ALL {
+        if menu::check(ui, mode == m, m.name(), "").clicked() {
+            out = Some(Set::Mode(m));
+        }
     }
-    if menu::row(ui, Some(crate::ui::tools::Glyph::Guides), "Open Platform Emulator", "").on_hover_text("The video inside real devices with the platform's app round it").clicked() {
+    ui.separator();
+    if menu::row(ui, Some(crate::ui::tools::Glyph::Guides), "Open Platform Emulator", "")
+        .on_hover_text("The video inside real devices with the platform's app round it")
+        .clicked()
+    {
         out = Some(Set::Open);
     }
-    menu::sub(ui, None, "Guide Options", |ui| {
-        for m in Mode::ALL {
-            if menu::check(ui, Mode::from_id(&s.guide_mode) == m, m.name(), "").clicked() {
-                out = Some(Set::Mode(m));
-            }
-        }
+    menu::sub(ui, None, "More", |ui| {
         if d.platform(cur).is_some_and(|p| p.pg == "watch") {
             menu::sub(ui, None, "Player view (desktop)", |ui| {
                 for m in ViewMode::ALL {
@@ -655,14 +661,19 @@ pub fn menu_rows(ui: &mut eframe::egui::Ui, s: &crate::settings::Settings) -> Op
                 }
             });
         }
-        ui.separator();
-        if menu::check(ui, s.guide_worst, "Worst case of all platforms", "").clicked() {
+        if menu::check(ui, s.guide_worst, "Safe for All Platforms", "")
+            .on_hover_text("The safe zone every platform agrees on")
+            .clicked()
+        {
             out = Some(Set::Worst(!s.guide_worst));
         }
         if menu::check(ui, s.guides_keep_aspect, "Maintain Aspect Ratio", "").clicked() {
             out = Some(Set::Keep(!s.guides_keep_aspect));
         }
-        if menu::check(ui, s.guide_render, "Draw in render.frame and contact sheets", "").clicked() {
+        if menu::check(ui, s.guide_render, "Show in Assistant Captures", "")
+            .on_hover_text("Draw the guide in render.frame and contact sheets")
+            .clicked()
+        {
             out = Some(Set::Render(!s.guide_render));
         }
     });
