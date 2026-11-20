@@ -1073,6 +1073,17 @@ pub(crate) const PANEL: &[&[PanelTool]] = &[
     ],
 ];
 
+/// ws:forum-ui: the second tooltip line of an edit tool: what dragging with it does.
+pub(crate) fn panel_tool_does(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "ripple" => "Drag a clip's edge: the clips after it move to close or open the gap. To delete and close the gap, press Delete",
+        "rolling" => "Drag a cut: one clip gets longer, its neighbour shorter, nothing else moves",
+        "slip" => "Drag a clip: shows a different part of its media, same place and length",
+        "slide" => "Drag a clip: moves it between its neighbours, which trim to make room",
+        _ => return None,
+    })
+}
+
 /// Seconds a press must be held to open a group (Premiere's long press).
 const LONG_PRESS: f64 = 0.4;
 
@@ -1160,6 +1171,11 @@ pub(crate) fn panel(
         let t = shown.iter().copied().find(|t| on(t)).or_else(|| shown.iter().copied().find(|t| t.id == last));
         let t = t.unwrap_or(first);
         let tip = t.key.map_or_else(|| t.name.to_string(), |a| with_key(t.name, a));
+        // ws:forum-ui: say what the edit tools do, so "how do I turn on ripple" never needs asking
+        let tip = match panel_tool_does(t.id) {
+            Some(d) => format!("{tip}\n{d}"),
+            None => tip,
+        };
         let tip = if shown.len() > 1 { format!("{tip}\nRight-click or hold for the others") } else { tip };
         let r = icon_button(ui, palette, egui::Id::new(("tools-panel", gi)), t.glyph, &tip, on(t));
         // a long press opens the group on release (opened mid-press, the release's click would close it)

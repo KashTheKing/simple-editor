@@ -68,6 +68,14 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     {
         app.cmd_palette.open = true;
     }
+    // ws:forum-ui: Shift+Delete also deletes and closes the gap (what other editors use), unless bound
+    let shift_del = egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Delete);
+    if !ctx.wants_keyboard_input()
+        && app.hotkeys.conflict(shift_del).is_none()
+        && ctx.input_mut(|i| crate::hotkeys::consume_exact(i, &shift_del))
+    {
+        app.pending_actions.push(crate::hotkeys::Action::RippleDelete);
+    }
     if !ctx.wants_keyboard_input() {
         let hit = ctx.input_mut(|i| extra.iter().find(|pair| crate::hotkeys::consume_exact(i, &pair.1)).cloned());
         if let Some((name, _)) = hit {
