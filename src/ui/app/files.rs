@@ -59,6 +59,7 @@ impl App {
         relocate_assets(&mut project, path.parent());
         self.set_project(project, Some(path.to_path_buf()));
         self.dirty = true;
+        self.saved = None; // the repair itself still needs saving
         self.toast(format!(
             "Repaired a damaged project ({why}). {} Original kept as {}",
             r.notes.join("; "),
@@ -77,13 +78,9 @@ impl App {
     pub(super) fn check_lock_file(&mut self, path: &Path) {
         let lock = Self::lock_path(path);
         if self.settings.lock_warn {
-            if let Ok(existing_pid) = std::fs::read_to_string(&lock) {
-                if !existing_pid.trim().is_empty() {
-                    self.toast(format!(
-                        "This project may already be open elsewhere (lock left by pid {})",
-                        existing_pid.trim()
-                    ));
-                }
+            // ws:home-page: only a live other Simple Editor window counts (a lock outlives a closed one)
+            if let Some(pid) = crate::ui::home_page::open_elsewhere(path, std::process::id()) {
+                self.toast(format!("This project may already be open elsewhere (lock left by pid {pid})"));
             }
         }
         let _ = std::fs::write(&lock, std::process::id().to_string());
@@ -184,6 +181,7 @@ impl App {
         match self.project.save_with_chats(&path, assistant_ctl::chats_json(self)) {
             Ok(()) => {
                 self.dirty = false;
+                self.saved = Some(self.project.to_json());
                 // ---- ws:online-library ---- library LUTs the project uses go beside it
                 crate::engine::lut::set_project(Some(&path));
                 if let Ok(v) = serde_json::to_value(&self.project) {
@@ -193,7 +191,8 @@ impl App {
                 }
                 self.settings.touch_recent_project(&path.to_string_lossy());
                 self.settings.save();
-                let _ = std::fs::remove_file(Self::lock_path(&path));
+                // ws:home-page: the lock stays while the project is open here (a rename elsewhere checks it)
+                let _ = std::fs::write(Self::lock_path(&path), std::process::id().to_string());
                 autosave::clear_for(&path);
                 self.fire_hook("project_save", json!({"path": path.to_string_lossy()}));
                 self.toast_with_folder("Project saved", path);
@@ -243,7 +242,7 @@ impl App {
     /// `on_yes` runs on a LATER frame once it resolves Save (and the save succeeded) or Discard - never
     /// on Cancel. Replaces the old blocking `confirm_discard() -> bool`.
     pub(crate) fn confirm_discard_then(&mut self, on_yes: impl FnOnce(&mut App) + 'static) {
-        if !self.dirty {
+        if !self.dirty || self.still_clean() {
             on_yes(self);
             return;
         }
@@ -254,6 +253,17 @@ impl App {
             "Save changes as a project file (.sedit)?"
         };
         confirm::ask_discard(msg, on_yes);
+    }
+
+    /// Marked dirty, but the project equals how it was opened or last saved (a fresh project nobody
+    /// touched, an edit that was undone, a no-op tweak): clears `dirty` and says so. Serialising the
+    /// project here is fine: it only runs when a save prompt is about to show.
+    pub(crate) fn still_clean(&mut self) -> bool {
+        let same = self.saved.as_deref().is_some_and(|s| s == self.project.to_json());
+        if same {
+            self.dirty = false;
+        }
+        same
     }
 
     pub(super) fn ffmpeg_missing(&mut self) -> bool {
@@ -292,10 +302,13 @@ impl App {
     }
 
     pub(super) fn detect_encoders_once(&mut self) {
-        if self.encoders.is_empty() && media::ffpipe::ffmpeg_exe().is_some() {
-            self.encoders = export::detect_encoders();
-            // ws:export-encoders: background hardware probe (cached per ffmpeg path + mtime)
-            crate::engine::encoders::start();
+        // ws:page-switch-freeze: never `ffmpeg -encoders` on this thread (the Export pane calls this every
+        // frame); the list fills in when the background probe lands, which also starts ws:export-encoders'
+        // hardware probe. Empty until then (and without ffmpeg): the menus offer the built-in names.
+        if self.encoders.is_empty() {
+            if let Some(v) = export::encoders_nonblocking(wake_ui) {
+                self.encoders = v;
+            }
         }
     }
 
@@ -860,6 +873,21 @@ mod tests {
         assert!(home.contains("HomeAction::New(i) => app.new_project(i)"), "home cards must make a new project");
         let set = fn_body(include_str!("mod.rs"), "fn set_project(");
         assert!(set.contains("self.close_source()"), "the old project's Source clip must not survive");
+    }
+
+    /// An untouched project never asks to save: the save prompt and the window close compare against the
+    /// snapshot taken when the project was opened, created or saved, and that snapshot is stable.
+    #[test]
+    fn an_unchanged_project_never_asks_to_save() {
+        let a = crate::model::Project::new();
+        assert_eq!(a.to_json(), crate::model::Project::new().to_json(), "a fresh project serialises the same every time");
+        let body = fn_body(include_str!("files.rs"), "pub(crate) fn confirm_discard_then(");
+        assert!(body.contains("self.still_clean()"));
+        let set = fn_body(include_str!("mod.rs"), "fn set_project(");
+        assert!(set.contains("self.saved = Some(self.project.to_json())"));
+        let save = fn_body(include_str!("files.rs"), "pub(crate) fn save_project(");
+        assert!(save.contains("self.saved = Some(self.project.to_json())"));
+        assert!(include_str!("mod.rs").contains("self.dirty && !self.still_clean()"), "closing the window too");
     }
 
     #[test]

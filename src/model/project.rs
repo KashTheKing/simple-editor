@@ -130,6 +130,12 @@ pub struct Project {
     /// Style guide, Links - which every Assistant request carries. An applied editing style sits inside it.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub context: String,
+    // ---- ws:timeline-tabs ----
+    /// The timelines open as tabs above the timeline, in tab order (None = the main timeline). Empty in
+    /// old files: just Main (plus the open sequence). A view list, kept across undo / redo; read it
+    /// through `timeline_tabs()`, which drops deleted sequences and always holds the open one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub timeline_tabs: Vec<Option<Id>>,
 }
 
 // ---- ws:project-color-fps ----

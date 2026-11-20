@@ -292,6 +292,8 @@ pub const COMPOSITE: &str = r#"
 uniform sampler2D u_dst;
 uniform vec2 u_layer;
 uniform mat3 u_inv;
+// built-in crop: (left, right, top, bottom) share of the layer's uv cut off
+uniform vec4 u_crop;
 uniform int u_scaler;
 uniform int u_mode;
 uniform float u_opacity;
@@ -343,7 +345,7 @@ void main() {
     vec2 uv = h.xy / z;
     // derivatives must be taken outside any branch
     vec2 e = max(fwidth(uv), vec2(1e-8));
-    vec2 dd = min(uv, 1.0 - uv);
+    vec2 dd = min(uv - u_crop.xz, 1.0 - u_crop.yw - uv);
     float cov = clamp(min(dd.x / e.x, dd.y / e.y) + 0.5, 0.0, 1.0);
     vec4 d = texture(u_dst, v_uv);
     if (cov <= 0.0 || h.z <= 0.0) { out_color = d; return; }

@@ -1320,6 +1320,22 @@ pub struct Chrome<'a> {
     // ---- ws:panels-multiscreen ----
     /// Monitors connected: a tab's Move to window ▸ offers Screen 2..this.
     pub monitors: u8,
+    // ---- ws:timeline-tabs ----
+    /// The timeline tabs in the Timeline's tab, in order: (name, renamable = a sequence, active).
+    /// Empty = just "Main".
+    pub timelines: Vec<(String, bool, bool)>,
+}
+
+/// ws:timeline-tabs: what a click in the Timeline's tab strip asks for (indexes into `Chrome::timelines`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TabCmd {
+    Switch(usize),
+    Close(usize),
+    CloseOthers(usize),
+    Rename(usize),
+    /// Drag-reorder: (from, to) where `to` indexes the list without the moved tab.
+    Move(usize, usize),
+    New,
 }
 
 /// What one frame of `show` changed, for the app to apply and persist.
@@ -1337,6 +1353,8 @@ pub struct Shown {
     /// A tab of the main window was dragged out of it and let go there: the app moves it to the screen
     /// under the mouse (`screens_ctl::drop_outside`).
     pub drag_out: Option<Pane>,
+    // ---- ws:timeline-tabs ----
+    pub tabs: Vec<TabCmd>,
 }
 
 struct Behaviour<'a> {
@@ -1379,6 +1397,8 @@ struct Behaviour<'a> {
     move_to: Vec<(Pane, u8)>,
     /// The screen this tree is drawn in (1 = the main window).
     screen: u8,
+    // ---- ws:timeline-tabs ----
+    tabs: Vec<TabCmd>,
 }
 
 /// The panes a tab bar's `+` offers: every one not on screen (hidden, missing, and not popped out).
@@ -1443,50 +1463,113 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
         let pinned = pane.is_some_and(|p| self.pinned.contains(&p));
         let glow = pane.and_then(|p| self.glow.iter().find(|(g, _)| *g == p).map(|(_, a)| *a));
         let pin_w = if pinned { 14.0 } else { 0.0 };
-        // an experimental feature's tab wears the badge after its title (`ui::experimental`)
-        let badge = pane.is_some_and(crate::ui::experimental::pane);
-        let badge_w = if badge { crate::ui::experimental::size(ui).x + 6.0 } else { 0.0 };
-        // ---- ws:pages ----
+        // ---- ws:pages ---- / ---- ws:timeline-tabs ----: the Timeline's tab is the strip of open
+        // timelines (each with a × while there are two or more), then a "+"
         let timeline = pane == Some(Pane::Timeline);
-        let text = if timeline { "Main".into() } else { self.tab_title_for_tile(tiles, tile_id) };
+        let chrome = self.chrome;
+        let main_only = [("Main".to_string(), false, true)];
+        let names: &[(String, bool, bool)] = match (timeline, chrome.timelines.is_empty()) {
+            (false, _) => &[],
+            (true, true) => &main_only,
+            (true, false) => &chrome.timelines,
+        };
+        let text = if timeline { egui::WidgetText::from("") } else { self.tab_title_for_tile(tiles, tile_id) };
         let font_id = egui::TextStyle::Button.resolve(ui.style());
         let galley = text.into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, font_id.clone());
-        let seq = self.chrome.editing.clone().filter(|_| timeline);
-        let seq = seq.map(|name| ui.painter().layout_no_wrap(name, font_id, egui::Color32::PLACEHOLDER));
-        let (seq_gap, close_w) = (12.0, 18.0);
-        let seq_w = seq.as_ref().map_or(0.0, |g| seq_gap + g.size().x + 2.0 + close_w);
+        let strip: Vec<_> = (names.iter())
+            .map(|(n, ..)| ui.painter().layout_no_wrap(n.clone(), font_id.clone(), egui::Color32::PLACEHOLDER))
+            .collect();
+        let closable = strip.len() > 1;
         let x_margin = self.tab_title_spacing(ui.visuals());
+        // each timeline is a tab of its own (padding, name, room for the ×), 5 pt apart
+        let (tab_gap, close_w, plus_w) = (5.0, 16.0, 18.0);
+        let tab_w = |g: &egui::Galley| 2.0 * x_margin + g.size().x + if closable { 2.0 + close_w } else { 0.0 };
+        let title_w = if timeline {
+            strip.iter().map(|g| tab_w(g) + tab_gap).sum::<f32>() + plus_w - x_margin
+        } else {
+            galley.size().x
+        };
         let (icon_w, gap) = if glyph.is_some() { (16.0, 4.0) } else { (0.0, 0.0) };
-        let width = galley.size().x + icon_w + gap + pin_w + badge_w + seq_w + 2.0 * x_margin;
+        let width = title_w + icon_w + gap + pin_w + 2.0 * x_margin;
         let (_, tab_rect) = ui.allocate_space(egui::vec2(width, ui.available_height()));
         // locked, a tab only clicks: no drag starts, so nothing re-docks by accident
         let sense = if self.chrome.locked { egui::Sense::click() } else { egui::Sense::click_and_drag() };
-        let tab_response = ui.interact(tab_rect, id, sense).on_hover_cursor(self.tab_hover_cursor_icon());
+        let mut tab_response = ui.interact(tab_rect, id, sense).on_hover_cursor(self.tab_hover_cursor_icon());
         if pane.is_some() && pane == self.scroll_to {
             ui.scroll_to_rect(tab_rect, None);
         }
-        let main_end = tab_rect.left() + x_margin + icon_w + gap + galley.size().x + pin_w;
-        let main_rect = egui::Rect::from_min_max(tab_rect.min, egui::pos2(main_end + seq_gap / 2.0, tab_rect.bottom()));
-        let close_rect = egui::Rect::from_min_max(
-            egui::pos2(tab_rect.right() - x_margin - close_w, tab_rect.top()),
-            egui::pos2(tab_rect.right() - x_margin, tab_rect.bottom()),
-        );
-        let (mut main_hot, mut close_hot) = (false, false);
-        if seq.is_some() {
-            let back = menu::shortcut(Action::OpenParentSequence);
-            let main = ui
-                .interact(main_rect, id.with("seq_main"), egui::Sense::click())
-                .on_hover_text(format!("Back to the main timeline   {back}"));
-            let close =
-                ui.interact(close_rect, id.with("seq_close"), egui::Sense::click()).on_hover_text("Close the sequence");
-            if main.clicked() || close.clicked() {
-                self.actions.push(Action::OpenParentSequence);
-            }
-            (main_hot, close_hot) = (main.hovered(), close.hovered());
+        // the strip's hit areas, registered after the tab so they win the pointer over it (the icon stays
+        // the pane's own: a drag from there re-docks the Timeline)
+        let x0 = tab_rect.left() + x_margin + icon_w + gap;
+        let (top, bottom) = (tab_rect.top(), tab_rect.bottom());
+        let mut spots = Vec::with_capacity(strip.len()); // (text x, the timeline's tab, × rect)
+        let mut x = x0;
+        for g in &strip {
+            let w = tab_w(g);
+            let rect = egui::Rect::from_min_max(egui::pos2(x, top), egui::pos2(x + w, bottom));
+            let close_x = rect.right() - x_margin / 2.0 - close_w;
+            let close = egui::Rect::from_min_max(egui::pos2(close_x, top), egui::pos2(close_x + close_w, bottom));
+            spots.push((x + x_margin, rect, close));
+            x += w + tab_gap;
         }
+        let plus_rect = egui::Rect::from_min_max(egui::pos2(x, top), egui::pos2(x + plus_w, bottom));
+        let mut cmds = Vec::new();
+        let mut hot = vec![(false, false); strip.len()]; // (tab, ×) hovered
+        let mut insert_x = None; // a tab being dragged: where it would land
+        for (i, &(_, hit, close_r)) in spots.iter().enumerate() {
+            let r = ui.interact(hit, id.with(("tl_tab", i)), egui::Sense::click_and_drag());
+            let c = closable
+                .then(|| ui.interact(close_r, id.with(("tl_close", i)), egui::Sense::click()).on_hover_text("Close"));
+            hot[i] = (r.hovered(), c.as_ref().is_some_and(|c| c.hovered()));
+            if c.as_ref().is_some_and(|c| c.clicked() || c.middle_clicked()) || (closable && r.middle_clicked()) {
+                cmds.push(TabCmd::Close(i));
+            } else if r.clicked() {
+                if !names[i].2 {
+                    cmds.push(TabCmd::Switch(i));
+                }
+                tab_response = tab_response.union(r.clone()); // a click on the strip still selects the pane's tab
+            }
+            if closable && (r.dragged() || r.drag_stopped()) {
+                if let Some(px) = ui.ctx().pointer_interact_pos().map(|p| p.x) {
+                    let others: Vec<egui::Rect> =
+                        spots.iter().enumerate().filter(|(k, _)| *k != i).map(|(_, s)| s.1).collect();
+                    let to = others.iter().filter(|h| h.center().x < px).count();
+                    if r.drag_stopped() {
+                        if to != i {
+                            cmds.push(TabCmd::Move(i, to));
+                        }
+                    } else if to != i {
+                        let half = tab_gap / 2.0;
+                        insert_x = Some(if to == 0 { others[0].left() - half } else { others[to - 1].right() + half });
+                    }
+                }
+            }
+            let (renamable, n) = (names[i].1, strip.len());
+            menu::context(&r, |ui| {
+                if ui.add_enabled_ui(n > 1, |ui| menu::row(ui, Some(Glyph::Cross), "Close", "")).inner.clicked() {
+                    cmds.push(TabCmd::Close(i));
+                }
+                if ui.add_enabled_ui(n > 1, |ui| menu::row(ui, None, "Close Others", "")).inner.clicked() {
+                    cmds.push(TabCmd::CloseOthers(i));
+                }
+                if ui.add_enabled_ui(renamable, |ui| menu::row(ui, None, "Rename…", "")).inner.clicked() {
+                    cmds.push(TabCmd::Rename(i));
+                }
+            });
+        }
+        let plus = timeline
+            .then(|| ui.interact(plus_rect, id.with("tl_new"), egui::Sense::click()).on_hover_text("New sequence"));
+        if plus.as_ref().is_some_and(|p| p.clicked()) {
+            cmds.push(TabCmd::New);
+        }
+        let plus_hot = plus.as_ref().is_some_and(|p| p.hovered());
+        self.tabs.extend(cmds);
         if ui.is_rect_visible(tab_rect) && !state.is_being_dragged {
             let text_color;
-            if self.chrome.cozy {
+            if timeline {
+                // ws:timeline-tabs: no shared background - the timelines below are the tabs
+                text_color = self.tab_text_color(ui.visuals(), tiles, tile_id, &egui_tiles::TabState::default());
+            } else if self.chrome.cozy {
                 // cozy: rounded top corners, no accent outline - the active tab IS the accent,
                 // inactive tabs only light up on hover
                 let accent = ui.visuals().widgets.active.bg_fill;
@@ -1523,10 +1606,60 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
             }
             let inner = tab_rect.shrink2(egui::vec2(x_margin, 0.0));
             let tp = egui::pos2(inner.left() + icon_w + gap, inner.center().y - galley.size().y / 2.0);
-            let text_w = galley.size().x;
-            // while a sequence is open "Main" is the way back: dimmed until hovered
-            let main_color = if seq.is_some() && !main_hot { text_color.gamma_multiply(0.6) } else { text_color };
-            ui.painter().galley(tp, galley, main_color);
+            let text_w = title_w;
+            // the theme's override_text_color is baked into the title galley: force the tab's own colour
+            ui.painter().galley_with_override_text_color(tp, galley, text_color);
+            // ---- ws:timeline-tabs ----: each timeline drawn like a pane tab - the active one in the accent
+            // (cozy) or the active tab fill and outline (sharp), the others lit on hover; × while hovered
+            let on = egui_tiles::TabState { active: true, ..Default::default() };
+            for (i, g) in strip.into_iter().enumerate() {
+                let (x, rect, close_r) = spots[i];
+                let (active, hovered) = (names[i].2, hot[i].0 || hot[i].1);
+                let color = if self.chrome.cozy {
+                    let r = egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 };
+                    if active {
+                        let accent = ui.visuals().widgets.active.bg_fill;
+                        ui.painter().rect_filled(rect.shrink(0.5), r, accent);
+                        crate::ui::tools::on_accent(accent)
+                    } else {
+                        if hovered {
+                            ui.painter().rect_filled(rect.shrink(0.5), r, ui.visuals().widgets.hovered.weak_bg_fill);
+                        }
+                        text_color
+                    }
+                } else if active {
+                    let bg = self.tab_bg_color(ui.visuals(), tiles, tile_id, &on);
+                    let stroke = self.tab_outline_stroke(ui.visuals(), tiles, tile_id, &on);
+                    ui.painter().rect(rect.shrink(0.5), 0.0, bg, stroke, egui::StrokeKind::Inside);
+                    ui.painter().hline(rect.x_range(), rect.bottom(), egui::Stroke::new(stroke.width + 1.0, bg));
+                    self.tab_text_color(ui.visuals(), tiles, tile_id, &on)
+                } else {
+                    if hovered {
+                        ui.painter().rect_filled(rect.shrink(0.5), 0.0, ui.visuals().widgets.hovered.weak_bg_fill);
+                    }
+                    text_color
+                };
+                ui.painter().galley(egui::pos2(x, inner.center().y - g.size().y / 2.0), g, color);
+                if closable && hovered {
+                    if hot[i].1 {
+                        let fill = color.gamma_multiply(0.2);
+                        ui.painter().rect_filled(close_r.shrink2(egui::vec2(1.0, 5.0)), 3.0, fill);
+                    }
+                    draw_glyph(ui.painter(), close_r, Glyph::Cross, color);
+                }
+            }
+            if timeline {
+                if plus_hot {
+                    let fill = ui.visuals().widgets.hovered.weak_bg_fill;
+                    ui.painter().rect_filled(plus_rect.shrink2(egui::vec2(1.0, 4.0)), 3.0, fill);
+                }
+                let color = if plus_hot { text_color } else { text_color.gamma_multiply(0.6) };
+                draw_glyph(ui.painter(), plus_rect, Glyph::Letter('+'), color);
+            }
+            if let Some(x) = insert_x {
+                let accent = ui.visuals().selection.bg_fill;
+                ui.painter().vline(x, tab_rect.shrink(3.0).y_range(), egui::Stroke::new(2.0, accent));
+            }
             // ---- ws:layout-modes-onboarding ----
             // a tab kept in front ("Stay on this tab") wears a small pin after its title; a glowing one
             // an accent underline that fades out (the "look here" cue used instead of switching tabs)
@@ -1536,23 +1669,6 @@ impl egui_tiles::Behavior<Pane> for Behaviour<'_> {
                     egui::vec2(pin_w, tab_rect.height()),
                 );
                 draw_glyph(ui.painter(), pin_rect, Glyph::Pin, text_color);
-            }
-            if badge {
-                let at = egui::pos2(tp.x + text_w + pin_w + 6.0, tab_rect.center().y);
-                let pill = crate::ui::experimental::paint(ui.painter(), at);
-                crate::ui::experimental::tip(ui, pill, id);
-            }
-            // ---- ws:pages ----
-            if let Some(g) = seq {
-                let x = tp.x + text_w + pin_w + seq_gap;
-                let divider = egui::Stroke::new(1.0, text_color.gamma_multiply(0.4));
-                ui.painter().vline(x - seq_gap / 2.0, tab_rect.shrink(6.0).y_range(), divider);
-                ui.painter().galley(egui::pos2(x, inner.center().y - g.size().y / 2.0), g, text_color);
-                if close_hot {
-                    let hot = ui.visuals().widgets.hovered.weak_bg_fill;
-                    ui.painter().rect_filled(close_rect.shrink2(egui::vec2(1.0, 4.0)), 3.0, hot);
-                }
-                draw_glyph(ui.painter(), close_rect, Glyph::Cross, text_color);
             }
             if let Some(alpha) = glow {
                 let accent = ui.visuals().selection.bg_fill.gamma_multiply(alpha.clamp(0.0, 1.0));
@@ -1785,6 +1901,7 @@ pub fn show(
         scroll_to: layout.scroll_to.take(),
         move_to: Vec::new(),
         screen: 1,
+        tabs: Vec::new(),
     };
     // simplify first (tree.ui would, wrapping lone panes in fresh, visible tab groups), then hide empty groups
     layout.tree.simplify(&egui_tiles::Behavior::simplification_options(&beh));
@@ -1868,6 +1985,7 @@ pub fn show(
         changed = true;
     }
     let (set_icon, actions) = (beh.set_icon, beh.actions);
+    let mut tabs = beh.tabs; // ws:timeline-tabs
     let mut to_dock: Vec<Pane> = Vec::new();
     let mut placed: Vec<(Pane, [f32; 4])> = Vec::new();
     layout.opened.retain(|p| layout.popped.contains(p));
@@ -1943,7 +2061,8 @@ pub fn show(
         layout.dock(p);
         changed = true;
     }
-    Shown { changed, moved, set_icon, actions, drag_out }
+    tabs.extend(screen_ops.tabs);
+    Shown { changed, moved, set_icon, actions, drag_out, tabs }
 }
 
 /// What the screen windows asked for this frame (applied after all of them drew).
@@ -1955,6 +2074,7 @@ struct ScreenOps {
     move_to: Vec<(Pane, u8)>,
     /// Windows the user closed: their panes go back to the main window.
     fold: Vec<usize>,
+    tabs: Vec<TabCmd>,
 }
 
 /// ---- ws:panels-multiscreen ---- Screen window `i` of `layout`, once it has a place (`ScreenWin::place`,
@@ -2004,6 +2124,7 @@ fn show_screen(
         scroll_to: None,
         move_to: Vec::new(),
         screen: sw.screen,
+        tabs: Vec::new(),
     };
     let (mut closed, mut rect) = (false, None);
     let tree = &mut sw.tree;
@@ -2027,6 +2148,7 @@ fn show_screen(
     ops.hide.extend(beh.hide);
     ops.pop.extend(beh.pop);
     ops.move_to.extend(beh.move_to);
+    ops.tabs.extend(beh.tabs);
     if closed {
         ops.fold.push(i);
     }
@@ -2760,7 +2882,8 @@ mod tests {
     fn closing_a_lone_tab_reflows_its_neighbours() {
         let ctx = egui::Context::default();
         let icons = BTreeMap::new();
-        let chrome = Chrome { icons: &icons, tab_bar: None, cozy: true, editing: None, locked: false, monitors: 1 };
+        let chrome =
+            Chrome { icons: &icons, tab_bar: None, cozy: true, editing: None, locked: false, monitors: 1, timelines: vec![] };
         let width = |l: &Layout, p: Pane| l.rects.iter().find(|(q, _)| *q == p).map(|(_, r)| r.width());
         let mut l = Layout::media_layout();
         frame(&ctx, &mut l, &chrome, vec![], 0.0);
@@ -2802,15 +2925,23 @@ mod tests {
         egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }
     }
 
-    /// The Timeline's tab is the sequence strip: with a sequence open, both "Main" and the × ask for
-    /// `OpenParentSequence`; with none open there is nothing to click back to.
+    /// ws:timeline-tabs: the Timeline's tab is the strip of open timelines. A click on another tab
+    /// switches, its × or a middle-click closes, "+" asks for a new one, a drag reorders; a lone tab has no ×.
     #[test]
-    fn sequence_tab_click_emits_open_parent() {
+    fn timeline_tab_strip_switches_closes_adds_and_reorders() {
         let ctx = egui::Context::default();
         ctx.set_fonts(crate::theme::test_fonts());
         let icons = BTreeMap::new();
-        let mut chrome =
-            Chrome { icons: &icons, tab_bar: None, cozy: true, editing: Some("Sequence 1".into()), locked: false, monitors: 1 };
+        let tabs = vec![("Main".into(), false, true), ("Sequence 1".into(), true, false), ("B".into(), true, false)];
+        let mut chrome = Chrome {
+            icons: &icons,
+            tab_bar: None,
+            cozy: true,
+            editing: None,
+            locked: false,
+            monitors: 1,
+            timelines: tabs.clone(),
+        };
         let mut l = Layout::default_layout();
         let mut t = 0.0;
         for _ in 0..2 {
@@ -2818,21 +2949,51 @@ mod tests {
             t += 0.1;
         }
         let tab = l.tree.tiles.find_pane(&Pane::Timeline).unwrap().egui_id(l.tree.id());
-        for part in ["seq_close", "seq_main"] {
-            let at = ctx.read_response(tab.with(part)).unwrap_or_else(|| panic!("no {part} hit area")).rect.center();
+        let at =
+            |part: egui::Id| ctx.read_response(part).unwrap_or_else(|| panic!("no hit area {part:?}")).rect.center();
+        let click = |l: &mut Layout, pos: egui::Pos2, button: egui::PointerButton, t: &mut f64| {
             let mut got = Vec::new();
-            for ev in [egui::Event::PointerMoved(at), button(at, true), button(at, false)] {
-                got.extend(frame(&ctx, &mut l, &chrome, vec![ev], t).actions);
-                t += 0.1;
+            for ev in [
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton { pos, button, pressed: true, modifiers: Default::default() },
+                egui::Event::PointerButton { pos, button, pressed: false, modifiers: Default::default() },
+            ] {
+                got.extend(frame(&ctx, l, &chrome, vec![ev], *t).tabs);
+                *t += 0.1;
             }
-            assert_eq!(got, vec![Action::OpenParentSequence], "{part}");
-            t += 1.0; // two clicks this close together would read as a double-click (maximise)
-        }
+            *t += 1.0; // two clicks this close together would read as a double-click (maximise)
+            got
+        };
+        let primary = egui::PointerButton::Primary;
+        assert_eq!(click(&mut l, at(tab.with(("tl_tab", 1))), primary, &mut t), vec![TabCmd::Switch(1)]);
+        let active = click(&mut l, at(tab.with(("tl_tab", 0))), primary, &mut t);
+        assert_eq!(active, vec![], "the active tab: nothing to do");
+        assert_eq!(click(&mut l, at(tab.with(("tl_close", 0))), primary, &mut t), vec![TabCmd::Close(0)]);
+        let middle = click(&mut l, at(tab.with(("tl_tab", 2))), egui::PointerButton::Middle, &mut t);
+        assert_eq!(middle, vec![TabCmd::Close(2)]);
+        assert_eq!(click(&mut l, at(tab.with("tl_new")), primary, &mut t), vec![TabCmd::New]);
         assert!(l.maximized.is_none());
-        chrome.editing = None;
-        frame(&ctx, &mut l, &chrome, vec![], t);
-        frame(&ctx, &mut l, &chrome, vec![], t + 0.1);
-        assert!(ctx.read_response(tab.with("seq_close")).is_none(), "no sequence open: just \"Main\"");
+        // drag the first tab past the last one
+        let (from, to) = (at(tab.with(("tl_tab", 0))), at(tab.with(("tl_tab", 2))) + egui::vec2(20.0, 0.0));
+        let mut got = Vec::new();
+        let steps = [
+            egui::Event::PointerMoved(from),
+            button(from, true),
+            egui::Event::PointerMoved(from + egui::vec2(10.0, 0.0)),
+            egui::Event::PointerMoved(to),
+            button(to, false),
+        ];
+        for ev in steps {
+            got.extend(frame(&ctx, &mut l, &chrome, vec![ev], t).tabs);
+            t += 0.1;
+        }
+        assert_eq!(got, vec![TabCmd::Move(0, 2)]);
+        // one tab: no ×, still a "+"
+        chrome.timelines = vec![("Main".into(), false, true)];
+        frame(&ctx, &mut l, &chrome, vec![], t + 1.0);
+        frame(&ctx, &mut l, &chrome, vec![], t + 1.1);
+        assert!(ctx.read_response(tab.with(("tl_close", 0))).is_none(), "the only tab can't close");
+        assert!(ctx.read_response(tab.with("tl_new")).is_some());
     }
 
     /// Unlocked (the default), dragging a tab onto another tile re-docks it there as one undoable move;
@@ -2844,7 +3005,8 @@ mod tests {
             let ctx = egui::Context::default();
             ctx.set_fonts(crate::theme::test_fonts());
             let icons = BTreeMap::new();
-            let chrome = Chrome { icons: &icons, tab_bar: None, cozy: true, editing: None, locked, monitors: 1 };
+            let chrome =
+                Chrome { icons: &icons, tab_bar: None, cozy: true, editing: None, locked, monitors: 1, timelines: vec![] };
             let mut l = Layout::default_layout();
             frame(&ctx, &mut l, &chrome, vec![], 0.0);
             frame(&ctx, &mut l, &chrome, vec![], 0.1);

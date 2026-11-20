@@ -923,6 +923,7 @@ fn sync_store(app: &mut App) {
     }
     if std::mem::take(&mut app.assistant.dirty) {
         app.dirty = true;
+        app.saved = None; // chats live outside `Project::to_json`, so only a save makes this clean again
     }
 }
 

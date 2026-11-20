@@ -91,6 +91,7 @@ const UNIFORMS: &[&str] = &[
     "u_dst",
     "u_layer",
     "u_inv",
+    "u_crop",
     "u_scaler",
     "u_mode",
     "u_opacity",
@@ -1486,6 +1487,25 @@ impl GpuRenderer {
         scaler: Scaler,
         mask: Option<glow::Texture>,
     ) -> Target {
+        let none = crate::engine::compose::NO_CROP;
+        self.composite_cropped(canvas, layer, layer_size, inv, mode, opacity, scaler, mask, none)
+    }
+
+    /// `composite` showing only the layer's uv rect left of `1 - right`, right of `left` and so on (a
+    /// clip's built-in crop, `Clip::crop_at`): the shader's coverage test narrows, nothing else runs.
+    #[allow(clippy::too_many_arguments)]
+    fn composite_cropped(
+        &mut self,
+        canvas: Target,
+        layer: glow::Texture,
+        layer_size: (u32, u32),
+        inv: [[f32; 3]; 3],
+        mode: BlendMode,
+        opacity: f32,
+        scaler: Scaler,
+        mask: Option<glow::Texture>,
+        crop: [f32; 4],
+    ) -> Target {
         let _s = crate::perf::span("gpu_composite");
         if self.ensure(K_COMPOSITE).is_err() {
             return canvas;
@@ -1501,6 +1521,7 @@ impl GpuRenderer {
             gl.uniform_2_f32(p.uni.get("u_res"), cw, ch);
             gl.uniform_2_f32(p.uni.get("u_layer"), layer_size.0 as f32, layer_size.1 as f32);
             gl.uniform_matrix_3_f32_slice(p.uni.get("u_inv"), false, &m);
+            gl.uniform_4_f32(p.uni.get("u_crop"), crop[0], crop[1], crop[2], crop[3]);
             gl.uniform_1_i32(p.uni.get("u_scaler"), scaler_i);
             gl.uniform_1_i32(p.uni.get("u_mode"), mode_i);
             gl.uniform_1_f32(p.uni.get("u_opacity"), opacity);
@@ -1853,7 +1874,8 @@ impl GpuRenderer {
             _ => None,
         };
         let mask_tex = mask.as_ref().map(|m| m.tex());
-        let out = self.composite(canvas, src, size, inv, clip.blend, opacity, project.scaler, mask_tex);
+        let crop = clip.crop_at(lt);
+        let out = self.composite_cropped(canvas, src, size, inv, clip.blend, opacity, project.scaler, mask_tex, crop);
         if let Some(MaskTex::Owned(t)) = mask {
             self.pool.put(t);
         }

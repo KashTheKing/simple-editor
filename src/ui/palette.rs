@@ -813,19 +813,7 @@ pub fn show(ctx: &egui::Context, state: &mut PaletteState, rows: &[Row]) -> Opti
                     let icon_id = ui.id().with(("palette-icon", i));
                     let gutter = egui::Atom::custom(icon_id, egui::vec2(18.0, 16.0));
                     let sub = egui::RichText::new(format!("  {}", row.sub)).weak();
-                    // an experimental feature's row wears the badge after its label (`ui::experimental`)
-                    let badge = match row.cmd {
-                        Command::Action(a) => crate::ui::experimental::action(a),
-                        Command::Pane(p) => crate::ui::experimental::pane(p),
-                        _ => false,
-                    };
-                    let badge_id = ui.id().with(("palette-badge", i));
-                    let pill = egui::Atom::custom(badge_id, crate::ui::experimental::size(ui) + egui::vec2(6.0, 0.0));
-                    let atoms = if badge {
-                        egui::Atoms::new((gutter, row.label.as_str(), pill, sub))
-                    } else {
-                        egui::Atoms::new((gutter, row.label.as_str(), sub))
-                    };
+                    let atoms = egui::Atoms::new((gutter, row.label.as_str(), sub));
                     let button = egui::Button::selectable(i == state.sel, atoms)
                         .truncate()
                         .shortcut_text(right)
@@ -839,9 +827,6 @@ pub fn show(ctx: &egui::Context, state: &mut PaletteState, rows: &[Row]) -> Opti
                                         let fg = ui.style().interact(&r.response).text_color();
                                         tools::draw_glyph(ui.painter(), rect, g, fg);
                                     }
-                                } else if id == badge_id {
-                                    let p = crate::ui::experimental::paint(ui.painter(), rect.left_center() + egui::vec2(6.0, 0.0));
-                                    crate::ui::experimental::tip(ui, p, badge_id);
                                 }
                             }
                             r.response

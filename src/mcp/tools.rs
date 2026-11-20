@@ -68,7 +68,11 @@ pub fn leaves_project(tool: &str, args: &Value) -> bool {
                 | "styles.save"
                 | "styles.delete"
                 | "styles.install_describer"
+                // ws:home-page: closes the project
+                | "home.show"
         )
+        // ws:home-page: renames a project file / edits the recents list
+        || (tool == "project.recent" && args.get("action").and_then(Value::as_str).is_some_and(|a| a != "list"))
         || (tool == "ui.action" && args.get("id").and_then(Value::as_str).is_some_and(|id| LEAVING_ACTIONS.contains(&id)))
 }
 
@@ -90,6 +94,7 @@ const LEAVING_ACTIONS: &[&str] = &[
     "import_timeline",
     "relink_media",
     "settings",
+    "home", // ws:home-page: closes the project
 ];
 
 // ---- ws:mcp-context ----

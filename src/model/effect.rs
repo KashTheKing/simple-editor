@@ -205,6 +205,11 @@ impl EffectKind {
     pub fn needs_motion(self) -> bool {
         matches!(self, EffectKind::MotionBlur | EffectKind::FrameBlend)
     }
+    /// Offered in the effect catalogue (Gallery ▸ Effects). Crop is built into every clip now (the
+    /// Inspector's Transform section), so its effect only stays loadable for old projects.
+    pub fn in_catalogue(self) -> bool {
+        self != EffectKind::Crop
+    }
     /// Effects the compositor applies by moving the layer instead of touching pixels.
     pub fn is_geometric(self) -> bool {
         matches!(self, EffectKind::Wobble | EffectKind::Plane3d)

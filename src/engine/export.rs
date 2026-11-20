@@ -1594,6 +1594,24 @@ pub fn detect_encoders() -> Vec<String> {
     names
 }
 
+static ENCODERS_UI: crate::engine::bg_probe::BgProbe<Vec<String>> = crate::engine::bg_probe::BgProbe::new();
+
+/// ws:page-switch-freeze: `detect_encoders` for the UI thread - `None` while a background probe runs
+/// (the Export page's first draw used to wait 2-3 s on `ffmpeg -encoders`).
+pub fn encoders_nonblocking(wake: fn()) -> Option<Vec<String>> {
+    fn job() -> Vec<String> {
+        let v = detect_encoders();
+        crate::engine::encoders::start(); // ws:export-encoders: its hardware probe (it finds ffmpeg itself)
+        v
+    }
+    ENCODERS_UI.get(job, wake)
+}
+
+/// The ffmpeg folder changed: the next `encoders_nonblocking` asks the new one.
+pub fn forget_encoders() {
+    ENCODERS_UI.reset();
+}
+
 fn parse_encoders(s: &str) -> Vec<String> {
     s.lines()
         .filter_map(|l| {

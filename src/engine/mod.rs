@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod analysis;
 pub mod autocut;
+pub mod bg_probe; // ws:page-switch-freeze: a probe worked out off the UI thread
 pub mod blend;
 // ---- ws:browser-layer ----
 pub mod browser;

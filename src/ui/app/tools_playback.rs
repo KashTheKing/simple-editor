@@ -26,15 +26,11 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 Ok(json!(list))
             }
             "sequence.open" => {
-                match arg_u64(args, "id") {
-                    Some(id) => {
-                        if !app.project.open_sequence(id) {
-                            return Err("no such sequence (or already open / cycle)".into());
-                        }
-                    }
-                    None => app.project.close_sequence(),
+                // ws:timeline-tabs: opens (or shows) the sequence's tab; no id = the main timeline's
+                let id = arg_u64(args, "id");
+                if !super::timeline_tabs::switch(app, id) {
+                    return Err("no such sequence".into());
                 }
-                app.after_edit();
                 Ok(json!({"ok": true, "editing": app.project.editing}))
             }
             "render.frame" => {
@@ -247,7 +243,7 @@ pub const TOOLS: &[ToolDef] = &[
     row!(
         "sequence.open",
         ToolKind::Read,
-        "Edit a sequence (swap it into the timeline); omit id to go back to the main timeline.",
+        "Edit a sequence: opens its timeline tab (or shows it when open already); omit id for the main timeline. `timeline.tabs` lists / closes tabs.",
         &["id:integer:false:"]
     ),
     // ---- ws:mcp-context ---- an image result (MCP image content; Luau still gets {width,height,data_url})
