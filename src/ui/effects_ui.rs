@@ -176,6 +176,33 @@ pub struct EffectsResponse {
     pub hover: Option<usize>,
 }
 
+// ---- ws:parity-editing ----
+/// Saved single effects of `kind` from the user's Gallery (Effects items holding exactly one effect), by
+/// name. Read when the Presets menu is open, never per frame otherwise.
+pub(crate) fn filter_presets(kind: EffectKind) -> Vec<(String, Effect)> {
+    use crate::engine::gallery;
+    gallery::list(&gallery::root(), gallery::Kind::Effect)
+        .into_iter()
+        .filter_map(|it| {
+            let fx: Vec<Effect> = serde_json::from_value(it.data.get("effects")?.clone()).ok()?;
+            match &fx[..] {
+                [e] if e.kind == kind => Some((it.name, e.clone())),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// Load a preset's settings into an effect already on a clip: its parameters (keys included), shader,
+/// LUT and visualizer setup. The effect's place, on/off, mask and time window on the clip stay.
+pub(crate) fn apply_preset(dst: &mut Effect, preset: &Effect) {
+    dst.params = preset.params.clone();
+    dst.shader = preset.shader.clone();
+    dst.lut = preset.lut.clone();
+    dst.audio_mix = preset.audio_mix.clone();
+    dst.camera = preset.camera.clone();
+}
+
 /// A stack row's right-click pick, applied once the rows are drawn.
 #[derive(Clone, Copy, PartialEq)]
 enum RowCmd {
@@ -220,6 +247,8 @@ pub fn stack(
     let maskable = clip.is_visual();
     let mut cmd: Option<(usize, RowCmd)> = None;
     let mut drag_move: Option<(usize, usize)> = None;
+    // ws:parity-editing: (row, saved effect) picked from the row's Presets ▸
+    let mut preset: Option<(usize, Effect)> = None;
     // (stack index, param name, new absolute value) - propagated to same-kind/same-index siblings when
     // more than one clip is selected (bulk edit; absolute overwrite, not a relative delta).
     let mut param_edits: Vec<(usize, String, f64)> = Vec::new();
@@ -410,6 +439,18 @@ pub fn stack(
             if menu::row(ui, None, "Save to Gallery…", "").clicked() {
                 out.save_effect = Some(i);
             }
+            // ---- ws:parity-editing ---- per-filter presets: this effect's saved settings, loaded in place
+            menu::sub(ui, None, "Presets", |ui| {
+                let list = filter_presets(kind);
+                if list.is_empty() {
+                    ui.weak("None yet").on_hover_text("Save to Gallery… ▸ This effect, with its settings adds one");
+                }
+                for (name, e) in list {
+                    if menu::row(ui, None, &name, "").on_hover_text("Load these settings into this effect").clicked() {
+                        preset = Some((i, e));
+                    }
+                }
+            });
             ui.separator();
             pick(ui, true, Some(Glyph::Copy), "Copy parameters", RowCmd::Copy);
             pick(ui, copied_kind == Some(kind), Some(Glyph::Paste), "Paste parameters", RowCmd::Paste);
@@ -473,6 +514,12 @@ pub fn stack(
             g.click();
         }
         _ => {}
+    }
+    if let Some((i, e)) = preset {
+        if let Some(dst) = clip.effects.get_mut(i).filter(|d| d.kind == e.kind) {
+            apply_preset(dst, &e);
+            g.click();
+        }
     }
     if let Some((from, to)) = drag_move {
         let e = clip.effects.remove(from);
@@ -623,6 +670,23 @@ mod tests {
         fn rect(&self, name: &str) -> Rect {
             test_rects::get(name).unwrap_or_else(|| panic!("no widget rect for {name}"))
         }
+    }
+
+    #[test]
+    fn a_filter_preset_loads_settings_but_keeps_the_effects_place_on_the_clip() {
+        let kind = EffectKind::ALL[0];
+        let mut on_clip = Effect::new(kind);
+        on_clip.start = 1.5;
+        on_clip.enabled = false;
+        let mut saved = Effect::new(kind);
+        for p in saved.params.iter_mut() {
+            p.set_at(0.0, 0.25);
+        }
+        saved.shader = "void main() {}".into();
+        apply_preset(&mut on_clip, &saved);
+        assert_eq!(on_clip.params, saved.params);
+        assert_eq!(on_clip.shader, saved.shader);
+        assert_eq!((on_clip.start, on_clip.enabled), (1.5, false), "window and on/off are the clip's own");
     }
 
     #[test]

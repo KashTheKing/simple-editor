@@ -39,6 +39,7 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("playlist_to_timeline", "playlist.to_timeline"),
     ("add_bus", "audio.add_bus"),
     ("insert_asset_clips", "timeline.add_clip"),
+    ("make_montage", "timeline.montage"), // ws:parity-editing
     ("add_text_clip", "timeline.add_clip"),
     ("split_at", "timeline.split"),
     ("delete_clips", "timeline.delete"),
@@ -279,6 +280,7 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/tracks.rs"),
     include_str!("../../model/ops/transitions.rs"),
     include_str!("../../model/ops/trim.rs"),
+    include_str!("../../model/ops/montage.rs"), // ws:parity-editing
 ];
 
 /// Every `pub fn NAME(...)` in `src` whose PARAMETER LIST (the balanced-paren span right after the

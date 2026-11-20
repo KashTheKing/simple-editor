@@ -789,6 +789,13 @@ pub struct Settings {
     /// Settings ▸ General ▸ "Open scripts externally": Open and Add Script launch the program Windows uses
     /// for `.luau` (Notepad when none) instead of the Script Editor pane.
     pub scripts_external: bool,
+    // ---- ws:parity-editing ----
+    /// How times are shown (Settings ▸ General ▸ Time display): "smpte" (HH:MM:SS:FF), "clock"
+    /// (HH:MM:SS.mmm) or "frames". Applied app-wide through `ui::set_time_format`.
+    pub time_format: String,
+    /// Export ▸ "Chapters from markers": embed the timeline markers as chapters in MP4/MOV/MKV exports.
+    #[serde(default = "default_true")]
+    pub export_chapters: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1119,6 +1126,9 @@ impl Default for Settings {
             reference_note_seen: false,
             reference_transcribe: true,
             scripts_external: false, // feat/scripts-editor
+            // ---- ws:parity-editing ----
+            time_format: "smpte".into(),
+            export_chapters: true,
         }
     }
 }

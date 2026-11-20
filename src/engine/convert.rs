@@ -36,6 +36,9 @@ pub struct ConvertOptions {
     /// The source's audio streams to keep (0-based among its audio streams); None = all. A video output
     /// keeps each as its own track, an audio output mixes them into one.
     pub audio_streams: Option<Vec<usize>>,
+    // ---- ws:parity-editing ----
+    /// Only this part of the source, in source seconds `[a, b)` (Save Clip as File); None = all of it.
+    pub range: Option<(f64, f64)>,
 }
 
 /// The `-map` / `-filter_complex` arguments that keep `streams` of the source's audio: one track each
@@ -53,6 +56,15 @@ pub fn audio_map_args(streams: Option<&[usize]>, mix: bool) -> Vec<String> {
             vec![s("-filter_complex"), format!("{ins}amix=inputs={}:normalize=0[a]", v.len()), s("-map"), s("[a]")]
         }
         Some(v) => v.iter().flat_map(|n| [s("-map"), format!("0:a:{n}")]).collect(),
+    }
+}
+
+// ---- ws:parity-editing ----
+/// `-ss` before `-i` for a range: a fast seek that is still frame-accurate when re-encoding.
+pub fn range_input_args(range: Option<(f64, f64)>) -> Vec<String> {
+    match range {
+        Some((a, _)) if a > 0.0 => vec!["-ss".into(), format!("{a:.6}")],
+        _ => Vec::new(),
     }
 }
 
@@ -120,6 +132,7 @@ pub fn bake_filter_opts(
         target_bytes: None,
         vf_extra,
         af_extra,
+        range: None,
     }
 }
 
@@ -158,17 +171,80 @@ pub fn start_convert(opts: ConvertOptions) -> Arc<Progress> {
     export::spawn_job("convert", move |prog| run_convert(&opts, prog))
 }
 
+// ---- ws:parity-editing ----
+/// Library ▸ Export Each As: convert `list` one after another (one ffmpeg at a time, so a batch of fifty
+/// files does not start fifty encoders) as ONE job. Progress is (files done + this file's fraction) / n;
+/// cancel stops the current file and skips the rest. A file that fails is reported at the end, the rest
+/// still run.
+pub fn start_batch(list: Vec<ConvertOptions>) -> Arc<Progress> {
+    export::spawn_job("batch export", move |prog| {
+        let n = list.len().max(1);
+        let mut failed: Vec<String> = Vec::new();
+        for (i, opts) in list.iter().enumerate() {
+            if prog.is_cancelled() {
+                return Err("cancelled".into());
+            }
+            let name = opts.out.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            let child = Progress::new();
+            let r = std::thread::scope(|s| {
+                let h = s.spawn(|| run_convert(opts, &child));
+                while !h.is_finished() {
+                    if prog.is_cancelled() {
+                        child.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    let f = (i as f32 + child.fraction()) / n as f32;
+                    prog.set(f.min(0.99), format!("{} of {n} · {name}", i + 1));
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                h.join().unwrap_or_else(|_| Err("crashed".into()))
+            });
+            if let Err(e) = r {
+                if prog.is_cancelled() {
+                    return Err("cancelled".into());
+                }
+                failed.push(format!("{name}: {e}"));
+            }
+        }
+        if failed.is_empty() {
+            prog.set(1.0, format!("Exported {} file{}", list.len(), if list.len() == 1 { "" } else { "s" }));
+            Ok(())
+        } else {
+            Err(format!("{} of {n} failed - {}", failed.len(), failed.join("; ")))
+        }
+    })
+}
+
+/// Where Export Each As writes `src` as `ext` inside `dir`: the source's name with the new extension,
+/// numbered (`name (2).mp4`) rather than overwriting anything - the source itself included.
+pub fn batch_out_path(dir: &std::path::Path, src: &std::path::Path, ext: &str) -> PathBuf {
+    let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "output".into());
+    let mut out = dir.join(format!("{stem}.{ext}"));
+    let mut n = 2;
+    while out.exists() || out == src {
+        out = dir.join(format!("{stem} ({n}).{ext}"));
+        n += 1;
+    }
+    out
+}
+
 fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
     let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     let ext = export::ext_of(&opts.out);
     let tmp = export::temp_output(&opts.out);
-    let dur = probe_duration(&opts.src).unwrap_or(0.0);
+    let dur = match opts.range {
+        Some((a, b)) => (b - a).max(0.0),
+        None => probe_duration(&opts.src).unwrap_or(0.0),
+    };
     let scaler = if opts.scaler.is_empty() { "lanczos" } else { &opts.scaler };
     let scale = opts.out_size.map(|(w, h)| format!("scale={w}:{h}:flags={scaler}"));
 
     let mut cmd = ffpipe::command(&ffmpeg);
     cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1"]);
+    cmd.args(range_input_args(opts.range));
     cmd.arg("-i").arg(&opts.src);
+    if let Some((a, b)) = opts.range {
+        cmd.args(["-t".to_string(), format!("{:.6}", (b - a).max(0.0))]);
+    }
     if ext == "gif" {
         let fps = opts.gif_fps.max(1);
         let mut chain = format!("fps={fps}");
@@ -338,6 +414,7 @@ mod tests {
             target_bytes: None,
             vf_extra: None,
             af_extra: None,
+            range: None,
         }
     }
 

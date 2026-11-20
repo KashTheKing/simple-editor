@@ -75,6 +75,7 @@ pub(super) fn progress_jobs(app: &App) -> Vec<ProgJob> {
     v.extend(object_mask_ctl::progress_jobs()); // ws:addon-sam2
     v.extend(bgremove_ctl::progress_jobs()); // ws:addon-bg-removal
     v.extend(speech_ctl::install_jobs()); // ws:addon-voice
+    v.extend(batch_export::progress_jobs()); // ws:parity-editing
     v.extend(caches::move_jobs()); // ws:neutral-web: Settings ▸ General ▸ Cache folder
     v.extend(music_ctl::progress_jobs()); // ws:music-burn: burns, erases, visualizer video prep
     v.extend(export_fix::progress_jobs(app)); // ws:forum-export: Find the problem

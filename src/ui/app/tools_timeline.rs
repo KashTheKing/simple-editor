@@ -132,6 +132,28 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     Err("pass asset_id, sequence_id or text".into())
                 }
             }
+            // ---- ws:parity-editing ----
+            "timeline.montage" => {
+                let ids = req(arg_ids(args, "asset_ids"), "asset_ids")?;
+                let d = crate::model::ops::montage::MontageOpts::default();
+                let o = crate::model::ops::montage::MontageOpts {
+                    at: arg_f64(args, "at").unwrap_or_else(|| app.project.duration()),
+                    photo_secs: arg_f64(args, "photo_secs").unwrap_or(d.photo_secs),
+                    clip_secs: arg_f64(args, "clip_secs").unwrap_or(d.clip_secs),
+                    transition: arg_f64(args, "transition").unwrap_or(d.transition),
+                    ken_burns: arg_bool(args, "ken_burns").unwrap_or(d.ken_burns),
+                    music: arg_u64(args, "music_id"),
+                    fit_music: arg_bool(args, "fit_music").unwrap_or(d.fit_music),
+                };
+                if o.music.is_some_and(|m| app.project.asset(m).is_none()) {
+                    return Err("no such music asset".into());
+                }
+                let made = app.project.make_montage(&ids, &o);
+                if made.is_empty() {
+                    return Err("nothing to place: pass photos or video clips".into());
+                }
+                Ok(json!({"ok": true, "clip_ids": made}))
+            }
             "timeline.split" => {
                 let t = req(arg_f64(args, "t"), "t")?;
                 let only = arg_ids(args, "clip_ids");
@@ -356,6 +378,7 @@ pub const TOOLS: &[ToolDef] = &[
     row!("project.save", ToolKind::Read, "Save the project (.sedit). Without a path: the current project file (error if none).", &["path:string:false:.sedit path"]),
     row!("project.set", ToolKind::Mutate, "Change project format/name/colour space/Max length (of the timeline being edited, or sequence_id's).", &["name:string:false:", "width:integer:false:", "height:integer:false:", "fps:number:false:rounded to 3 decimals, 1..240", "color:string:false:sdr | hdr10 | hlg", "max_duration:number:false:seconds; 0 or null = no limit", "sequence_id:integer:false:set that sequence's max_duration"]),
     row!("timeline.list", ToolKind::Read, "Tracks and clips of the timeline being edited (main or the open sequence): ids, kind, asset, start, duration, src_in, speed, effects, label. On a big timeline filter it (any argument turns on paging: total, next_offset): track (index or name), from/to (timeline s, overlapping), kind, clip_ids, has_keyframes, has_blocks, fields (id, kind, name, asset, sequence, start, duration, end, src_in, speed, reverse, freeze, enabled, label, link, track, effects, keys = prop -> {n, hand}, blocks = [name, t, dur]), limit (default 200) / offset. For keyframes, blocks and transitions over the whole timeline use animate.audit instead.", &["track:string:false:track index or name (V1)", "from:number:false:timeline s", "to:number:false:timeline s", "kind:string:false:Video | Audio | Image | Text | ...", "clip_ids:array:false:", "has_keyframes:boolean:false:", "has_blocks:boolean:false:", "fields:array:false:field names, default the ones above", "limit:integer:false:default 200", "offset:integer:false:"]),
+    row!("timeline.montage", ToolKind::Mutate, "Make a montage / slideshow: the photos and clips end to end on one video track, a pan-and-zoom on each photo, a cross dissolve between them, and optional music the photos stretch to fit. One undo step.", &["asset_ids:array:true:photos and video clips, in order", "at:number:false:timeline seconds (default: the end)", "photo_secs:number:false:default 4", "clip_secs:number:false:longest part of each clip (default 0 = whole)", "transition:number:false:dissolve seconds (default 0.5, 0 = cuts)", "ken_burns:boolean:false:default true", "music_id:integer:false:an audio asset under the montage", "fit_music:boolean:false:stretch the photos to the music (default true)"]),
     row!("timeline.add_clip", ToolKind::Mutate, "Place an asset, a sequence, or a new text clip at a time.", &["asset_id:integer:false:", "sequence_id:integer:false:", "text:string:false:creates a text clip", "at:number:true:timeline seconds", "track:integer:false:video track index", "duration:number:false:text/image length"]),
     row!("timeline.split", ToolKind::Mutate, "Split clips at t (all clips crossing t when clip_ids is omitted).", &["t:number:true:", "clip_ids:array:false:"]),
     row!("timeline.delete", ToolKind::Mutate, "Delete clips (linked clips follow).", &["clip_ids:array:true:", "ripple:boolean:false:close the gap"]),

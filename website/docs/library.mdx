@@ -28,7 +28,9 @@ on the left of the Edit page (<kbd>Ctrl+1</kbd> shows or hides it).
   the item only appears once it's found. **File ▸ Import ▸ From URL…** does the same.
 - **Image sequences**: import one numbered frame (png, tif, bmp, tga, dpx or exr with at least three
   numbered siblings) and Simple Editor turns the whole sequence into one clip.
-- **Timelines from other editors**: **File ▸ Import ▸ Import Timeline (Premiere / Resolve XML, EDL)…**.
+- **Timelines from other editors**: **File ▸ Import ▸ Import Timeline (Premiere / Resolve XML, EDL)…**. It
+  also opens **Shotcut** projects (`.mlt`): tracks, clips, each clip's sound, speed, transitions (as dissolves),
+  gain, clip names and markers come across, and the report lists anything that did not.
 
 Importing doesn't copy or change your files: the project points at them where they are. A dot next to an
 item means it's used in the timeline.
@@ -43,7 +45,9 @@ The header is one row:
   chip under the search box: its ✕ turns off just that one, **Clear filter** turns them all off.
 - **Shift+click a bin's arrow** to open or close it with every bin inside it.
 - **View ▾** switches between **List** and **Gallery**, changes the thumbnail **Size**, sets the sort
-  order, and (in List view) picks the **Columns**. <kbd>Ctrl</kbd>+scroll also resizes thumbnails.
+  order, and (in List view) picks the **Columns**. <kbd>Ctrl</kbd>+scroll also resizes thumbnails. Sort by
+  **Date Created** (when the file came onto this PC) or **Date Recorded** (the camera's date inside MP4, MOV and
+  JPEG files, else the file's modified date) to put footage in shooting order.
 - **Project | Browse** under the header switches between your project's media and **Browse**, which shows
   your recent files and any folders you've linked (right-click ▸ **Link folder…**). Double-click a file there
   to play it in Source; right-click ▸ **Add to the project** imports it.
@@ -74,8 +78,15 @@ project (with Undo).
 playhead**, **Append at sequence end**, **Insert** / **Overwrite at playhead**, **New sequence from
 selection**, **Info…** (description, tags, label and folder), **Label**, **Move to folder**, **New
 Subclip from Marks**, **Reveal in Explorer**, **Proxies**,
-**Convert To** (mp4, mov, gif, mp3, wav, png and more), **Convert…**, **Compress…** and **Remove from
-project**. If the file is missing you also get **Relink Media…**.
+**Make Montage**, **Export Each As**, **Convert To** (mp4, mov, gif, mp3, wav, png and more), **Convert…**,
+**Compress…** and **Remove from project**.
+
+- **Make Montage** puts the selected photos and clips end to end at the end of the timeline, with a slow
+  pan-and-zoom on each photo and a dissolve between neighbours. Select a song too and it plays underneath, with
+  the photos stretched so the montage lasts as long as the song. It is one undo step, and everything it makes is
+  ordinary clips, keyframes and transitions you can change.
+- **Export Each As** writes every selected file into a folder you pick, in one format, one after another, with
+  your export settings. The files are not added back to the Library. If the file is missing you also get **Relink Media…**.
 
 ![Right-click an empty spot](/img/tutorial/library-empty-menu.png)
 

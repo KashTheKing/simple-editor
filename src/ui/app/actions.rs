@@ -239,10 +239,13 @@ impl App {
                     self.after_edit();
                 }
             }
-            NudgeLeft | NudgeRight => {
+            NudgeLeft | NudgeRight | NudgeLeft10 | NudgeRight10 => {
+                // ws:parity-editing: Shift nudges 10 frames; the whole selection (and what it links to) moves
                 let ids = self.project.expand_links(&self.selection);
                 if !ids.is_empty() {
-                    let dt = if a == NudgeLeft { -self.project.frame_dur() } else { self.project.frame_dur() };
+                    let frames = if matches!(a, NudgeLeft10 | NudgeRight10) { 10.0 } else { 1.0 };
+                    let dir = if matches!(a, NudgeLeft | NudgeLeft10) { -1.0 } else { 1.0 };
+                    let dt = dir * frames * self.project.frame_dur();
                     let snap = self.project.to_json();
                     if self.project.move_clips(&ids, dt, 0, None) {
                         push_undo_json(&mut self.undo, &mut self.redo, snap);
@@ -531,6 +534,7 @@ impl App {
                 timeline_tabs::switch(self, None);
             }
             SaveToGallery => gallery_mine::open_dialog(self, None),
+            SaveClipAsFile => self.save_clip_as_file(), // ws:parity-editing
             SaveTemplate => {
                 if self.selection.is_empty() {
                     self.toast("Select the clips to save as a template");
@@ -918,6 +922,7 @@ impl App {
             }
         }
 
+        batch_export::poll(self); // ws:parity-editing
         // library conversions
         let mut done: Vec<(PathBuf, Option<String>)> = Vec::new();
         self.convert_jobs.retain(|(prog, out)| {

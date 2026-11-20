@@ -104,6 +104,12 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
     for (id, ext) in resp.convert {
         app.start_asset_convert(id, &ext);
     }
+    if let Some(ids) = resp.montage {
+        make_montage(app, &ids); // ws:parity-editing
+    }
+    if let Some((ids, ext)) = resp.batch_export {
+        batch_export::start(app, &ids, &ext); // ws:parity-editing
+    }
     for (id, mode) in resp.proxy_mode {
         if let Some(a) = app.project.asset_mut(id) {
             a.proxy = mode;
@@ -282,4 +288,20 @@ mod tests {
         assert!(push < add, "the undo snapshot must be pushed BEFORE the first subclip is added");
         assert_eq!(body.matches("push_undo").count(), 1, "exactly one undo step for the whole batch");
     }
+}
+
+// ---- ws:parity-editing ----
+/// Library ▸ Make Montage: the first song in the selection plays under the rest. One undo step.
+fn make_montage(app: &mut App, ids: &[Id]) {
+    let music = ids.iter().copied().find(|&id| app.project.asset(id).is_some_and(|a| !a.has_video() && a.kind == ClipKind::Audio));
+    let o = crate::model::ops::montage::MontageOpts { at: app.project.duration(), music, ..Default::default() };
+    if crate::model::ops::montage::montage_plan(&app.project, ids, &o).is_empty() {
+        app.toast("Select photos or video clips to make a montage");
+        return;
+    }
+    app.push_undo();
+    let made = app.project.make_montage(ids, &o);
+    app.after_edit();
+    app.selection = made;
+    app.toast_undo("Montage added at the end of the timeline", Action::Undo);
 }

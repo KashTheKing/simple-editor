@@ -335,6 +335,11 @@ impl App {
                 fps: (every > 1.0).then(|| self.project.fps / every),
                 target_bytes: self.settings.export_target_bytes(),
                 alpha: arg_bool(args, "alpha").unwrap_or(false),
+                chapters: match arg_bool(args, "chapters") {
+                    Some(false) => Vec::new(),
+                    Some(true) => export::chapters_from_markers(&self.project),
+                    None => self.export_chapters(),
+                },
             };
             let mut project = self.export_project();
             // MCP exports have no background opt-in either - "use_project_bg": true opts in per call
@@ -371,6 +376,7 @@ impl App {
                 // ---- ws:export-deliver ----
                 vf_extra: None,
                 af_extra: None,
+                range: None,
             };
             Ok((crate::engine::convert::start_convert(opts), out))
         }

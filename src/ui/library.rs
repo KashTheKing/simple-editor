@@ -174,6 +174,10 @@ pub struct LibraryResponse {
     pub settings_changed: bool,
     /// (asset id, target extension) - start a Convert To… with the default options.
     pub convert: Vec<(Id, String)>,
+    /// ws:parity-editing: Export Each As ▸ format - the assets, written to a folder the app asks for.
+    pub batch_export: Option<(Vec<Id>, String)>,
+    /// ws:parity-editing: Make Montage from these assets (in Library order).
+    pub montage: Option<Vec<Id>>,
     /// Source paths whose proxy should be rebuilt (the app releases decoders, deletes, rescans).
     pub regen_proxy: Vec<String>,
     /// Per-source proxy choice from the Proxies menu: (asset id, None = auto / Some(on)).
@@ -1338,6 +1342,21 @@ fn browser(
             1 => order.sort_by(|&x, &y| project.assets[x].duration.total_cmp(&project.assets[y].duration)),
             2 => order.sort_by_key(|&i| kind_rank(project.assets[i].kind)),
             3 => order.sort_by_key(|&i| std::cmp::Reverse(project.assets[i].id)),
+            // ws:parity-editing: oldest first; a file not read yet (or with no date) goes last
+            4 | 5 => {
+                let created = state.sort == 4;
+                let key = |i: usize| {
+                    crate::engine::media_dates::dates(&project.assets[i].path)
+                        .and_then(|d| if created { d.created } else { d.recorded })
+                        .unwrap_or(i64::MAX)
+                };
+                let keys: std::collections::HashMap<usize, i64> = order.iter().map(|&i| (i, key(i))).collect();
+                order.sort_by_key(|i| keys[i]);
+                if keys.values().any(|k| *k == i64::MAX) {
+                    // dates still being read on the worker: look again shortly (stops once all are in)
+                    ui.ctx().request_repaint_after(std::time::Duration::from_millis(300));
+                }
+            }
             // natural order ("take2" before "take10"), as a folder import files them
             _ => {
                 // lower-case each name once, not twice per comparison
@@ -1589,8 +1608,16 @@ fn header_cell(ui: &mut egui::Ui, state: &mut LibraryState, label: &str, sort: O
 
 /// The Sort by radios (View ▾, the empty area's Sort ▸, the column header's right-click).
 fn sort_items(ui: &mut egui::Ui, state: &mut LibraryState) {
-    for (i, n) in ["Name", "Duration", "Kind", "Recent"].iter().enumerate() {
-        ui.radio_value(&mut state.sort, i as u8, *n);
+    const TIPS: [&str; 6] = [
+        "By name, numbers in order (take2 before take10)",
+        "Shortest first",
+        "Video, audio, images, then the rest",
+        "Most recently imported first",
+        "When the file was created on this PC, oldest first",
+        "When it was filmed or photographed (the camera's date in the file, else its modified date), oldest first",
+    ];
+    for (i, n) in ["Name", "Duration", "Kind", "Recent", "Date Created", "Date Recorded"].iter().enumerate() {
+        ui.radio_value(&mut state.sort, i as u8, *n).on_hover_text(TIPS[i]);
     }
 }
 
@@ -3191,6 +3218,23 @@ impl Tree<'_, '_> {
                 for t in crate::engine::convert::TARGETS {
                     if menu::row(ui, None, t, "").clicked() {
                         self.resp.convert.extend(ids.iter().map(|id| (*id, (*t).to_string())));
+                    }
+                }
+            });
+            // ---- ws:parity-editing ----
+            let r = menu::row(ui, None, "Make Montage", "").on_hover_text(
+                "The selected photos and clips end to end at the end of the timeline, with a pan-and-zoom on photos \
+                 and dissolves between them. A selected song plays underneath and the photos stretch to fit it.",
+            );
+            if r.clicked() {
+                self.resp.montage = Some(ids.clone());
+            }
+            menu::sub(ui, None, "Export Each As", |ui| {
+                for t in crate::engine::convert::TARGETS {
+                    let r = menu::row(ui, None, t, "")
+                        .on_hover_text("Write each selected file to a folder you pick, one after another, with the export settings");
+                    if r.clicked() {
+                        self.resp.batch_export = Some((ids.clone(), (*t).to_string()));
                     }
                 }
             });

@@ -123,6 +123,7 @@ pub fn options(src: &Path, spec: &Spec, size: (u32, u32), ticked: Option<Vec<usi
         target_bytes: spec.size_mb.map(|mb| (mb * 1e6) as u64),
         vf_extra: if FORMATS[spec.format].1 == "gif" { None } else { vf_extra },
         af_extra: None,
+        range: None,
         audio_streams: if spec.ticked_only { ticked } else { None },
     }
 }

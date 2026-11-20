@@ -110,6 +110,17 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         });
         ui.end_row();
 
+        // ---- ws:parity-editing ----
+        ui.label("Time display").on_hover_text(
+            "How times show in the transport, Inspector, markers and menus: timecode (00:01:02:15), clock (00:01:02.500) or frames (1875)",
+        );
+        let opts: Vec<(&str, &str)> = crate::ui::TimeFormat::ALL.iter().map(|f| (f.id(), f.name())).collect();
+        if combo(ui, "time_format", &mut s.time_format, &opts, Some(160.0)) {
+            crate::ui::set_time_format(crate::ui::TimeFormat::from_id(&s.time_format));
+            changed = true;
+        }
+        ui.end_row();
+
         ui.label("Preview max width");
         ui.horizontal(|ui| {
             changed |= ui.add(egui::DragValue::new(&mut s.preview_max_width).range(320..=3840).speed(8)).changed();

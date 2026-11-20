@@ -67,6 +67,8 @@ fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
         "cache_folder" => json!(Settings::cache_dir().to_string_lossy()),
         "web_browser" => json!(s.web_browser),
         "export_guide" => json!(s.export_guide),
+        "time_format" => json!(s.time_format), // ws:parity-editing
+        "export_chapters" => json!(s.export_chapters),
         "timeline_waveform" => json!(s.timeline_waveform),
         "export_captions" => json!(s.export_captions.map_or("follow".to_string(), |b| b.to_string())),
         _ => return None,
@@ -127,6 +129,12 @@ fn set_scalar(s: &mut Settings, key: &str, value: &str) -> Result<(), String> {
             crate::engine::browsers::set_choice(v);
         }
         "export_guide" => s.export_guide = parse_bool(value)?,
+        // ---- ws:parity-editing ----
+        "time_format" => match value.trim() {
+            v @ ("smpte" | "clock" | "frames") => s.time_format = v.to_string(),
+            _ => return Err("time_format: smpte | clock | frames".into()),
+        },
+        "export_chapters" => s.export_chapters = parse_bool(value)?,
         "timeline_waveform" => match value {
             "simple" | "detailed" => s.timeline_waveform = value.to_string(),
             _ => return Err("timeline_waveform: simple | detailed".into()),
@@ -355,6 +363,7 @@ pub const TOOLS: &[ToolDef] = &[
                 return Ok(ToolOutcome::Done(json!({"ok": true, "message": msg})));
             }
             set_scalar(&mut app.settings, key, value)?;
+            crate::ui::set_time_format(crate::ui::TimeFormat::from_id(&app.settings.time_format)); // ws:parity-editing
             app.settings.save();
             Ok(ToolOutcome::Done(json!({"ok": true})))
         },

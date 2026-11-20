@@ -740,15 +740,81 @@ pub fn popup_open_pos(ctx: &egui::Context) -> egui::Pos2 {
     clicked_at.unwrap_or_else(|| ctx.content_rect().center())
 }
 
-/// HH:MM:SS:FF timecode.
+/// A time as the user chose to see it (Settings ▸ General ▸ Time display): HH:MM:SS:FF by default.
 pub fn timecode(t: f64, fps: f64) -> String {
+    format_time(t, fps, time_format())
+}
+
+// ---- ws:parity-editing ----
+/// How times are displayed app-wide (Shotcut's Time Format): SMPTE timecode, a clock with
+/// milliseconds, or a frame count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TimeFormat {
+    #[default]
+    Smpte,
+    Clock,
+    Frames,
+}
+
+impl TimeFormat {
+    pub const ALL: [TimeFormat; 3] = [TimeFormat::Smpte, TimeFormat::Clock, TimeFormat::Frames];
+    pub fn id(self) -> &'static str {
+        match self {
+            TimeFormat::Smpte => "smpte",
+            TimeFormat::Clock => "clock",
+            TimeFormat::Frames => "frames",
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            TimeFormat::Smpte => "Timecode",
+            TimeFormat::Clock => "Clock",
+            TimeFormat::Frames => "Frames",
+        }
+    }
+    pub fn tip(self) -> &'static str {
+        match self {
+            TimeFormat::Smpte => "Hours, minutes, seconds and frames (00:01:02:15)",
+            TimeFormat::Clock => "Hours, minutes, seconds and milliseconds (00:01:02.500)",
+            TimeFormat::Frames => "A frame count from the start (1875)",
+        }
+    }
+    pub fn from_id(s: &str) -> TimeFormat {
+        TimeFormat::ALL.into_iter().find(|f| f.id().eq_ignore_ascii_case(s)).unwrap_or_default()
+    }
+}
+
+static TIME_FORMAT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The app-wide display format (set from `Settings::time_format` at start and on change).
+pub fn time_format() -> TimeFormat {
+    TimeFormat::ALL[TIME_FORMAT.load(std::sync::atomic::Ordering::Relaxed) as usize % 3]
+}
+
+pub fn set_time_format(f: TimeFormat) {
+    let i = TimeFormat::ALL.iter().position(|x| *x == f).unwrap_or(0) as u8;
+    TIME_FORMAT.store(i, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `t` seconds in format `f` at `fps`.
+pub fn format_time(t: f64, fps: f64, f: TimeFormat) -> String {
     let t = t.max(0.0);
     let fps = fps.max(1.0);
-    let total_frames = (t * fps).round() as u64;
-    let fpsr = fps.round() as u64;
-    let f = total_frames % fpsr;
-    let s = total_frames / fpsr;
-    format!("{:02}:{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60, f)
+    match f {
+        TimeFormat::Smpte => {
+            let total_frames = (t * fps).round() as u64;
+            let fpsr = fps.round() as u64;
+            let f = total_frames % fpsr;
+            let s = total_frames / fpsr;
+            format!("{:02}:{:02}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60, f)
+        }
+        TimeFormat::Clock => {
+            let ms = (t * 1000.0).round() as u64;
+            let s = ms / 1000;
+            format!("{:02}:{:02}:{:02}.{:03}", s / 3600, (s / 60) % 60, s % 60, ms % 1000)
+        }
+        TimeFormat::Frames => format!("{}", (t * fps).round() as u64),
+    }
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -769,6 +835,8 @@ pub(crate) fn parse_timecode(s: &str, fps: f64, cur: f64) -> Option<f64> {
     }
     let n: Vec<f64> = s.split(':').map(|p| p.trim().parse::<f64>().ok()).collect::<Option<_>>()?;
     let t = match n[..] {
+        // ws:parity-editing: with Time display = Frames a bare whole number is a frame count
+        [frames] if time_format() == TimeFormat::Frames && !s.contains('.') => frames / fps,
         [secs] => secs,
         [m, s] => m * 60.0 + s,
         [h, m, s] => h * 3600.0 + m * 60.0 + s,
@@ -875,6 +943,21 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn time_formats_smpte_clock_and_frames() {
+        let t = 62.5;
+        assert_eq!(format_time(t, 30.0, TimeFormat::Smpte), "00:01:02:15");
+        assert_eq!(format_time(t, 30.0, TimeFormat::Clock), "00:01:02.500");
+        assert_eq!(format_time(t, 30.0, TimeFormat::Frames), "1875");
+        assert_eq!(format_time(3723.25, 25.0, TimeFormat::Clock), "01:02:03.250");
+        for f in TimeFormat::ALL {
+            assert_eq!(TimeFormat::from_id(f.id()), f);
+        }
+        assert_eq!(TimeFormat::from_id("junk"), TimeFormat::Smpte, "unknown ids fall back to timecode");
+        // what each format prints, the transport's click-to-edit parser reads back
+        assert!((parse_timecode("00:01:02.500", 30.0, 0.0).unwrap() - 62.5).abs() < 1e-9);
+    }
 
     #[test]
     fn polygon_masks_never_stay_empty() {

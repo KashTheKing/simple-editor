@@ -174,6 +174,7 @@ pub(crate) use object_mask_ctl::active_clip as object_mask_clip; // ws:addon-sam
 pub(crate) mod bgremove_ctl; // ws:addon-bg-removal
 mod speech_ctl; // ws:addon-voice
 mod whatsnew;
+mod batch_export; // ws:parity-editing: Library ▸ Export Each As
 mod perf_ctl; // ws:perf-window
 mod quick_export; // ws:quick-export
 mod animator_ctl; // ws:animator
@@ -997,6 +998,7 @@ impl App {
         // ---- ws:neutral-web ---- (before anything builds a cache path or opens a link)
         Settings::set_cache_folder(&settings.cache_folder);
         crate::engine::browsers::set_choice(&settings.web_browser);
+        crate::ui::set_time_format(crate::ui::TimeFormat::from_id(&settings.time_format)); // ws:parity-editing
         // ---- ws:pages ---- (a pre-pages file keeps its old tree as the "Before update" profile)
         layout_ctl::migrate_to_pages(&mut settings);
         media::ffpipe::set_dir(&settings.ffmpeg_dir);

@@ -465,6 +465,10 @@ actions! {
     // ---- feat/scripts-editor ----
     // Unbound by design (Window menu, the top bar's Scripts button, the palette), like ToggleJobs.
     ToggleScriptEditor => "toggle_script_editor", "Show / Hide Script Editor", None;
+    // ---- ws:parity-editing ----
+    NudgeLeft10 => "nudge_left_10", "Nudge Left 10 Frames", sc(SHIFT, Key::Comma);
+    NudgeRight10 => "nudge_right_10", "Nudge Right 10 Frames", sc(SHIFT, Key::Period);
+    SaveClipAsFile => "save_clip_as_file", "Save Clip as File…", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -839,6 +843,8 @@ pub fn group(a: Action) -> &'static str {
         ExportSections => "File",
         // ---- feat/scripts-editor ----
         ToggleScriptEditor => "Panels & Pages",
+        // ---- ws:parity-editing ----
+        NudgeLeft10 | NudgeRight10 | SaveClipAsFile => "Clip",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

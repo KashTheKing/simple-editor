@@ -263,7 +263,22 @@ fn sort_assets(p: &Project, list: &mut [&Asset], key: &str, uses: &HashMap<Id, u
             let s = |x: &Asset| std::fs::metadata(&x.path).map(|m| m.len()).unwrap_or(0);
             s(a).cmp(&s(b))
         }),
-        k => return Err(format!("sort: unknown field '{k}' (id, name, duration, kind, folder, ext, uses, label, size)")),
+        // ---- ws:parity-editing ----
+        "created" | "recorded" => {
+            let rec = key == "recorded";
+            Box::new(move |a: &&Asset, b: &&Asset| {
+                let d = |x: &Asset| {
+                    let d = crate::engine::media_dates::read_dates(std::path::Path::new(&x.path));
+                    if rec { d.recorded } else { d.created }.unwrap_or(i64::MAX)
+                };
+                d(a).cmp(&d(b))
+            })
+        }
+        k => {
+            return Err(format!(
+                "sort: unknown field '{k}' (id, name, duration, kind, folder, ext, uses, label, size, created, recorded)"
+            ))
+        }
     };
     list.sort_by(|a, b| if desc { cmp(b, a) } else { cmp(a, b) });
     Ok(())

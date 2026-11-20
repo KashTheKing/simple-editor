@@ -157,6 +157,11 @@ pub struct Clip {
     /// Background removal (no green screen): drawn with its cached matte (`engine::bgremove`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bg_removal: Option<BgRemoval>,
+    // ---- ws:parity-editing ----
+    /// Free-text note on the clip (Shotcut's clip comments): shown in the Inspector and the clip's
+    /// timeline tooltip, with a small mark on the clip. Empty = none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub comment: String,
 }
 
 /// Essential-Sound role tag for an audio (or audio-bearing) clip. Sole definition - other
@@ -230,6 +235,7 @@ impl Clip {
             blocks: Vec::new(),
             browser: (kind == ClipKind::Browser).then(BrowserStyle::default),
             bg_removal: None,
+            comment: String::new(),
         }
     }
     /// Built-in crop (left, right, top, bottom) at clip-local `lt`, each clamped to 0..0.5 - what both
@@ -692,5 +698,22 @@ impl Clip {
             // the right edge of a reversed clip is the earliest source time
             self.src_in = (self.src_in - d * self.speed).max(0.0);
         }
+    }
+}
+
+#[cfg(test)]
+mod parity_editing_tests {
+    use super::*;
+
+    #[test]
+    fn clip_comment_round_trips_and_stays_out_of_old_files() {
+        let mut c = Clip::new(1, ClipKind::Video, "Shot", 0.0, 2.0);
+        let plain = serde_json::to_string(&c).unwrap();
+        assert!(!plain.contains("comment"), "an empty comment is not written");
+        let back: Clip = serde_json::from_str(&plain).unwrap();
+        assert!(back.comment.is_empty());
+        c.comment = "retake: the boom is in shot".into();
+        let back: Clip = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.comment, c.comment);
     }
 }
