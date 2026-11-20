@@ -16,8 +16,18 @@ pub(super) fn frame(app: &mut App, ctx: &egui::Context) {
         crate::ui::animator::set_onion(0);
         app.animator.here = false;
     }
-    // the Animator's loop ends with it: Loop switched off, or a press back on the timeline / Viewer
-    if app.animator.looping && !(app.animator.here && app.animator.loop_play) {
+    // Loop on + the Animator open: whatever started playback (Space anywhere, the Preview's Play), it repeats
+    // the range the Animator shows, and follows that range when it changes (Selected clips / Whole timeline,
+    // a new selection). It ends when Loop is switched off or the Animator closes.
+    let r = app.animator.range;
+    let want = app.animator.loop_play && app.pane_drawn(Pane::Animator) && r.1 > r.0;
+    if want && app.player.is_playing() {
+        if !app.animator.looping || app.player.loop_range() != Some(r) {
+            app.play_stop_at = None;
+            app.player.set_loop(Some(r)); // (a playhead outside the range jumps to its start)
+            app.animator.looping = true;
+        }
+    } else if app.animator.looping && !want {
         app.player.set_loop(None);
         app.animator.looping = false;
     }
