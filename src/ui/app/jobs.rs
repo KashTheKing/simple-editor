@@ -273,10 +273,16 @@ impl App {
 
     /// dshow audio inputs, asked for once (the ffmpeg device probe takes ~a second).
     pub(super) fn audio_inputs(&mut self) -> Vec<(String, bool)> {
+        // ws:page-switch-freeze: probed in the background (5-16 s of ffmpeg on some machines); empty until then
         if self.audio_inputs.is_none() {
-            self.audio_inputs = Some(guarded(crate::engine::capture::audio_devices).unwrap_or_default());
+            self.audio_inputs = crate::engine::capture::audio_devices_nonblocking(wake_ui);
         }
         self.audio_inputs.clone().unwrap_or_default()
+    }
+
+    /// The input list is still being probed (`audio_inputs` answers empty meanwhile).
+    pub(super) fn audio_inputs_pending(&self) -> bool {
+        self.audio_inputs.is_none()
     }
 
     /// Screen-capture options for the record-on-blur path: what the pane's Record button would use.

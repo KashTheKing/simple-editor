@@ -93,6 +93,8 @@ mod source_ctl;
 mod source_pane;
 // every placement call site (drops, library add, recording import, panes) names a DropMode
 pub(crate) use edit_ops::DropMode;
+use panes::wake_ui; // ws:page-switch-freeze
+use panes::warm_probes;
 // ---- ws:inspector-gallery ----: `pub(crate)`, not private, so `ui::gallery` (a sibling of `ui::app`,
 // not a descendant) can name `thumbs::ThumbSource` - gallery.rs owns the actual thumbnail cache
 // (thread-local, mirroring effects_ui.rs's own `THUMBS`), this module only builds the textures.
@@ -186,6 +188,9 @@ mod script_ctl; // ws:assistant-luau
 #[path = "windows.rs"]
 mod windows_dlg;
 mod project_match; // ws:project-color-fps
+mod timeline_tabs; // ws:timeline-tabs
+mod home_ctl; // ws:home-page
+mod os_paste; // Ctrl+V of a screenshot / copied files
 
 enum ExportKind {
     File { path: PathBuf },
@@ -203,6 +208,10 @@ pub struct App {
     project: Project,
     project_path: Option<PathBuf>,
     dirty: bool,
+    /// The project as it was opened or last saved (`Project::to_json`); None when that state itself still
+    /// needs saving (a repaired or recovered project, a chat change). `still_clean` compares against it so
+    /// an edit that changed nothing (or was undone) never asks to save.
+    saved: Option<String>,
     undo: Vec<UndoEntry>,
     redo: Vec<UndoEntry>,
     settings: Settings,
@@ -373,6 +382,9 @@ pub struct App {
     source_pending: Option<source_pane::Pending>,
     /// Movie mode pre-render cache.
     prerender: PreRender,
+    /// The project Movie Mode's pre-render was last made from: an edit re-renders only the seconds that
+    /// differ from it (`playback::video_dirty_spans`), not the whole timeline. None = render everything.
+    prerender_base: Option<Project>,
     /// Movie mode paused the clock because the frame under the playhead was not rendered yet.
     movie_stall: bool,
     /// True while playback is held because the player reported buffering (spinner shown).
@@ -458,6 +470,9 @@ pub struct App {
     onboarding: Option<crate::ui::onboarding::Onboarding>,
     /// The home / empty-state cards were dismissed for this session (`ui::home`).
     home_dismissed: bool,
+    // ---- ws:home-page ----
+    /// The Home page (`home_ctl`): open, the recents read so far, the rename dialog.
+    home: home_ctl::HomeState,
     /// The selection `frame::tick` last reacted to, so auto-surface / glow fire once per change.
     sel_sig: frame::SelSig,
     // ---- ws:export-deliver ----
@@ -582,6 +597,9 @@ pub struct App {
     // ---- ws:online-library ----
     /// The online library: the catalogue, downloads in flight, Gallery state.
     pub(crate) online: library_ctl::OnlineState,
+    // ---- ws:timeline-tabs ----
+    /// The background timeline tabs' views and the Rename Sequence window.
+    tabs: timeline_tabs::TabsState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -617,13 +635,99 @@ pub(crate) enum HistoryCategory {
 /// previous one. Only sentinel entries (layout steps) carry a fixed label.
 #[derive(Clone)]
 pub(crate) struct UndoEntry {
-    pub json: String,
+    pub json: Snap,
     pub label: String,
     /// Seconds since Unix epoch (`SystemTime`, not `Instant` - a History panel needs a real clock to
     /// group by day and survive across app restarts... though the stack itself is session-only today;
     /// kept as a real timestamp anyway since "session-only" is the smaller, more surprising fact here).
     pub at: f64,
     pub category: HistoryCategory,
+}
+
+/// An undo snapshot. An edit pushes the project itself (a clone: a few ms even with megabytes of HTML
+/// sources); it becomes JSON text only when something reads it as text (History labels, MCP
+/// `history.*`, tests), once. Serialising a big project on every trim was most of an edit's commit
+/// time (`bench_trim_commit`); Undo/Redo take the project back without a parse.
+#[derive(Clone)]
+pub(crate) struct Snap(Arc<(std::sync::OnceLock<String>, Mutex<Option<Project>>)>);
+
+impl Snap {
+    pub fn of(p: Project) -> Self {
+        Snap(Arc::new((std::sync::OnceLock::new(), Mutex::new(Some(p)))))
+    }
+    /// The JSON text (serialised now on first use).
+    pub fn text(&self) -> &str {
+        self.0 .0.get_or_init(|| {
+            let p = self.0 .1.lock().unwrap_or_else(|e| e.into_inner()).take();
+            p.map(|p| p.to_json()).unwrap_or_default()
+        })
+    }
+    /// Identity for caches keyed by entry (History labels) - reading it never serialises.
+    pub fn key(&self) -> usize {
+        Arc::as_ptr(&self.0) as usize
+    }
+    /// Has this snapshot been turned into text yet (the regression test's probe).
+    pub fn is_text(&self) -> bool {
+        self.0 .0.get().is_some()
+    }
+    /// The project it holds: a clone while it is still one, else parsed from its text.
+    pub fn project(&self) -> Result<Project, String> {
+        if let Some(j) = self.0 .0.get() {
+            return Project::from_json(j);
+        }
+        let held = self.0 .1.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match held {
+            Some(p) => Ok(p),
+            None => Project::from_json(self.text()),
+        }
+    }
+}
+impl std::ops::Deref for Snap {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.text()
+    }
+}
+impl From<String> for Snap {
+    fn from(s: String) -> Self {
+        let cell = std::sync::OnceLock::new();
+        let _ = cell.set(s);
+        Snap(Arc::new((cell, Mutex::new(None))))
+    }
+}
+impl From<&str> for Snap {
+    fn from(s: &str) -> Self {
+        Snap::from(s.to_owned())
+    }
+}
+impl From<Project> for Snap {
+    fn from(p: Project) -> Self {
+        Snap::of(p)
+    }
+}
+impl PartialEq<str> for Snap {
+    fn eq(&self, other: &str) -> bool {
+        // a held project serialises to an object: a sentinel (LAYOUT_STEP) never matches it, unparsed
+        if !self.is_text() && !other.starts_with('{') {
+            return false;
+        }
+        self.text() == other
+    }
+}
+impl PartialEq<&str> for Snap {
+    fn eq(&self, other: &&str) -> bool {
+        *self == **other
+    }
+}
+impl PartialEq<String> for Snap {
+    fn eq(&self, other: &String) -> bool {
+        *self == **other
+    }
+}
+impl std::fmt::Debug for Snap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.text())
+    }
 }
 
 fn now_secs() -> f64 {
@@ -680,7 +784,8 @@ pub(crate) fn describe_change(old_json: &str, new_json: &str) -> String {
 
 /// Push an undo snapshot (capped) and clear the redo history. Labels are NOT derived here - that cost
 /// (two project parses) belongs to the History panel, lazily; see `UndoEntry::label`.
-fn push_undo_json(undo: &mut Vec<UndoEntry>, redo: &mut Vec<UndoEntry>, json: String) {
+fn push_undo_json(undo: &mut Vec<UndoEntry>, redo: &mut Vec<UndoEntry>, json: impl Into<Snap>) {
+    let json = json.into();
     let entry = if json == LAYOUT_STEP {
         UndoEntry { label: "Rearranged panels".into(), category: HistoryCategory::Layout, at: now_secs(), json }
     } else {
@@ -884,6 +989,7 @@ impl App {
             project: Project::new(),
             project_path: None,
             dirty: false,
+            saved: Some(Project::new().to_json()),
             undo: Vec::new(),
             redo: Vec::new(),
             settings,
@@ -988,6 +1094,7 @@ impl App {
             source_focus: false,
             source_pending: None,
             prerender: PreRender::new(),
+            prerender_base: None,
             movie_stall: false,
             buffer_stall: false,
             play_gate: playgate::Gate::default(),
@@ -1022,6 +1129,8 @@ impl App {
             // ---- ws:layout-modes-onboarding ----
             onboarding: None,
             home_dismissed: false,
+            // ---- ws:home-page ----
+            home: Default::default(),
             sel_sig: frame::SelSig::default(),
             // ---- ws:export-deliver ----
             export_queue: std::collections::VecDeque::new(),
@@ -1067,6 +1176,7 @@ impl App {
             emulator: Default::default(), // ws:device-emulator
             emulator_tex: None,
             match_offer: None, // ws:project-color-fps
+            tabs: Default::default(), // ws:timeline-tabs
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -1113,7 +1223,7 @@ impl App {
     // toast()/toast_with_folder()/push_toast()/toast_undo() moved to feedback.rs (ws:forgiveness).
 
     fn push_undo(&mut self) {
-        push_undo_json(&mut self.undo, &mut self.redo, self.project.to_json());
+        push_undo_json(&mut self.undo, &mut self.redo, self.project.clone());
     }
 
     // ws:source-monitor: `insert_at` (chain each asset's clips end to end) is now
@@ -1135,7 +1245,8 @@ impl App {
         // ---- ws:media-library ----: a frame of a numbered still run bakes as one clip instead
         let paths = media_sync::intercept_sequences(self, &paths);
         // (a project with a linked bin is not empty: opening the file as the project would drop the bin)
-        if self.project.is_empty() && self.project.assets.is_empty() && self.project.linked_bins.is_empty() && paths.len() == 1 {
+        // (ws:timeline-tabs: the whole project - an empty sequence tab must not be replaced by the file)
+        if self.project.is_blank() && self.project.linked_bins.is_empty() && paths.len() == 1 {
             self.open_media(&paths[0]);
             return Vec::new();
         }
@@ -1154,26 +1265,42 @@ impl App {
         self.player.set_project(&self.project);
         audio_only::edited(&self.project); // ws:preview-audio-only: the mix is analysed / baked again
         if self.settings.movie_mode {
-            // the picture changed: drop what was pre-rendered and render the range again
+            // drop only what the edit can have changed (the edited clips' old and new spans); a change that
+            // could touch any frame (format, a track reorder...) or no earlier render still clears it all
+            let spans = self.prerender_base.as_ref().and_then(|b| crate::playback::video_dirty_spans(b, &self.project));
             let end = self.project.duration();
             let App { prerender, .. } = self;
-            guarded(|| prerender.invalidate(0.0, end));
+            match spans {
+                Some(spans) => spans.into_iter().for_each(|(a, b)| {
+                    guarded(|| prerender.invalidate(a, b));
+                }),
+                None => {
+                    guarded(|| prerender.invalidate(0.0, end));
+                }
+            }
+            self.prerender_base = Some(self.project.clone());
             self.request_prerender();
         }
     }
 
     fn set_project(&mut self, project: Project, path: Option<PathBuf>) {
         self.probes.clear(); // import probes belong to the project that started them
+        // ---- ws:home-page ---- a project replaced ends Home; this window's lock on the old one goes
+        self.home.open = false;
+        home_ctl::release_lock(self.project_path.as_deref(), path.as_deref());
         self.project = project;
         self.project_path = path;
         assistant_ctl::project_changed(self, self.project_path.clone().as_deref());
         self.dirty = false;
+        self.saved = Some(self.project.to_json());
+        self.prerender_base = None; // a new project: Movie Mode renders it from scratch
         self.undo.clear();
         self.redo.clear();
         // ws:mcp-context: the group's snapshot and the comment watermark belong to the old project
         self.mcp_ctx.group = None;
         self.mcp_ctx.seen = None;
         self.selection.clear();
+        timeline_tabs::project_changed(self); // ws:timeline-tabs
         // the old project's Source clip and library picks point at assets that no longer exist
         self.close_source();
         let lib = &mut self.library;
@@ -1289,6 +1416,7 @@ impl eframe::App for App {
             crate::perf::startup_mark(&format!("update {} start", self.startup_frames));
         }
         let perf_t0 = Instant::now(); // ws:perf-baseline: the HUD's UI frame time
+        crate::perf::frame_trace_start(_frame.info().cpu_usage); // ws:page-switch-freeze
         // shown cloaked, maximised when it should be, and revealed once a frame at its final size is
         // on screen (`winpos::Reveal`): no white flash, no jump
         let just = self.reveal.step(ctx, _frame, !crate::winpos::background());
@@ -1296,6 +1424,7 @@ impl eframe::App for App {
         crate::ui::titlebar::corners(ctx, _frame);
         if !self.window_shown {
             self.window_shown = true;
+            warm_probes(ctx); // ws:page-switch-freeze
             boot::run(self); // ws:forgiveness: offers crash recovery, if any
             self.recover_recordings(); // screen recordings a crash or power cut left unfinished
         }
@@ -1335,6 +1464,7 @@ impl eframe::App for App {
         for f in FRAME_HOOKS {
             f(self, ctx);
         }
+        crate::perf::frame_trace("@hooks", perf_t0); // ws:page-switch-freeze: SE_FRAME_TRACE marks
         // ---- ws:ui-kit ----: this frame's ui::menu snapshot, last frame's menu clicks, ui.screenshot images
         tools_uikit::frame(self, ctx);
         self.poll_panels();
@@ -1387,7 +1517,7 @@ impl eframe::App for App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 prog.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
                 self.close_after_export = true;
-            } else if self.dirty && self.screenshot.is_none() {
+            } else if self.dirty && !self.still_clean() && self.screenshot.is_none() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
                 // non-blocking now: the Close re-send happens at the top of `update` once this resolves
                 // (see `pending_close` above), not synchronously here.
@@ -1401,6 +1531,9 @@ impl eframe::App for App {
         }
         // the window really closes this frame: answer held / parked MCP calls instead of letting them time out
         if self.close_confirmed && ctx.input(|i| i.viewport().close_requested()) {
+            if Settings::save_pending() {
+                self.settings.save(); // ws:page-switch-freeze: a page switch's save_async may not have landed
+            }
             assistant_ctl::deny_held(self, "the app closed");
             tools_context::end_waits(self, "the app closed");
         }
@@ -1609,6 +1742,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
 
+        crate::perf::frame_trace("@pre-layout", perf_t0);
         // ---- layout ----
         if self.fullscreen {
             // same pane as the docked preview (it reads self.fullscreen) - no second copy to drift
@@ -1636,6 +1770,10 @@ impl eframe::App for App {
                     let t = self.settings.bg_tint;
                     ui.painter().rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(t[0], t[1], t[2], t[3]));
                 }
+                // ---- ws:home-page ---- the Home page takes the panes' place while it shows
+                if home_ctl::draw(self, ui) {
+                    return;
+                }
                 let mut l = std::mem::replace(&mut self.layout, Layout::new(egui_tiles::Tree::empty("layout")));
                 // cloned: the draw closure needs self mutably while the tab renderer reads the icons
                 let icons = self.settings.icon_overrides.clone();
@@ -1645,6 +1783,10 @@ impl eframe::App for App {
                     cozy: self.settings.ui_look != "sharp",
                     // ---- ws:pages ----
                     editing: self.project.editing.and_then(|id| self.project.sequence(id)).map(|s| s.name.clone()),
+                    // ---- ws:timeline-tabs ----
+                    timelines: (self.project.timeline_tabs().into_iter())
+                        .map(|t| (timeline_tabs::tab_name(&self.project, t), t.is_some(), t == self.project.editing))
+                        .collect(),
                     locked: self.settings.panels_locked,
                     // ---- ws:panels-multiscreen ----
                     monitors: self.screens.monitors.len().clamp(1, 3) as u8,
@@ -1671,6 +1813,7 @@ impl eframe::App for App {
                     },
                 );
                 self.layout = l;
+                crate::perf::frame_trace("@layout", perf_t0);
                 self.layout_dirty |= shown.changed;
                 // ---- ws:panels-multiscreen ----
                 if let Some(p) = shown.drag_out {
@@ -1689,6 +1832,7 @@ impl eframe::App for App {
                     push_undo_json(&mut self.undo, &mut self.redo, LAYOUT_STEP.to_owned());
                 }
                 self.pending_actions.extend(shown.actions);
+                timeline_tabs::apply(self, shown.tabs); // ws:timeline-tabs
                 if !shown.set_icon.is_empty() {
                     for (pane, pick) in shown.set_icon {
                         let key = format!("pane.{}", pane.title());
@@ -1732,8 +1876,10 @@ impl eframe::App for App {
             }
         }
 
+        crate::perf::frame_trace("@acts", perf_t0);
         // also in fullscreen: an export's progress + Cancel must not disappear behind it
         self.windows(ctx);
+        crate::perf::frame_trace("@windows", perf_t0);
 
         // persist the layout when it changed, debounced to the end of drag gestures
         if self.layout_dirty && !ctx.input(|i| i.pointer.any_down()) {
@@ -1749,6 +1895,7 @@ impl eframe::App for App {
         // toasts: drawn by feedback::draw, a WINDOW_DRAWER (ws:forgiveness) - this used to be an inline
         // block here; see windows() -> WINDOW_DRAWERS.
         let hits = self.player.cache_hits(); // ws:perf-baseline
+        crate::perf::frame_trace_end(perf_t0, &self.settings.page); // ws:page-switch-freeze
         self.hud.end_frame(perf_t0, self.gpu.as_mut(), hits);
     }
 
@@ -1891,8 +2038,12 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     emulator_ctl::TOOLS,
     // ---- ws:preview-audio-only ----
     audio_only::TOOLS,
+    // ---- ws:timeline-tabs ----
+    timeline_tabs::TOOLS,
     // ---- ws:assistant-luau ----
     media_api::TOOLS,
+    // ---- ws:home-page ----
+    home_ctl::TOOLS,
     script_ctl::TOOLS,
 ];
 
@@ -1989,6 +2140,10 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     music_ctl::act,
     // ---- ws:preview-audio-only ----
     audio_only::act,
+    // ---- ws:timeline-tabs ----
+    timeline_tabs::act,
+    // ---- ws:home-page ----
+    home_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -2048,6 +2203,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:interchange ----
     // ---- ws:assistant-pane ----
     assistant_ctl::tick,
+    os_paste::tick,
     // ---- ws:mcp-context ----
     tools_context::tick,
     // ---- ws:transcribe-islands ----
@@ -2162,6 +2318,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     music_ctl::windows,
     // ---- ws:project-color-fps ----
     project_match::window,
+    // ---- ws:timeline-tabs ----
+    timeline_tabs::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -2377,7 +2535,7 @@ impl App {
     /// of "Project edited". Callers push the entry themselves (this only sets the label on the last
     /// one) - see `push_undo_json`. First real caller: ws:forgiveness (Delete/RippleDelete, History
     /// panel restore).
-    pub(crate) fn push_undo_labeled(&mut self, before: String, label: &'static str) {
+    pub(crate) fn push_undo_labeled(&mut self, before: impl Into<Snap>, label: &'static str) {
         push_undo_json(&mut self.undo, &mut self.redo, before);
         if let Some(e) = self.undo.last_mut() {
             e.label = label.to_string();

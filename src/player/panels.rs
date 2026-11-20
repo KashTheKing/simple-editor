@@ -375,8 +375,6 @@ pub fn upscale_window(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette) {
         .frame(flyout_frame(pal, ctx).inner_margin(egui::Margin::same(14)))
         .show(ctx, |ui| {
             ui.set_width(340.0);
-            crate::ui::experimental::badge(ui);
-            ui.add_space(4.0);
             if !enhance::available() {
                 ui.label(egui::RichText::new("The AI enhancer isn't installed").color(pal.text));
                 ui.add_space(6.0);

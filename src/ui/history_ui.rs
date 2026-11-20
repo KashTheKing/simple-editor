@@ -101,7 +101,7 @@ pub fn show(
 
     // resolve row labels lazily (see the module doc): entry i's row describes snapshot i -> i+1
     // (-> the live project for the top). A pre-set label (layout sentinels, tests) wins as-is.
-    let key = |e: &UndoEntry| (e.at.to_bits(), e.json.len());
+    let key = |e: &UndoEntry| (e.at.to_bits(), e.json.key());
     let mut live_json: Option<String> = None; // serialized at most once, and only on a cache miss
     for i in 0..undo.len() {
         if !undo[i].label.is_empty() || state.labels.contains_key(&key(&undo[i])) {
@@ -221,9 +221,7 @@ pub fn show(
                 let text = export_markdown(undo, &visible, |e| label_of(state, e));
                 if std::fs::write(&out, &text).is_ok() {
                     // best-effort convenience, matching the app's other "reveal the saved file" spots
-                    let mut cmd = std::process::Command::new("explorer");
-                    cmd.arg("/select,").arg(&out);
-                    let _ = cmd.spawn();
+                    crate::contextmenu::reveal(&out);
                 }
             }
         }
@@ -258,7 +256,7 @@ pub fn restore_at(undo: &[UndoEntry], i: usize, live_json: &str) -> Option<(Stri
     if e.category == HistoryCategory::Layout {
         return None;
     }
-    let restored = crate::model::Project::from_json(&e.json).ok()?;
+    let restored = e.json.project().ok()?;
     Some((live_json.to_string(), restored))
 }
 

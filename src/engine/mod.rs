@@ -4,6 +4,7 @@
 pub mod agent;
 pub mod analysis;
 pub mod autocut;
+pub mod bg_probe; // ws:page-switch-freeze: a probe worked out off the UI thread
 pub mod blend;
 // ---- ws:browser-layer ----
 pub mod browser;
@@ -43,6 +44,8 @@ pub mod deepfilter; // speech denoise add-on (DeepFilterNet CLI, downloaded on d
 pub mod html_lint;
 #[cfg(test)]
 mod blitz_tests;
+#[cfg(test)]
+mod social_text_tests; // ws:social-text
 pub mod library;
 pub mod shaderlib;
 pub mod skills;

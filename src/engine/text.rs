@@ -10,11 +10,17 @@
 //! `reveal_bucket` keeps the cache from growing per-frame the way `engine::shapes::reveal_bucket` does.
 
 use crate::media::Frame;
-use crate::model::TextStyle;
+use crate::model::{TextStyle, BOX_BAR, BOX_LINES};
 use ab_glyph::{point, Font, FontArc, FontVec, Glyph, GlyphId, OutlinedGlyph, PxScale, ScaleFont};
 use fontdb::{Database, Family, Query, Style, Weight, ID};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Fonts shipped inside the exe (SIL Open Font License 1.1, see `assets/fonts/OFL-*.txt`): static
+/// Bold Latin subsets made from the upstream variable fonts. TikTok Sans for the TikTok text styles,
+/// Inter for the Snapchat ones. Registered before the system fonts, so they work on any PC.
+pub const BUNDLED_FONTS: [&[u8]; 2] =
+    [include_bytes!("../../assets/fonts/TikTokSans-Bold.ttf"), include_bytes!("../../assets/fonts/Inter-Bold.ttf")];
 
 /// Largest rendered text image side - keeps silly sizes from allocating gigabytes.
 const MAX_SIDE: u32 = 8192;
@@ -36,12 +42,19 @@ fn reveal_bucket(style: &TextStyle, t: f64) -> u32 {
     if !style.reveal.is_animated() && !wave_varies {
         return 0;
     }
-    let r = if t.is_finite() { t.max(0.0) } else { 0.0 };
+    let mut r = if t.is_finite() { t.max(0.0) } else { 0.0 };
+    // ws:social-text: a keyframed reveal alone (a typewriter) only changes between its first and
+    // last key - outside them the picture is fixed, so it needs no re-render per frame there
+    if !wave_varies && style.reveal.link.is_none() && style.reveal.baked.is_empty() {
+        if let (Some(a), Some(b)) = (style.reveal.keys.first(), style.reveal.keys.last()) {
+            r = r.clamp(a.t.max(0.0), b.t.max(0.0));
+        }
+    }
     (r * REVEAL_HZ).min(u32::MAX as f64) as u32
 }
 
 pub struct TextRasterizer {
-    cache: HashMap<(u64, u32, u32), Arc<Frame>>,
+    cache: HashMap<(u64, u32, u32, u32), Arc<Frame>>,
     families: Vec<String>,
     loaded: bool,
     db: Database,
@@ -74,6 +87,9 @@ impl TextRasterizer {
             return;
         }
         self.loaded = true;
+        for f in BUNDLED_FONTS {
+            self.db.load_font_data(f.to_vec());
+        }
         self.db.load_system_fonts();
         self.refresh_families();
     }
@@ -114,12 +130,20 @@ impl TextRasterizer {
     /// Render `style` at `scale` for clip-local time `t` (seconds). Never fails: unknown fonts fall
     /// back to any sans font; empty text yields a 1×1 transparent frame.
     pub fn render(&mut self, style: &TextStyle, scale: f32, t: f64) -> Arc<Frame> {
-        let key = (style.cache_key(), scale.to_bits(), reveal_bucket(style, t));
+        self.render_in(style, scale, t, 0.0)
+    }
+    /// `render` for a layer on a frame `frame_w` px wide (in the bitmap's own px, before the clip's
+    /// scale): a caption bar (`TextStyle::is_bar`) draws its band exactly that wide. Other styles
+    /// ignore it and share one cache entry whatever the frame.
+    pub fn render_in(&mut self, style: &TextStyle, scale: f32, t: f64, frame_w: f32) -> Arc<Frame> {
+        let bar_w =
+            if style.is_bar() && frame_w.is_finite() { frame_w.clamp(0.0, MAX_SIDE as f32).round() } else { 0.0 };
+        let key = (style.cache_key(), scale.to_bits(), reveal_bucket(style, t), bar_w.to_bits());
         if let Some(f) = self.cache.get(&key) {
             return f.clone();
         }
         self.load_system_fonts();
-        let frame = Arc::new(self.rasterize(style, scale, t).unwrap_or_else(|| Frame::new(1, 1)));
+        let frame = Arc::new(self.rasterize(style, scale, t, bar_w).unwrap_or_else(|| Frame::new(1, 1)));
         if self.cache.len() >= 64 {
             // ponytail: drop-all cache - LRU if text-heavy projects thrash
             self.cache.clear();
@@ -152,7 +176,7 @@ impl TextRasterizer {
             .clone()
     }
 
-    fn rasterize(&mut self, style: &TextStyle, scale: f32, t: f64) -> Option<Frame> {
+    fn rasterize(&mut self, style: &TextStyle, scale: f32, t: f64, bar_w: f32) -> Option<Frame> {
         // ---- ws:text-titles: sample the now-Animated fields once at this clip-local `t` ----
         let sz = style.size.at(t) as f32;
         let ls = style.letter_spacing.at(t) as f32;
@@ -326,9 +350,12 @@ impl TextRasterizer {
         let pad = if has_box { style.box_padding.max(0.0) * scale } else { 0.0 };
         let m = (r + shx.abs().max(shy.abs()) + blur * 2.0).max(pad).ceil() as i32 + 1;
         // ponytail: hard cap on the image size - bigger text just gets clipped
-        let w = ((bx1 - bx0).ceil() as i32 + 2 * m).clamp(1, MAX_SIDE as i32) as u32;
+        let cw = (bx1 - bx0).ceil() as i32 + 2 * m;
+        // a caption bar: the image is the frame's width (or the text's, if wider), the text centred
+        let bar = has_box && style.box_mode == BOX_BAR && bar_w >= 1.0;
+        let w = (if bar { cw.max(bar_w as i32) } else { cw }).clamp(1, MAX_SIDE as i32) as u32;
         let h = ((by1 - by0).ceil() as i32 + 2 * m).clamp(1, MAX_SIDE as i32) as u32;
-        let (ox, oy) = (m as f32 - bx0, m as f32 - by0);
+        let (ox, oy) = (m as f32 - bx0 + ((w as i32 - cw).max(0) / 2) as f32, m as f32 - by0);
         let (wu, n) = (w as usize, (w * h) as usize);
 
         // ---- masks ----
@@ -381,13 +408,28 @@ impl TextRasterizer {
         // ---- compose: box, shadow, outline, fill ----
         let mut out = Frame::new(w, h);
         if has_box {
-            let x0 = ((ox - pad).floor().max(0.0) as u32).min(w);
-            let y0 = ((oy - pad).floor().max(0.0) as u32).min(h);
-            let x1 = ((block_w + ox + pad).ceil().max(0.0) as u32).min(w);
-            let y1 = ((block_h + oy + pad).ceil().max(0.0) as u32).min(h);
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    over(&mut out.rgba[(y as usize * wu + x as usize) * 4..][..4], style.box_color, 255);
+            let rad = style.box_radius.max(0.0) * scale;
+            let boxes = if bar {
+                let (y0, y1) = ((oy - pad).round(), (oy + block_h + pad).round());
+                vec![BoxRect { x0: 0.0, y0, x1: w as f32, y1, r: [rad.min((y1 - y0) / 2.0); 4] }]
+            } else if style.box_mode == BOX_LINES {
+                let spans: Vec<Option<(f32, f32)>> = lines
+                    .iter()
+                    .map(|&(_, _, lw)| {
+                        let x0 = ox + (block_w - lw) * align;
+                        (lw > 0.0).then_some((x0, x0 + lw))
+                    })
+                    .collect();
+                line_boxes(&spans, oy, lh, sf.ascent() - sf.descent(), pad, rad)
+            } else {
+                let (y0, y1) = ((oy - pad).round(), (oy + block_h + pad).round());
+                let r = rad.min(block_w / 2.0 + pad).min((y1 - y0) / 2.0);
+                vec![BoxRect { x0: ox - pad, y0, x1: ox + block_w + pad, y1, r: [r; 4] }]
+            };
+            let mask = box_mask(&boxes, w, h);
+            for (px, &m) in out.rgba.chunks_exact_mut(4).zip(mask.iter()) {
+                if m > 0 {
+                    over(px, style.box_color, m);
                 }
             }
         }
@@ -425,7 +467,147 @@ impl TextRasterizer {
     }
 }
 
-/// Straight-alpha "over": `c` with coverage `cov` (0..255) onto the straight-alpha pixel `d`.
+/// One background box in image px: its edges, then the corner radii [top-left, top-right,
+/// bottom-right, bottom-left]. A box with a NEGATIVE radius is a fillet instead (see `line_boxes`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BoxRect {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
+    pub r: [f32; 4],
+}
+
+/// Per-line hugging boxes (`BOX_LINES`). `spans[i]` is line i's horizontal extent in image px
+/// (`None` for an empty line: no box there, and the chain breaks). Line i's glyphs start at
+/// `top + i * lh` and are `glyph_h` tall; each box adds `pad` round them. Neighbouring boxes meet
+/// on one whole-pixel row, so no seam shows. Where one line sticks out past its neighbour, its
+/// corner is rounded and the inside corner gets a concave fillet of the same radius, so the stack
+/// reads as one shape. A fillet is returned as a `BoxRect` quarter square whose single negative
+/// radius marks the corner holding the circle's centre: the square is filled outside that circle.
+pub(crate) fn line_boxes(
+    spans: &[Option<(f32, f32)>],
+    top: f32,
+    lh: f32,
+    glyph_h: f32,
+    pad: f32,
+    rad: f32,
+) -> Vec<BoxRect> {
+    let n = spans.len();
+    let mut ys: Vec<(f32, f32)> =
+        (0..n).map(|i| (top + i as f32 * lh - pad, top + i as f32 * lh + glyph_h + pad)).collect();
+    for i in 0..n.saturating_sub(1) {
+        if spans[i].is_some() && spans[i + 1].is_some() {
+            let yb = (ys[i].1 + ys[i + 1].0) / 2.0;
+            ys[i].1 = yb;
+            ys[i + 1].0 = yb;
+        }
+    }
+    let rad = rad.max(0.0);
+    let mut out: Vec<BoxRect> = Vec::with_capacity(n * 2);
+    let mut idx: Vec<Option<usize>> = vec![None; n];
+    for i in 0..n {
+        let Some((x0, x1)) = spans[i] else { continue };
+        let (y0, y1) = (ys[i].0.round(), ys[i].1.round());
+        let r = rad.min((x1 - x0) / 2.0 + pad).min((y1 - y0) / 2.0);
+        idx[i] = Some(out.len());
+        out.push(BoxRect { x0: x0 - pad, y0, x1: x1 + pad, y1, r: [r; 4] });
+    }
+    let mut fillets = Vec::new();
+    for i in 0..n.saturating_sub(1) {
+        let (Some(a), Some(b)) = (idx[i], idx[i + 1]) else { continue };
+        let (ra, rb) = (out[a], out[b]);
+        let yb = ra.y1;
+        let cap = |x: f32| x.min(rad).min((ra.y1 - ra.y0) / 2.0).min((rb.y1 - rb.y0) / 2.0);
+        // left: d > 0 when the lower box sticks out further
+        let d = ra.x0 - rb.x0;
+        if d.abs() < 0.5 {
+            (out[a].r[3], out[b].r[0]) = (0.0, 0.0);
+        } else if d > 0.0 {
+            let f = cap(d / 2.0);
+            out[a].r[3] = 0.0;
+            out[b].r[0] = out[b].r[0].min(f);
+            fillets.push(BoxRect { x0: ra.x0 - f, y0: yb - f, x1: ra.x0, y1: yb, r: [-f, 0.0, 0.0, 0.0] });
+        } else {
+            let f = cap(-d / 2.0);
+            out[b].r[0] = 0.0;
+            out[a].r[3] = out[a].r[3].min(f);
+            fillets.push(BoxRect { x0: rb.x0 - f, y0: yb, x1: rb.x0, y1: yb + f, r: [0.0, 0.0, 0.0, -f] });
+        }
+        // right: d > 0 when the lower box sticks out further
+        let d = rb.x1 - ra.x1;
+        if d.abs() < 0.5 {
+            (out[a].r[2], out[b].r[1]) = (0.0, 0.0);
+        } else if d > 0.0 {
+            let f = cap(d / 2.0);
+            out[a].r[2] = 0.0;
+            out[b].r[1] = out[b].r[1].min(f);
+            fillets.push(BoxRect { x0: ra.x1, y0: yb - f, x1: ra.x1 + f, y1: yb, r: [0.0, -f, 0.0, 0.0] });
+        } else {
+            let f = cap(-d / 2.0);
+            out[b].r[1] = 0.0;
+            out[a].r[2] = out[a].r[2].min(f);
+            fillets.push(BoxRect { x0: rb.x1, y0: yb, x1: rb.x1 + f, y1: yb + f, r: [0.0, 0.0, -f, 0.0] });
+        }
+    }
+    out.extend(fillets.into_iter().filter(|f| f.x1 - f.x0 >= 0.5));
+    out
+}
+
+/// Antialiased coverage of the union of `boxes` on a w×h image (rounded rectangles, and fillets:
+/// see `line_boxes`). Top and bottom edges sit on whole pixels, so boxes sharing a row leave no seam.
+pub(crate) fn box_mask(boxes: &[BoxRect], w: u32, h: u32) -> Vec<u8> {
+    let (wu, hu) = (w as usize, h as usize);
+    let mut m = vec![0u8; wu * hu];
+    let span = |a: f32, b: f32, n: usize| ((a.floor().max(0.0) as usize).min(n), (b.ceil().max(0.0) as usize).min(n));
+    for b in boxes {
+        let fillet = b.r.iter().position(|&r| r < 0.0);
+        // a fillet's neighbouring boxes cover its inner sides: reach a pixel past them for the AA
+        let (gx0, gx1) = if fillet.is_some() { span(b.x0 - 1.0, b.x1 + 1.0, wu) } else { span(b.x0, b.x1, wu) };
+        let (gy0, gy1) = span(b.y0, b.y1, hu);
+        for y in gy0..gy1 {
+            let py = y as f32 + 0.5;
+            for x in gx0..gx1 {
+                let px = x as f32 + 0.5;
+                let cov = match fillet {
+                    Some(k) => {
+                        let f = -b.r[k];
+                        let (cx, cy) = match k {
+                            0 => (b.x0, b.y0),
+                            1 => (b.x1, b.y0),
+                            2 => (b.x1, b.y1),
+                            _ => (b.x0, b.y1),
+                        };
+                        let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+                        // clipped on the circle's side only: the other sides meet the boxes
+                        let ox = if k == 0 || k == 3 { px - b.x0 } else { b.x1 - px };
+                        let oy = if k < 2 { py - b.y0 } else { b.y1 - py };
+                        (d - f + 0.5).clamp(0.0, 1.0).min((ox.min(oy) + 0.5).clamp(0.0, 1.0))
+                    }
+                    None => {
+                        let (cx, cy) = ((b.x0 + b.x1) / 2.0, (b.y0 + b.y1) / 2.0);
+                        let (hx, hy) = ((b.x1 - b.x0) / 2.0, (b.y1 - b.y0) / 2.0);
+                        let r = match (px < cx, py < cy) {
+                            (true, true) => b.r[0],
+                            (false, true) => b.r[1],
+                            (false, false) => b.r[2],
+                            (true, false) => b.r[3],
+                        };
+                        let (qx, qy) = ((px - cx).abs() - (hx - r), (py - cy).abs() - (hy - r));
+                        let d = (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt() + qx.max(qy).min(0.0) - r;
+                        (0.5 - d).clamp(0.0, 1.0)
+                    }
+                };
+                let v = (cov * 255.0 + 0.5) as u8;
+                let o = &mut m[y * wu + x];
+                *o = (*o).max(v);
+            }
+        }
+    }
+    m
+}
+
+/// Straight-alpha "over":`c` with coverage `cov` (0..255) onto the straight-alpha pixel `d`.
 #[inline]
 fn over(d: &mut [u8], c: [u8; 4], cov: u8) {
     let sa = c[3] as f32 / 255.0 * cov as f32 / 255.0;
@@ -840,9 +1022,9 @@ mod tests {
         }
         let mut style = ten_char_style();
         style.reveal = Animated::new(0.5);
-        let half = tr.rasterize(&style, 1.0, 0.0).expect("renders");
+        let half = tr.rasterize(&style, 1.0, 0.0, 0.0).expect("renders");
         style.reveal = Animated::new(1.0);
-        let full = tr.rasterize(&style, 1.0, 0.0).expect("renders");
+        let full = tr.rasterize(&style, 1.0, 0.0, 0.0).expect("renders");
         assert!(alpha_sum(&half) > 0, "the first 5 chars must still draw something");
         assert!(alpha_sum(&half) < alpha_sum(&full), "half-revealed must draw strictly less than fully revealed");
     }
@@ -856,9 +1038,9 @@ mod tests {
             return;
         }
         let mut style = ten_char_style();
-        let flat = tr.rasterize(&style, 1.0, 0.3).expect("renders");
+        let flat = tr.rasterize(&style, 1.0, 0.3, 0.0).expect("renders");
         style.wave = Animated::new(20.0);
-        let waved = tr.rasterize(&style, 1.0, 0.3).expect("renders");
+        let waved = tr.rasterize(&style, 1.0, 0.3, 0.0).expect("renders");
         // same glyph "ink" (alpha mass), just moved - not clipped away - so the two frames differ but
         // carry a comparable amount of coverage (loosely: within 15%, allowing for edge clipping).
         let (fa, wa) = (alpha_sum(&flat) as f64, alpha_sum(&waved) as f64);
