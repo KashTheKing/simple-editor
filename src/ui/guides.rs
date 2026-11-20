@@ -20,6 +20,120 @@ pub enum CanvasGuideKind {
     Third,
     /// Another visible clip's edge or centre.
     Clip,
+    // ---- ws:parity-preview-tools ----
+    /// A line of the Preview's overlay grid (`Overlay.cols` / `rows`).
+    Grid,
+    /// An action-safe or title-safe border (`Overlay.safe`).
+    Safe,
+}
+
+// ---- ws:parity-preview-tools ----
+
+/// The Preview's own overlay: a grid of `cols` x `rows` cells and the action-safe / title-safe
+/// borders. Viewer-only (Settings.preview_overlay): never rendered, never exported. While it is shown,
+/// a canvas drag also snaps onto its lines (`canvas_snap`).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Overlay {
+    /// Grid columns / rows (0 = no grid on that axis; 1 draws nothing either).
+    pub cols: u32,
+    pub rows: u32,
+    /// Draw the action-safe and title-safe borders.
+    pub safe: bool,
+    /// Action-safe and title-safe areas, in % of the frame's width and height.
+    pub action: f32,
+    pub title: f32,
+}
+
+impl Default for Overlay {
+    fn default() -> Self {
+        // 90 / 80 %: the classic broadcast pair Shotcut and most editors draw
+        Self { cols: 0, rows: 0, safe: false, action: 90.0, title: 80.0 }
+    }
+}
+
+/// The grid presets of the Preview's Grid menu: (label, cols, rows). Square-ish cells on 16:9 are
+/// the custom row's job; these are the counts editors ship.
+pub const GRID_PRESETS: &[(&str, u32, u32)] =
+    &[("Thirds", 3, 3), ("2 x 2", 2, 2), ("4 x 4", 4, 4), ("8 x 8", 8, 8), ("16 x 9", 16, 9), ("16 x 16", 16, 16)];
+
+/// The largest grid count the custom fields accept (a 64-cell grid is already a texture, not a guide).
+pub const GRID_MAX: u32 = 64;
+
+impl Overlay {
+    /// Is a grid drawn (on either axis)?
+    pub fn grid_on(&self) -> bool {
+        self.cols > 1 || self.rows > 1
+    }
+    /// Anything to draw or snap to?
+    pub fn any(&self) -> bool {
+        self.grid_on() || self.safe
+    }
+    /// Action- and title-safe fractions of the frame, each clamped to 10..100 %.
+    fn safe_fracs(&self) -> [f32; 2] {
+        [self.action, self.title].map(|p| (p / 100.0).clamp(0.1, 1.0))
+    }
+    /// The overlay's lines for a `w` x `h` project: (vertical x's, horizontal y's, kind) in project px
+    /// relative to the canvas centre - the `Clip.x` / `Clip.y` frame `canvas_snap` works in. Grid lines
+    /// exclude the frame edges (the canvas snap has those already).
+    pub fn lines(&self, w: f32, h: f32) -> Vec<(bool, f32, CanvasGuideKind)> {
+        let mut v = Vec::new();
+        let mut grid = |n: u32, len: f32, vertical: bool| {
+            for i in 1..n.min(GRID_MAX) {
+                v.push((vertical, len * (i as f32 / n as f32 - 0.5), CanvasGuideKind::Grid));
+            }
+        };
+        grid(self.cols, w, true);
+        grid(self.rows, h, false);
+        if self.safe {
+            for f in self.safe_fracs() {
+                let (hw, hh) = (w * f / 2.0, h * f / 2.0);
+                v.extend([(true, -hw), (true, hw), (false, -hh), (false, hh)].map(|(vt, at)| (vt, at, CanvasGuideKind::Safe)));
+            }
+        }
+        v
+    }
+}
+
+/// Draw `ov` over the video rect `lb` (a `pw` x `ph` project): thin grid lines, the action-safe border
+/// solid and the title-safe one dashed, in a light colour with a dark under-stroke so they read on
+/// any picture. `clip` = the visible part of the canvas.
+pub fn paint_overlay(p: &egui::Painter, ov: &Overlay, lb: Rect, (pw, ph): (u32, u32)) {
+    if !ov.any() || !lb.is_positive() {
+        return;
+    }
+    let (sx, sy) = (lb.width() / pw.max(1) as f32, lb.height() / ph.max(1) as f32);
+    let c = lb.center();
+    let shade = Stroke::new(2.0, egui::Color32::from_black_alpha(70));
+    let line = Stroke::new(1.0, egui::Color32::from_white_alpha(110));
+    let seg = |a: egui::Pos2, b: egui::Pos2| {
+        p.line_segment([a, b], shade);
+        p.line_segment([a, b], line);
+    };
+    for (vertical, at, kind) in ov.lines(pw as f32, ph as f32) {
+        if kind != CanvasGuideKind::Grid {
+            continue;
+        }
+        if vertical {
+            let x = c.x + at * sx;
+            seg(pos2(x, lb.top()), pos2(x, lb.bottom()));
+        } else {
+            let y = c.y + at * sy;
+            seg(pos2(lb.left(), y), pos2(lb.right(), y));
+        }
+    }
+    if ov.safe {
+        for (i, f) in ov.safe_fracs().into_iter().enumerate() {
+            let r = Rect::from_center_size(c, lb.size() * f);
+            let pts = [r.left_top(), r.right_top(), r.right_bottom(), r.left_bottom(), r.left_top()];
+            p.add(egui::Shape::line(pts.to_vec(), shade));
+            if i == 0 {
+                p.add(egui::Shape::line(pts.to_vec(), line));
+            } else {
+                p.extend(egui::Shape::dashed_line(&pts, line, 6.0, 4.0));
+            }
+        }
+    }
 }
 
 /// One snap line the drag landed on: vertical (`at` = x) or horizontal (`at` = y), in project px
@@ -36,7 +150,8 @@ pub struct CanvasGuide {
 /// visible asset-backed clip's edges / centre at `playhead`. The clip's own left / centre / right (top /
 /// centre / bottom) lines all count; per axis the closest target within `thr` px wins and returns its
 /// guide, anything farther leaves that axis untouched. `enabled` false (Settings.canvas_snap off) =
-/// the raw candidate and no guides.
+/// the raw candidate and no guides. `overlay` = the Preview's shown grid / safe areas, whose lines
+/// are snap targets too (ws:parity-preview-tools).
 /// ponytail: only asset-backed clips (video / image) are snap targets - text and shape clips have no
 /// native size for `placement`; add `ShapeStyle.w/h` bounds here if snapping to shapes is wanted.
 pub fn canvas_snap(
@@ -47,6 +162,7 @@ pub fn canvas_snap(
     cand: (f32, f32),
     half: (f32, f32),
     thr: f32,
+    overlay: &Overlay,
 ) -> ((f32, f32), Vec<CanvasGuide>) {
     if !enabled {
         return (cand, Vec::new());
@@ -55,6 +171,10 @@ pub fn canvas_snap(
     let (w, h) = (project.width.max(1) as f32, project.height.max(1) as f32);
     let mut xs = vec![(0.0, Centre), (-w / 2.0, Edge), (w / 2.0, Edge), (-w / 6.0, Third), (w / 6.0, Third)];
     let mut ys = vec![(0.0, Centre), (-h / 2.0, Edge), (h / 2.0, Edge), (-h / 6.0, Third), (h / 6.0, Third)];
+    // ---- ws:parity-preview-tools ----
+    for (vertical, at, kind) in overlay.lines(w, h) {
+        if vertical { xs.push((at, kind)) } else { ys.push((at, kind)) }
+    }
     for (_, c) in project.all_clips() {
         if c.id == moving || !c.is_visual() || !c.enabled || !c.contains(playhead) {
             continue;
@@ -234,7 +354,7 @@ mod tests {
         use CanvasGuideKind::*;
         let p = snap_project();
         let half = (50.0, 50.0);
-        let snap = |cand: (f32, f32)| canvas_snap(true, &p, 1, 1.0, cand, half, 8.0);
+        let snap = |cand: (f32, f32)| canvas_snap(true, &p, 1, 1.0, cand, half, 8.0, &Overlay::default());
         // centre: a candidate 4 px off the middle lands exactly on it
         let ((x, y), g) = snap((4.0, -3.0));
         assert_eq!((x, y), (0.0, 0.0));
@@ -261,8 +381,63 @@ mod tests {
     #[test]
     fn canvas_snap_off_returns_no_guides() {
         let p = snap_project();
-        let ((x, y), g) = canvas_snap(false, &p, 1, 1.0, (4.0, -3.0), (50.0, 50.0), 8.0);
+        let ((x, y), g) = canvas_snap(false, &p, 1, 1.0, (4.0, -3.0), (50.0, 50.0), 8.0, &Overlay::default());
         assert_eq!((x, y), (4.0, -3.0), "raw candidate back");
         assert!(g.is_empty());
+    }
+
+    // ---- ws:parity-preview-tools ----
+
+    #[test]
+    fn overlay_lines_split_the_frame_and_safe_areas_are_centred() {
+        let ov = Overlay { cols: 4, rows: 2, safe: true, action: 90.0, title: 80.0 };
+        let l = ov.lines(1920.0, 1080.0);
+        let at = |vert: bool, kind: CanvasGuideKind| -> Vec<f32> {
+            l.iter().filter(|g| g.0 == vert && g.2 == kind).map(|g| g.1).collect()
+        };
+        // 4 columns: 3 inner lines at -480, 0, 480 (project px from centre); no frame edges
+        assert_eq!(at(true, CanvasGuideKind::Grid), vec![-480.0, 0.0, 480.0]);
+        assert_eq!(at(false, CanvasGuideKind::Grid), vec![0.0]);
+        // action 90 %: +-864 x, +-486 y; title 80 %: +-768 x, +-432 y
+        assert_eq!(at(true, CanvasGuideKind::Safe), vec![-864.0, 864.0, -768.0, 768.0]);
+        assert_eq!(at(false, CanvasGuideKind::Safe), vec![-486.0, 486.0, -432.0, 432.0]);
+        // off by default, 1 x 1 draws nothing, absurd counts are capped
+        assert!(!Overlay::default().any());
+        assert!(Overlay { cols: 1, rows: 1, ..Default::default() }.lines(100.0, 100.0).is_empty());
+        let big = Overlay { cols: 10_000, ..Default::default() };
+        assert_eq!(big.lines(100.0, 100.0).len(), GRID_MAX as usize - 1);
+    }
+
+    #[test]
+    fn canvas_snap_lands_on_shown_grid_and_safe_lines_only() {
+        use CanvasGuideKind::*;
+        let p = snap_project();
+        let half = (50.0, 50.0);
+        let ov = Overlay { cols: 4, rows: 0, safe: true, action: 90.0, title: 80.0 };
+        // the clip's centre 3 px off the 4-column line at -480 snaps onto it
+        let ((x, _), g) = canvas_snap(true, &p, 1, 1.0, (-477.0, 300.0), half, 8.0, &ov);
+        assert_eq!(x, -480.0);
+        assert!(g.iter().any(|g| g.vertical && g.kind == Grid && g.at == -480.0), "{g:?}");
+        // the clip's top edge (y - 50) 4 px below the title-safe top (-432) snaps up onto it
+        let ((_, y), g) = canvas_snap(true, &p, 1, 1.0, (200.0, -378.0), half, 8.0, &ov);
+        assert_eq!(y, -382.0);
+        assert!(g.iter().any(|g| !g.vertical && g.kind == Safe && g.at == -432.0), "{g:?}");
+        // the same candidates with the overlay hidden: no grid or safe target
+        let ((x, _), g) = canvas_snap(true, &p, 1, 1.0, (-477.0, 300.0), half, 8.0, &Overlay::default());
+        assert_eq!(x, -477.0);
+        assert!(g.iter().all(|g| !matches!(g.kind, Grid | Safe)), "{g:?}");
+    }
+
+    #[test]
+    fn overlay_settings_round_trip_and_old_files_get_the_default() {
+        let mut s = crate::settings::Settings::default();
+        assert_eq!(s.preview_overlay, Overlay::default());
+        s.preview_overlay = Overlay { cols: 3, rows: 3, safe: true, action: 93.0, title: 90.0 };
+        let back: crate::settings::Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back.preview_overlay, s.preview_overlay);
+        let old: crate::settings::Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.preview_overlay, Overlay::default());
+        let partial: Overlay = serde_json::from_str(r#"{"safe": true}"#).unwrap();
+        assert_eq!((partial.safe, partial.action, partial.title), (true, 90.0, 80.0));
     }
 }

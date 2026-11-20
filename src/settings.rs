@@ -719,6 +719,9 @@ pub struct Settings {
     // ---- ws:player-metadata ----
     /// Saved tag sets (Settings ▸ Metadata), applied in one click in the player, the Library and Export.
     pub metadata_presets: Vec<crate::engine::tags::MetaPreset>,
+    // ---- ws:parity-preview-tools ----
+    /// The Preview's grid and action-safe / title-safe overlay (viewer-only; also snap targets).
+    pub preview_overlay: crate::ui::guides::Overlay,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1018,6 +1021,7 @@ impl Default for Settings {
             emulator: BTreeMap::new(),
             match_import: true, // ws:project-color-fps
             metadata_presets: Vec::new(), // ws:player-metadata
+            preview_overlay: Default::default(), // ws:parity-preview-tools
         }
     }
 }

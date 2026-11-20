@@ -183,6 +183,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             app.settings.canvas_snap = on;
             app.settings.save();
         }
+        // ---- ws:parity-preview-tools ----
+        if let Some(ov) = resp.set_overlay {
+            app.settings.preview_overlay = ov;
+            app.settings.save_async();
+        }
         if let Some((kind, cx, cy, w, h)) = resp.new_shape {
             let id = app.add_shape(kind, Some((cx, cy, w, h)));
             if !resp.new_points.is_empty() {
