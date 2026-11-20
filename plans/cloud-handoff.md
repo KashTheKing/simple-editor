@@ -261,3 +261,63 @@ plus a new panel API.
   and `plugins.enable`.
 - Tests: manifest parse and validation; permission enforcement (a script without `network` can't fetch); install,
   uninstall and update from a local zip fixture and a mocked GitHub API response; the example plugin's panel draws.
+
+## Shotcut parity (from plans/shotcut-comparison.md; each is a new branch from develop)
+For each, read the matching item in `plans/shotcut-comparison.md`. Check what already exists before building, and
+skip anything another section owns (pitch-speed, group-sync, alpha-export, time-remap, zones-markers, mixed-footage,
+forum-*).
+
+### parity-audio: `claude/parity-audio`
+- Audio filters on a single clip, not only via buses.
+- The missing filter types: band pass, notch, expander, declick, mid-side, stereo width, channel copy/swap/invert,
+  downmix, 15-band EQ, two-pass normalise.
+- An audio spectrum analyser and vectorscope on the Audio page.
+- Track auto-fade and seam.
+- A tone generator.
+
+### parity-formats: `claude/parity-formats`
+- Subtitles: ASS/SSA import, soft subtitle tracks in MP4/MKV export, and extracting subtitles from a media file.
+- SVG and AVIF image import.
+- Lottie (and Rive if a permissive runtime fits) as animated clips.
+- Generators: colour bars, noise, plasma, counter/timer.
+
+### parity-webcam: `claude/parity-webcam`
+- Webcam capture next to Screen Recording: device and format pick, a preview, record to the Library.
+- An optional webcam bubble while screen recording.
+- Screen Snapshot: a still of the desktop or a window.
+
+### parity-preview-tools: `claude/parity-preview-tools`
+- Preview: a configurable grid and title-safe and action-safe overlays, with snapping; zoom levels at 10% and 25%.
+- Video bakes: denoise (hqdn3d/nlmeans) and deinterlace (bwdif).
+- Effects: corner pin and lens correction.
+
+### parity-editing: `claude/parity-editing`
+Item 8 of the queue in `plans/shotcut-comparison.md`:
+- batch export from the Library, a slideshow/montage generator, names and comments on timeline clips
+- chapters embedded in the export, a time-format choice (SMPTE/clock/frames), per-filter presets
+- Library: sort by created/recorded date, filter by type, search; file-browser search and type filter
+- nudging clips and groups, saving a trimmed clip as its own file, and importing Shotcut .mlt projects
+- a starter asset pack: emoji, real SFX and graphics, with licences checked
+
+### parity-effects: `claude/parity-effects`
+Item 9:
+- every missing Shotcut video filter as a native effect or library shader: old film, halftone, sketch, mosaic, fisheye
+  and the rest
+- the missing blend modes (Saturate, Exclusion, the four HSL modes)
+- the custom gradient wipe, and eyedropper white balance
+
+### parity-360: `claude/parity-360`
+Item 10: the 360° video filters.
+
+### parity-io: `claude/parity-io`
+Item 11:
+- network stream playback, full-range option, auto-rotate override
+- a detailed media properties panel and a bitrate graph, search in recents
+- GPU choice, Contour ShuttlePRO support
+
+### parity-color-pipeline: `claude/parity-color-pipeline` (largest)
+Item 12:
+- Write `plans/color-pipeline.md` first.
+- Then 16-bit float, linear-light GPU compositing and a 10-bit end-to-end path behind a Settings ▸ Processing Mode
+  choice, with 8-bit kept as the fast default.
+- Playback must never stutter in any mode.
