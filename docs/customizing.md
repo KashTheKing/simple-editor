@@ -434,7 +434,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `media.smart_bin` | Mutate | id, name, op | Manage Project.smart_bins: save the current library filter under a name, apply one (by index or name) to the library, list them, or delete one. |
 | `media.status` | Read | id | AssetStatus per asset id (Ready \| Decoding \| Offline \| ProxyBuilding, with percent) from the same tick that drives the library badge. |
 | `media.subclip` | Mutate | asset_id, in, name, out | Create a subclip asset (a named in/out range into an existing library asset). |
-| `media.transcribe` | Job | async, asset_id, clip_id, islands, model | Transcribe a clip (or the first timeline clip of an asset) with whisper — same job as transcribe.run without generating cues; fills Project.transcripts when done (read with media.transcript). islands / async as in transcribe.run (async: poll transcribe.status). |
+| `media.transcribe` | Job | align, async, asset_id, clip_id, engine, islands, model | Transcribe a clip (or the first timeline clip of an asset) with whisper.cpp or the faster-whisper add-on (engine, align as in transcribe.run) — same job as transcribe.run without generating cues; fills Project.transcripts when done (read with media.transcript). islands / async as in transcribe.run (async: poll transcribe.status). |
 | `media.transcript` | Read | asset_id, clip_id | {clip_id, words:[{start,end,text}], text} for one clip (clip_id, or asset_id's first timeline clip), or every transcript when both are omitted. A clip without one gives empty words plus a hint. |
 
 **`mixer.*`** (1 tool)
@@ -726,9 +726,9 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
-| `transcribe.install` | Job | model | Download a whisper model into the cache (job; 75–466 MB). Already downloaded = done at once. |
-| `transcribe.run` | Job | async, clip_id, cues, islands, language, model | Transcribe a clip's audio with whisper (background job; word timings always on). On completion the words are in Project.transcripts (media.transcript) and, with cues=true (default), captions are generated. islands=true transcribes each speech island separately (accurate cut points on long takes with pauses; needs the clip's waveform). async=true replies at once - poll transcribe.status {clip_id} until state is done/failed. |
-| `transcribe.status` | Read | clip_id | State of the clip's latest whisper run (for transcribe.run / media.transcribe with async=true): {state: running (+fraction, status) \| done \| failed (+error) \| none}. When done, read the words with media.transcript. |
+| `transcribe.install` | Job | engine, model, remove | Download a whisper model into the cache (job; 75–466 MB). Already downloaded = done at once. engine=faster-whisper installs the faster-whisper add-on first when it is missing (about 445 MB with the aligner, plus the model) and downloads its copy of the model; remove=true (with engine=faster-whisper) uninstalls the add-on and its models. |
+| `transcribe.run` | Job | align, async, clip_id, cues, engine, islands, language, model | Transcribe a clip's audio with whisper.cpp or the faster-whisper add-on (engine: whisper.cpp \| faster-whisper, falling back to whisper.cpp when the add-on is missing; align: pin word times to the audio, faster-whisper only, on by default) (background job; word timings always on). On completion the words are in Project.transcripts (media.transcript) and, with cues=true (default), captions are generated. islands=true transcribes each speech island separately (accurate cut points on long takes with pauses; needs the clip's waveform). async=true replies at once - poll transcribe.status {clip_id} until state is done/failed. |
+| `transcribe.status` | Read | clip_id | State of the clip's latest whisper run (for transcribe.run / media.transcribe with async=true): {state: running (+fraction, status, engine) \| done \| failed (+error) \| none, run: the last finished run's {engine, aligned, secs, fallback}, engine_default, align_default, addon: the faster-whisper add-on {installed, version, aligner, models, installing, disk_mb}}. When done, read the words with media.transcript. |
 
 **`transcript.*`** (6 tools)
 
