@@ -189,6 +189,7 @@ mod windows_dlg;
 mod project_match; // ws:project-color-fps
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
+mod group_sync; // ws:gap-group-sync
 
 enum ExportKind {
     File { path: PathBuf },
@@ -2041,6 +2042,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:home-page ----
     home_ctl::TOOLS,
     script_ctl::TOOLS,
+    // ---- ws:gap-group-sync ----
+    group_sync::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2140,6 +2143,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     timeline_tabs::act,
     // ---- ws:home-page ----
     home_ctl::act,
+    // ---- ws:gap-group-sync ----
+    group_sync::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[

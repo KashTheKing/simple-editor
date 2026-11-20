@@ -42,14 +42,14 @@ impl Project {
             .chain(p.sequences.iter().map(|s| s.id))
             .chain(p.sequences.iter().flat_map(|s| s.tracks.iter().map(|t| t.id)))
             .chain(
-                p.sequences.iter().flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.max(c.link)))),
+                p.sequences.iter().flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.max(c.link).max(c.group)))),
             )
             .chain(
                 p.main_stash
                     .iter()
-                    .flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.max(c.link)))),
+                    .flat_map(|s| s.tracks.iter().flat_map(|t| t.clips.iter().map(|c| c.id.max(c.link).max(c.group)))),
             )
-            .chain(p.all_clips().map(|(_, c)| c.id.max(c.link)))
+            .chain(p.all_clips().map(|(_, c)| c.id.max(c.link).max(c.group)))
             .max()
             .unwrap_or(0);
         fn plan_max(items: &[PlanItem]) -> Id {

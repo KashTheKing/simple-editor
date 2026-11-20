@@ -222,6 +222,13 @@ impl Default for TimelineState {
     }
 }
 
+/// The clips a click on `ids` selects once clip groups count: every member of their groups, plus the
+/// members' A/V partners when `linked` (Linked Selection on).
+pub(crate) fn group_unit(p: &Project, ids: &[Id], linked: bool) -> Vec<Id> {
+    let g = p.expand_groups(ids);
+    if linked { p.expand_links(&g) } else { g }
+}
+
 /// Paste a copied group (relative times, the way `presets::capture_template` stores one) at `at`, with
 /// fresh clip / link / marker ids. `Project::place_clips` picks the first track of each kind with room
 /// (adding one when nothing is free); `target` then pulls the group onto the row the user last clicked,
@@ -1146,6 +1153,12 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 }
             }
             let selected = c.selection.contains(&clip.id);
+            // a grouped clip wears its group's colour as a thin outer edge, so the members read as one
+            if clip.group != 0 {
+                let (_, col) = crate::model::LABEL_COLORS[(clip.group as usize) % crate::model::LABEL_COLORS.len()];
+                let col = egui::Color32::from_rgb(col[0], col[1], col[2]).gamma_multiply(0.8);
+                lp.rect_stroke(rect, cr, Stroke::new(1.5, col), StrokeKind::Outside);
+            }
             if selected {
                 lp.rect_stroke(rect, cr, Stroke::new(2.0, pal.selection), StrokeKind::Inside);
             } else if linked_sel.contains(&clip.id) {
@@ -1313,7 +1326,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             }
             // the menu's Actions run on the selection: a right-click retargets it, like a click would
             if rclick && !selected {
-                *c.selection = c.project.expand_links(&[clip.id]);
+                *c.selection = group_unit(c.project, &[clip.id], true);
                 c.sel_transitions.clear();
             }
         }
@@ -2188,6 +2201,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         // click = whole link group, Alt+click = just this clip (the other way round with Linked Selection
         // off), Ctrl toggles the group, Shift adds it
         let group = if mods.alt == c.linked { vec![cid] } else { c.project.expand_links(&[cid]) };
+        // a clip group (Clip ▸ Group) comes along with a plain click; Alt+click still picks one clip
+        let group = if mods.alt { group } else { group_unit(c.project, &group, c.linked) };
         if mods.ctrl {
             if c.selection.contains(&cid) {
                 c.selection.retain(|x| !group.contains(x));

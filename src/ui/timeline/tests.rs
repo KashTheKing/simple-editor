@@ -1319,6 +1319,39 @@ fn headless_alt_click_selects_single_clip() {
     assert_eq!(h.selection, vec![vid], "Alt+click selects only the clicked clip");
 }
 
+/// ws:gap-group-sync: a click on any member of a clip group selects the group (with the A/V partners),
+/// Alt+click picks the one clip, and dragging an unselected member moves the whole group.
+#[test]
+fn group_click_selects_members_and_drag_moves_them() {
+    let mut h = Harness::new();
+    let (vid, aud) = (h.video_clip().id, h.audio_clip().id);
+    let t = h.project.new_id();
+    h.project.tracks[0].clips.push(Clip::new(t, ClipKind::Text, "title", 12.0, 2.0));
+    h.project.group_clips(&[vid, t]).unwrap();
+    h.frame(vec![]);
+    let lanes = h.state.lanes_rect;
+    let p = pos2(h.state.x_at(5.0), lanes.top() + 30.0);
+    h.press(p);
+    h.release(p);
+    h.frame(vec![]);
+    let mut sel = h.selection.clone();
+    sel.sort();
+    let mut want = vec![vid, aud, t];
+    want.sort();
+    assert_eq!(sel, want, "a click takes the whole group");
+    h.press_m(p, Modifiers::ALT);
+    h.release_m(p, Modifiers::ALT);
+    h.frame(vec![]);
+    assert_eq!(h.selection, vec![vid], "Alt+click picks one clip");
+    h.selection.clear();
+    h.frame(vec![]);
+    assert!(h.drag(p, p + vec2(40.0, 0.0)), "the drag moved something");
+    let d = h.project.clip(vid).unwrap().start;
+    assert!(d > 0.0, "moved right: {d}");
+    assert!((h.project.clip(t).unwrap().start - 12.0 - d).abs() < 1e-6, "the title came along");
+    assert!((h.project.clip(aud).unwrap().start - d).abs() < 1e-6, "and the audio");
+}
+
 /// AUDIT FIX regression test: the modifier table's Body/Shift row ("click = add link group to
 /// selection") had no matching code before this workstream - Shift+click was indistinguishable
 /// from a plain click. Confirms the fix and that Ctrl/plain click paths are unaffected.

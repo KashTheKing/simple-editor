@@ -663,6 +663,7 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 | `timeline.extend` | Mutate | side, t, to, track | Extend an edit point to a time (rolls a shared cut, ripple-trims a single side). |
 | `timeline.extract` | Mutate | a, b, tracks | Remove a range and close the gap (ripple tracks by default). |
 | `timeline.find` | Read | query | Search clip names, marker names/notes, subtitle cues and sequence names (case-insensitive substring). |
+| `timeline.group` | Mutate | clip_ids | Group clips (any tracks; their linked A/V partners too) so a click selects them all and they move, copy and delete together. Returns the group id. |
 | `timeline.import` | Read | path, replace | Import a timeline from another editor (FCP7 XML, EDL, .prproj); returns the report and opens it in the app (replace=true swaps the project in). |
 | `timeline.in_out` | Read | - | Current in_point/out_point (null if unset). |
 | `timeline.join` | Mutate | clip_id | Merge a clip with its right neighbour if contiguous/same asset. |
@@ -693,9 +694,11 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 | `timeline.snap_set` | Ui | enabled | Toggle snapping (mirrors the bare-S hotkey); not project data, no undo. |
 | `timeline.splice` | Mutate | asset_id, at, in, out, track | Insert edit: ripple-opens space then places the asset. |
 | `timeline.split` | Mutate | clip_ids, t | Split clips at t (all clips crossing t when clip_ids is omitted). |
+| `timeline.sync_audio` | Mutate | clip_ids | Line clips up by their sound (cross-correlation, as multicam sync). The first stays; the others move. Returns offset_s, moved_s and confidence per clip; under 0.4 nothing moves. |
 | `timeline.trim` | Mutate | clip_id, end, start | Trim a clip's edges to new timeline times. |
 | `timeline.trim_edges` | Mutate | dt, edges, ripple | Asymmetric multi-roller trim: every listed edge moves by the same dt, all-or-nothing. |
 | `timeline.trim_view` | Ui | on | Show/hide the dual-frame trim view (only actually paints once an edit point is also selected). |
+| `timeline.ungroup` | Mutate | clip_ids | Dissolve the groups the clips belong to. |
 | `timeline.unnest` | Mutate | clip_id | Flatten a Sequence clip back onto the timeline at its original positions. |
 | `timeline.view_preset` | Mutate | clip_text, keys, name, thumbs, waves | Get or set the active timeline view preset (row heights/element toggles). |
 | `timeline.zones` | Read | x, y | Debug hit-test: which arm.rs Zone a point would land on (Body/BodyBottom/Edge/Seam/Lane/RulerInOut/...). |

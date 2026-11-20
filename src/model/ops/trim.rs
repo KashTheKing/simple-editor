@@ -488,6 +488,17 @@ impl Project {
                 };
                 c.link = new_link;
             }
+            // a duplicated group is a new group of its own (shares the map: ids never collide)
+            if c.group != 0 {
+                c.group = match link_map.get(&c.group) {
+                    Some(&g) => g,
+                    None => {
+                        let g = self.new_id();
+                        link_map.insert(c.group, g);
+                        g
+                    }
+                };
+            }
             let kind = self.tracks[ti].kind;
             let target = self.find_free_track(kind, c.start, c.duration, Some(ti));
             new_ids.push(c.id);

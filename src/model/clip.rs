@@ -7,6 +7,10 @@ pub struct Clip {
     /// Clips sharing a non-zero link id move/split/delete together (video + its audio).
     #[serde(default)]
     pub link: Id,
+    /// Clips sharing a non-zero group id (any tracks) select, move, copy and delete together
+    /// (Clip ▸ Group). Unlike `link` it is a selection unit only: effects, speed and trims stay per clip.
+    #[serde(default, skip_serializing_if = "is_zero_link")]
+    pub group: Id,
     pub kind: ClipKind,
     /// True when this clip is a container (slot) whose media can be replaced without losing effects/transforms.
     #[serde(default)]
@@ -163,6 +167,7 @@ impl Clip {
         Self {
             id,
             link: 0,
+            group: 0,
             kind,
             container: false,
             container_label: String::new(),

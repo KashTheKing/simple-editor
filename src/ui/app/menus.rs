@@ -289,7 +289,8 @@ impl App {
         use Action::*;
         let has_sel = !self.selection.is_empty();
         acts_if(ui, !self.timeline_is_empty(), &[Some(Split)]);
-        acts_if(ui, has_sel, &[Some(DuplicateClips), Some(ToggleEnabled), Some(LinkToggle), None]);
+        acts_if(ui, has_sel, &[Some(DuplicateClips), Some(ToggleEnabled), Some(LinkToggle)]);
+        acts_if(ui, has_sel, &[Some(GroupClips), Some(UngroupClips), Some(SyncByAudio), None]); // ws:gap-group-sync
         acts_if(ui, has_sel, &[Some(Retime), Some(FreezeFrame), None]);
         menu::sub(ui, None, "Add", |ui| {
             acts(ui, &[Some(AddText), Some(AddShape), Some(AddAdjustment)]);

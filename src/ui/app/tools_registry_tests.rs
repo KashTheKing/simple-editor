@@ -52,6 +52,8 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("close_sequence", "sequence.open"),
     ("insert_sequence_clip", "timeline.add_clip"),
     ("nest_selection", "timeline.nest"),
+    ("group_clips", "timeline.group"), // ws:gap-group-sync
+    ("ungroup_clips", "timeline.ungroup"),
     ("add_shape_clip", "shapes.add"),
     ("add_container_clip", "container.add"),
     ("replace_container_media", "container.replace"),

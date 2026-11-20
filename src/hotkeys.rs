@@ -426,6 +426,11 @@ actions! {
     PrevTimeline => "prev_timeline", "Previous Timeline Tab", sc(CTRL_SHIFT, Key::Tab);
     NewTimeline => "new_timeline", "New Timeline Tab", None;
     CloseTimeline => "close_timeline", "Close Timeline Tab", None;
+    // ---- ws:gap-group-sync ----
+    // Clip groups (`Clip.group`) and audio sync (`ui::app::group_sync`)
+    GroupClips => "group", "Group", sc(CTRL, Key::G);
+    UngroupClips => "ungroup", "Ungroup", sc(CTRL_SHIFT, Key::G);
+    SyncByAudio => "sync_by_audio", "Sync by Audio", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -785,6 +790,8 @@ pub fn group(a: Action) -> &'static str {
         ResetPageLayout | ScreenSetup => "Panels & Pages",
         // ---- ws:timeline-tabs ----
         NextTimeline | PrevTimeline | NewTimeline | CloseTimeline => "Timeline",
+        // ---- ws:gap-group-sync ----
+        GroupClips | UngroupClips | SyncByAudio => "Clip",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

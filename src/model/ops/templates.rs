@@ -29,6 +29,7 @@ impl Project {
         }
         let layered = layers.len() == clips.len() && !clips.is_empty();
         let mut link_map: HashMap<Id, Id> = HashMap::new();
+        let mut group_map: HashMap<Id, Id> = HashMap::new();
         let mut ids: HashMap<Id, Id> = HashMap::new();
         let mut out = Vec::new();
         let mut pictures: Vec<(Id, Id)> = Vec::new(); // (link, sequence) of Sequence clips placed on video
@@ -48,6 +49,17 @@ impl Project {
                     nl
                 } else {
                     l
+                };
+            }
+            // a pasted group is a new group, not more members of the copied one
+            if c.group != 0 {
+                c.group = match group_map.get(&c.group) {
+                    Some(&g) => g,
+                    None => {
+                        let g = self.new_id();
+                        group_map.insert(c.group, g);
+                        g
+                    }
                 };
             }
             if c.uses_asset() && c.asset != 0 {
