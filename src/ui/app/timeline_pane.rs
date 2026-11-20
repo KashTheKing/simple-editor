@@ -107,6 +107,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         app.timeline.zoom_by(zoom / app.timeline.zoom, anchor);
     }
     app.timeline.show_kinds = app.settings.track_kinds();
+    // ws:forum-ui: Settings ▸ Appearance's playhead width
+    app.timeline.playhead_w = if app.settings.playhead_w > 0.0 { app.settings.playhead_w.clamp(1.0, 4.0) } else { 1.5 };
     // a Gallery card on its way over the lanes: measure the clip it would place, once per card (the hover ghost)
     if let Some(p) = egui::DragAndDrop::payload::<DragPayload>(ui.ctx()) {
         let key = format!("{p:?}");
@@ -211,6 +213,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     // ws:source-monitor: any press on the timeline (a clip select as much as a seek) means "the
     // timeline is the transport now" - Space/JKL/I/O come back here from the Source monitor
     // (was: drop the library preview on seek).
+    // ws:forum-ui: a resized track-name column is remembered
+    if let Some(w) = app.timeline.header_w_done.take() {
+        app.settings.timeline_header_w = w;
+        app.settings.save_async();
+    }
     if resp.seeked || source_pane::pressed_in(ui) {
         app.source_focus = false;
         // a Source tab stacked with the Preview gives way to it (after the draw: the tree is out)

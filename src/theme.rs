@@ -411,6 +411,19 @@ pub fn apply(ctx: &egui::Context, pref: &str, ov: &PaletteOverride, look: &str) 
     apply_visuals(ctx, pref, ov, look);
 }
 
+/// ws:forum-ui: Settings ▸ Appearance ▸ Clear borders - thicker, brighter lines between panels and
+/// around windows, for dark themes where panels blend together. Off leaves the theme's own strokes.
+pub fn clear_borders(ctx: &egui::Context, on: bool) {
+    if !on {
+        return;
+    }
+    ctx.all_styles_mut(|s| {
+        let line = s.visuals.widgets.noninteractive.fg_stroke.color.gamma_multiply(0.55);
+        s.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.5, line);
+        s.visuals.window_stroke = egui::Stroke::new(1.5, line);
+    });
+}
+
 /// `apply` without the font set: the player keeps its lighter `player_fonts`.
 pub fn apply_visuals(ctx: &egui::Context, pref: &str, ov: &PaletteOverride, look: &str) {
     ctx.options_mut(|o| o.zoom_with_keyboard = false);

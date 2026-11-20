@@ -111,6 +111,12 @@ const TICKS: [(f64, f64); 16] = [
     (3600.0, 600.0),
 ];
 
+/// ws:forum-ui: the track-name column's default width, also its minimum: room for about 10 characters
+/// of name beside the solo / lock / eye buttons.
+pub const HEADER_W: f32 = 150.0;
+/// The widest the track-name column can be dragged.
+pub const HEADER_MAX_W: f32 = 420.0;
+
 pub struct TimelineState {
     /// Pixels per second.
     pub zoom: f32,
@@ -177,6 +183,11 @@ pub struct TimelineState {
     pub show_kinds: (bool, bool),
     /// tools-panel: the Marker tool's press time while a drag is out - a range marker on release.
     marker_from: Option<f64>,
+    // ---- ws:forum-ui ----
+    /// The playhead line's width in points (Settings ▸ Appearance ▸ Playhead width; set by the pane).
+    pub playhead_w: f32,
+    /// The header column was just resized to this width (on release): the pane saves it to Settings.
+    pub header_w_done: Option<f32>,
     // ---- ws:mcp-context ----
     /// Clips an agent's undo group just changed, outlined at `flash_alpha` (faded by
     /// `ui::app::tools_context::tick`; 0 = nothing drawn).
@@ -190,7 +201,9 @@ impl Default for TimelineState {
             zoom: 40.0,
             scroll_x: 0.0,
             scroll_y: 0.0,
-            header_w: 150.0,
+            header_w: HEADER_W,
+            playhead_w: 1.5,
+            header_w_done: None,
             drag_len: 3.0,
             drag_key: String::new(),
             lanes_rect: egui::Rect::NOTHING,
@@ -827,6 +840,23 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     // multi-clip right-click "Effects" quick-toggle: only offered when 2+ selected clips share a kind
     let shared_effects = shared_effect_kinds(c.project, c.selection);
 
+    // ---- ws:forum-ui: drag the track-name column's right edge to resize it ----
+    {
+        let edge = Rect::from_min_max(pos2(header.right() - 5.0, header.top()), pos2(header.right() - 0.5, header.bottom()));
+        let r = ui
+            .interact(edge, id.with("header-resize"), Sense::drag())
+            .on_hover_cursor(CursorIcon::ResizeHorizontal)
+            .on_hover_text("Drag to widen the track names");
+        if r.dragged() {
+            state.header_w = (state.header_w + r.drag_delta().x).clamp(HEADER_W, HEADER_MAX_W);
+        }
+        if r.drag_stopped() {
+            state.header_w_done = Some(state.header_w);
+        }
+        if r.hovered() || r.dragged() {
+            painter.vline(header.right() - 0.5, header.y_range(), Stroke::new(2.0, pal.accent));
+        }
+    }
     // ---- rows ----
     let mut y = lanes.top() - state.scroll_y;
     for ti in row_order(c.project, state.show_kinds) {
@@ -1809,7 +1839,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
     let px = state.x_at(*c.playhead);
     if px >= lanes.left() - 1.0 && px <= lanes.right() + 1.0 {
         let pp = painter.with_clip_rect(Rect::from_min_max(ruler.min, lanes.max));
-        pp.vline(px, Rangef::new(ruler.top(), lanes.bottom()), Stroke::new(1.5, pal.playhead));
+        pp.vline(px, Rangef::new(ruler.top(), lanes.bottom()), Stroke::new(state.playhead_w, pal.playhead));
         pp.add(Shape::convex_polygon(
             vec![pos2(px - 5.0, ruler.top()), pos2(px + 5.0, ruler.top()), pos2(px, ruler.top() + 7.0)],
             pal.playhead,

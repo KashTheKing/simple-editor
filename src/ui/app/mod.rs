@@ -947,6 +947,7 @@ impl App {
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
         media::ytdlp::set_dir(&settings.ytdlp_dir);
         theme::apply(ctx, &settings.theme, &settings.palette, &settings.ui_look);
+        theme::clear_borders(ctx, settings.clear_borders); // ws:forum-ui
         crate::perf::startup_mark("app: theme + fonts");
         let backend = Backend::parse(&settings.decoder);
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
@@ -1215,6 +1216,11 @@ impl App {
         crate::perf::startup_mark("app: presets");
         app.player.set_project(&app.project);
         app.gallery = crate::ui::gallery::GalleryState::from_settings(&app.settings); // ws:gallery-audio
+        // ws:forum-ui: the track-name column keeps the width it was dragged to
+        if app.settings.timeline_header_w > 0.0 {
+            let (lo, hi) = (timeline::HEADER_W, timeline::HEADER_MAX_W);
+            app.timeline.header_w = app.settings.timeline_header_w.clamp(lo, hi);
+        }
         crate::perf::startup_mark("app: built");
         app
     }
