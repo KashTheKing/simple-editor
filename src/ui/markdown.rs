@@ -246,6 +246,8 @@ pub fn plain(src: &str) -> String {
 /// (already palette-derived) visuals, same as a plain `ui.label`.
 pub fn show(ui: &mut egui::Ui, src: &str, palette: &Palette) {
     for block in parse(src) {
+        // ws:zones-markers: `show_timed` turns timecodes in the text into playhead links
+        let block = if TIMED.with(|t| t.get()) { timed_block(block) } else { block };
         match block {
             Block::Heading(level, spans) => {
                 let size = match level {
@@ -296,6 +298,49 @@ pub fn show(ui: &mut egui::Ui, src: &str, palette: &Palette) {
     }
 }
 
+// ---- ws:zones-markers ----
+thread_local! {
+    static TIMED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `show`, with every timecode in the text (1:23, 01:02:03, 1:23.5) as a link that moves the playhead
+/// (`ui::timecode_links`). Project notes use it.
+pub fn show_timed(ui: &mut egui::Ui, src: &str, palette: &Palette) {
+    TIMED.with(|t| t.set(true));
+    show(ui, src, palette);
+    TIMED.with(|t| t.set(false));
+}
+
+/// Plain runs split around their timecodes, each timecode a `seek:` link.
+fn timed_spans(spans: Vec<Span>) -> Vec<Span> {
+    use crate::ui::timecode_links::{pieces, SEEK_SCHEME};
+    let mut out = Vec::new();
+    for s in spans {
+        match s {
+            Span::Plain(t) => {
+                for (piece, at) in pieces(&t) {
+                    out.push(match at {
+                        Some(sec) => Span::Link(piece.to_string(), format!("{SEEK_SCHEME}{sec}")),
+                        None => Span::Plain(piece.to_string()),
+                    });
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn timed_block(b: Block) -> Block {
+    match b {
+        Block::Heading(l, s) => Block::Heading(l, timed_spans(s)),
+        Block::Paragraph(s) => Block::Paragraph(timed_spans(s)),
+        Block::BulletList(items) => Block::BulletList(items.into_iter().map(timed_spans).collect()),
+        Block::Numbered(items) => Block::Numbered(items.into_iter().map(|(n, s)| (n, timed_spans(s))).collect()),
+        other => other,
+    }
+}
+
 fn show_spans(ui: &mut egui::Ui, spans: &[Span], size: f32, heading: bool) {
     // no links: one label, so a selection copies exactly what was selected and words keep their own
     // spacing (one label per span left a gap around every bold or code word)
@@ -332,11 +377,16 @@ fn show_spans(ui: &mut egui::Ui, spans: &[Span], size: f32, heading: bool) {
             Span::Italic(t) => ui.label(base(t).italics()),
             Span::Code(t) => ui.label(base(t).monospace().background_color(ui.visuals().extreme_bg_color)),
             Span::Link(text, url) => {
-                let r = ui.link(base(text));
-                if r.clicked() {
-                    crate::engine::browsers::open_url(url);
+                // ws:zones-markers: a timecode link moves the playhead instead of opening a page
+                if let Some(t) = url.strip_prefix(crate::ui::timecode_links::SEEK_SCHEME).and_then(|t| t.parse().ok()) {
+                    crate::ui::timecode_links::link(ui, base(text), t)
+                } else {
+                    let r = ui.link(base(text));
+                    if r.clicked() {
+                        crate::engine::browsers::open_url(url);
+                    }
+                    r
                 }
-                r
             }
         };
     }

@@ -428,6 +428,9 @@ pub fn find_problem(
     text: &Arc<Mutex<TextRasterizer>>,
     prog: &Progress,
 ) -> Result<Option<Culprit>, String> {
+    // the remembered project is the undrawn one: draw zones + browser zooms as start_export does
+    let drawn = crate::engine::zones::drawn(project);
+    let project = &drawn;
     let span = opts.range.unwrap_or((0.0, project.duration()));
     let segs = segments(project, span);
     let dir = std::env::temp_dir().join(format!("simple-editor-find-problem-{}", std::process::id()));

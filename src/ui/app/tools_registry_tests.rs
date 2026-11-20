@@ -145,6 +145,13 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("add_span", "animate.span_add"),
     ("remove_span", "animate.span_remove"),
     ("refresh_spans", "animate.span_set"),
+    // ---- ws:zones-markers ----
+    ("add_zone", "zones.add"),
+    ("remove_zone", "zones.remove"),
+    ("set_zone_range", "zones.set"),
+    ("set_marker_category", "markers.set"),
+    ("add_marker_category", "markers.category_set"),
+    ("edit_marker_category", "markers.category_set"),
     ("trim_clip", "timeline.trim"),
     ("block_from_keys", "keyblocks.from_keys"),
     ("convert_keys_to_blocks", "keyblocks.convert_all"),
@@ -194,6 +201,7 @@ const OP_INTERNAL: &[(&str, &str)] = &[
     ("snap_marker_to_nearest_clip", "UI-only marker-drag snapping, not a tool argument"),
     ("link_marker_to_closest_clip", "UI-only marker-drag snapping, not a tool argument"),
     ("marker_mut", "accessor; edits go through markers.add/markers.remove"),
+    ("zone_mut", "accessor; edits go through zones.set"), // ws:zones-markers
     ("sort_markers", "internal bookkeeping, not a user edit"),
     ("add_path", "Draw-tool / motion-path capture is UI-only, no MCP tool"),
     ("apply_path", "Draw-tool / motion-path capture is UI-only, no MCP tool"),
@@ -254,6 +262,7 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/sequences.rs"),
     include_str!("../../model/ops/shapes.rs"),
     include_str!("../../model/ops/spans.rs"), // ws:animator
+    include_str!("../../model/ops/zones.rs"), // ws:zones-markers
     include_str!("../../model/ops/subtitles.rs"),
     include_str!("../../model/ops/templates.rs"),
     include_str!("../../model/ops/timeremap.rs"), // ws:time-remap

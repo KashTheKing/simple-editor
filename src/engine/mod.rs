@@ -8,6 +8,8 @@ pub mod bg_probe; // ws:page-switch-freeze: a probe worked out off the UI thread
 pub mod blend;
 // ---- ws:browser-layer ----
 pub mod browser;
+pub mod zones; // ws:zones-markers
+pub mod sections; // ws:zones-markers: export between markers
 pub mod browsers; // the user's web browser (default or picked in Settings)
 pub mod cache_lru;
 pub mod cache_move; // Settings ▸ General ▸ Cache folder

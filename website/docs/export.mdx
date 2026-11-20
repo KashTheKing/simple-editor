@@ -153,6 +153,17 @@ A failed export says what went wrong in one sentence, with one button that fixes
 - When an export finishes, its message has **Play**, which opens the file in your media player.
 
 The assistant can do the same: `export.diagnose`, `export.find_problem` and `export.retry_software`.
+## Export each section
+
+Cut a video into parts at its markers and export every part on its own: **Export each section** under the
+Export panel's settings (also **Export Each Section…** in the command palette) asks for a folder and puts one
+job per section on the render queue (the Jobs panel beside it shows them), with the Export panel's settings.
+
+- A section runs from one marker to the next and is named after the marker it starts at: the files are
+  called **&lt;project&gt; - &lt;marker name&gt;**. Whatever comes before the first marker is **Start**.
+- With In / Out set, only that range is cut into sections.
+- A marker with a length (a range marker) is a section of its own.
+- Two sections with the same name get a number (**Take**, **Take 2**).
 
 ## Quick Export
 

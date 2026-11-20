@@ -61,6 +61,28 @@ applied. Each row is a grip, a checkbox and the effect's name:
 **Adjustment layers** (**Clip ▸ Add ▸ Add Adjustment Layer**, <kbd>Ctrl+Alt+L</kbd>) are empty clips whose
 effects apply to everything below them on the timeline, for as long as the layer lasts.
 
+### Effect zones
+
+An **effect zone** is an effect stack laid over a stretch of time instead of on one clip: grade or blur
+everything from 0:30 to 0:45, whatever clips are there. A zone covers either the **whole timeline** (every track
+below it, like an adjustment layer that never gets in the way of your clips) or **one track** (just that track's
+clips).
+
+- **Add one**: right-click the ruler ▸ **Add Effect Zone** (the whole timeline), right-click a video track's header ▸
+  **Add Effect Zone** (that track), or **Add Effect Zone** in the command palette. It covers the In/Out range,
+  else the selected clips, else five seconds from the playhead.
+- It shows as a bar in the **Zones** lane above the tracks: teal over the whole timeline, violet on one track
+  (its name is on the bar). Overlapping zones stack.
+- **Drag the bar** to move it, **drag an end** to make it longer or shorter (both snap like clips), and
+  **double-click** it to jump to its start.
+- **Click it** and the Inspector shows its card: name, **Applies to** (whole timeline or a track), **From**,
+  **Length**, **On**, and its effects, with **Add effect** and the same stack as a clip's (reorder, masks,
+  keyframes with **◆**; keyframe times count from the zone's start).
+- **Right-click the bar** for **Applies to**, **On** and **Delete Zone**.
+
+Zones play, export and pre-render through the same effect path as clips, so they cost no more than the same
+effects on clips would.
+
 ## Transitions
 
 ![The Gallery's Transitions tab](/img/tutorial/transitions.png)

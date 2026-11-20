@@ -436,6 +436,16 @@ actions! {
     GroupClips => "group", "Group", sc(CTRL, Key::G);
     UngroupClips => "ungroup", "Ungroup", sc(CTRL_SHIFT, Key::G);
     SyncByAudio => "sync_by_audio", "Sync by Audio", None;
+    // ---- ws:zones-markers ----
+    // Step through the markers of the Markers pane's category (all of them while it shows them all), the
+    // way Up / Down step through cuts.
+    NextMarker => "next_marker", "Next Marker", sc(SHIFT, Key::ArrowDown);
+    PrevMarker => "prev_marker", "Previous Marker", sc(SHIFT, Key::ArrowUp);
+    // An empty effect zone over In/Out (else the selected clips, else 5 s from the playhead), picked so the
+    // Inspector shows it. Unbound by design.
+    AddEffectZone => "add_effect_zone", "Add Effect Zone", None;
+    // One export job per section between markers, named "<project> - <marker>". Unbound by design.
+    ExportSections => "export_sections", "Export Each Section…", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -798,6 +808,10 @@ pub fn group(a: Action) -> &'static str {
         NextTimeline | PrevTimeline | NewTimeline | CloseTimeline => "Timeline",
         // ---- ws:gap-group-sync ----
         GroupClips | UngroupClips | SyncByAudio => "Clip",
+        // ---- ws:zones-markers ----
+        NextMarker | PrevMarker => "Marking",
+        AddEffectZone => "Add",
+        ExportSections => "File",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

@@ -55,6 +55,18 @@
 
 ### Editing
 - **Time remapping**: speed keys on a clip for smooth speed ramps, freeze holds and stretches that play backwards then forwards again, in the Inspector's new Time Remap section and the Animator's Speed view. Changing a segment's speed or length changes the clip's length and moves the rest of its track; a linked picture and sound change together. The sound follows the speed and is silent in holds and backward stretches. `clip.time_remap` over MCP.
+### Timeline and markers
+- **Effect zones**: an effect stack over a time range of one track or of the whole timeline (grade or blur everything from 0:30 to 0:45), shown as a bar in a Zones lane above the tracks. Drag it to move it, drag its ends to resize it, click it to edit its effects in the Inspector (keyframes too). It plays, exports and pre-renders like any effect. Add one from the ruler's or a track header's right-click menu, or Add Effect Zone in the command palette.
+- **Marker categories**: Todo, Fix, Music cue, B-roll, Chapter and Review, each with a colour, plus your own. Set one from a marker's right-click menu (on the timeline or in the Markers panel) or its row in the Markers panel; the panel filters by category, and **Next / Previous Marker** (<kbd>Shift+Down</kbd> / <kbd>Shift+Up</kbd>) step through the category it shows. Older projects open with their markers uncategorised.
+- **Range markers on the ruler**: drag either end of a marker with a length to change it; drag a row from the Markers panel onto the timeline to put that marker there.
+- **Timecodes you can click**: a time like 1:23, 01:02:03 or 1:23.5 in a project note or a marker's note is a link that moves the playhead there.
+
+### Export
+- **Export each section**: one file per section between markers (inside In/Out when set; a marker with a length is a section of its own), named "&lt;project&gt; - &lt;marker name&gt;", all on the render queue. In the Export panel and the command palette.
+
+### Assistant and MCP
+- `zones.add` / `zones.set` / `zones.remove` / `zones.list`, `markers.categories` / `markers.category_set`, `export.sections`; `markers.add` / `markers.set` / `markers.list` take a `category`; `notes.get` lists the timecodes in the notes.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

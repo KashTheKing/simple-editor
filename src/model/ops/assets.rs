@@ -76,6 +76,9 @@ impl Project {
             color: ColorSpace::Sdr,
             // ---- ws:timeline-tabs ----
             timeline_tabs: Vec::new(),
+            // ---- ws:zones-markers ----
+            marker_categories: default_marker_categories(),
+            zones: Vec::new(),
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);

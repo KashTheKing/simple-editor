@@ -674,10 +674,12 @@ const MIX_BLOCK: usize = 1024;
 /// Audio-only extensions (mp3, wav, m4a, flac, ogg, aac, opus) skip video (`-vn`); gif skips audio.
 pub fn start_export(project: Project, opts: ExportOptions, text: Arc<Mutex<TextRasterizer>>) -> Arc<Progress> {
     // browser zooms: the page parts drawn at the scale they are shown at (not project clips)
-    let project = crate::engine::browser::render_view(&project).into_owned();
+    // ws:zones-markers: zones::drawn = zones + browser::render_view. The doctor keeps the project as asked for
+    // (a retry re-runs start_export; find_problem draws it itself), since drawing zones twice doubles them.
+    let drawn = crate::engine::zones::drawn(&project);
     let prog = spawn_job("export", {
-        let (project, opts) = (project.clone(), opts.clone());
-        move |prog| run_export(&project, &opts, &text, prog)
+        let opts = opts.clone();
+        move |prog| run_export(&drawn, &opts, &text, prog)
     });
     crate::engine::export_doctor::remember(&prog, project, opts); // ws:forum-export
     prog

@@ -86,7 +86,20 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 app.project.plan_remove(id);
                 Ok(json!({"ok": true}))
             }
-            "notes.get" => Ok(json!({"notes": app.project.notes})),
+            // ws:zones-markers: + the timecodes in each note (what the notes pane shows as links)
+            "notes.get" => {
+                let tc: Vec<Value> = app
+                    .project
+                    .notes
+                    .iter()
+                    .flat_map(|n| {
+                        crate::ui::timecode_links::find(&n.body)
+                            .into_iter()
+                            .map(move |(r, t)| json!({"note": n.id, "text": &n.body[r], "t": t}))
+                    })
+                    .collect();
+                Ok(json!({"notes": app.project.notes, "timecodes": tc}))
+            }
             // `notes` is now a titled list (see the planner's Notes tab); this tool predates that and
             // keeps working against the first note (creating an untitled one if there isn't one yet).
             "notes.set" => {
@@ -112,13 +125,18 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 let row = |m: &crate::model::Marker, offset: f64, clip: Option<Id>| -> Value {
                     json!({"id": m.id, "t": offset + m.t, "duration": m.duration, "name": m.name,
                            "note": m.note, "icon": m.icon, "done": m.done, "author": m.author,
-                           "label": m.label, "label_name": p.label_name(m.label), "clip_id": clip})
+                           "label": m.label, "label_name": p.label_name(m.label), "clip_id": clip,
+                           "category": m.category}) // ws:zones-markers
                 };
                 let mut list: Vec<(f64, Value)> = p.markers.iter().map(|m| (m.t, row(m, 0.0, None))).collect();
                 for (_, c) in p.all_clips() {
                     list.extend(c.markers.iter().map(|m| (c.start + m.t, row(m, c.start, Some(c.id)))));
                 }
                 list.retain(|(_, v)| !open_only || (v["done"] == false && v["note"] != ""));
+                // ws:zones-markers: one category ("" = uncategorised ones)
+                if let Some(c) = arg_str(args, "category") {
+                    list.retain(|(_, v)| v["category"].as_str().is_some_and(|x| x.eq_ignore_ascii_case(c)));
+                }
                 list.sort_by(|a, b| a.0.total_cmp(&b.0));
                 Ok(json!(list.into_iter().map(|(_, v)| v).collect::<Vec<_>>()))
             }
@@ -131,6 +149,9 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 }
                 let m = app.project.marker_mut(id).ok_or("no such marker")?;
                 apply_marker_patch(m, args);
+                if let Some(c) = arg_str(args, "category") {
+                    app.project.set_marker_category(id, c); // ws:zones-markers
+                }
                 app.project.sort_markers();
                 Ok(json!({"ok": true, "id": id}))
             }
@@ -158,6 +179,9 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     if let Some(a) = arg_str(args, "author") {
                         m.author = a.to_string();
                     }
+                }
+                if let Some(c) = arg_str(args, "category") {
+                    app.project.set_marker_category(id, c); // ws:zones-markers
                 }
                 app.fire_markers_added(&[id]);
                 Ok(json!({"ok": true, "id": id}))
@@ -276,7 +300,7 @@ pub const TOOLS: &[ToolDef] = &[
         &["id:integer:true:", "title:string:false:", "done:boolean:false:", "notes:string:false:"]
     ),
     row!("plan.remove", ToolKind::Mutate, "Remove a planner item.", &["id:integer:true:"]),
-    row!("notes.get", ToolKind::Read, "Free-form project notes.", &[]),
+    row!("notes.get", ToolKind::Read, "Free-form project notes, plus the timecodes in them (1:23, 01:02:03, 1:23.5) in seconds.", &[]),
     row!(
         "notes.set",
         ToolKind::Mutate,
@@ -290,7 +314,7 @@ pub const TOOLS: &[ToolDef] = &[
         ToolKind::Read,
         "Every marker in timeline time (project markers + clip markers) with name, note, icon, done, author \
          (\"\" = the user). Markers with notes are the user's review comments.",
-        &["open:boolean:false:only open comments (not done, with a note)"]
+        &["open:boolean:false:only open comments (not done, with a note)", "category:string:false:only this marker type (\"\" = uncategorised)"]
     ),
     row!(
         "markers.add",
@@ -303,7 +327,8 @@ pub const TOOLS: &[ToolDef] = &[
             "label:integer:false:",
             "duration:number:false:range markers",
             "clip_id:integer:false:",
-            "author:string:false:your name, so the user sees who left it"
+            "author:string:false:your name, so the user sees who left it",
+            "category:string:false:marker type (markers.categories); a new name adds one"
         ]
     ),
     row!(
@@ -319,7 +344,8 @@ pub const TOOLS: &[ToolDef] = &[
             "icon:string:false:glyph name",
             "label:integer:false:",
             "done:boolean:false:",
-            "author:string:false:"
+            "author:string:false:",
+            "category:string:false:marker type; \"\" = none, a new name adds one"
         ]
     ),
     row!("markers.remove", ToolKind::Mutate, "Remove a marker by id.", &["id:integer:true:"]),
