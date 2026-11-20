@@ -938,3 +938,39 @@ A button that opens a panel/pane/window (e.g. the top-right Performance button) 
   SE_MCP_FULL_ACCESS=0 (+ assistant_guard false so `act settings` doesn't wait for an Allow).
 - Pass -Only as an array (`-Command "& .\scripts\docs-shots.ps1 -Only @('a','b')"`); with -File it arrives as one
   string and nothing matches. Windows can keep demo media open after a run: use a fresh -Work if it can't be wiped.
+
+## Page-switch freeze (2026-11-19, claude/fix-page-switch-freeze)
+- User report: clicking a page (Audio) sometimes froze the editor. Three blocking reads on the UI thread:
+  the Voiceover pane's first draw ran `ffmpeg -list_devices -f dshow` (4.7-16 s on this machine), the Export
+  pane's first draw ran `ffmpeg -encoders` (2.4-3.1 s), and the Inspector (Asset section) plus every Library
+  row stat'ed the source file each frame (`proxy::needs_proxy`, 30-90 ms under disk load).
+- Fix: `engine::bg_probe::BgProbe` (answer or start-once-and-None), `capture::audio_devices_nonblocking`,
+  `export::encoders_nonblocking` (+ `forget_encoders` on an ffmpeg folder change), warmed on the first frame
+  (`panes::warm_probes`); `proxy::file_len` = one stat worker + a 30 s cache. Regression test:
+  `audio_page_first_draw_does_no_blocking_probe` (no UI code calls the blocking probes).
+- Also on every switch: `switch_page` wrote settings.json on the UI thread (40-300 ms on a busy disk). It uses
+  `Settings::save_async` now (snapshot, write on a thread, newest save wins by a generation number, one lock
+  around write+rename; `Settings::save_pending` -> a sync `save` when the window closes). The other ~110
+  `settings.save()` callers are still synchronous - a candidate for the same treatment.
+- `SE_FRAME_TRACE=<ms>` (perf.rs): every UI frame slower than <ms> goes to stderr (from a writer thread)
+  with cumulative section marks (@hooks/@pre-layout/@layout/@acts/@windows) and each pane over 1 ms, plus
+  "frame gap" lines with eframe's update+paint for the previous frame. Writing the lines on the UI thread
+  showed up as fake 0.5 s hitches while cargo hammered the disk - keep the writer thread.
+- Measuring through MCP on a loaded machine: `layout.page` round-trips of 1-25 s were idle time (HTTP), not UI
+  work - read the trace, not the call time.
+
+## 2026-11-19 TikTok / Snapchat text (claude/feat-social-text-styles-4016d6)
+- `TextStyle.box_mode` (BOX_BLOCK / BOX_LINES / BOX_BAR) + `box_radius`, both `#[serde(default)]` (old files = one
+  square block, as before). The box is a coverage mask (`engine::text::box_mask`) drawn in the rasterizer, so the
+  cached bitmap carries it and preview (CPU + GPU via `playback::layer_for`), export, proxies and thumbnails all get it.
+- BOX_LINES: `line_boxes` gives one rounded rect per line plus concave quarter-circle fillets where widths step;
+  neighbours meet on a whole-pixel row (no AA seam). Radius and fillet split the width step (each <= half of it).
+- BOX_BAR: needs the frame width, so `TextRasterizer::render_in(style, scale, t, frame_w)` (cache key gains the width
+  only for bars). Callers pass `compose::text_frame_w(clip, lt, canvas_w)` (canvas width / the clip's x scale);
+  `placement_w` centres a bar and drops rotation; the Preview drag keeps x for a bar. Subtitles pass the canvas width.
+- Fonts bundled for the first time: `assets/fonts/` TikTok Sans + Inter, static Bold Latin subsets (~46 + 50 KB)
+  made with fontTools instancer + subset from the Google Fonts variable files (OFL 1.1, no Reserved Font Name);
+  `TextRasterizer::load_system_fonts` registers them first. ~96 KB of exe: over the +64 KB line, needs the release
+  PR's size note.
+- `reveal_bucket` now clamps t to the reveal's key range, so a typewriter stops re-rasterising after its last key.
+- `SE_SOCIAL_SHOTS=<dir> cargo test each_social_preset_renders_its_look` dumps a PPM of every preset (over grey).

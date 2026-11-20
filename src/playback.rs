@@ -1600,7 +1600,7 @@ fn dropped_delta(prev_idx: i64, idx: i64, rate: f64) -> u64 {
 /// None = the change can affect any frame (or is too entangled to bound): clear everything.
 /// Edits that cannot change pixels (markers, in/out points, audio tracks, buses, planner, notes,
 /// labels, folders) produce no spans at all - the whole cache survives them.
-fn video_dirty_spans(old: &Project, new: &Project) -> Option<Vec<(f64, f64)>> {
+pub(crate) fn video_dirty_spans(old: &Project, new: &Project) -> Option<Vec<(f64, f64)>> {
     // serde_json string equality instead of a PartialEq derive cascade across the whole model
     fn json<T: serde::Serialize>(v: &T) -> String {
         serde_json::to_string(v).unwrap_or_default()
@@ -1613,7 +1613,7 @@ fn video_dirty_spans(old: &Project, new: &Project) -> Option<Vec<(f64, f64)>> {
         || json(&old.scaler) != json(&new.scaler)
         || old.show_subtitles != new.show_subtitles
         || old.tracks.len() != new.tracks.len()
-        || json(&old.assets) != json(&new.assets)
+        || old.assets != new.assets // (field compare: serialising megabytes of HTML sources took ms per edit)
         || json(&old.sequences) != json(&new.sequences)
     {
         return None;
@@ -2004,7 +2004,7 @@ fn layers_with(
         style.text = cue_text.into_owned();
         // ---- ws:text-titles ----: `t` here is decode_layers' own timeline time (subtitles have no
         // clip-local time of their own - see compose.rs's identical call for the same reasoning).
-        let img = text.with(|tx| tx.render(&style, w as f32 / project.width.max(1) as f32, t));
+        let img = text.with(|tx| tx.render_in(&style, w as f32 / project.width.max(1) as f32, t, w as f32));
         if img.width > 1 || img.height > 1 {
             set.layers.push((LayerSet::SUBTITLES, img));
         }
@@ -2287,7 +2287,10 @@ fn layer_for<'p>(
         }
         ClipKind::Text => {
             let Some(style) = &clip.text else { return };
-            let img = text.with(|tx| tx.render(style, sv, clip.local(t)));
+            let lt = clip.local(t);
+            // a caption bar spans the frame at the drawn (boosted) size: `sv / s` canvases wide
+            let fw = crate::engine::compose::text_frame_w(clip, lt, w as f32 * sv / s.max(1e-6));
+            let img = text.with(|tx| tx.render_in(style, sv, lt, fw));
             if img.width > 1 || img.height > 1 {
                 set.layers.push((clip.id, img));
             }

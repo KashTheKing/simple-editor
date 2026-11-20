@@ -29,13 +29,13 @@ pub mod gallery_filter;
 pub mod guides;
 pub mod social;
 pub mod emulator; // ws:device-emulator
-pub mod experimental; // the Experimental badge
 pub mod history_ui;
 pub mod spiky_ball;
 pub mod visualizer_ui; // ws:audio-visualizer
 pub mod audio_card; // ws:audio-visualizer
 // ---- ws:layout-modes-onboarding ----
 pub mod home;
+pub mod home_page; // ws:home-page
 pub mod hud; // ws:perf-baseline
 pub mod perf_ui; // ws:perf-window
 pub mod import_ui;

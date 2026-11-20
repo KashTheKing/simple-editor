@@ -7,7 +7,12 @@ impl App {
             return;
         }
         self.panes_drawing.push(pane);
-        if guarded(|| self.draw_pane_inner(ui, pane)).is_none() {
+        let t = Instant::now();
+        let ok = guarded(|| self.draw_pane_inner(ui, pane)).is_some();
+        if crate::perf::frame_trace_on().is_some() {
+            crate::perf::frame_trace(format!("{pane:?}"), t); // ws:page-switch-freeze
+        }
+        if !ok {
             self.failed_panes.push(pane);
             self.toast(format!("{} failed to draw - the pane is disabled for this session", pane.title()));
         }
@@ -335,4 +340,23 @@ mod tests {
         let draw = include_str!("panes.rs");
         assert!(draw.contains("self.panes_drawing.push(pane);"), "draw_pane records what it drew");
     }
+}
+
+// ---- ws:page-switch-freeze ----
+/// The UI's context, for background probes to repaint it when they land (`wake_ui`).
+static UI_CTX: std::sync::OnceLock<egui::Context> = std::sync::OnceLock::new();
+pub(super) fn wake_ui() {
+    if let Some(c) = UI_CTX.get() {
+        c.request_repaint();
+    }
+}
+/// First frame: start the slow child-process probes in the background, so the first visit to the Audio
+/// page (Voiceover: the microphone list) or the Export page (the encoder list) finds them ready.
+pub(super) fn warm_probes(ctx: &egui::Context) {
+    let _ = UI_CTX.set(ctx.clone());
+    if cfg!(test) {
+        return; // headless tests never spawn ffmpeg for a pane they don't draw
+    }
+    let _ = crate::engine::capture::audio_devices_nonblocking(wake_ui);
+    let _ = export::encoders_nonblocking(wake_ui);
 }

@@ -112,6 +112,18 @@ fn placement_w(pw: u32, clip: &Clip, t: f64, native: (u32, u32), cw: u32, ch: u3
     let k = clip.scale.at(lt) as f32;
     let kx = clip.scale_x.at(lt) as f32;
     let ky = clip.scale_y.at(lt) as f32;
+    if is_bar(clip) {
+        // a caption bar spans the frame: centred, never rotated; only its height moves
+        return Placement {
+            cx: cw as f32 / 2.0,
+            cy: ch as f32 / 2.0 + clip.y.at(lt) as f32 * s,
+            w: nw * fit * k * kx,
+            h: nh * fit * k * ky,
+            rot: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+        };
+    }
     Placement {
         cx: cw as f32 / 2.0 + clip.x.at(lt) as f32 * s,
         cy: ch as f32 / 2.0 + clip.y.at(lt) as f32 * s,
@@ -123,7 +135,27 @@ fn placement_w(pw: u32, clip: &Clip, t: f64, native: (u32, u32), cw: u32, ch: u3
     }
 }
 
-/// The size a layer is decoded at: the smallest of a few fixed fractions of the decoder's own
+/// A Text clip drawn as a full-width caption bar (`TextStyle::is_bar`).
+pub fn is_bar(clip: &Clip) -> bool {
+    clip.kind == ClipKind::Text && clip.text.as_ref().is_some_and(|s| s.is_bar())
+}
+
+/// The frame width, in the text bitmap's own px, that a caption bar must span on a `cw`-px-wide
+/// canvas: the canvas width undone by the clip's horizontal scale (the placement scales it back up),
+/// so the bar is exactly the frame's width whatever the aspect ratio or scale. 0 for other clips.
+pub fn text_frame_w(clip: &Clip, lt: f64, cw: f32) -> f32 {
+    if !is_bar(clip) {
+        return 0.0;
+    }
+    let k = (clip.scale.at(lt) * clip.scale_x.at(lt)) as f32;
+    if k.abs() > 1e-3 {
+        cw / k.abs()
+    } else {
+        cw
+    }
+}
+
+/// The size a layer is decoded at:the smallest of a few fixed fractions of the decoder's own
 /// size `src` that covers the `need`ed placement (all of `src` when nothing does) - halvings for a
 /// still, eighths for video. The renderer scales a layer to its quad whatever size the bitmap is,
 /// so it need not match the placement pixel for pixel, and must not: a keyframed scale (a pop-in,
@@ -185,6 +217,7 @@ pub fn covers(project: &Project, clip: &Clip, t: f64, w: u32, h: u32) -> bool {
         || clip.bg_removal.is_some() // ws:addon-bg-removal: keyed, so see-through
         || effects::effects_for(project, clip).iter().any(|e| e.enabled)
         || clip.opacity.at(lt) * clip.fade_mult(lt) < 1.0
+        || clip.crop_at(lt) != NO_CROP
     {
         return false;
     }
@@ -315,7 +348,7 @@ impl Compositor {
             let s = w as f32 / project.width.max(1) as f32;
             // ---- ws:text-titles ----: t here is the top-level render() timeline time, not clip-local -
             // subtitles have no clip to be local to, and the burnt-in style has no reveal/wave UI anyway.
-            let img = text.render(&self.sub_style, s, t);
+            let img = text.render_in(&self.sub_style, s, t, w as f32);
             if img.width > 1 || img.height > 1 {
                 let sv = h as f32 / project.height.max(1) as f32;
                 let p = Placement {
@@ -524,7 +557,7 @@ impl Compositor {
                         draw_layer(out, win, plan.window, n, opacity, sc, &mut self.layer);
                     }
                     mask_coverage(&plan.mask, w, h, 0.0, 1.0, crate::engine::browser::MASK_ORIGIN, &mut self.cov);
-                    draw_layer_masked(out, &page, plan.page, n, opacity, sc, &mut self.layer, Some(&self.cov));
+                    draw_layer_masked(out, &page, plan.page, n, opacity, sc, &mut self.layer, Some(&self.cov), NO_CROP);
                     self.page = page;
                 } else if let (Some(bar), Some(p)) = (&l.bg, plan.load_bar(b, lt, s)) {
                     draw_layer(out, bar, p, n, opacity, Scaler::Nearest, &mut self.layer);
@@ -641,11 +674,12 @@ impl Compositor {
                 p.cx += extra.dx;
                 p.cy += extra.dy;
                 let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
-                draw_layer_masked(out, &self.src, p, clip.blend, opacity, project.scaler, &mut self.layer, m);
+                let crop = clip.crop_at(lt);
+                draw_layer_masked(out, &self.src, p, clip.blend, opacity, project.scaler, &mut self.layer, m, crop);
             }
             ClipKind::Text => {
                 let Some(style) = &clip.text else { return };
-                let img = text.render(style, s, lt);
+                let img = text.render_in(style, s, lt, text_frame_w(clip, lt, w as f32));
                 let native = (img.width, img.height);
                 self.draw_bitmap(project, pw, clip, &img, native, t, w, h, out, extra, opacity);
             }
@@ -700,7 +734,8 @@ impl Compositor {
                 p.cx += extra.dx;
                 p.cy += extra.dy;
                 let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
-                draw_layer_masked(out, &nested, p, clip.blend, opacity, project.scaler, &mut self.layer, m);
+                let crop = clip.crop_at(lt);
+                draw_layer_masked(out, &nested, p, clip.blend, opacity, project.scaler, &mut self.layer, m, crop);
                 self.seq[depth] = nested;
             }
             ClipKind::Audio => {}
@@ -738,12 +773,14 @@ impl Compositor {
             p.cx += extra.dx;
             p.cy += extra.dy;
             let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
-            draw_layer_masked(out, &self.src, p, clip.blend, opacity, project.scaler, &mut self.layer, m);
+            let crop = clip.crop_at(lt);
+            draw_layer_masked(out, &self.src, p, clip.blend, opacity, project.scaler, &mut self.layer, m, crop);
         } else {
             p.cx += extra.dx;
             p.cy += extra.dy;
             let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
-            draw_layer_masked(out, img, p, clip.blend, opacity, project.scaler, &mut self.layer, m);
+            let crop = clip.crop_at(lt);
+            draw_layer_masked(out, img, p, clip.blend, opacity, project.scaler, &mut self.layer, m, crop);
         }
     }
 }
@@ -1042,11 +1079,16 @@ pub fn draw_layer(
     scaler: Scaler,
     scratch: &mut Frame,
 ) {
-    draw_layer_masked(dst, src, p, mode, opacity, scaler, scratch, None);
+    draw_layer_masked(dst, src, p, mode, opacity, scaler, scratch, None, NO_CROP);
 }
 
+/// No built-in crop (left, right, top, bottom).
+pub const NO_CROP: [f32; 4] = [0.0; 4];
+
 /// `draw_layer` with an optional canvas-sized coverage mask (0..255 per pixel) multiplied into the
-/// layer's alpha. A masked draw always takes the general path, which is where coverage is applied.
+/// layer's alpha, and the clip's built-in crop (`Clip::crop_at`: the share cut off each edge of the
+/// layer's own rect). A masked or cropped draw takes the general path, where coverage is applied - the
+/// crop only narrows the coverage rectangle, no extra pass over the pixels.
 #[allow(clippy::too_many_arguments)]
 fn draw_layer_masked(
     dst: &mut Frame,
@@ -1057,6 +1099,7 @@ fn draw_layer_masked(
     scaler: Scaler,
     scratch: &mut Frame,
     mask: Option<&[u8]>,
+    crop: [f32; 4],
 ) {
     if dst.is_empty() || src.is_empty() || !(opacity > 0.0) {
         return;
@@ -1066,14 +1109,18 @@ fn draw_layer_masked(
     }
     let mask = mask.filter(|m| m.len() >= dst.width as usize * dst.height as usize);
     if p.yaw != 0.0 || p.pitch != 0.0 {
-        draw_layer_perspective(dst, src, p, mode, opacity, scaler, scratch, mask);
+        draw_layer_perspective(dst, src, p, mode, opacity, scaler, scratch, mask, crop);
         return;
     }
     let (cw, ch) = (dst.width as i64, dst.height as i64);
     let (sw, sh) = (src.width as i64, src.height as i64);
 
     // (a) axis-aligned, 1:1 - composite src rows straight onto the canvas at an integer offset.
-    if mask.is_none() && p.rot == 0.0 && (p.w - sw as f32).abs() < 0.5 && (p.h - sh as f32).abs() < 0.5 {
+    let cropped = crop != NO_CROP;
+    if crop[0] + crop[1] >= 1.0 || crop[2] + crop[3] >= 1.0 {
+        return; // cropped away
+    }
+    if mask.is_none() && !cropped && p.rot == 0.0 && (p.w - sw as f32).abs() < 0.5 && (p.h - sh as f32).abs() < 0.5 {
         let ox = (p.cx - sw as f32 / 2.0).round() as i64;
         let oy = (p.cy - sh as f32 / 2.0).round() as i64;
         let (x0, x1) = (ox.max(0), (ox + sw).min(cw));
@@ -1104,6 +1151,9 @@ fn draw_layer_masked(
     scratch.resize(dst.width, dst.height);
     let (sin, cos) = p.rot.to_radians().sin_cos();
     let (hw, hh) = (p.w / 2.0, p.h / 2.0);
+    // the visible (cropped) part of the layer rect, in layer space
+    let (ux0, ux1) = (-hw + p.w * crop[0], hw - p.w * crop[1]);
+    let (vy0, vy1) = (-hh + p.h * crop[2], hh - p.h * crop[3]);
     let (kx, ky) = (sw as f32 / p.w, sh as f32 / p.h);
     let (swm, shm) = ((sw - 1) as f32, (sh - 1) as f32);
     let stride = scratch.stride();
@@ -1119,7 +1169,7 @@ fn draw_layer_masked(
             let u = dx * cos + dy * sin;
             let v = -dx * sin + dy * cos;
             // 1px feathered rectangle coverage, times the mask's
-            let mut cov = ((hw - u.abs()).min(hh - v.abs()) + 0.5).clamp(0.0, 1.0);
+            let mut cov = ((u - ux0).min(ux1 - u).min(v - vy0).min(vy1 - v) + 0.5).clamp(0.0, 1.0);
             if let Some(m) = mrow {
                 cov *= m[(x0 + i as u32) as usize] as f32 / 255.0;
             }
@@ -1155,6 +1205,7 @@ fn draw_layer_perspective(
     scaler: Scaler,
     scratch: &mut Frame,
     mask: Option<&[u8]>,
+    crop: [f32; 4],
 ) {
     let f = dst.width as f32;
     let (hw, hh) = (p.w / 2.0, p.h / 2.0);
@@ -1213,7 +1264,8 @@ fn draw_layer_perspective(
             let u = (inv[0][0] * px + inv[0][1] * py + inv[0][2]) / ww;
             let v = (inv[1][0] * px + inv[1][1] * py + inv[1][2]) / ww;
             // feathered coverage ≈ distance to the unit-square edge in source pixels
-            let mut cov = ((u.min(1.0 - u) * sw).min(v.min(1.0 - v) * sh) + 0.5).clamp(0.0, 1.0);
+            let (du, dv) = ((u - crop[0]).min(1.0 - crop[1] - u), (v - crop[2]).min(1.0 - crop[3] - v));
+            let mut cov = ((du * sw).min(dv * sh) + 0.5).clamp(0.0, 1.0);
             if let Some(m) = mrow {
                 cov *= m[(x0 + i as u32) as usize] as f32 / 255.0;
             }
@@ -1490,6 +1542,39 @@ mod tests {
 
     #[test]
     fn compositor_renders_fake_video() {
+        // (the crop test below shares this setup)
+        compositor_renders_fake_video_inner();
+    }
+
+    /// The built-in crop: the cut-off edges show what is under the clip (black here), the rest is the
+    /// clip, keyframes move the edge, and a cropped clip no longer counts as covering the canvas.
+    #[test]
+    fn built_in_crop_renders() {
+        let mut project = Project::from_media(fake_asset());
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        pool.insert_video(&project.assets[0].path, Box::new(FakeVideo([255, 0, 0, 255])));
+        let (mut comp, mut text, mut out) = (Compositor::new(), TextRasterizer::new(), Frame::default());
+        let (w, h) = (64, 48);
+        assert!(covers(&project, &project.tracks[0].clips[0], 1.0, w, h), "uncropped: full frame");
+        let c = &mut project.tracks[0].clips[0];
+        c.crop_left.value = 0.25;
+        c.crop_bottom.key_at(0.0, 0.0);
+        c.crop_bottom.key_at(2.0, 0.5);
+        assert!(!covers(&project, &project.tracks[0].clips[0], 1.0, w, h), "cropped: no longer covers");
+        comp.render(&project, 2.0, w, h, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 8, 10), [0, 0, 0, 255], "left quarter cut");
+        assert_eq!(px(&out, 40, 10), [255, 0, 0, 255], "kept part");
+        assert_eq!(px(&out, 40, 40), [0, 0, 0, 255], "bottom half cut at the second key");
+        comp.render(&project, 0.0, w, h, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 40, 40), [255, 0, 0, 255], "no bottom crop at the first key");
+        // rotated / tilted layers take the general and perspective paths: same cut
+        project.tracks[0].clips[0].rotation.value = 180.0;
+        comp.render(&project, 2.0, w, h, &mut pool, &mut text, &mut out);
+        assert_eq!(px(&out, 56, 40), [0, 0, 0, 255], "rotated: the layer's own left edge is cut");
+        assert_eq!(px(&out, 20, 40), [255, 0, 0, 255]);
+    }
+
+    fn compositor_renders_fake_video_inner() {
         let project = Project::from_media(fake_asset());
         let mut pool = DecoderPool::new(Backend::Ffmpeg);
         pool.insert_video(&project.assets[0].path, Box::new(FakeVideo([255, 0, 0, 255])));

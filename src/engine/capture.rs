@@ -31,7 +31,7 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long ffmpeg gets to finish after `q` before it is killed (the MKV is readable either way).
@@ -1028,26 +1028,26 @@ const LOOPBACK_HINTS: [&str; 10] = [
 /// dshow audio input devices (`ffmpeg -list_devices true -f dshow -i dummy`), cached.
 /// The bool marks devices that look like desktop/loopback capture.
 ///
-/// ponytail: probed once per process - the UI polls this every frame while the recorder/settings
-/// windows are open and each probe spawns ffmpeg (~250 ms), so it must not re-run per frame. A device
-/// plugged in (or Stereo Mix enabled) mid-session therefore needs a restart; swap the `OnceLock` for a
-/// `Mutex<Option<_>>` when there is a "Refresh" button next to the device combos to clear it.
+/// Blocking (it spawns ffmpeg: 0.3-16 s): the UI reads it through `audio_devices_nonblocking`, probed once
+/// per process, so a device plugged in mid-session needs a restart.
 pub fn audio_devices() -> Vec<(String, bool)> {
-    static CACHE: OnceLock<Vec<(String, bool)>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            let Some(exe) = ffpipe::ffmpeg_exe() else { return Vec::new() };
-            // listing devices always "fails" (dummy is not a real device); the list is on stderr
-            match ffpipe::command(&exe)
-                .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
-                .stdin(Stdio::null())
-                .output()
-            {
-                Ok(o) => parse_devices(&String::from_utf8_lossy(&o.stderr)),
-                Err(_) => Vec::new(),
-            }
-        })
-        .clone()
+    let Some(exe) = ffpipe::ffmpeg_exe() else { return Vec::new() };
+    // listing devices always "fails" (dummy is not a real device); the list is on stderr
+    match ffpipe::command(&exe)
+        .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
+        .stdin(Stdio::null())
+        .output()
+    {
+        Ok(o) => parse_devices(&String::from_utf8_lossy(&o.stderr)),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// ws:page-switch-freeze: `audio_devices` for the UI thread - the list once a background probe has it,
+/// `None` while it runs (the Audio page's Voiceover pane used to wait 5-16 s on it at its first draw).
+pub fn audio_devices_nonblocking(wake: fn()) -> Option<Vec<(String, bool)>> {
+    static DEVICES: crate::engine::bg_probe::BgProbe<Vec<(String, bool)>> = crate::engine::bg_probe::BgProbe::new();
+    DEVICES.get(audio_devices, wake)
 }
 
 /// Audio device names out of ffmpeg's `-list_devices` output (both the modern `"name" (audio)` layout
