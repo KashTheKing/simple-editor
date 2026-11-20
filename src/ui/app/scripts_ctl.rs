@@ -192,7 +192,11 @@ pub(super) fn tick(app: &mut App, _ctx: &egui::Context) {
     let src = app.script_editor.text.clone();
     let result = match scripting::check(&src, &name) {
         Err(e) => Err(e.lines().next().unwrap_or("failed").to_string()),
-        Ok(()) => app.run_script_src(&src, &name, None),
+        // ---- feat/plugins ---- a plugin's file runs in its plugin's sandbox, never with full access
+        Ok(()) => match plugins_ctl::run_if_plugin_file(app, &path, &src) {
+            Some(r) => r,
+            None => app.run_script_src(&src, &name, None),
+        },
     };
     let ed = &mut app.script_editor;
     (ed.output, ed.output_err) = match result {

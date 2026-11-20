@@ -1,0 +1,18 @@
+{
+  "id": "hello-panel",
+  "name": "Hello Panel",
+  "version": "1.0.0",
+  "author": "Simple Editor",
+  "description": "An example plugin: a panel that counts the clips, drops markers and nudges the selection, a script, and a LUT.",
+  "min_app_version": "1.4.0",
+  "homepage": "https://github.com/KashTheKing/simple-editor/tree/main/examples/plugins/hello-panel",
+  "icon": "bolt",
+  "contents": {
+    "panels": [
+      { "id": "main", "title": "Hello", "script": "panels/hello.luau", "icon": "bolt" }
+    ],
+    "scripts": ["scripts/marker-at-every-cut.luau"],
+    "luts": ["luts/hello-teal.cube"]
+  },
+  "permissions": {}
+}

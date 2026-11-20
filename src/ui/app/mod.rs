@@ -202,6 +202,7 @@ mod footage_ctl; // ws:mixed-footage
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
 mod group_sync; // ws:gap-group-sync
+mod plugins_ctl; // feat/plugins: the Plugins pane, plugin panels, Install from URL
 mod os_paste; // Ctrl+V of a screenshot / copied files
 mod export_fix; // ws:forum-export
 mod health_ctl; // ws:forum-preview
@@ -643,6 +644,9 @@ pub struct App {
     // ---- ws:gap-group-sync ----
     /// A Sync by Audio correlating on its worker thread.
     group_sync: group_sync::SyncState,
+    // ---- feat/plugins ----
+    /// Installed plugins, their open panels and the Install from URL / confirm windows.
+    plugins: plugins_ctl::PluginsUi,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -1235,6 +1239,7 @@ impl App {
             tabs: Default::default(), // ws:timeline-tabs
             health: Default::default(), // ws:forum-preview
             group_sync: Default::default(), // ws:gap-group-sync
+            plugins: Default::default(), // feat/plugins
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -2155,6 +2160,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     reference_ctl::TOOLS,
     // ---- feat/scripts-editor ----
     scripts_ctl::TOOLS,
+    // ---- feat/plugins ----
+    plugins_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2385,6 +2392,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     reference_ctl::tick,
     // ---- feat/scripts-editor ----
     scripts_ctl::tick,
+    // ---- feat/plugins ----
+    plugins_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -2470,6 +2479,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     timeline_tabs::windows,
     // ---- feat/scripts-editor ----
     scripts_ctl::windows,
+    // ---- feat/plugins ----
+    plugins_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -2551,6 +2562,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     reference_ctl::draw,
     // ---- feat/scripts-editor ----
     scripts_ctl::draw,
+    // ---- feat/plugins ----
+    plugins_ctl::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

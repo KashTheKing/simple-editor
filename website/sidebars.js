@@ -28,7 +28,7 @@ module.exports = {
       type: 'category',
       label: 'Reference',
       collapsed: false,
-      items: ['right-click', 'shortcuts', 'advanced', 'scripting', 'report-a-bug'],
+      items: ['right-click', 'shortcuts', 'advanced', 'scripting', 'plugins', 'report-a-bug'],
     },
     {
       type: 'category',

@@ -2103,6 +2103,7 @@ dependencies = [
  "eframe",
  "egui_tiles",
  "fontdb",
+ "miniz_oxide",
  "mlua",
  "png",
  "raw-window-handle",

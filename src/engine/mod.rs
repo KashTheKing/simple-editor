@@ -57,6 +57,7 @@ mod blitz_tests;
 mod social_text_tests; // ws:social-text
 pub mod library;
 pub mod stock; // ws:gallery-stock
+pub mod plugins; // feat/plugins: plugin.json bundles, install from GitHub, Luau panels
 pub mod shaderlib;
 pub mod skills;
 pub mod webcap;
