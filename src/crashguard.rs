@@ -373,7 +373,8 @@ fn install_native_filter() {}
 
 /// File name only, for messages ("clip.mp4", not the whole path).
 pub fn short(path: &str) -> String {
-    Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string())
+    // both separators, whatever the host: a record can carry either
+    path.rsplit(['\\', '/']).find(|s| !s.is_empty()).unwrap_or(path).to_string()
 }
 
 /// One plain sentence naming what the previous run died on, or None when nothing was in flight.

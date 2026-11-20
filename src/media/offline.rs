@@ -91,16 +91,6 @@ pub fn bring_back(path: &str) {
     }
 }
 
-/// Bring every file back (the safe start's "Bring media back").
-pub fn bring_all_back() {
-    let mut s = set().write().unwrap_or_else(|e| e.into_inner());
-    s.session.clear();
-    if !s.saved.is_empty() {
-        s.saved.clear();
-        persist(&s);
-    }
-}
-
 /// The error an open of an offline file returns.
 pub const REFUSED: &str = "offline: Simple Editor closed while reading this file last time";
 

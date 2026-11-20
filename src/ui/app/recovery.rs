@@ -226,8 +226,10 @@ impl RecoverPlan {
                 if n > 0 {
                     app.push_undo_labeled(before, "Switch off effects");
                     app.after_edit();
+                    app.toast_undo(format!("Recovered with {n} effects switched off"), Action::Undo);
+                } else {
+                    app.toast("Recovered the project (it has no effects to switch off)"); // no Undo: nothing to undo
                 }
-                app.toast_undo(format!("Recovered with {n} effects switched off"), Action::Undo);
             }
         }
     }
@@ -235,7 +237,9 @@ impl RecoverPlan {
 
 /// A rolling autosave's project, from its folder (`<project stem>-<pid>`).
 pub(super) fn backup_name(path: &Path) -> String {
-    let dir = path.parent().and_then(|d| d.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    // the parent folder's name, split by hand so either separator works
+    let text = path.to_string_lossy();
+    let dir = text.rsplit(['\\', '/']).filter(|s| !s.is_empty()).nth(1).unwrap_or_default().to_string();
     match dir.rsplit_once('-') {
         Some((stem, pid)) if pid.chars().all(|c| c.is_ascii_digit()) && !stem.is_empty() => stem.to_string(),
         _ => dir,
