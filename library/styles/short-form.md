@@ -1,6 +1,6 @@
 ---
-name: shorts
-title: Shorts
+name: short-form
+title: Short-form
 description: Vertical short - hook in the first second, a visual change every 2 s, captions in the safe zone.
 avg_shot: 2.0
 cut_on_beat: 0.2

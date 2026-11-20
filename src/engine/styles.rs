@@ -67,7 +67,7 @@ pub const BUILT_IN: &[(&str, &str)] = &[
     ("documentary", include_str!("../../library/styles/documentary.md")),
     ("music-video", include_str!("../../library/styles/music-video.md")),
     ("podcast-clips", include_str!("../../library/styles/podcast-clips.md")),
-    ("shorts", include_str!("../../library/styles/shorts.md")),
+    ("short-form", include_str!("../../library/styles/short-form.md")),
     ("trailer", include_str!("../../library/styles/trailer.md")),
     ("vlog", include_str!("../../library/styles/vlog.md")),
 ];
@@ -641,7 +641,7 @@ mod tests {
         let all = list_in(&temp("filter"));
         let names: Vec<&str> = filter(&all, "t", 9).iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names[0], "trailer");
-        assert!(names.contains(&"shorts"), "title / name containing it");
+        assert!(names.contains(&"short-form"), "title / name containing it");
         assert_eq!(slug("My Lisbon Vlog!"), "my-lisbon-vlog");
         assert_eq!(slug("!!!"), "style");
     }
