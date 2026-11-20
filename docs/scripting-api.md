@@ -169,7 +169,6 @@ table. The *Where* column says which scripts have a name:
 |---|---|---|
 | `package: table` | Script, Hook | Module loading (require) |
 | `package.path: string` | Script, Hook | Where require looks for modules |
-| `package.cpath: string` | Script, Hook | Where require looks for native modules |
 | `package.loaded: table` | Script, Hook | The modules loaded so far |
 | `package.loaders: table` | Script, Hook | The functions require tries in turn |
 

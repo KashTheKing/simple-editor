@@ -1374,8 +1374,8 @@ fn lanes_view(
     let range_of = |whole: bool, p: &Project| match (whole || ids.is_empty(), p.in_point, p.out_point) {
         (true, Some(a), Some(b)) if b > a => (a, b),
         (true, ..) => (0.0, p.duration().max(1.0)),
-        // exactly the selected clips (`rows` also lists the clips their transitions lead into)
-        _ => range(p, ids),
+        // exactly the selected clips and their own transitions (not the whole of the clips those lead into)
+        _ => ids.iter().flat_map(|&id| clip_transitions(p, id)).fold(range(p, ids), |r, (_, w, _)| (r.0.min(w.0), r.1.max(w.1))),
     };
     ui.horizontal(|ui| {
         if view == View::Blocks {

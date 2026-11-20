@@ -303,7 +303,6 @@ pub const API: &[ApiItem] = &[
     f("unpack", "t: table, i: number?, j: number?", "...any", "t[i] to t[j] as separate values", ALL),
     t("package", "Module loading (require)", OWN),
     v("package.path", "string", "Where require looks for modules", OWN),
-    v("package.cpath", "string", "Where require looks for native modules", OWN),
     v("package.loaded", "table", "The modules loaded so far", OWN),
     v("package.loaders", "table", "The functions require tries in turn", OWN),
     t("debug", "Stack inspection", OWN),
