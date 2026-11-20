@@ -19,7 +19,7 @@
 //! state allocates nothing.
 
 use crate::media::SAMPLE_RATE;
-use crate::model::{AudioFilter, Bus, FilterKind, Id, Project};
+use crate::model::{AudioFilter, Bus, FilterKind, Id, Project, EQ15_HZ, NORMALIZE_UNMEASURED};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -49,6 +49,10 @@ pub enum Band {
     Peak,
     LowShelf,
     HighShelf,
+    // ---- ws:parity-audio ----
+    /// Constant 0 dB peak gain band-pass.
+    BandPass,
+    Notch,
 }
 
 /// Normalised RBJ coefficients `[b0, b1, b2, a1, a2]` (a0 divided out). Shelves take Q like the peaks
@@ -81,6 +85,9 @@ pub fn coeffs(band: Band, f0: f32, q: f32, gain_db: f32, sr: f32) -> [f32; 5] {
             2.0 * ((a - 1.0) - (a + 1.0) * cs),
             (a + 1.0) - (a - 1.0) * cs - tsa,
         ),
+        // ---- ws:parity-audio ----
+        Band::BandPass => (alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
+        Band::Notch => (1.0, -2.0 * cs, 1.0, 1.0 + alpha, -2.0 * cs, 1.0 - alpha),
     };
     if a0.abs() < 1e-12 {
         return [1.0, 0.0, 0.0, 0.0, 0.0];
@@ -121,6 +128,10 @@ pub fn filter_bands(f: &AudioFilter, t: f64) -> Vec<(Band, f32, f32, f32)> {
         FilterKind::Eq => EQ_BANDS.iter().map(|&(b, gi, fi, qi)| (b, p(fi), p(qi), p(gi))).collect(),
         FilterKind::HighPass => vec![(Band::HighPass, p(0), p(1), 0.0)],
         FilterKind::LowPass => vec![(Band::LowPass, p(0), p(1), 0.0)],
+        // ---- ws:parity-audio ----
+        FilterKind::BandPass => vec![(Band::BandPass, p(0), p(1), 0.0)],
+        FilterKind::Notch => vec![(Band::Notch, p(0), p(1), 0.0)],
+        FilterKind::Eq15 => EQ15_HZ.iter().enumerate().map(|(i, &hz)| (Band::Peak, hz, EQ15_Q, p(i))).collect(),
         _ => Vec::new(),
     }
 }
@@ -308,6 +319,32 @@ enum Dsp {
         pos: usize,
         phase: f32,
     },
+    // ---- ws:parity-audio ----
+    /// Band-pass / notch (1 band) or the 15-band EQ, × 2 channels, band-major (like `Biquads`).
+    Bands(Vec<Biquad>),
+    Declick(Box<Declick>),
+    /// Mid-side / width / channels / downmix / normalize: a ramped gain where one is audible.
+    Matrix {
+        prev: f32,
+    },
+}
+
+// ---- ws:parity-audio ----
+/// Q of each 15-band EQ peak: 2/3 octave apart, so neighbours meet near -3 dB of a full boost.
+pub const EQ15_Q: f32 = 2.1;
+/// Longest De-click repair the parameter allows, in seconds (`F_DECLICK`'s "Length ms" max).
+const MAX_DECLICK_S: f32 = 0.005;
+
+/// De-click memory: a delay line long enough to bridge a click once it has been seen, the slow average
+/// of the waveform's sample-to-sample jumps, and the repair span currently being bridged (frame
+/// counters: `n` frames written so far).
+struct Declick {
+    ring: Vec<f32>,
+    n: u64,
+    prev: [f32; 2],
+    avg: f32,
+    /// (last good frame before the click, first good frame after it), as frame counters.
+    span: Option<(u64, u64)>,
 }
 
 /// The Pitch filter's window: long enough for low voices, short enough not to smear transients.
@@ -358,6 +395,22 @@ impl FilterState {
             FilterKind::Pitch => {
                 Dsp::Pitch { ring: vec![0.0; ((sr * PITCH_WINDOW_S) as usize + 4) * 2], pos: 0, phase: 0.0 }
             }
+            // ---- ws:parity-audio ----
+            FilterKind::BandPass | FilterKind::Notch => Dsp::Bands(vec![Biquad::default(); 2]),
+            FilterKind::Eq15 => Dsp::Bands(vec![Biquad::default(); EQ15_HZ.len() * 2]),
+            FilterKind::Expander => Dsp::Dyn { env: 0.0, gain: 1.0 },
+            FilterKind::Declick => Dsp::Declick(Box::new(Declick {
+                ring: vec![0.0; (declick_delay(sr) + 4) * 2],
+                n: 0,
+                prev: [0.0; 2],
+                avg: 0.0,
+                span: None,
+            })),
+            FilterKind::MidSide
+            | FilterKind::StereoWidth
+            | FilterKind::Channels
+            | FilterKind::Downmix
+            | FilterKind::Normalize => Dsp::Matrix { prev: f32::NAN },
         };
         Self { kind: f.kind, sr, dsp }
     }
@@ -601,7 +654,170 @@ impl FilterState {
                     *pos = (*pos + 1) % cap;
                 }
             }
+            // ---- ws:parity-audio ----
+            (Dsp::Bands(bq), _) => {
+                for (b, (band, f0, q, g)) in bq.chunks_exact_mut(2).zip(filter_bands(f, t)) {
+                    let c = coeffs(band, f0, q, g, sr);
+                    b[0].c = c;
+                    b[1].c = c;
+                }
+                for fr in buf.chunks_exact_mut(2) {
+                    for b in bq.chunks_exact_mut(2) {
+                        fr[0] = b[0].tick(fr[0]);
+                        fr[1] = b[1].tick(fr[1]);
+                    }
+                }
+            }
+            (Dsp::Dyn { env, gain }, FilterKind::Expander) => {
+                let thr = p(0).clamp(-80.0, 0.0);
+                let ratio = p(1).clamp(1.0, 10.0);
+                let (at, rl) = (coef(p(2), sr), coef(p(3), sr));
+                let range = p(4).clamp(0.0, 80.0);
+                for fr in buf.chunks_exact_mut(2) {
+                    let peak = fr[0].abs().max(fr[1].abs());
+                    let c = if peak > *env { at } else { rl };
+                    *env += (peak - *env) * c;
+                    let under = (thr - lin_to_db(*env)).max(0.0);
+                    let target = db_to_lin(-(under * (ratio - 1.0)).min(range));
+                    // open fast, close at the release rate, so a word's onset is never chopped
+                    *gain += (target - *gain) * if target > *gain { at } else { rl };
+                    fr[0] *= *gain;
+                    fr[1] *= *gain;
+                }
+            }
+            (Dsp::Declick(d), _) => declick(d, p(0).clamp(0.0, 1.0), p(1).clamp(0.1, MAX_DECLICK_S * 1000.0), sr, buf),
+            (Dsp::Matrix { .. }, FilterKind::MidSide) => {
+                let (gm, gs) = (db_to_lin(p(0).clamp(-24.0, 24.0)), db_to_lin(p(1).clamp(-24.0, 24.0)));
+                for fr in buf.chunks_exact_mut(2) {
+                    let (m, s) = ((fr[0] + fr[1]) * 0.5 * gm, (fr[0] - fr[1]) * 0.5 * gs);
+                    fr[0] = m + s;
+                    fr[1] = m - s;
+                }
+            }
+            (Dsp::Matrix { prev }, FilterKind::StereoWidth) => {
+                let w = p(0).clamp(0.0, 2.0);
+                ramp(prev, w, buf, |fr, w| {
+                    let (m, s) = ((fr[0] + fr[1]) * 0.5, (fr[0] - fr[1]) * 0.5 * w);
+                    fr[0] = m + s;
+                    fr[1] = m - s;
+                });
+            }
+            (Dsp::Matrix { .. }, FilterKind::Channels) => {
+                let mode = p(0).round().clamp(0.0, 5.0) as u8;
+                for fr in buf.chunks_exact_mut(2) {
+                    match mode {
+                        0 => fr[1] = fr[0],
+                        1 => fr[0] = fr[1],
+                        2 => fr.swap(0, 1),
+                        3 => fr[0] = -fr[0],
+                        4 => fr[1] = -fr[1],
+                        _ => {
+                            fr[0] = -fr[0];
+                            fr[1] = -fr[1];
+                        }
+                    }
+                }
+            }
+            (Dsp::Matrix { prev }, FilterKind::Downmix) => {
+                let amt = p(0).clamp(0.0, 1.0);
+                ramp(prev, amt, buf, |fr, a| {
+                    let m = (fr[0] + fr[1]) * 0.5;
+                    fr[0] += (m - fr[0]) * a;
+                    fr[1] += (m - fr[1]) * a;
+                });
+            }
+            (Dsp::Matrix { prev }, FilterKind::Normalize) => {
+                let g = db_to_lin(normalize_gain_db(f.at(0, t), f.at(1, t), f.at(2, t)) as f32);
+                ramp(prev, g, buf, |fr, g| {
+                    fr[0] *= g;
+                    fr[1] *= g;
+                });
+            }
             _ => {}
+        }
+    }
+}
+
+// ---- ws:parity-audio ----
+/// The Normalize filter's gain in dB: target - measured, capped at +max (and at -max going down);
+/// 0 until an analysis pass has written a measurement.
+pub fn normalize_gain_db(target: f64, measured: f64, max: f64) -> f64 {
+    if measured >= NORMALIZE_UNMEASURED - 1e-6 || !measured.is_finite() {
+        return 0.0;
+    }
+    let max = max.clamp(0.0, 40.0);
+    (target - measured).clamp(-max, max)
+}
+
+/// Walk `buf` frame by frame with a value lerped from last block's `prev` to `v` (the first block jumps
+/// straight to `v`), so a moved slider or a keyframe never clicks.
+fn ramp(prev: &mut f32, v: f32, buf: &mut [f32], mut each: impl FnMut(&mut [f32], f32)) {
+    let n = (buf.len() / 2).max(1) as f32;
+    let v0 = if prev.is_finite() { *prev } else { v };
+    let dv = (v - v0) / n;
+    *prev = v;
+    for (i, fr) in buf.chunks_exact_mut(2).enumerate() {
+        each(fr, v0 + dv * i as f32);
+    }
+}
+
+/// Frames the De-click output lags its input: the longest repair plus a margin, so the first good frame
+/// after a click has arrived by the time the bridge across it is played.
+fn declick_delay(sr: f32) -> usize {
+    (sr * MAX_DECLICK_S) as usize + 4
+}
+
+/// De-click: a jump between two frames far above the recent average jump marks a click; the next
+/// `len_ms` of audio is bridged by a straight line from the last good frame to the first frame after
+/// the click, played `declick_delay` frames late so that frame is known. Linked across channels.
+fn declick(d: &mut Declick, sensitivity: f32, len_ms: f32, sr: f32, buf: &mut [f32]) {
+    let delay = declick_delay(sr) as u64;
+    let cap = (d.ring.len() / 2) as u64;
+    let len = ((len_ms * 0.001 * sr) as u64).clamp(1, delay - 2);
+    // a jump this many times the running average is a click: 6x (sensitivity 1) .. 40x (0)
+    let k = 6.0 + (1.0 - sensitivity) * 34.0;
+    let a = coef(10.0, sr);
+    for fr in buf.chunks_exact_mut(2) {
+        let jump = (fr[0] - d.prev[0]).abs().max((fr[1] - d.prev[1]).abs());
+        d.prev = [fr[0], fr[1]];
+        let w = (d.n % cap) as usize;
+        d.ring[w * 2] = fr[0];
+        d.ring[w * 2 + 1] = fr[1];
+        if d.n > 2 && jump > k * d.avg && jump > 0.02 {
+            let end = d.n + len;
+            d.span = Some(match d.span {
+                Some((from, until)) if d.n <= until + 1 => (from, until.max(end)),
+                _ => (d.n - 1, end),
+            });
+        } else {
+            // clicks stay out of the average, so a burst of them cannot raise the bar
+            d.avg += (jump - d.avg) * a;
+        }
+        d.n += 1;
+        // play the frame `delay` behind
+        let Some(o) = d.n.checked_sub(delay + 1) else {
+            fr[0] = 0.0;
+            fr[1] = 0.0;
+            continue;
+        };
+        let at = |i: u64| ((i % cap) * 2) as usize;
+        match d.span {
+            Some((from, until)) if o > from && o < until => {
+                // the far anchor may still be on its way when a later click stretched the span
+                let to = until.min(d.n - 1);
+                let x = (o - from) as f32 / (to - from).max(1) as f32;
+                for ch in 0..2 {
+                    let (s0, s1) = (d.ring[at(from) + ch], d.ring[at(to) + ch]);
+                    fr[ch] = s0 + (s1 - s0) * x.min(1.0);
+                }
+            }
+            _ => {
+                if d.span.is_some_and(|(_, until)| o >= until) {
+                    d.span = None;
+                }
+                fr[0] = d.ring[at(o)];
+                fr[1] = d.ring[at(o) + 1];
+            }
         }
     }
 }
@@ -1861,5 +2077,141 @@ mod tests {
         let empty = BusGraph::new();
         empty.publish(&feed);
         assert_eq!(feed.len(), 0, "an unsynced/bus-less graph publishes nothing");
+    }
+
+    // ---- ws:parity-audio ----
+    fn stereo(l: &[f32], r: &[f32]) -> Vec<f32> {
+        l.iter().zip(r).flat_map(|(a, b)| [*a, *b]).collect()
+    }
+
+    fn run(f: &AudioFilter, buf: &mut [f32]) {
+        let mut st = FilterState::new(f, SR);
+        for blk in buf.chunks_mut(2048) {
+            st.process(f, 0.0, blk);
+        }
+    }
+
+    #[test]
+    fn band_pass_and_notch_shape_the_band() {
+        let bp = filt(FilterKind::BandPass, &[(0, 1000.0), (1, 2.0)]);
+        let (at, far_lo, far_hi) = (thru_rms(&bp, 1000.0), thru_rms(&bp, 80.0), thru_rms(&bp, 12_000.0));
+        assert!(at > 0.3, "the centre passes at 0 dB: {at}");
+        assert!(far_lo < at * 0.1 && far_hi < at * 0.1, "{far_lo} {far_hi} vs {at}");
+        let notch = filt(FilterKind::Notch, &[(0, 1000.0), (1, 4.0)]);
+        assert!(thru_rms(&notch, 1000.0) < 0.02, "the notch removes its frequency");
+        assert!(thru_rms(&notch, 200.0) > 0.33, "and leaves the rest");
+        assert!(filter_response_db(&notch, 0.0, 1000.0) < -30.0);
+        assert!(filter_response_db(&bp, 0.0, 1000.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn eq15_is_flat_by_default_and_boosts_one_band() {
+        let flat = AudioFilter::new(FilterKind::Eq15);
+        for hz in [30.0, 300.0, 3000.0, 15000.0] {
+            assert!(filter_response_db(&flat, 0.0, hz).abs() < 0.01, "{hz}");
+        }
+        let one = filt(FilterKind::Eq15, &[(8, 12.0)]); // 1 kHz
+        let r = thru_rms(&one, 1000.0) / thru_rms(&flat, 1000.0);
+        assert!((r - 4.0).abs() < 0.5, "+12 dB at 1 kHz ≈ ×4, got ×{r}");
+        assert!(filter_response_db(&one, 0.0, 100.0).abs() < 0.5, "a band two octaves away is untouched");
+        assert_eq!(filter_bands(&one, 0.0).len(), 15);
+    }
+
+    #[test]
+    fn expander_pushes_quiet_parts_down_and_leaves_loud_ones() {
+        let f = filt(FilterKind::Expander, &[(0, -30.0), (1, 2.0), (4, 40.0)]);
+        // -40 dBFS: 10 dB under → a further 10 dB down at ratio 2
+        let mut quiet = sine(440.0, db_to_lin(-40.0), 48000);
+        run(&f, &mut quiet);
+        let db = lin_to_db(peak(&quiet[quiet.len() / 2..]));
+        assert!((db + 50.0).abs() < 2.0, "{db}");
+        let mut loud = sine(440.0, db_to_lin(-10.0), 48000);
+        run(&f, &mut loud);
+        let db = lin_to_db(peak(&loud[loud.len() / 2..]));
+        assert!((db + 10.0).abs() < 0.2, "{db}");
+        // the range caps the cut
+        let capped = filt(FilterKind::Expander, &[(0, -30.0), (1, 10.0), (4, 12.0)]);
+        let mut q = sine(440.0, db_to_lin(-60.0), 48000);
+        run(&capped, &mut q);
+        let db = lin_to_db(peak(&q[q.len() / 2..]));
+        assert!((db + 72.0).abs() < 2.0, "{db}");
+    }
+
+    #[test]
+    fn declick_bridges_a_click_and_keeps_clean_audio() {
+        let f = filt(FilterKind::Declick, &[(0, 0.5), (1, 0.3)]);
+        let clean = sine(200.0, 0.3, 9600);
+        let mut out = clean.clone();
+        run(&f, &mut out);
+        let delay = declick_delay(SR as f32);
+        // clean audio comes through unchanged, `delay` frames late
+        let diff = (2000..9000).map(|i| (out[(i + delay) * 2] - clean[i * 2]).abs()).fold(0.0f32, f32::max);
+        assert!(diff < 1e-6, "clean audio must pass untouched: {diff}");
+        // a one-sample spike is bridged
+        let mut clicked = clean.clone();
+        clicked[5000 * 2] = 0.95;
+        clicked[5000 * 2 + 1] = 0.95;
+        run(&f, &mut clicked);
+        let err = (4990..5060).map(|i| (clicked[(i + delay) * 2] - clean[i * 2]).abs()).fold(0.0f32, f32::max);
+        assert!(err < 0.05, "the spike is gone: worst error {err}");
+    }
+
+    #[test]
+    fn stereo_tools() {
+        let l = vec![0.5f32; 4096];
+        let r = vec![0.1f32; 4096];
+        // swap
+        let mut b = stereo(&l, &r);
+        run(&filt(FilterKind::Channels, &[(0, 2.0)]), &mut b);
+        assert_eq!((b[0], b[1]), (0.1, 0.5));
+        // copy left to right, invert right
+        let mut b = stereo(&l, &r);
+        run(&filt(FilterKind::Channels, &[(0, 0.0)]), &mut b);
+        assert_eq!((b[0], b[1]), (0.5, 0.5));
+        let mut b = stereo(&l, &r);
+        run(&filt(FilterKind::Channels, &[(0, 4.0)]), &mut b);
+        assert_eq!((b[0], b[1]), (0.5, -0.1));
+        // downmix to mono
+        let mut b = stereo(&l, &r);
+        run(&AudioFilter::new(FilterKind::Downmix), &mut b);
+        assert!((b[0] - 0.3).abs() < 1e-6 && (b[1] - 0.3).abs() < 1e-6);
+        // width 0 = mono, width 1 = untouched
+        let mut b = stereo(&l, &r);
+        run(&filt(FilterKind::StereoWidth, &[(0, 0.0)]), &mut b);
+        assert!((b[0] - b[1]).abs() < 1e-6);
+        let mut b = stereo(&l, &r);
+        run(&AudioFilter::new(FilterKind::StereoWidth), &mut b);
+        assert!((b[0] - 0.5).abs() < 1e-6 && (b[1] - 0.1).abs() < 1e-6);
+        // mid-side: sides off = mono, mid off = only the difference
+        let mut b = stereo(&l, &r);
+        run(&filt(FilterKind::MidSide, &[(1, -24.0)]), &mut b);
+        assert!((b[0] - b[1]).abs() < 0.03);
+        let mut b = stereo(&l, &l);
+        run(&filt(FilterKind::MidSide, &[(0, -24.0)]), &mut b);
+        assert!(b[0].abs() < 0.04, "identical channels are all mid: {}", b[0]);
+    }
+
+    #[test]
+    fn normalize_applies_target_minus_measured() {
+        assert_eq!(normalize_gain_db(-16.0, 0.0, 20.0), 0.0, "unmeasured passes through");
+        assert_eq!(normalize_gain_db(-16.0, -26.0, 20.0), 10.0);
+        assert_eq!(normalize_gain_db(-16.0, -60.0, 20.0), 20.0, "capped at Max gain");
+        assert_eq!(normalize_gain_db(-16.0, -6.0, 20.0), -10.0);
+        let f = filt(FilterKind::Normalize, &[(0, -16.0), (1, -22.0)]);
+        let mut b = vec![0.25f32; 2048];
+        run(&f, &mut b);
+        assert!((b[100] - 0.25 * db_to_lin(6.0)).abs() < 1e-4, "{}", b[100]);
+    }
+
+    #[test]
+    fn every_kind_survives_silence_and_full_scale() {
+        for k in FilterKind::ALL {
+            let f = AudioFilter::new(k);
+            for v in [0.0f32, 1.0, -1.0] {
+                let mut b = vec![v; 4096];
+                run(&f, &mut b);
+                assert!(b.iter().all(|s| s.is_finite()), "{k:?} produced a non-finite sample");
+            }
+        }
     }
 }

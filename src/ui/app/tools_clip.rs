@@ -163,21 +163,8 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
             "audio.add_filter" => {
                 let bus = req(arg_u64(args, "bus"), "bus")?;
                 let kind_s = req(arg_str(args, "kind"), "kind")?;
-                let kind = FilterKind::ALL
-                    .into_iter()
-                    .find(|k| k.name().eq_ignore_ascii_case(kind_s) || format!("{k:?}").eq_ignore_ascii_case(kind_s))
-                    .ok_or_else(|| format!("unknown filter '{kind_s}'"))?;
-                let mut f = crate::model::AudioFilter::new(kind);
-                if let Some(params) = args.get("params").and_then(|v| v.as_object()) {
-                    for (pname, pval) in params {
-                        let i = kind
-                            .params()
-                            .iter()
-                            .position(|s| s.name.eq_ignore_ascii_case(pname))
-                            .ok_or_else(|| format!("unknown param '{pname}' for {}", kind.name()))?;
-                        f.params[i].value = pval.as_f64().ok_or("param values must be numbers")?;
-                    }
-                }
+                let kind = FilterKind::parse(kind_s).ok_or_else(|| format!("unknown filter '{kind_s}'"))?;
+                let f = crate::model::AudioFilter::with_params(kind, args.get("params").and_then(|v| v.as_object()))?;
                 let b = app.project.bus_mut(bus).ok_or("no such bus")?;
                 b.filters.push(f);
                 Ok(json!({"ok": true, "index": b.filters.len() - 1}))
@@ -338,7 +325,7 @@ pub const TOOLS: &[ToolDef] = &[
     row!("clip.connect_nodes", ToolKind::Mutate, "Wire one node's output into another node's input port (cycles are refused).", &["clip_id:integer:true:", "from:integer:true:", "to:integer:true:", "port:integer:false:default 0"]),
     row!("audio.buses", ToolKind::Read, "Mixer buses (id, name, gain, pan, mute/solo/mono, output, filters).", &[]),
     row!("audio.add_bus", ToolKind::Mutate, "Create a bus (it feeds Main until routed elsewhere).", &["name:string:false:"]),
-    row!("audio.add_filter", ToolKind::Mutate, "Add a filter to a bus with optional params {name: value}.", &["bus:integer:true:", "kind:string:true:Eq|HighPass|LowPass|Reverb|Echo|Distortion|Compressor|NoiseGate|Noise|Gain", "params:object:false:"]),
+    row!("audio.add_filter", ToolKind::Mutate, "Add a filter to a bus with optional params {name: value}.", &["bus:integer:true:", "kind:string:true:Eq|HighPass|LowPass|BandPass|Notch|Eq15|Reverb|Echo|Distortion|Compressor|Expander|NoiseGate|Declick|MidSide|StereoWidth|Channels|Downmix|Normalize|Noise|Gain|…", "params:object:false:"]),
     row!("audio.route", ToolKind::Mutate, "Send a clip, a track or a bus into a bus (bus 0 = Main / inherit).", &["bus:integer:true:destination bus", "clip_id:integer:false:", "track:integer:false:track index", "from_bus:integer:false:"]),
     row!("shapes.add", ToolKind::Mutate, "Add a vector shape clip.", &["kind:string:false:Rect|Ellipse|Triangle|Polygon|Star|Line|Arrow|Draw", "at:number:true:", "duration:number:false:default 5", "fill:array:false:[r,g,b,a]", "stroke:array:false:[r,g,b,a]", "stroke_width:number:false:", "sides:integer:false:", "width:number:false:project px", "height:number:false:project px"]),
     row!("container.add", ToolKind::Mutate, "Add a container clip pair (video slot + audio slot) at a time.", &["at:number:true:timeline seconds", "duration:number:false:default 5", "label:string:false:slot label"]),
