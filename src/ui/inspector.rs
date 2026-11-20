@@ -49,6 +49,8 @@ thread_local! {
     /// (clip, effect index): draw that effect's mask in the viewport / edit that shader effect's GLSL.
     static EFFECT_MASK: RefCell<Option<(Id, usize)>> = const { RefCell::new(None) };
     static EDIT_SHADER: RefCell<Option<(Id, usize)>> = const { RefCell::new(None) };
+    // ws:parity-360: (clip, 360 Transform index, options) of a "360 Stabilize" pick
+    static STABILIZE_360: RefCell<Option<(Id, usize, crate::engine::vr360::StabilizeOptions)>> = const { RefCell::new(None) };
     /// An effect row's "Save to Gallery…" (clip, stack index).
     static SAVE_EFFECT: RefCell<Option<(Id, usize)>> = const { RefCell::new(None) };
     /// Timeline time a keyframe menu's Previous / Next key asked for.
@@ -83,6 +85,12 @@ pub fn take_save_effect() -> Option<(Id, usize)> {
 
 pub fn take_edit_shader() -> Option<(Id, usize)> {
     EDIT_SHADER.with(|p| p.borrow_mut().take())
+}
+
+// ---- ws:parity-360 ----
+/// (clip, 360 Transform effect index, options) the user asked to 360 Stabilize.
+pub fn take_stabilize_360() -> Option<(Id, usize, crate::engine::vr360::StabilizeOptions)> {
+    STABILIZE_360.with(|p| p.borrow_mut().take())
 }
 
 /// Timeline time to seek to (a keyframe menu's Previous / Next key).
@@ -1244,6 +1252,9 @@ fn clip_section(
             }
             if let Some(i) = r.edit_shader {
                 EDIT_SHADER.with(|p| *p.borrow_mut() = Some((id, i)));
+            }
+            if let Some((i, o)) = r.stabilize_360 {
+                STABILIZE_360.with(|p| *p.borrow_mut() = Some((id, i, o)));
             }
         });
     }

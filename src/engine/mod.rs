@@ -65,6 +65,7 @@ pub mod transcribe;
 // ---- ws:transcript-captions ----
 pub mod tts;
 pub mod visualizer; // ws:audio-visualizer
+pub mod vr360; // ws:parity-360
 // ---- ws:music-burn ----
 pub mod disc;
 pub mod mixvideo;
