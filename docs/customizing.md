@@ -706,6 +706,8 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 |---|---|---|---|
 | `titles.list` | Read | - | List placeable title/text templates: builtin_titles() + Settings.templates filtered by is_text_template. Returns [{name, clip_count, exposed: [string]}]. |
 | `titles.place` | Mutate | at, name | Decode the named title template (builtin or Settings.templates) and place it at `at` (or the playhead). Returns {clip_ids, exposed}. |
+| `slideshow.make` | Mutate | asset_ids, photo_secs, transition, transition_secs, title, title_secs, credits, credits_secs, music, fit_to_music, ken_burns, at, seed | Classic 2000s Make Slideshow: photos and clips in order with a pan-and-zoom on each photo, a classic transition on every cut, a blue title card and a credits card, optional music (fit_to_music stretches the photos to the song). One undo step. Returns {clip_ids, transitions, duration, photo_secs, fits}. |
+| `slideshow.transitions` | Read | - | The Classic 2000s transitions slideshow.make can use: [{id, name, desc}]. |
 
 **`track.*`** (4 tools)
 
