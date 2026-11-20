@@ -29,6 +29,22 @@ on the left of the Edit page (<kbd>Ctrl+1</kbd> shows or hides it).
 - **Image sequences**: import one numbered frame (png, tif, bmp, tga, dpx or exr with at least three
   numbered siblings) and Simple Editor turns the whole sequence into one clip.
 - **Timelines from other editors**: **File ▸ Import ▸ Import Timeline (Premiere / Resolve XML, EDL)…**.
+- **SVG and AVIF pictures** import like any picture. An SVG is drawn to a PNG at its own size, kept in a
+  `Generated` folder next to your project.
+- **Lottie animations** (`.json` or `.lottie`) become a clip, transparent where the animation is. Shapes,
+  gradients, trim paths and eased motion are drawn; masks, mattes, text and image layers, expressions and
+  effects aren't (a message says which ones a file uses).
+
+## Generators
+
+**Right-click an empty spot ▸ Generate** makes a clip in a **Generated** bin, at your project's size and
+frame rate:
+
+- **Colour Bars**: SMPTE-style bars for checking colour and levels (a picture).
+- **Noise**: TV static.
+- **Plasma**: a flowing colour background.
+- **Counter**: a timer counting up over a transparent background. The assistant (`media.generate`) can
+  make it count down, start from any time, and show seconds, hundredths or frames.
 
 Importing doesn't copy or change your files: the project points at them where they are. A dot next to an
 item means it's used in the timeline.
@@ -80,7 +96,7 @@ project**. If the file is missing you also get **Relink Media…**.
 ![Right-click an empty spot](/img/tutorial/library-empty-menu.png)
 
 **Right-click an empty spot** for **Import Media…**, **Import Folder as Bin…**, **Import from URL…**, **New folder**, **New
-sequence**, **Add Adjustment Layer**, **Sort**, **Columns**, **Link folder…**, **Consolidate Media…**,
+sequence**, **Add Adjustment Layer**, **Generate**, **Sort**, **Columns**, **Link folder…**, **Consolidate Media…**,
 **Remove unused**, and **Open Project…**.
 
 Folders, sequences and Smart Bins have their own small menus (rename, delete). See the
