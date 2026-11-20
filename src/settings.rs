@@ -729,6 +729,12 @@ pub struct Settings {
     // ---- ws:player-metadata ----
     /// Saved tag sets (Settings ▸ Metadata), applied in one click in the player, the Library and Export.
     pub metadata_presets: Vec<crate::engine::tags::MetaPreset>,
+    // ---- ws:forum-export ----
+    /// How fast this PC exports, in megapixel-frames per second, learned from finished exports
+    /// (0 = not measured yet): the Export pane's time estimate.
+    pub export_mpx_rate: f64,
+    /// The preset card each project file last exported with (project path -> preset name).
+    pub export_tile_by_project: BTreeMap<String, String>,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1030,6 +1036,9 @@ impl Default for Settings {
             emulator: BTreeMap::new(),
             match_import: true, // ws:project-color-fps
             metadata_presets: Vec::new(), // ws:player-metadata
+            // ---- ws:forum-export ----
+            export_mpx_rate: 0.0,
+            export_tile_by_project: BTreeMap::new(),
         }
     }
 }

@@ -8,6 +8,14 @@
 - **Compatibility graphics**: when the window or its graphics can't start (old GPUs, broken drivers), a plain message offers **Start in compatibility mode** instead of an error or a white window, and so does the next start after one that closed before its window was ready. It draws the preview on the processor and turns vsync off, and uses a software OpenGL (Mesa's `opengl32.dll` in a `compat-gl` folder) when one is there. **Settings ▸ Performance ▸ Compatibility graphics**, or `--compat-graphics`.
 - **Hardware encoders are re-tested after a driver update**, and one that brought the app or the PC down while being tested is never tried again.
 - **Hourly autosaves**: Restore Autosave keeps the last ten minutes plus one autosave per hour for two days, listed by project and age.
+### Export reliability
+- **Failed exports say why in plain words**, with one button that fixes it: Retry in Software, Choose Another File, Relink…, Change Settings or Find the Problem. The Jobs list shows the same sentence instead of the encoder's log.
+- **Any hardware encoder failure finishes in software**: a chosen NVIDIA / Intel / AMD encoder, or one that fails partway through, now retries once on x264 (before, only an automatic pick that failed in its first frames did). A full disk, a locked file or missing media is not retried.
+- **Stuck exports**: an export with no progress for a minute says so in the Jobs list and offers **Retry in Software** (stops it and runs it again on x264, keeping the queue).
+- **Find Export Problem**: exports the timeline in halves at low quality in the background, then selects the clip whose section fails or hangs and moves the playhead to it.
+- **A check before exporting**: missing files offer **Relink…** next to Export Anyway, and a clip that would hang or balloon the export (a 0.0025× speed clip, a broken length, a bad project frame rate) offers **Go to Clip**.
+- **The Export panel estimates the time** as well as the size, learning this PC's speed from each finished export; TikTok / Shorts / Reels cards note that the apps re-encode uploads; each project file reopens the Export panel on the preset it last used; the finished-export message has **Play**.
+- MCP: `export.diagnose`, `export.find_problem`, `export.retry_software`.
 
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.

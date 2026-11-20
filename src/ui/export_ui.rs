@@ -1297,13 +1297,21 @@ fn output_bar(
             1
         };
         parts.push(estimated_size(state, project, settings, (w, h, export_dur, streams), &ext));
+        // ---- ws:forum-export: how long it should take on this PC (learned from finished exports) ----
+        let fps = out_fps(state.fps, project).unwrap_or(project.fps);
+        parts.push(estimated_time(w, h, fps, export_dur, settings.export_mpx_rate));
     }
     ui.horizontal(|ui| {
         let preset = state.tile.clone().unwrap_or_else(|| "Custom settings".into());
         ui.label(egui::RichText::new(preset).strong());
-        ui.label(egui::RichText::new(parts.join(" · ")).strong())
-            .on_hover_text("The size is an estimate - the real one depends on the footage.");
+        ui.label(egui::RichText::new(parts.join(" · ")).strong()).on_hover_text(
+            "The size and time are estimates - the real ones depend on the footage and this PC. The time gets closer after each export.",
+        );
     });
+    // ---- ws:forum-export: social apps re-encode every upload ----
+    if let Some(note) = state.tile.as_deref().and_then(social_note) {
+        ui.weak(note);
+    }
     // ---- ws:max-duration: one line when the timeline runs past its Max length ----
     if let (Some(over), Some(max)) = (project.over_by(), project.limit()) {
         let (text, button, tip) = if state.overflow {
@@ -1407,6 +1415,25 @@ fn output_bar(
         }
     });
     out
+}
+
+// ---- ws:forum-export ----
+/// The summary's time: "~40 s to export", from this PC's measured speed (`Settings.export_mpx_rate`).
+pub fn estimated_time(w: u32, h: u32, fps: f64, dur: f64, rate: f64) -> String {
+    let secs = crate::engine::export_doctor::estimate_secs(w, h, fps, dur, rate);
+    if secs < 60.0 {
+        format!("~{} s to export", (secs.round() as u64).max(1))
+    } else {
+        format!("~{} to export", mmss((secs / 60.0).round() * 60.0))
+    }
+}
+
+/// The line under a social preset card: those apps re-encode every upload (forum 50942, 51395).
+pub fn social_note(tile: &str) -> Option<&'static str> {
+    let t = tile.to_ascii_lowercase();
+    ["tiktok", "shorts", "reels", "instagram"].iter().any(|k| t.contains(k)).then_some(
+        "TikTok, Shorts and Reels re-encode every upload. Export at 1080×1920 and high quality so detail survives.",
+    )
 }
 
 // ---- ws:export-size ----

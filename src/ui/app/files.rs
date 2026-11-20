@@ -322,21 +322,10 @@ impl App {
         }
         self.detect_encoders_once();
         // ---- ws:export-deliver ----
+        // ws:forum-export: missing files offer Relink…, a clip that would hang the export offers Go to Clip
         let offline = offline_assets(&self.project);
-        if offline.is_empty() {
-            self.export_ui.open = true;
-        } else {
-            let list = offline.iter().take(5).map(|p| format!("  {p}")).collect::<Vec<_>>().join("\n");
-            let more =
-                if offline.len() > 5 { format!("\n  … and {} more", offline.len() - 5) } else { String::new() };
-            confirm::ask_app(
-                "Missing media",
-                format!(
-                    "{} file(s) used on the timeline can't be found - they export as black/silence:\n{list}{more}\n\nExport anyway?",
-                    offline.len()
-                ),
-                |app| app.export_ui.open = true,
-            );
+        if export_fix::preflight(self, &offline) {
+            export_fix::open_pane(self);
         }
     }
 
@@ -374,6 +363,7 @@ impl App {
         note_export(&prog, &path); // forum-crash
         self.export = Some((prog.clone(), ExportKind::File { path }));
         // ---- ws:export-deliver ----
+        export_fix::remember_tile(self, &choice.last); // ws:forum-export
         self.settings.last_export = Some(choice.last); // what Ctrl+M re-runs next time
         self.settings.save(); // the window remembers resolution/scaler in settings
         Some(prog)
@@ -540,10 +530,13 @@ impl App {
                 let _ = std::fs::remove_file(temp);
             }
             if prog.is_cancelled() {
-                self.toast("Export cancelled");
-                self.export_queue.clear(); // a cancel means "stop", not "start the next one"
+                // ws:forum-export: Retry in Software's own cancel keeps the queue and starts the retry
+                if !export_fix::retrying(self) {
+                    self.toast("Export cancelled");
+                    self.export_queue.clear(); // a cancel means "stop", not "start the next one"
+                }
             } else {
-                self.push_toast(feedback::Toast::new(format!("Export failed: {e}")).kind(feedback::ToastKind::Error));
+                export_fix::failed(self, &prog, &kind, &e); // ws:forum-export: one sentence + its fix
             }
             self.fire_hook("export_done", json!({"path": hook_path.to_string_lossy(), "ok": false}));
             return;
@@ -571,7 +564,9 @@ impl App {
                 if let Some(p) = &play {
                     quick_export::open_in_player(p);
                 }
-                self.push_toast(feedback::Toast::with_folder(msg, path).kind(feedback::ToastKind::Success));
+                let t = feedback::Toast::with_folder(msg, path.clone()).kind(feedback::ToastKind::Success);
+                let t = export_fix::succeeded(self, &prog, &path, t); // ws:forum-export: Play + speed
+                self.push_toast(t);
             }
             ExportKind::Overwrite { original, temp } => {
                 // ws:quick-export: an empty project first - `release_files` also empties the frame cache, and
@@ -822,7 +817,7 @@ pub(super) fn refuses_source(project: &Project, out: &Path) -> bool {
 }
 
 /// Paths of assets used on the timeline whose file is missing - the export preflight list.
-fn offline_assets(project: &Project) -> Vec<String> {
+pub(super) fn offline_assets(project: &Project) -> Vec<String> {
     let used = project.used_assets();
     project
         .assets

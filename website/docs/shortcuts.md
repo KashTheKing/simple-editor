@@ -28,6 +28,9 @@ Keys are written the way the app writes them: `OpenBracket` is `[`, `Semicolon` 
 | Export Frame… | <kbd>Ctrl+Shift+F</kbd> |
 | Record Voiceover | <kbd>Ctrl+Alt+R</kbd> |
 | Quick Export | <kbd>Ctrl+M</kbd> |
+| Retry Export in Software | - |
+| Find Export Problem | - |
+| Play Last Export | - |
 | Import Folder as Bin… | - |
 | Screen Recording… | - |
 | Import Timeline (Premiere / Resolve XML, EDL)… | - |

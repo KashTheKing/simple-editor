@@ -102,6 +102,9 @@ pub struct JobRow {
     pub state: JobState,
     pub can_cancel: bool,
     pub can_reorder: bool,
+    // ---- ws:forum-export ----
+    /// A running export that has made no progress for `export_doctor::STALL`: offers Retry in Software.
+    pub stalled: bool,
 }
 
 impl JobRow {
@@ -116,6 +119,7 @@ impl JobRow {
             elapsed: Duration::ZERO,
             state: JobState::Running,
             can_cancel: kind.can_cancel(),
+            stalled: false, // ws:forum-export
             can_reorder: kind == JobKind::QueuedExport,
         }
     }
@@ -183,6 +187,9 @@ pub struct JobsResponse {
     pub proxy_next: Option<JobId>,
     /// Clear the waveform / thumbnail / pre-render caches.
     pub clear_caches: bool,
+    // ---- ws:forum-export ----
+    /// A stalled export row's Retry in Software.
+    pub retry_software: Option<JobId>,
 }
 
 /// Running / Queued / Recent, in that order.
@@ -278,6 +285,15 @@ fn row_ui(ui: &mut egui::Ui, row: &JobRow, i: usize, n: usize, out: &mut JobsRes
                 }
                 if row.kind == JobKind::QueuedProxy && ui.add(egui::Button::new("Build next").small()).clicked() {
                     out.proxy_next = Some(row.id.clone());
+                }
+                // ws:forum-export: a stuck export can be stopped and re-run on the software encoder
+                if row.stalled
+                    && ui
+                        .add(egui::Button::new("Retry in Software").small())
+                        .on_hover_text("Stop this export and run it again with the software encoder (x264)")
+                        .clicked()
+                {
+                    out.retry_software = Some(row.id.clone());
                 }
             });
         });
@@ -420,6 +436,21 @@ mod tests {
         let up = h.text_at("▲", 1);
         let resp = h.click(up);
         assert_eq!(resp.reorder, vec![("queue:1".to_string(), -1)]);
+    }
+
+    // ---- ws:forum-export ----
+    #[test]
+    fn a_stalled_export_offers_retry_in_software() {
+        let mut stuck = row(JobKind::Export, 0, JobState::Running);
+        stuck.stalled = true;
+        stuck.status = "No progress for 1:05 · still working".into();
+        let mut h = H::new(vec![row(JobKind::Convert, 0, JobState::Running), stuck]);
+        h.frame(vec![]);
+        let at = h.text_at("Retry in Software", 0);
+        assert!(h.shapes.iter().filter(|c| matches!(&c.shape, egui::epaint::Shape::Text(t) if t.galley.text() == "Retry in Software")).count() == 1, "only the stalled row offers it");
+        let resp = h.click(at);
+        assert_eq!(resp.retry_software, Some("export:0".to_string()));
+        assert!(resp.cancel.is_empty());
     }
 
     #[test]

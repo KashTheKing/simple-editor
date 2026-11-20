@@ -547,6 +547,9 @@ pub struct Progress {
     done: AtomicBool,
     // ---- ws:export-deliver ----
     started: std::time::Instant,
+    // ---- ws:forum-export ----
+    /// When `fraction` last changed (the stuck-job watchdog, `idle_for`).
+    moved: Mutex<std::time::Instant>,
 }
 
 impl Progress {
@@ -558,6 +561,7 @@ impl Progress {
             cancel: AtomicBool::new(false),
             done: AtomicBool::new(false),
             started: std::time::Instant::now(),
+            moved: Mutex::new(std::time::Instant::now()),
         })
     }
     // ---- ws:export-deliver ----
@@ -574,8 +578,18 @@ impl Progress {
         eta_from(self.elapsed(), self.fraction())
     }
     pub fn set(&self, fraction: f32, status: impl Into<String>) {
-        *self.fraction.lock().unwrap() = fraction;
+        let mut f = self.fraction.lock().unwrap();
+        if *f != fraction {
+            *self.moved.lock().unwrap() = std::time::Instant::now();
+        }
+        *f = fraction;
+        drop(f);
         *self.status.lock().unwrap() = status.into();
+    }
+    // ---- ws:forum-export ----
+    /// Time since the fraction last moved (a status change alone is not progress).
+    pub fn idle_for(&self) -> Duration {
+        self.moved.lock().unwrap().elapsed()
     }
     pub fn fraction(&self) -> f32 {
         *self.fraction.lock().unwrap()
@@ -622,7 +636,12 @@ const MIX_BLOCK: usize = 1024;
 pub fn start_export(project: Project, opts: ExportOptions, text: Arc<Mutex<TextRasterizer>>) -> Arc<Progress> {
     // browser zooms: the page parts drawn at the scale they are shown at (not project clips)
     let project = crate::engine::browser::render_view(&project).into_owned();
-    spawn_job("export", move |prog| run_export(&project, &opts, &text, prog))
+    let prog = spawn_job("export", {
+        let (project, opts) = (project.clone(), opts.clone());
+        move |prog| run_export(&project, &opts, &text, prog)
+    });
+    crate::engine::export_doctor::remember(&prog, project, opts); // ws:forum-export
+    prog
 }
 
 /// Run `job` on a named thread; any Err (or panic) lands in `Progress::finish`.
@@ -672,6 +691,13 @@ pub(crate) fn run_export(
             // ws:export-encoders: the probe's verdict is stale - forget the encoder and go software once
             crate::engine::encoders::mark_broken(&enc);
             let note = format!("{enc} failed to start - retried in software");
+            run_export_with(project, opts, text, prog, Some(note), &mut None)
+        }
+        // ws:forum-export: any other hardware failure (a chosen encoder, or one that died partway)
+        // finishes in software too, unless the disk, the file or the media is what failed
+        (Err(e), None) if !prog.is_cancelled() && crate::engine::export_doctor::retry_in_software(project, opts, &e) => {
+            let enc = resolve_encoder(&ext_of(&opts.out_path), &opts.encoder).0;
+            let note = crate::engine::export_doctor::retry_note(&enc, false);
             run_export_with(project, opts, text, prog, Some(note), &mut None)
         }
         (r, _) => r,
