@@ -17,6 +17,8 @@ pub struct FootageMeta {
     pub gamma: &'static str,
     /// 10 bits (or more) per sample.
     pub ten_bit: bool,
+    /// The stream is tagged PQ or HLG (`color_transfer`), so the decoder already tone-maps it.
+    pub hdr_tagged: bool,
 }
 
 static CACHE: Mutex<Option<HashMap<String, FootageMeta>>> = Mutex::new(None);
@@ -94,9 +96,11 @@ pub fn from_probe(stream: &Value, format: &Value, path: &str) -> FootageMeta {
         ""
     };
     let pix = stream.get("pix_fmt").and_then(Value::as_str).unwrap_or("");
-    let raw_bits: u32 = stream.get("bits_per_raw_sample").and_then(Value::as_str).and_then(|s| s.parse().ok()).unwrap_or(0);
+    let raw_bits: u32 =
+        stream.get("bits_per_raw_sample").and_then(Value::as_str).and_then(|s| s.parse().ok()).unwrap_or(0);
     let ten_bit = raw_bits >= 10 || pix.contains("p10") || pix.contains("p12") || pix.contains("10le");
-    FootageMeta { camera, gamma, ten_bit }
+    let hdr_tagged = matches!(trc, "arib-std-b67" | "smpte2084");
+    FootageMeta { camera, gamma, ten_bit, hdr_tagged }
 }
 
 /// How many source frames make one project frame: Some(2) for 50p in a 25p project, 60p in 30p, 59.94 in
@@ -141,37 +145,59 @@ pub fn batch_fps(rates: &[f64]) -> Option<(f64, bool)> {
 
 /// The library id of the S-Log3 conversion LUT (`library::save(Kind::Lut, ..)` installs it on first use).
 pub const SLOG3_LUT: &str = "slog3-to-rec709";
+/// The S-Log2 / S-Gamut conversion LUT.
+pub const SLOG2_LUT: &str = "slog2-to-rec709";
+/// HLG to Rec.709, for HLG footage whose file is not tagged HLG (a tagged file is tone-mapped on decode).
+pub const HLG_LUT: &str = "hlg-to-rec709";
 
-/// A 33³ `.cube` taking Sony S-Log3 / S-Gamut3.Cine (as decoded: legal range expanded to 0..1) to Rec.709:
-/// Sony's published S-Log3 curve to scene linear, the S-Gamut3.Cine to Rec.709 primaries matrix, a soft
-/// shoulder that keeps mid grey at about 42 % and rolls about +3.5 stops of highlights into white, then the
-/// Rec.709 camera curve.
-pub fn slog3_cube() -> String {
+/// The conversion LUT a gamma hint asks for: (library id, the `.cube` text). None = nothing to convert.
+pub fn lut_for(gamma: &str) -> Option<(&'static str, String)> {
+    match gamma {
+        "S-Log3" => Some((SLOG3_LUT, slog3_cube())),
+        "S-Log2" => Some((SLOG2_LUT, slog2_cube())),
+        "HLG" => Some((HLG_LUT, hlg_cube())),
+        _ => None,
+    }
+}
+
+/// Whether `m`'s footage wants a conversion LUT offered: log footage always, HLG only when the file is not
+/// tagged HLG (the tagged kind is already tone-mapped when it is decoded).
+pub fn wants_lut(m: &FootageMeta) -> bool {
+    match m.gamma {
+        "S-Log3" | "S-Log2" => true,
+        "HLG" => !m.hdr_tagged,
+        _ => false,
+    }
+}
+
+/// S-Gamut3.Cine to Rec.709 primaries (linear).
+const SGAMUT3_CINE_709: [[f64; 3]; 3] = [
+    [1.6269474097, -0.5401385389, -0.0868088709],
+    [-0.1785155271, 1.4179409275, -0.2394254004],
+    [0.0444361150, -0.1959199662, 1.2403560849],
+];
+/// S-Gamut (and S-Gamut3, the same primaries) to Rec.709.
+const SGAMUT_709: [[f64; 3]; 3] =
+    [[1.87785, -0.79412, -0.08373], [-0.17681, 1.35098, -0.17417], [-0.02621, -0.14844, 1.17465]];
+/// Rec.2020 to Rec.709.
+const BT2020_709: [[f64; 3]; 3] = [[1.6605, -0.5876, -0.0728], [-0.1246, 1.1329, -0.0083], [-0.0182, -0.1006, 1.1187]];
+
+/// A 33³ `.cube`: the input (as decoded: legal range expanded to 0..1) through `to_lin` to scene linear,
+/// the primaries matrix, `gain`, a soft shoulder that keeps mid grey at about 42 % and rolls the highlights
+/// into white, then the Rec.709 camera curve.
+fn conversion_cube(title: &str, to_lin: impl Fn(f64) -> f64, m: [[f64; 3]; 3], gain: f64) -> String {
     const N: usize = 33;
-    const M: [[f64; 3]; 3] = [
-        [1.6269474097, -0.5401385389, -0.0868088709],
-        [-0.1785155271, 1.4179409275, -0.2394254004],
-        [0.0444361150, -0.1959199662, 1.2403560849],
-    ];
-    let to_lin = |x: f64| {
-        let code = x * 876.0 + 64.0; // decoded full range back to 10-bit code values
-        if code >= 171.2102946929 {
-            10f64.powf((code - 420.0) / 261.5) * (0.18 + 0.01) - 0.01
-        } else {
-            (code - 95.0) * 0.01125 / (171.2102946929 - 95.0)
-        }
-    };
     let shoulder = |x: f64| {
         let x = x.max(0.0);
         (x * (1.0 + x / 16.0) / (1.0 + x) * 1.25).min(1.0)
     };
     let oetf = |l: f64| if l < 0.018 { 4.5 * l } else { 1.099 * l.powf(0.45) - 0.099 };
-    let mut s = format!("TITLE \"S-Log3 to Rec.709\"\nLUT_3D_SIZE {N}\n");
+    let mut s = format!("TITLE \"{title}\"\nLUT_3D_SIZE {N}\n");
     for b in 0..N {
         for g in 0..N {
             for r in 0..N {
-                let inp = [r, g, b].map(|i| to_lin(i as f64 / (N - 1) as f64));
-                let out: Vec<f64> = M
+                let inp = [r, g, b].map(|i| to_lin(i as f64 / (N - 1) as f64) * gain);
+                let out: Vec<f64> = m
                     .iter()
                     .map(|row| oetf(shoulder(row[0] * inp[0] + row[1] * inp[1] + row[2] * inp[2])).clamp(0.0, 1.0))
                     .collect();
@@ -180,6 +206,48 @@ pub fn slog3_cube() -> String {
         }
     }
     s
+}
+
+/// Sony S-Log3 / S-Gamut3.Cine to Rec.709: Sony's published S-Log3 curve, about +3.5 stops of highlights
+/// rolled into white.
+pub fn slog3_cube() -> String {
+    let to_lin = |x: f64| {
+        let code = x * 876.0 + 64.0; // decoded full range back to 10-bit code values
+        if code >= 171.2102946929 {
+            10f64.powf((code - 420.0) / 261.5) * (0.18 + 0.01) - 0.01
+        } else {
+            (code - 95.0) * 0.01125 / (171.2102946929 - 95.0)
+        }
+    };
+    conversion_cube("S-Log3 to Rec.709", to_lin, SGAMUT3_CINE_709, 1.0)
+}
+
+/// Sony S-Log2 / S-Gamut to Rec.709: Sony's S-Log2 curve (S-Log scaled by 219/155, reflection 0.9).
+pub fn slog2_cube() -> String {
+    let to_lin = |x: f64| {
+        let slog = if x >= 0.030001222851889303 {
+            10f64.powf((x - 0.616596 - 0.03) / 0.432699) - 0.037584
+        } else {
+            (x - 0.030001222851889303) / 5.0
+        };
+        slog * 0.9 * 219.0 / 155.0
+    };
+    conversion_cube("S-Log2 to Rec.709", to_lin, SGAMUT_709, 1.0)
+}
+
+/// HLG (Rec.2100, scene referred) to Rec.709: the inverse HLG OETF, Rec.2020 to Rec.709 primaries, and a
+/// gain that puts HLG's mid grey (about 38 %) near SDR mid grey and its reference white (75 %) near white.
+pub fn hlg_cube() -> String {
+    let (a, b, c) = (0.17883277, 0.28466892, 0.55991073);
+    let to_lin = move |e: f64| {
+        let e = e.clamp(0.0, 1.0);
+        if e <= 0.5 {
+            e * e / 3.0
+        } else {
+            (((e - c) / a).exp() + b) / 12.0
+        }
+    };
+    conversion_cube("HLG to Rec.709", to_lin, BT2020_709, 3.75)
 }
 
 #[cfg(test)]
@@ -198,8 +266,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("se-footage-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let cases = [
-            ("a7iv.mp4", vec!["-metadata", "make=Sony", "-metadata", "model=ILCE-7M4", "-metadata", "comment=Gamma S-Log3"], "Sony ILCE-7M4", "S-Log3"),
-            ("iphone.mov", vec!["-metadata", "make=Apple", "-metadata", "model=iPhone 15 Pro"], "Apple iPhone 15 Pro", ""),
+            (
+                "a7iv.mp4",
+                vec!["-metadata", "make=Sony", "-metadata", "model=ILCE-7M4", "-metadata", "comment=Gamma S-Log3"],
+                "Sony ILCE-7M4",
+                "S-Log3",
+            ),
+            (
+                "iphone.mov",
+                vec!["-metadata", "make=Apple", "-metadata", "model=iPhone 15 Pro"],
+                "Apple iPhone 15 Pro",
+                "",
+            ),
             ("plain.mp4", vec![], "", ""),
         ];
         for (name, tags, camera, gamma) in cases {
@@ -231,6 +309,43 @@ mod tests {
         assert!((0.38..0.46).contains(&out[0]) && (out[0] - out[1]).abs() < 0.01, "{out:?}");
         let black = sample_trilinear(&lut, [(95.0 - 64.0) / 876.0; 3]);
         assert!(black[1] < 0.02, "S-Log3 black is black: {black:?}");
+    }
+
+    /// Each log / HLG LUT parses, puts its mid grey near the middle of the screen, keeps black black, and
+    /// stays neutral on grey input.
+    #[test]
+    fn every_conversion_lut_parses_and_keeps_grey_neutral() {
+        use crate::engine::lut::{parse_cube, sample_trilinear};
+        // (gamma, its 18 % grey and black as decoded full range)
+        for (gamma, grey, black) in [
+            ("S-Log3", (420.0 - 64.0) / 876.0, (95.0 - 64.0) / 876.0),
+            ("S-Log2", (347.0 - 64.0) / 876.0, (90.0 - 64.0) / 876.0),
+            ("HLG", 0.38, 0.0),
+        ] {
+            let (id, text) = lut_for(gamma).expect(gamma);
+            assert!(id.ends_with("-to-rec709"));
+            let lut = parse_cube(&text).unwrap_or_else(|e| panic!("{gamma}: {e}"));
+            let out = sample_trilinear(&lut, [grey as f32; 3]);
+            assert!((0.36..0.48).contains(&out[0]), "{gamma} grey: {out:?}");
+            assert!((out[0] - out[1]).abs() < 0.02 && (out[1] - out[2]).abs() < 0.02, "{gamma} neutral: {out:?}");
+            let b = sample_trilinear(&lut, [black as f32; 3]);
+            assert!(b[1] < 0.03, "{gamma} black: {b:?}");
+            let w = sample_trilinear(&lut, [1.0; 3]);
+            assert!(w[1] > 0.85, "{gamma} white: {w:?}");
+        }
+        assert!(lut_for("").is_none());
+    }
+
+    #[test]
+    fn hlg_wants_a_lut_only_when_the_file_is_not_tagged() {
+        let m = |gamma, hdr_tagged| FootageMeta { gamma, hdr_tagged, ..Default::default() };
+        assert!(wants_lut(&m("S-Log3", false)) && wants_lut(&m("S-Log2", false)));
+        assert!(wants_lut(&m("HLG", false)), "HLG named in the tags or file name, stream tagged SDR");
+        assert!(!wants_lut(&m("HLG", true)), "tagged HLG is tone-mapped on decode");
+        assert!(!wants_lut(&m("", false)));
+        let s = json!({"color_transfer": "arib-std-b67"});
+        assert!(from_probe(&s, &json!({}), "a.mp4").hdr_tagged);
+        assert!(!from_probe(&json!({}), &json!({}), "clip_hlg.mp4").hdr_tagged);
     }
 
     #[test]

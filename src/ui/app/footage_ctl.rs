@@ -16,8 +16,8 @@ use std::hash::{Hash, Hasher};
 pub(crate) struct State {
     /// Heavy sources waiting on "make proxies?".
     proxies: Vec<Id>,
-    /// S-Log3 sources waiting on "add the LUT?".
-    log: Vec<Id>,
+    /// Log / untagged-HLG sources waiting on "add the LUT?", with their gamma ("S-Log3", "S-Log2", "HLG").
+    log: Vec<(Id, &'static str)>,
     /// Cameras on the timeline and their clips, while the camera card is up (2+ cameras).
     cams: Vec<(String, Vec<Id>)>,
     /// The reference camera (index into `cams`).
@@ -33,7 +33,7 @@ pub(super) fn has_card(app: &App) -> bool {
 }
 
 /// Footage that stutters without a proxy: 4K long-GOP or 10-bit HEVC.
-fn heavy(a: &crate::model::Asset) -> bool {
+pub(crate) fn heavy(a: &crate::model::Asset) -> bool {
     let long_gop = matches!(a.codec.as_str(), "h264" | "hevc" | "av1" | "vp9" | "mpeg2video" | "mpeg4");
     let ten_bit = footage::of(&a.path).is_some_and(|m| m.ten_bit);
     (long_gop && a.width as u64 * a.height as u64 > 1920 * 1088) || (a.codec == "hevc" && ten_bit)
@@ -41,7 +41,7 @@ fn heavy(a: &crate::model::Asset) -> bool {
 
 impl App {
     /// An import landed (`videos` carry their library ids): offer proxies for heavy footage that would not
-    /// get one anyway, and the LUT for S-Log3.
+    /// get one anyway, and the conversion LUT for S-Log3, S-Log2 and untagged HLG.
     pub(super) fn footage_landed(&mut self, videos: &[crate::model::Asset]) {
         let auto = self.settings.use_proxies;
         let slow: Vec<Id> = videos
@@ -49,14 +49,28 @@ impl App {
             .filter(|a| a.proxy.is_none() && heavy(a) && !(auto && crate::media::proxy::needs_proxy(a)))
             .map(|a| a.id)
             .collect();
-        match self.settings.footage_proxies {
-            _ if slow.is_empty() => {}
-            1 => self.make_proxies(&slow),
-            2 => {}
-            _ => self.footage.proxies.extend(slow),
-        }
-        let log = videos.iter().filter(|a| footage::of(&a.path).is_some_and(|m| m.gamma == "S-Log3")).map(|a| a.id);
+        self.offer_proxies(&slow);
+        let log =
+            videos.iter().filter_map(|a| footage::of(&a.path).filter(footage::wants_lut).map(|m| (a.id, m.gamma)));
         self.footage.log.extend(log);
+    }
+
+    /// The "make proxies?" offer for these sources, honouring the remembered answer
+    /// (`Settings.footage_proxies`). Other checks that find slow footage (phone VFR, odd codecs) call this
+    /// rather than drawing their own card. Sources already proxied or already waiting are skipped.
+    pub(crate) fn offer_proxies(&mut self, ids: &[Id]) {
+        let ids: Vec<Id> = ids
+            .iter()
+            .copied()
+            .filter(|id| !self.footage.proxies.contains(id))
+            .filter(|&id| self.project.asset(id).is_some_and(|a| a.proxy.is_none()))
+            .collect();
+        match self.settings.footage_proxies {
+            _ if ids.is_empty() => {}
+            1 => self.make_proxies(&ids),
+            2 => {}
+            _ => self.footage.proxies.extend(ids),
+        }
     }
 
     fn make_proxies(&mut self, ids: &[Id]) {
@@ -72,32 +86,44 @@ impl App {
         }
         self.push_undo_labeled(before, "Make proxies");
         self.after_edit();
-        self.toast(format!("Making proxies for {} clip{} - see Jobs", ids.len(), if ids.len() == 1 { "" } else { "s" }));
+        self.toast(format!(
+            "Making proxies for {} clip{} - see Jobs",
+            ids.len(),
+            if ids.len() == 1 { "" } else { "s" }
+        ));
     }
 
-    /// The S-Log3 LUT (installed into the library on first use) on each source's own effects, so every clip
-    /// from it - now and later - is converted. One undo step.
-    fn add_log_lut(&mut self, ids: &[Id]) {
+    /// Each source's conversion LUT (installed into the library on first use) on its own effects, so every
+    /// clip from it - now and later - is converted. One undo step.
+    fn add_log_lut(&mut self, ids: &[(Id, &'static str)]) {
         use crate::engine::library::{self, Kind};
-        let mut path = library::path_of(Kind::Lut, footage::SLOG3_LUT);
-        if !path.exists() {
-            match library::save(Kind::Lut, footage::SLOG3_LUT, &footage::slog3_cube()) {
-                Ok(item) => path = item.path,
-                Err(e) => return self.toast(format!("Can't add the LUT: {e}")),
+        let mut luts: Vec<(&'static str, String)> = Vec::new();
+        for &(_, gamma) in ids {
+            if luts.iter().any(|(g, _)| *g == gamma) {
+                continue;
             }
-        }
-        let lut = path.to_string_lossy().into_owned();
-        let before = self.project.to_json();
-        for &id in ids {
-            if let Some(a) = self.project.asset_mut(id) {
-                if !a.effects.iter().any(|e| e.kind == crate::model::EffectKind::Lut && e.lut == lut) {
-                    let mut e = crate::model::Effect::new(crate::model::EffectKind::Lut);
-                    e.lut = lut.clone();
-                    a.effects.insert(0, e); // first: the conversion comes before any grade
+            let Some((lib_id, cube)) = footage::lut_for(gamma) else { continue };
+            let mut path = library::path_of(Kind::Lut, lib_id);
+            if !path.exists() {
+                match library::save(Kind::Lut, lib_id, &cube) {
+                    Ok(item) => path = item.path,
+                    Err(e) => return self.toast(format!("Can't add the LUT: {e}")),
                 }
             }
+            luts.push((gamma, path.to_string_lossy().into_owned()));
         }
-        self.push_undo_labeled(before, "S-Log3 to Rec.709");
+        let before = self.project.to_json();
+        for &(id, gamma) in ids {
+            let Some((_, lut)) = luts.iter().find(|(g, _)| *g == gamma) else { continue };
+            add_lut_first(&mut self.project, id, lut);
+        }
+        let label = match luts.as_slice() {
+            [("S-Log3", _)] => "S-Log3 to Rec.709",
+            [("S-Log2", _)] => "S-Log2 to Rec.709",
+            [("HLG", _)] => "HLG to Rec.709",
+            _ => "Convert to Rec.709",
+        };
+        self.push_undo_labeled(before, label);
         self.after_edit();
     }
 
@@ -125,6 +151,28 @@ impl App {
             self.toast(format!("Some clips could not be matched: {e}"));
         }
     }
+}
+
+/// Put the LUT at `lut` first on source `id`'s effects (the conversion comes before any grade), once.
+pub(crate) fn add_lut_first(project: &mut Project, id: Id, lut: &str) {
+    let Some(a) = project.asset_mut(id) else { return };
+    if a.effects.iter().any(|e| e.kind == crate::model::EffectKind::Lut && e.lut == lut) {
+        return;
+    }
+    let mut e = crate::model::Effect::new(crate::model::EffectKind::Lut);
+    e.lut = lut.to_string();
+    a.effects.insert(0, e);
+}
+
+/// The card's title for the waiting sources: "S-Log3 footage", "S-Log3 and HLG footage".
+pub(crate) fn log_title(log: &[(Id, &'static str)]) -> String {
+    let mut gammas: Vec<&str> = Vec::new();
+    for &(_, g) in log {
+        if !gammas.contains(&g) {
+            gammas.push(g);
+        }
+    }
+    format!("{} footage", gammas.join(" and "))
 }
 
 /// Group the timeline's video clips by camera.
@@ -224,12 +272,13 @@ pub(super) fn cards(app: &mut App, ui: &mut egui::Ui) {
     }
     if !s.log.is_empty() {
         egui::Frame::popup(ui.style()).show(ui, |ui| {
-            ui.label(egui::RichText::new("S-Log3 footage").strong())
-                .on_hover_text("Log footage looks flat and grey until it is converted to normal (Rec.709) colour");
+            ui.label(egui::RichText::new(log_title(&s.log)).strong()).on_hover_text(
+                "Log and HLG footage looks flat or washed out until it is converted to normal (Rec.709) colour",
+            );
             ui.horizontal(|ui| {
                 if ui
                     .button("Add LUT")
-                    .on_hover_text("Adds the S-Log3 to Rec.709 LUT from the library to these clips' sources, before any grade")
+                    .on_hover_text("Adds the matching conversion LUT (to Rec.709) from the library to these clips' sources, before any grade")
                     .clicked()
                 {
                     act = Some(3);
@@ -319,6 +368,25 @@ mod tests {
             _ => None,
         };
         let g = cameras(&p, &cam);
-        assert_eq!(g.iter().map(|(n, ids)| (n.as_str(), ids.len())).collect::<Vec<_>>(), [("Sony ILCE-7M4", 2), ("Sony ILCE-6400", 1)]);
+        assert_eq!(
+            g.iter().map(|(n, ids)| (n.as_str(), ids.len())).collect::<Vec<_>>(),
+            [("Sony ILCE-7M4", 2), ("Sony ILCE-6400", 1)]
+        );
+    }
+
+    /// The conversion LUT goes first on the source (before any grade) and only once.
+    #[test]
+    fn conversion_lut_goes_first_once() {
+        let mut p = Project::new();
+        let mut a = crate::engine::import::placeholder("C:/c0001.mp4");
+        a.effects.push(crate::model::Effect::new(crate::model::EffectKind::Lut));
+        a.effects[0].lut = "C:/grade.cube".into();
+        let id = p.add_asset(a);
+        add_lut_first(&mut p, id, "C:/slog3-to-rec709.cube");
+        add_lut_first(&mut p, id, "C:/slog3-to-rec709.cube");
+        let luts: Vec<&str> = p.asset(id).unwrap().effects.iter().map(|e| e.lut.as_str()).collect();
+        assert_eq!(luts, ["C:/slog3-to-rec709.cube", "C:/grade.cube"]);
+        assert_eq!(log_title(&[(1, "S-Log3"), (2, "S-Log3")]), "S-Log3 footage");
+        assert_eq!(log_title(&[(1, "S-Log3"), (2, "HLG")]), "S-Log3 and HLG footage");
     }
 }

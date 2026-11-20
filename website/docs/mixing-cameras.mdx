@@ -57,8 +57,9 @@ Optical flow is never worked out while you play: playback always stays smooth.
 
 4K long-GOP files (H.264 / HEVC straight from the camera) and 10-bit HEVC can be too much to decode in real
 time. 4K gets proxies automatically while **Settings ▸ Performance ▸ Play low-res all-intra proxies in the preview** is on. Otherwise a card asks
-*This 4K footage may stutter — make proxies?*; your answer is remembered. Proxies are only for editing:
-exports always use the original files.
+*This 4K footage may stutter — make proxies?*; your answer is remembered, and **Settings ▸ Performance ▸
+Heavy footage** changes it (Ask, Make proxies, Play originals). Proxies are only for editing: exports always use
+the original files.
 
 ## Two cameras, one look
 
@@ -67,6 +68,10 @@ more cameras, a card offers **Match colours between cameras**: pick the referenc
 cameras' clips are colour matched to it ([Colour Match](color.mdx)), as one undo step. It is never done
 for you.
 
-Footage shot in **S-Log3** (found in the file's metadata or its name) gets a card too: **Add LUT** puts the
-library's S-Log3 to Rec.709 LUT on those clips' sources, so every clip cut from them is converted before your
-grade. HLG footage needs nothing: it is converted when it is decoded.
+Footage shot in **S-Log3** or **S-Log2** (found in the file's metadata or its name) gets a card too: **Add LUT**
+puts the matching conversion LUT from the library (S-Log3 to Rec.709, S-Log2 to Rec.709) on those clips' sources,
+so every clip cut from them is converted before your grade.
+
+HLG footage that the file says is HLG needs nothing: it is converted when it is decoded. HLG that is only named
+in the metadata or the file name (the stream itself is not marked HLG) gets the same card with an HLG to Rec.709
+LUT.

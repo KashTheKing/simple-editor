@@ -7,8 +7,8 @@
 - **Every-frame slow motion**: a clip whose rate is a whole multiple of the project's shows a rate badge (**50**) on the timeline; right-click ▸ Speed ▸ **Slow motion (every frame)**, or the Inspector's new **Preset** row (Normal, Every frame, Custom), plays each source frame once: 50p in 25p is exactly 50 %, no blending. At normal speed such clips show every Nth frame, never a blend.
 - **Frame rate** in the Inspector for odd rates (24p in 30p): Frame sampling (the default), Frame blending, or Optical flow, which renders in-between frames with ffmpeg in the background and swaps the clip onto the result (never on the playback path).
 - **Zoom** in the Inspector's Transform section: 100 % fits the whole frame, a mark shows 1:1, and **Max sharp** says how far a punch-in stays lossless (200 % for 4K in 1080p). A clip that has to be enlarged says **Upscaled**, with an **AI Upscale** button when the AI enhancer is installed.
-- **Heavy footage**: 4K long-GOP or 10-bit HEVC that would not get a proxy on its own asks "make proxies?" once; the answer is remembered.
-- **Two cameras**: the camera make and model are read from each file; clips from two or more cameras on the timeline offer **Match colours between cameras** (pick the reference camera, Colour Match does the rest, one undo step). S-Log3 footage offers the library's new S-Log3 to Rec.709 LUT on its sources.
+- **Heavy footage**: 4K long-GOP or 10-bit HEVC that would not get a proxy on its own asks "make proxies?" once; the answer is remembered, and **Settings ▸ Performance ▸ Heavy footage** changes it.
+- **Two cameras**: the camera make and model are read from each file; clips from two or more cameras on the timeline offer **Match colours between cameras** (pick the reference camera, Colour Match does the rest, one undo step). S-Log3 and S-Log2 footage, and HLG footage the file doesn't mark as HLG, offer the matching new conversion LUT (to Rec.709) on its sources, first in the effect order.
 - New guide page: **Mixing cameras and frame rates**.
 
 ### Timeline tools and crop

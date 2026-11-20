@@ -33,7 +33,12 @@ pub fn take_requests() -> Vec<FootageReq> {
 
 /// The video clip's source rate (snapped), if known.
 fn src_fps(project: &Project, clip: &Clip) -> Option<f64> {
-    (clip.kind == ClipKind::Video).then(|| project.asset(clip.asset)).flatten().map(|a| a.fps).filter(|f| *f > 1.0).map(snap_fps)
+    (clip.kind == ClipKind::Video)
+        .then(|| project.asset(clip.asset))
+        .flatten()
+        .map(|a| a.fps)
+        .filter(|f| *f > 1.0)
+        .map(snap_fps)
 }
 
 /// The speed that shows every source frame once (50p in a 25p project: 0.5), for a clip whose rate is a
@@ -136,9 +141,13 @@ pub(super) fn rows(
                     speed = Some(s);
                 }
             }
-            let _ = ui.selectable_label(!normal && !at_every, "Custom").on_hover_text("Any other speed: set it in Speed");
+            let _ =
+                ui.selectable_label(!normal && !at_every, "Custom").on_hover_text("Any other speed: set it in Speed");
         });
-        if (src - pf).abs() > 1e-3 && footage::rate_multiple(src, pf).is_none() && footage::rate_multiple(pf, src).is_none() {
+        if (src - pf).abs() > 1e-3
+            && footage::rate_multiple(src, pf).is_none()
+            && footage::rate_multiple(pf, src).is_none()
+        {
             // an odd mix (24 in 30): how the in-between frames are made
             let cur = if blends(&c) { Mode::Blend } else { Mode::Sample };
             crate::ui::prop_field(ui, "Frame rate", |ui| {
@@ -211,7 +220,8 @@ fn zoom_row(ui: &mut egui::Ui, project: &mut Project, c: &Clip, playhead: f64, u
             let rail = r.rect.x_range().shrink(r.rect.height() / 2.5);
             let x = rail.min + ((native * 100.0 - 100.0) / (top - 100.0)) as f32 * rail.span();
             let y = r.rect.center().y;
-            ui.painter().line_segment([egui::pos2(x, y - 7.0), egui::pos2(x, y + 7.0)], egui::Stroke::new(2.0_f32, accent));
+            ui.painter()
+                .line_segment([egui::pos2(x, y - 7.0), egui::pos2(x, y + 7.0)], egui::Stroke::new(2.0_f32, accent));
         }
         ui.weak(format!("{pct:.0} %"));
     });
