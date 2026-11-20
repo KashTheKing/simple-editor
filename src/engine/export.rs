@@ -236,13 +236,18 @@ impl TempDir {
     /// Move every file into `dst` (created if missing; same-named files replaced). Stale stems of an
     /// earlier export (`NN <title>.wav` not written this time) are removed; any other file is kept.
     fn commit(&self, dst: &Path) -> Result<(), String> {
-        let err = |e: std::io::Error| format!("stems to {}: {e}", dst.display());
+        self.commit_with(dst, is_stem_file)
+    }
+    /// `commit`, with `stale` naming which of `dst`'s files an earlier export of the same kind wrote
+    /// (removed when this run did not write them again).
+    fn commit_with(&self, dst: &Path, stale: impl Fn(&str) -> bool) -> Result<(), String> {
+        let err = |e: std::io::Error| format!("moving the files to {}: {e}", dst.display());
         std::fs::create_dir_all(dst).map_err(err)?;
         let fresh: Vec<std::ffi::OsString> =
             std::fs::read_dir(&self.0).map_err(err)?.filter_map(|e| e.ok().map(|e| e.file_name())).collect();
         for e in std::fs::read_dir(dst).map_err(err)?.flatten() {
             let name = e.file_name();
-            if is_stem_file(&name.to_string_lossy()) && !fresh.contains(&name) {
+            if stale(&name.to_string_lossy()) && !fresh.contains(&name) {
                 let _ = std::fs::remove_file(e.path());
             }
         }
@@ -430,11 +435,18 @@ fn output_filters(opts: &ExportOptions, project: (u32, u32), audio: bool, args: 
         None => String::new(),
     };
     let (fw, fh) = scale.unwrap_or(project);
-    if (fw % 2 == 1 || fh % 2 == 1) && args.iter().any(|a| matches!(a.as_str(), "yuv420p" | "nv12" | "yuv420p10le" | "p010le")) {
+    let alpha = writes_alpha(args);
+    if alpha {
+        // ws:gap-alpha-export: letterbox bars are part of the see-through background
+        vf = vf.replace(":color=black", ":color=black@0");
+    }
+    if (fw % 2 == 1 || fh % 2 == 1)
+        && args.iter().any(|a| matches!(a.as_str(), "yuv420p" | "nv12" | "yuv420p10le" | "p010le" | "yuva420p"))
+    {
         if !vf.is_empty() {
             vf.push(',');
         }
-        vf.push_str("pad=ceil(iw/2)*2:ceil(ih/2)*2");
+        vf.push_str(if alpha { "pad=ceil(iw/2)*2:ceil(ih/2)*2:color=black@0" } else { "pad=ceil(iw/2)*2:ceil(ih/2)*2" });
     }
     let af = if opts.loudnorm && audio { LOUDNORM.to_string() } else { String::new() };
     (vf, af)
@@ -683,12 +695,24 @@ pub(crate) fn ext_of(path: &Path) -> String {
 }
 
 // ---- ws:gap-alpha-export ----
-/// Image-sequence formats (`<name>_%05d.<ext>` into a folder).
-pub const SEQUENCE_EXTS: &[&str] = &["png", "jpg", "tif"];
-
 /// An image-sequence export: the output's file name carries ffmpeg's frame-number pattern.
 pub fn is_sequence(out: &Path) -> bool {
     out.file_name().is_some_and(|n| n.to_string_lossy().contains("%05d"))
+}
+
+/// Is `file` one frame of the sequence whose pattern is `pattern` (`<name>_%05d.<ext>`)? A re-export
+/// into the same folder removes the frames it did not write again (a shorter range, a bigger step).
+fn is_frame_of(file: &str, pattern: &str) -> bool {
+    let Some((head, tail)) = pattern.split_once("%05d") else { return false };
+    file.len() > head.len() + tail.len()
+        && file.starts_with(head)
+        && file.ends_with(tail)
+        && file[head.len()..file.len() - tail.len()].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// Do the codec args write an alpha channel? (Then pads and letterbox bars stay see-through.)
+fn writes_alpha(args: &[String]) -> bool {
+    args.iter().any(|a| matches!(a.as_str(), "rgba" | "argb" | "yuva420p" | "yuva444p10le"))
 }
 
 /// Where a sequence called `name` goes inside `dir`: its own `<name>` folder, frames `<name>_%05d.<ext>`.
@@ -1082,7 +1106,8 @@ fn run_export_with(
     match &seq_dir {
         Some((d, dir)) => {
             std::mem::forget(tmp); // (the pattern is no file of its own)
-            d.commit(dir)?;
+            let pattern = opts.out_path.file_name().unwrap_or_default().to_string_lossy();
+            d.commit_with(dir, |f| is_frame_of(f, &pattern))?;
         }
         None => tmp.commit(&opts.out_path)?,
     }
@@ -3196,6 +3221,32 @@ pub(crate) mod tests {
         assert_eq!(sequence_path(Path::new("C:/out"), "shot", "png"), Path::new("C:/out/shot/shot_%05d.png"));
         assert!(!is_sequence(Path::new("C:/out/shot.png")));
         assert_eq!(sequence_ext("tiff_sequence"), Some("tif"));
+        assert_eq!(sequence_ext("mp4"), None);
+    }
+
+    #[test]
+    fn sequence_frames_and_see_through_pads() {
+        assert!(is_frame_of("shot_00001.png", "shot_%05d.png"));
+        assert!(is_frame_of("shot_123456.png", "shot_%05d.png"), "past 99999 frames ffmpeg adds a digit");
+        assert!(!is_frame_of("shot_0000a.png", "shot_%05d.png"));
+        assert!(!is_frame_of("shot_.png", "shot_%05d.png"));
+        assert!(!is_frame_of("shot_00001.tif", "shot_%05d.png"), "another format's frames are kept");
+        assert!(!is_frame_of("notes.txt", "shot_%05d.png"));
+        let s = |v: &str| v.split(' ').map(String::from).collect::<Vec<_>>();
+        let vp9 = s(&special_video_args("webm", "auto", 16, true, false).unwrap());
+        let prores = s(&special_video_args("mov", "auto", 16, true, false).unwrap());
+        assert!(writes_alpha(&vp9) && writes_alpha(&prores));
+        assert!(!writes_alpha(&s("-c:v libx264 -pix_fmt yuv420p")));
+        assert!(!writes_alpha(&s(&special_video_args("png", "", 16, false, true).unwrap())));
+        // letterboxed to 1080x1080 from 16:9: transparent bars, and an odd size pads with clear pixels
+        let boxed = ExportOptions { out_size: Some((1080, 1080)), letterbox: true, ..opts_for(PathBuf::from("o.webm")) };
+        let (vf, _) = output_filters(&boxed, (1920, 1080), false, &vp9);
+        assert!(vf.contains(":color=black@0") && !vf.contains(":color=black:"), "{vf}");
+        let odd = opts_for(PathBuf::from("o.webm"));
+        assert_eq!(output_filters(&odd, (321, 241), false, &vp9).0, "pad=ceil(iw/2)*2:ceil(ih/2)*2:color=black@0");
+        assert_eq!(output_filters(&odd, (321, 241), false, &prores).0, "", "4:4:4 needs no even size");
+        let (vf, _) = output_filters(&boxed, (1920, 1080), false, &s("-c:v libx264 -pix_fmt yuv420p"));
+        assert!(vf.ends_with(":color=black"), "an opaque export keeps black bars: {vf}");
     }
 
     /// A shape over nothing written as transparent ProRes 4444 reads back with an alpha channel:
@@ -3226,7 +3277,8 @@ pub(crate) mod tests {
             return;
         }
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
-        for (name, fps, count) in [("all", None, 30usize), ("third", Some(10.0), 10)] {
+        // the last run re-exports "all" with a bigger step: the 20 frames it no longer writes are removed
+        for (name, fps, count) in [("all", None, 30usize), ("third", Some(10.0), 10), ("all", Some(10.0), 10)] {
             let out = sequence_path(&dir, name, "png");
             let opts = ExportOptions { alpha: true, fps, ..opts_for(out) };
             assert_eq!(wait_done(&start_export(shape_over_nothing(), opts, text.clone())), None);

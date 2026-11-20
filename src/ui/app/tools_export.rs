@@ -273,7 +273,19 @@ pub(crate) fn quick_export(
                 }
                 ExportPresetRef::Custom { ext, .. } => ("edit".into(), ext.clone()),
             };
-            unique_path(&default_out_dir(app), &format!("{}_{suffix}", project.name), &ext)
+            let (dir, stem) = (default_out_dir(app), format!("{}_{suffix}", project.name));
+            match crate::engine::export::sequence_ext(&ext) {
+                // ws:gap-alpha-export: a preset saved with a sequence format writes into a fresh folder
+                Some(fext) => {
+                    let (mut name, mut n) = (stem.clone(), 2);
+                    while dir.join(&name).exists() {
+                        name = format!("{stem}_{n}");
+                        n += 1;
+                    }
+                    crate::engine::export::sequence_path(&dir, &name, fext)
+                }
+                None => unique_path(&dir, &stem, &ext),
+            }
         }
     };
     let (choice, label) = quick_choice(&target, &project, &app.settings, out.clone())?;
