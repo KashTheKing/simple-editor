@@ -583,12 +583,16 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `scopes.read` | Read | kind | Current-frame histogram/percentile/mean statistics (waveform/parade/vectorscope share the same summary — see the tool's own note). |
 
-**`scripts.*`** (3 tools)
+**`scripts.*`** (7 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `scripts.eval` | Ui | code, purpose, dry_run, budget_ms, max_output | Run a Luau script now against the project and library, as one undo step `Script: <purpose>` (undone if it errors); sandboxed to project / library tools, so not held for Allow. See "Assistant scripts" above. |
+| `scripts.create` | Ui | content, name, open | Make a new Luau script in the scripts folder: 'New Script.luau' from the commented template, or 'name' (refused if taken) with 'content' instead of the template. 'open' shows it in the Script Editor pane. Writes a file, so the guard asks first. |
+| `scripts.delete` | Ui | name | Move a script (by name) to the Recycle Bin. The guard asks first. |
 | `scripts.list` | Read | - | Luau scripts with @name/@desc/@hotkey/@on metadata. |
+| `scripts.open` | Ui | external, name | Open a script (by name) in the Script Editor pane, or with 'external' in the program Windows uses for .luau files (Notepad when none; the guard asks first). The 'Open scripts externally' setting does not apply here: omit 'external' for the pane. |
+| `scripts.rename` | Ui | name, to | Rename a script (by its name from scripts.list or its file stem) to 'to'; the extension is kept and a name another script has is refused. |
 | `scripts.run` | Mutate | event, name | Run a script by name (file stem). Pass 'event' to test-run it as if an @on hook fired with that JSON payload (its own @budget_ms applies); omit 'event' to queue a plain run, same as picking it from the Scripts menu. |
 
 **`selection.*`** (2 tools)

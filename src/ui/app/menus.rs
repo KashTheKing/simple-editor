@@ -61,7 +61,7 @@ const MAIN_PANES: [Pane; 22] = [
     // ---- feat/reference-clips ----
     Pane::References,
 ];
-const MORE_PANES: [Pane; 9] = [
+const MORE_PANES: [Pane; 10] = [
     Pane::Grade,
     Pane::Clips,
     Pane::Curves,
@@ -71,6 +71,8 @@ const MORE_PANES: [Pane; 9] = [
     Pane::Moodboard,
     Pane::History,
     Pane::AutoCut,
+    // ---- feat/scripts-editor ----
+    Pane::ScriptEditor,
 ];
 
 /// The Action that toggles a pane: its Window-menu row's shortcut text, and its one palette row.
@@ -96,6 +98,7 @@ pub(super) fn toggle_action(p: Pane) -> Option<Action> {
         Pane::Voiceover => Voiceover,
         Pane::Transcript => ToggleTranscript,
         Pane::ScreenRecording => ScreenCapture,
+        Pane::ScriptEditor => ToggleScriptEditor, // feat/scripts-editor
         _ => return None,
     })
 }
@@ -178,6 +181,8 @@ impl App {
                 quick_export::button(self, ui);
                 // ---- ws:perf-window ----
                 perf_ctl::button(self, ui);
+                // ---- feat/scripts-editor ----
+                scripts_ctl::button(self, ui);
                 // ---- ws:jobs-panel ----
                 jobs_pane::indicator(self, ui);
             });
@@ -428,22 +433,8 @@ impl App {
         }
         acts(ui, &[Some(Action::MaximizePane)]);
         // ---- ws:command-palette ---- (per-script icon/hotkey/desc from ScriptMeta)
-        if !self.script_metas().is_empty() {
-            menu::sub(ui, Some(tools::Glyph::Terminal), "Scripts", |ui| {
-                for m in self.script_metas().to_vec() {
-                    let glyph = m.icon.and_then(tools::Glyph::from_name).unwrap_or(tools::Glyph::Terminal);
-                    let r = menu::row(ui, Some(glyph), &m.name, m.hotkey.as_deref().unwrap_or(""));
-                    let r = if m.desc.is_empty() { r } else { r.on_hover_text(&m.desc) };
-                    if r.clicked() {
-                        self.run_script_path = Some(m.path.clone());
-                    }
-                }
-                ui.separator();
-                if menu::row(ui, Some(tools::Glyph::Folder), "Open Scripts Folder", "").clicked() {
-                    let _ = std::process::Command::new("explorer").arg(crate::scripting::scripts_dir()).spawn();
-                }
-            });
-        }
+        // ---- feat/scripts-editor ---- shown with no scripts too, so Add Script is always reachable
+        menu::sub(ui, Some(tools::Glyph::Terminal), "Scripts", |ui| scripts_ctl::menu(self, ui));
     }
 
     /// ---- ws:panels-multiscreen ---- Window ▸ Move to window ▸ <pane> ▸ Main window / Screen N.

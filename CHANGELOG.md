@@ -99,6 +99,11 @@
 - **Just a part**: Import URL and Find a Reference can download only a time range of a link (`1:23-1:45`; a link's `?t=` start fills it in).
 - **References bin**: clips imported from Find a Reference keep where they came from, get a `reference` tag and a **References** smart bin, and are transcribed in the background so the Library and the pane find them by what is said. **Copy Credits** lists every source. A one-time fair-use note comes first; nothing is scraped or bulk-downloaded.
 - MCP: `references.suggest`, `references.search_links`, `references.import_range`, `references.list`, `references.set`, `references.credits`.
+### Scripts
+- **Manage scripts from Window ▸ Scripts**: each script is a submenu with **Run**, **Open**, **Open Folder** (shows the file in File Explorer), **Rename…** (the extension is kept; a name another script has is refused) and **Delete…** (asks, then moves it to the Recycle Bin). **Add Script** makes `New Script.luau` from a short commented template and opens it; the Scripts menu is there even with no scripts.
+- **Script Editor pane**: edit a script inside the app with Luau colours, **Save** (<kbd>Ctrl+S</kbd> while editing), **Run** (the result or the error, with its line, shows under the code), **Open Externally** (the program Windows uses for `.luau`, or Notepad) and **Open Folder**. A dot marks unsaved changes; a file changed by another program reloads, or offers **Reload** when you have unsaved edits. Open it from the top bar's Scripts button, the Window menu or the palette.
+- **Settings ▸ General ▸ Open scripts externally**: Open and Add Script use your own editor instead of the pane.
+- MCP: `scripts.create`, `scripts.rename`, `scripts.delete` and `scripts.open` (creating, renaming and deleting wait for your Allow).
 
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.

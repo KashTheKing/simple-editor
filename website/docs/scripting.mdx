@@ -17,6 +17,31 @@ is created the first time the app looks for scripts; **Window ▸ Scripts ▸ Op
 Run a script from **Window ▸ Scripts** or the command palette (<kbd>Ctrl+P</kbd>), give it a hotkey, or run it
 over MCP (`scripts.run`).
 
+### Managing and editing scripts
+
+Each script in **Window ▸ Scripts** is a submenu:
+
+| Item | What it does |
+|---|---|
+| **Run** | Runs it against the open project as one undo step |
+| **Open** | Opens it in the **Script Editor** pane (or your own editor, see below) |
+| **Open Folder** | Shows the file in File Explorer |
+| **Rename…** | A name box; the extension stays, and a name another script has is refused |
+| **Delete…** | Asks, then moves the file to the Recycle Bin |
+
+Under the list, **Add Script** makes `New Script.luau` from a short commented template and opens it, and
+**Open Scripts Folder** opens the folder.
+
+The **Script Editor** pane (the top bar's Scripts button, **Window ▸ More ▸ Script Editor**, or the palette)
+edits one script with Luau colours. **Save** writes it (<kbd>Ctrl+S</kbd> while you are typing in it), **Run**
+saves and runs it and shows the result, or the error with its line number, under the code, and **Open
+Externally** opens it in the program Windows uses for `.luau` files (Notepad when there is none). A dot next
+to the name means unsaved changes. If another program changes the file, the pane reloads it, or, when you have
+unsaved edits, offers **Reload** or **Keep Mine**.
+
+To always use your own editor, turn on **Settings ▸ General ▸ Open scripts externally**: **Open** and **Add
+Script** then open the file there instead of in the pane.
+
 ```lua
 -- @name Clip count
 -- @desc Shows how long the project is and how many tracks it has

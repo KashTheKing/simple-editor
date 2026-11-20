@@ -785,6 +785,10 @@ pub struct Settings {
     /// Transcribe each reference once imported (whisper + a downloaded model), so it is found by quote.
     #[serde(default = "default_true")]
     pub reference_transcribe: bool,
+    // ---- feat/scripts-editor ----
+    /// Settings ▸ General ▸ "Open scripts externally": Open and Add Script launch the program Windows uses
+    /// for `.luau` (Notepad when none) instead of the Script Editor pane.
+    pub scripts_external: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1114,6 +1118,7 @@ impl Default for Settings {
             tenor_key: String::new(),
             reference_note_seen: false,
             reference_transcribe: true,
+            scripts_external: false, // feat/scripts-editor
         }
     }
 }

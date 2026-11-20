@@ -186,6 +186,10 @@ pub enum Pane {
     /// imports and the project's references by quote (`ui::reference_ui`, `ui::app::reference_ctl`).
     /// Tab-stacked hidden in every preset (`stack_unplaced`); the Window menu and the Library open it.
     References,
+    // ---- feat/scripts-editor ----
+    /// One Luau script in a code editor: Save, Run, Open Externally, the run's result (`ui::script_editor`,
+    /// `ui::app::scripts_ctl`). Tab-stacked hidden in every preset (`stack_unplaced`).
+    ScriptEditor,
 }
 
 impl Pane {
@@ -276,6 +280,8 @@ impl Pane {
         Pane::Context,
         // ---- feat/reference-clips ----
         Pane::References,
+        // ---- feat/scripts-editor ----
+        Pane::ScriptEditor,
     ];
     /// Panes added in round 3 - a stored layout without them is from an older version (see `from_json`).
     /// Tools left this list with the pages (no page places it; the viewer's tool rail replaces it).
@@ -320,6 +326,7 @@ impl Pane {
             Pane::ScreenRecording => Glyph::Record,
             Pane::Context => Glyph::Notepad, // feat/styles-context
             Pane::References => Glyph::Search, // feat/reference-clips
+            Pane::ScriptEditor => Glyph::Terminal,
         }
     }
     /// A pane by its title, ignoring case. The retired Effects / Transitions panes answer with the Gallery
@@ -373,6 +380,7 @@ impl Pane {
             Pane::ScreenRecording => "Screen Recording",
             Pane::Context => "Project Context", // feat/styles-context
             Pane::References => "Find a Reference", // feat/reference-clips
+            Pane::ScriptEditor => "Script Editor",
         }
     }
 }

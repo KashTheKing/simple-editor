@@ -99,6 +99,7 @@ pub mod timecode_links; // ws:zones-markers: timecodes in text as playhead links
 pub mod zones_ui; // ws:zones-markers: the effect-zone Inspector card
 pub mod stock_ui; // ws:gallery-stock
 pub mod reference_ui; // feat/reference-clips: Find a Reference
+pub mod script_editor; // feat/scripts-editor
 // ---- ws:browser-layer ----
 mod browser_ui;
 

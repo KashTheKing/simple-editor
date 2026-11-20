@@ -206,6 +206,7 @@ mod os_paste; // Ctrl+V of a screenshot / copied files
 mod export_fix; // ws:forum-export
 mod health_ctl; // ws:forum-preview
 mod reference_ctl; // feat/reference-clips: Find a Reference
+mod scripts_ctl; // feat/scripts-editor: the Scripts menu, the Script Editor pane, scripts.create/rename/delete/open
 
 #[derive(Clone)]
 enum ExportKind {
@@ -582,6 +583,11 @@ pub struct App {
     styles_ctx: crate::ui::styles_ui::CtxState,
     /// Speech-to-text was installed when the Learn a style window opened (words per minute).
     styles_ctx_can_transcribe: bool,
+    // ---- feat/scripts-editor ----
+    /// The Script Editor pane's open file, its text and the menu's Rename… box (`scripts_ctl`).
+    script_editor: crate::ui::script_editor::ScriptEditor,
+    /// The pane's Run was pressed: `scripts_ctl::tick` runs it next frame, outside the pane draw.
+    script_editor_run: bool,
     // ---- ws:project-color-fps ----
     /// "Match project to this video?" waiting for an answer (`project_match`).
     match_offer: Option<project_match::MatchOffer>,
@@ -1222,6 +1228,8 @@ impl App {
             emulator_tex: None,
             styles_ctx: Default::default(), // feat/styles-context
             styles_ctx_can_transcribe: false,
+            script_editor: Default::default(), // feat/scripts-editor
+            script_editor_run: false,
             match_offer: None, // ws:project-color-fps
             footage: Default::default(), // ws:mixed-footage
             tabs: Default::default(), // ws:timeline-tabs
@@ -2145,6 +2153,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     stock_ctl::TOOLS,
     // ---- feat/reference-clips ----
     reference_ctl::TOOLS,
+    // ---- feat/scripts-editor ----
+    scripts_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2256,6 +2266,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     group_sync::act,
     // ---- ws:zones-markers ----
     tools_zones::act,
+    // ---- feat/scripts-editor ----
+    scripts_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -2371,6 +2383,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     stock_ctl::frame,
     // ---- feat/reference-clips ----
     reference_ctl::tick,
+    // ---- feat/scripts-editor ----
+    scripts_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -2454,6 +2468,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     styles_ctl::windows,
     // ---- ws:timeline-tabs ----
     timeline_tabs::windows,
+    // ---- feat/scripts-editor ----
+    scripts_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -2533,6 +2549,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     styles_ctl::draw, // feat/styles-context
     // ---- feat/reference-clips ----
     reference_ctl::draw,
+    // ---- feat/scripts-editor ----
+    scripts_ctl::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

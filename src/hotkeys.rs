@@ -462,6 +462,9 @@ actions! {
     AddEffectZone => "add_effect_zone", "Add Effect Zone", None;
     // One export job per section between markers, named "<project> - <marker>". Unbound by design.
     ExportSections => "export_sections", "Export Each Section…", None;
+    // ---- feat/scripts-editor ----
+    // Unbound by design (Window menu, the top bar's Scripts button, the palette), like ToggleJobs.
+    ToggleScriptEditor => "toggle_script_editor", "Show / Hide Script Editor", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -834,6 +837,8 @@ pub fn group(a: Action) -> &'static str {
         NextMarker | PrevMarker => "Marking",
         AddEffectZone => "Add",
         ExportSections => "File",
+        // ---- feat/scripts-editor ----
+        ToggleScriptEditor => "Panels & Pages",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

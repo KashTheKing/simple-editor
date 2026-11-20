@@ -191,6 +191,14 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         .on_hover_text("When a video's size, frame rate or HDR differs from the project's")
         .changed();
     changed |= ui.checkbox(&mut s.confirm_overwrite, "Confirm before overwriting files").changed();
+    // ---- feat/scripts-editor ----
+    changed |= ui
+        .checkbox(&mut s.scripts_external, "Open scripts externally")
+        .on_hover_text(
+            "Window ▸ Scripts ▸ Open and Add Script open the file in the program Windows uses for .luau files \
+             (Notepad when there is none) instead of the Script Editor",
+        )
+        .changed();
     let save = match crate::ui::menu::shortcut(crate::hotkeys::Action::Save) {
         k if k.is_empty() => "Save".to_string(),
         k => format!("Save ({k})"),
