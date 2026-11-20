@@ -24,6 +24,7 @@ mod perf;
 mod playback;
 mod player;
 mod scripting;
+mod scripting_api;
 mod selftest;
 mod settings;
 mod theme;

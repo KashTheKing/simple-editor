@@ -8,7 +8,10 @@
 //! (`ui::app::scripts_ctl`) does the work each `Act` / `MenuAct` names.
 
 use crate::scripting::ScriptMeta;
+use crate::scripting_api::Ctx;
 use crate::ui::html_code::{colour, Kind};
+use crate::ui::script_intel::{self as intel, Analysis, Completion, Diag, SymKind};
+use std::sync::{Arc, Mutex};
 use crate::ui::{menu, tools};
 use eframe::egui::{self, text::LayoutJob, text::TextFormat, Color32, FontId, Key, Modifiers};
 use std::ops::Range;
@@ -22,37 +25,8 @@ const KEYWORDS: &[&str] = &[
     "and", "break", "continue", "do", "else", "elseif", "end", "export", "false", "for", "function", "if", "in",
     "local", "nil", "not", "or", "repeat", "return", "then", "true", "type", "until", "while",
 ];
-/// The globals a script is handed (`scripting::PRELUDE`) and Luau's own libraries.
-const GLOBALS: &[&str] = &[
-    "editor",
-    "library",
-    "project",
-    "query",
-    "math",
-    "string",
-    "table",
-    "bit32",
-    "utf8",
-    "os",
-    "coroutine",
-    "buffer",
-    "print",
-    "tostring",
-    "tonumber",
-    "pairs",
-    "ipairs",
-    "select",
-    "type",
-    "typeof",
-    "assert",
-    "error",
-    "pcall",
-    "setmetatable",
-    "getmetatable",
-];
-
 /// `[[`, `[=[`, `[==[`... at `i`: the number of `=` (the level), or `None`.
-fn long_open(b: &[u8], i: usize) -> Option<usize> {
+pub(crate) fn long_open(b: &[u8], i: usize) -> Option<usize> {
     if b.get(i) != Some(&b'[') {
         return None;
     }
@@ -64,7 +38,7 @@ fn long_open(b: &[u8], i: usize) -> Option<usize> {
 }
 
 /// The end (exclusive) of a long bracket of `level` whose body starts at `from` (the whole rest when unclosed).
-fn long_close(text: &str, from: usize, level: usize) -> usize {
+pub(crate) fn long_close(text: &str, from: usize, level: usize) -> usize {
     let close = format!("]{}]", "=".repeat(level));
     text.get(from..).and_then(|t| t.find(&close)).map_or(text.len(), |k| from + k + close.len())
 }
@@ -144,7 +118,7 @@ pub fn tokens(text: &str) -> Vec<(Range<usize>, Kind)> {
             let member = matches!(before, Some(b'.' | b':'));
             let kind = if KEYWORDS.contains(&word) && !member {
                 Some(Kind::Keyword)
-            } else if GLOBALS.contains(&word) && !member {
+            } else if !member && crate::scripting_api::globals(crate::scripting_api::ALL).any(|g| g.name == word) {
                 Some(Kind::Tag)
             } else if matches!(after, Some(b'(' | b'{' | b'"' | b'\'')) {
                 Some(Kind::Func)
@@ -208,6 +182,11 @@ pub struct ScriptEditor {
     pub output_err: bool,
     /// The menu's Rename… box, while it is open.
     pub rename: Option<Rename>,
+    // ---- feat/script-intellisense ----
+    /// The open file belongs to a plugin (completion and checks use the plugin API).
+    pub plugin: bool,
+    /// Completion, signature help, hover and diagnostics state.
+    pub intel: Intel,
 }
 
 /// The floating name field Rename… opens beside the menu.
@@ -240,6 +219,8 @@ impl ScriptEditor {
         self.conflict = false;
         self.output.clear();
         self.output_err = false;
+        self.intel = Intel::default();
+        self.intel.changed(None);
         Ok(())
     }
 
@@ -288,6 +269,7 @@ impl ScriptEditor {
                 self.saved = text.clone();
                 self.text = text;
                 self.disk_time = t;
+                self.intel.changed(None);
                 true
             }
             Err(_) => false,
@@ -388,33 +370,449 @@ pub fn show(ui: &mut egui::Ui, st: &mut ScriptEditor) -> Vec<Act> {
     // the code fills the pane above the result line
     let line_h = ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y * 2.0;
     let code_h = (ui.available_height() - line_h).max(60.0);
-    let (dark, base) = (ui.visuals().dark_mode, ui.visuals().text_color());
-    let font = egui::TextStyle::Monospace.resolve(ui.style());
     egui::ScrollArea::both().id_salt("se-script-editor-scroll").max_height(code_h).auto_shrink([false, false]).show(
         ui,
-        |ui| {
-            let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
-                let mut job = highlight(buf.as_str(), &font, dark, base);
-                job.wrap.max_width = wrap;
-                ui.fonts_mut(|f| f.layout_job(job))
-            };
-            let rows = ((code_h / ui.text_style_height(&egui::TextStyle::Monospace)) as usize).max(4);
-            egui::TextEdit::multiline(&mut st.text)
-                .id(editor_id)
-                .code_editor()
-                .lock_focus(true)
-                .desired_rows(rows)
-                .desired_width(f32::INFINITY)
-                .layouter(&mut layouter)
-                .show(ui);
-        },
+        |ui| code(ui, st, editor_id, code_h),
     );
-    // the last run's result: selectable, so an error can be copied
-    let colour = if st.output_err { ui.visuals().error_fg_color } else { ui.visuals().weak_text_color() };
-    let text = if st.output.is_empty() { "Run shows the script's result here".to_string() } else { st.output.clone() };
-    ui.add(egui::Label::new(egui::RichText::new(text).color(colour)).truncate().selectable(true))
-        .on_hover_text(st.output.as_str());
+    status_line(ui, st);
     acts
+}
+
+// ---------------------------------------------------------------------------------------------------
+// ---- feat/script-intellisense ----
+// completion, signature help, hover and diagnostics (the analysis is `ui::script_intel`)
+
+/// How long after the last keystroke the syntax / unknown-global check runs.
+const CHECK_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+/// Rows the completion list shows at once.
+const LIST_ROWS: usize = 8;
+
+/// The pane's IntelliSense state. The check runs on its own thread; the list and signature help are
+/// worked out on the UI thread only when the text or the cursor changes.
+#[derive(Default)]
+pub struct Intel {
+    /// Bumped by every edit.
+    rev: u64,
+    /// When the last edit happened (`None` = check straight away, e.g. a file just opened).
+    edited: Option<Instant>,
+    /// An edit has not been checked yet.
+    pending: bool,
+    /// The check in flight: its result lands here.
+    job: Option<Arc<Mutex<Option<Vec<Diag>>>>>,
+    /// The last check's findings.
+    pub diags: Vec<Diag>,
+    /// The completion list and its selected row.
+    list: Option<(Completion, usize)>,
+    /// Signature help for (rev, cursor), and the call whose help Esc closed.
+    sig: Option<(intel::Signature, usize, usize)>,
+    sig_key: Option<(u64, usize)>,
+    sig_closed: Option<usize>,
+    /// Hover text for (rev, char).
+    hover: Option<((u64, usize), Option<(String, String)>)>,
+    /// The editor had focus last frame (egui drops focus on Esc before the pane sees the key).
+    had_focus: bool,
+}
+
+impl Intel {
+    /// The text changed (at `now`; `None` checks without waiting).
+    pub fn changed(&mut self, now: Option<Instant>) {
+        self.rev += 1;
+        self.pending = true;
+        self.edited = now;
+    }
+
+    /// A check is waiting or running.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn busy(&self) -> bool {
+        self.pending || self.job.is_some()
+    }
+
+    /// Collect a finished check, start a due one, and ask for a frame when the delay ends.
+    fn poll(&mut self, ctx: &egui::Context, text: &str, lang: Ctx) {
+        if let Some(job) = &self.job {
+            let done = job.lock().ok().and_then(|mut g| g.take());
+            if let Some(d) = done {
+                self.diags = d;
+                self.job = None;
+            }
+        }
+        if !self.pending || self.job.is_some() {
+            return;
+        }
+        let wait = self.edited.map_or(std::time::Duration::ZERO, |t| CHECK_DELAY.saturating_sub(t.elapsed()));
+        if !wait.is_zero() {
+            ctx.request_repaint_after(wait);
+            return;
+        }
+        self.pending = false;
+        let slot = Arc::new(Mutex::new(None));
+        self.job = Some(slot.clone());
+        let (text, ctx) = (text.to_string(), ctx.clone());
+        let spawned = std::thread::Builder::new().name("script-check".into()).spawn(move || {
+            let d = intel::check(&text, lang);
+            if let Ok(mut g) = slot.lock() {
+                *g = Some(d);
+            }
+            ctx.request_repaint();
+        });
+        if spawned.is_err() {
+            self.job = None;
+        }
+    }
+}
+
+fn char_to_byte(s: &str, chars: usize) -> usize {
+    s.char_indices().nth(chars).map_or(s.len(), |(i, _)| i)
+}
+
+fn byte_to_char(s: &str, byte: usize) -> usize {
+    let mut b = byte.min(s.len());
+    while !s.is_char_boundary(b) {
+        b -= 1;
+    }
+    s[..b].chars().count()
+}
+
+/// The icon colour of a completion row's kind (the editor's own syntax colours).
+fn kind_colour(k: SymKind, dark: bool, base: Color32) -> Color32 {
+    let k = match k {
+        SymKind::Keyword => Kind::Keyword,
+        SymKind::Function | SymKind::LocalFunction => Kind::Func,
+        SymKind::Table => Kind::Tag,
+        SymKind::Type => Kind::AtRule,
+        SymKind::Tool => Kind::Str,
+        SymKind::Value | SymKind::Local | SymKind::Param | SymKind::Global => Kind::Prop,
+    };
+    colour(k, dark, base)
+}
+
+/// Put `label` in place of `start..cursor` and the cursor after it.
+fn accept(ctx: &egui::Context, id: egui::Id, text: &mut String, start: usize, label: &str) -> bool {
+    let Some(mut state) = egui::TextEdit::load_state(ctx, id) else { return false };
+    let Some(range) = state.cursor.char_range() else { return false };
+    let end = char_to_byte(text, range.primary.index).max(start);
+    if start > text.len() || !text.is_char_boundary(start) {
+        return false;
+    }
+    text.replace_range(start..end, label);
+    let at = byte_to_char(text, start + label.len());
+    state.cursor.set_char_range(Some(egui::text::CCursorRange::one(egui::text::CCursor::new(at))));
+    state.store(ctx, id);
+    true
+}
+
+/// A wavy underline from x0 to x1 at y.
+fn squiggle(p: &egui::Painter, x0: f32, x1: f32, y: f32, c: Color32) {
+    let mut pts = Vec::new();
+    let mut x = x0;
+    let mut up = false;
+    while x < x1 {
+        pts.push(egui::pos2(x, if up { y - 1.5 } else { y + 0.5 }));
+        x += 2.0;
+        up = !up;
+    }
+    pts.push(egui::pos2(x1, y));
+    p.add(egui::Shape::line(pts, egui::Stroke::new(1.0_f32, c)));
+}
+
+/// The code field with the list, signature help, hover and underlines.
+fn code(ui: &mut egui::Ui, st: &mut ScriptEditor, id: egui::Id, code_h: f32) {
+    let ctx = ui.ctx().clone();
+    let (dark, base) = (ui.visuals().dark_mode, ui.visuals().text_color());
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let lang = intel::context_of(&st.text, st.plugin);
+    let focused = ui.memory(|m| m.has_focus(id)) || st.intel.had_focus;
+
+    // keys that belong to an open list (or signature help) are taken before the text field sees them
+    let mut take: Option<usize> = None;
+    if focused {
+        if let Some((c, sel)) = st.intel.list.as_mut() {
+            let n = c.items.len().max(1);
+            let (down, up, tab, enter, esc) = ui.input_mut(|i| {
+                (
+                    i.consume_key(Modifiers::NONE, Key::ArrowDown),
+                    i.consume_key(Modifiers::NONE, Key::ArrowUp),
+                    i.consume_key(Modifiers::NONE, Key::Tab),
+                    i.consume_key(Modifiers::NONE, Key::Enter),
+                    i.consume_key(Modifiers::NONE, Key::Escape),
+                )
+            });
+            if down {
+                *sel = (*sel + 1) % n;
+            }
+            if up {
+                *sel = (*sel + n - 1) % n;
+            }
+            if tab || enter {
+                take = Some(*sel);
+            }
+            if esc {
+                st.intel.list = None;
+                ctx.memory_mut(|m| m.request_focus(id));
+            }
+        } else if let Some((_, _, open)) = &st.intel.sig {
+            let open = *open;
+            if ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
+                st.intel.sig_closed = Some(open);
+                st.intel.sig = None;
+                ctx.memory_mut(|m| m.request_focus(id));
+            }
+        }
+    }
+    let ask = focused && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Space));
+    let mut taken = false;
+    if let Some(k) = take {
+        if let Some((c, _)) = st.intel.list.take() {
+            if let Some(it) = c.items.get(k) {
+                taken = accept(&ctx, id, &mut st.text, c.start, &it.label);
+            }
+        }
+    }
+
+    let len_before = st.text.len();
+    let mut layouter = |ui: &egui::Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
+        let mut job = highlight(buf.as_str(), &font, dark, base);
+        job.wrap.max_width = wrap;
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
+    let rows = ((code_h / ui.text_style_height(&egui::TextStyle::Monospace)) as usize).max(4);
+    let out = egui::TextEdit::multiline(&mut st.text)
+        .id(id)
+        .code_editor()
+        .lock_focus(true)
+        .desired_rows(rows)
+        .desired_width(f32::INFINITY)
+        .layouter(&mut layouter)
+        .show(ui);
+    let changed = out.response.changed() || taken;
+    if taken {
+        ctx.memory_mut(|m| m.request_focus(id));
+    }
+    if changed {
+        st.intel.changed(Some(Instant::now()));
+    }
+    st.intel.poll(&ctx, &st.text, lang);
+    let text = st.text.as_str();
+    let cursor = out.cursor_range.map(|r| char_to_byte(text, r.primary.index));
+    let has_focus = out.response.has_focus() || taken || ctx.memory(|m| m.has_focus(id));
+    st.intel.had_focus = has_focus;
+    if !has_focus && !ctx.input(|i| i.pointer.any_down()) {
+        st.intel.list = None;
+    }
+
+    // the list: opened by typing a word, `.` or `:`, or Ctrl+Space; it follows the word being typed
+    if !taken && (changed || ask) {
+        let typed = text.len() > len_before;
+        let prev = cursor.and_then(|c| text[..c].chars().next_back());
+        let wordy = prev.is_some_and(|c| c.is_alphanumeric() || c == '_');
+        let opens = ask || (typed && (wordy || matches!(prev, Some('.' | ':')))) || (st.intel.list.is_some() && wordy);
+        st.intel.list = match (opens, cursor) {
+            (true, Some(c)) => intel::complete(&Analysis::new(text), c, ask, lang).map(|comp| (comp, 0)),
+            _ => None,
+        };
+    } else if let (Some((comp, _)), Some(c)) = (&st.intel.list, cursor) {
+        let word_ok = c >= comp.start && !text.get(comp.start..c).is_some_and(|w| w.contains(char::is_whitespace));
+        if !word_ok || (!has_focus && !ctx.input(|i| i.pointer.any_down())) {
+            st.intel.list = None;
+        }
+    }
+    if !has_focus {
+        st.intel.sig = None;
+    }
+
+    // signature help: worked out when the text or the cursor moved
+    if let (true, Some(c)) = (has_focus, cursor) {
+        let key = (st.intel.rev, c);
+        if st.intel.sig_key != Some(key) {
+            st.intel.sig_key = Some(key);
+            let an = Analysis::new(text);
+            st.intel.sig = intel::call_at(&an, c).and_then(|call| {
+                if st.intel.sig_closed == Some(call.open) {
+                    return None;
+                }
+                intel::signature(&an, &call, lang).map(|s| (s, call.arg, call.open))
+            });
+            if st.intel.sig.is_none() && intel::call_at(&an, c).map(|c| c.open) != st.intel.sig_closed {
+                st.intel.sig_closed = None;
+            }
+        }
+    }
+
+    let galley_pos = out.galley_pos.to_vec2();
+    let rect_at = |byte: usize| out.galley.pos_from_cursor(egui::text::CCursor::new(byte_to_char(text, byte))).translate(galley_pos);
+    let painter = ui.painter_at(out.response.rect.intersect(ui.clip_rect()));
+    let pointer = ctx.input(|i| i.pointer.hover_pos()).filter(|p| out.response.rect.contains(*p));
+
+    // underlines: errors red, unknown globals in the warning colour; their message on hover
+    let mut hover_diag: Option<&Diag> = None;
+    let char_w = ui.fonts_mut(|f| f.glyph_width(&egui::TextStyle::Monospace.resolve(ui.style()), '0')).max(4.0);
+    for d in st.intel.diags.iter().take(200) {
+        let (r0, r1) = (d.range.start.min(text.len()), d.range.end.min(text.len()));
+        let a = rect_at(r0);
+        let b = rect_at(r1);
+        let x1 = if (a.top() - b.top()).abs() < 1.0 { b.left() } else { a.left() + char_w * 3.0 };
+        let x1 = x1.max(a.left() + char_w);
+        let c = if d.error { ui.visuals().error_fg_color } else { ui.visuals().warn_fg_color };
+        squiggle(&painter, a.left(), x1, a.bottom() - 1.0, c);
+        let zone = egui::Rect::from_min_max(a.left_top(), egui::pos2(x1, a.bottom()));
+        if pointer.is_some_and(|p| zone.contains(p)) {
+            hover_diag = Some(d);
+        }
+    }
+
+    // hover docs for the API name under the pointer
+    let hover = pointer.filter(|_| !ctx.input(|i| i.pointer.any_down())).and_then(|p| {
+        let cc = out.galley.cursor_from_pos(p - out.galley_pos).index;
+        let key = (st.intel.rev, cc);
+        if st.intel.hover.as_ref().map(|(k, _)| *k) != Some(key) {
+            let an = Analysis::new(text);
+            st.intel.hover = Some((key, intel::hover(&an, char_to_byte(text, cc), lang)));
+        }
+        st.intel.hover.as_ref().and_then(|(_, h)| h.clone())
+    });
+    if hover_diag.is_some() || hover.is_some() {
+        let diag = hover_diag.map(|d| (d.msg.clone(), d.error));
+        out.response.clone().on_hover_ui_at_pointer(|ui| {
+            ui.set_max_width(420.0);
+            if let Some((msg, err)) = &diag {
+                let c = if *err { ui.visuals().error_fg_color } else { ui.visuals().warn_fg_color };
+                ui.colored_label(c, msg);
+            }
+            if let Some((sig, doc)) = &hover {
+                ui.label(egui::RichText::new(sig).monospace());
+                if !doc.is_empty() {
+                    ui.weak(doc);
+                }
+            }
+        });
+    }
+
+    let Some(range) = out.cursor_range else { return };
+    let caret = out.galley.pos_from_cursor(range.primary).translate(galley_pos);
+
+    // signature help, above the line: the current parameter stands out
+    if let Some((sig, arg, _)) = st.intel.sig.clone() {
+        egui::Area::new(id.with("signature"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .fixed_pos(caret.left_top() - egui::vec2(0.0, 2.0))
+            .interactable(false)
+            .show(&ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.set_max_width(480.0);
+                    let accent = ui.visuals().selection.stroke.color;
+                    let weak = ui.visuals().weak_text_color();
+                    let mono = egui::TextStyle::Monospace.resolve(ui.style());
+                    let mut job = LayoutJob::default();
+                    let mut put = |s: &str, c: Color32, strong: bool| {
+                        let mut f = TextFormat::simple(mono.clone(), c);
+                        if strong {
+                            f.underline = egui::Stroke::new(1.0_f32, c);
+                        }
+                        job.append(s, 0.0, f);
+                    };
+                    put(&sig.name, base, false);
+                    put("(", weak, false);
+                    let last = sig.params.len().saturating_sub(1);
+                    for (k, p) in sig.params.iter().enumerate() {
+                        let on = k == arg || (k == last && p.starts_with("...") && arg > last);
+                        put(p, if on { accent } else { base }, on);
+                        if k < last {
+                            put(", ", weak, false);
+                        }
+                    }
+                    put(")", weak, false);
+                    if !sig.ret.is_empty() {
+                        put(&format!(" -> {}", sig.ret), weak, false);
+                    }
+                    ui.label(job);
+                    if !sig.doc.is_empty() {
+                        ui.weak(&sig.doc);
+                    }
+                });
+            });
+    }
+
+    // the completion list, under the cursor: icon, name, signature; the selected row's doc below
+    let Some((comp, sel)) = st.intel.list.clone() else { return };
+    let mut clicked = None;
+    egui::Area::new(id.with("completion"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(egui::pos2(rect_at(comp.start).left() - 26.0, caret.bottom() + 2.0))
+        .show(&ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                let w = 420.0;
+                ui.set_width(w);
+                let v = ui.visuals().clone();
+                let mono = egui::TextStyle::Monospace.resolve(ui.style());
+                let row_h = ui.text_style_height(&egui::TextStyle::Monospace) + 6.0;
+                let first = sel.saturating_sub(LIST_ROWS - 1).min(comp.items.len().saturating_sub(LIST_ROWS));
+                for (k, it) in comp.items.iter().enumerate().skip(first).take(LIST_ROWS) {
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, row_h), egui::Sense::click());
+                    let on = k == sel;
+                    let p = ui.painter_at(rect);
+                    let (fg, weak) = if on {
+                        let fill = v.selection.bg_fill;
+                        p.rect_filled(rect, 3.0, fill);
+                        let c = tools::on_accent_over(fill, v.panel_fill);
+                        (c, c.gamma_multiply(0.75))
+                    } else {
+                        if resp.hovered() {
+                            p.rect_filled(rect, 3.0, v.widgets.hovered.weak_bg_fill);
+                        }
+                        (v.text_color(), v.weak_text_color())
+                    };
+                    // the kind icon: its letter on a tint of the kind's syntax colour
+                    let kc = kind_colour(it.kind, v.dark_mode, v.text_color());
+                    let icon = egui::Rect::from_center_size(egui::pos2(rect.left() + 12.0, rect.center().y), egui::vec2(18.0, 16.0));
+                    p.rect_filled(icon, 3.0, kc.gamma_multiply(0.25));
+                    p.text(icon.center(), egui::Align2::CENTER_CENTER, it.kind.letter(), FontId::monospace(11.0), kc);
+                    let name = p.text(egui::pos2(rect.left() + 26.0, rect.center().y), egui::Align2::LEFT_CENTER, &it.label, mono.clone(), fg);
+                    if it.detail != it.label {
+                        let sig_font = FontId::new(mono.size * 0.9, mono.family.clone());
+                        p.text(egui::pos2(name.right() + 10.0, rect.center().y), egui::Align2::LEFT_CENTER, &it.detail, sig_font, weak);
+                    }
+                    if resp.clicked() {
+                        clicked = Some(k);
+                    }
+                }
+                if let Some(it) = comp.items.get(sel) {
+                    let doc = if it.doc.is_empty() { it.kind.name().to_string() } else { it.doc.clone() };
+                    ui.separator();
+                    ui.add(egui::Label::new(egui::RichText::new(doc).color(v.weak_text_color())).wrap());
+                }
+            });
+        });
+    if let Some(k) = clicked {
+        if let Some(it) = comp.items.get(k) {
+            if accept(&ctx, id, &mut st.text, comp.start, &it.label) {
+                st.intel.changed(Some(Instant::now()));
+                ctx.memory_mut(|m| m.request_focus(id));
+            }
+        }
+        st.intel.list = None;
+    }
+}
+
+/// The line under the code: the first problem (its line and message, counted), then the last run's result.
+fn status_line(ui: &mut egui::Ui, st: &ScriptEditor) {
+    ui.horizontal(|ui| {
+        let d = &st.intel.diags;
+        let first = d.iter().find(|d| d.error).or(d.first());
+        if let Some(f) = first {
+            let c = if f.error { ui.visuals().error_fg_color } else { ui.visuals().warn_fg_color };
+            let more = if d.len() > 1 { format!("  (+{} more)", d.len() - 1) } else { String::new() };
+            let tip: Vec<String> = d.iter().take(20).map(|d| format!("Line {}: {}", d.line, d.msg)).collect();
+            ui.add(egui::Label::new(egui::RichText::new(format!("Line {}: {}{more}", f.line, f.msg)).color(c)).truncate())
+                .on_hover_text(tip.join("\n"));
+            ui.separator();
+        }
+        // the last run's result: selectable, so an error can be copied
+        let colour = if st.output_err { ui.visuals().error_fg_color } else { ui.visuals().weak_text_color() };
+        let text = if st.output.is_empty() { "Run shows the script's result here".to_string() } else { st.output.clone() };
+        ui.add(egui::Label::new(egui::RichText::new(text).color(colour)).truncate().selectable(true))
+            .on_hover_text(st.output.as_str());
+    });
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -666,6 +1064,19 @@ mod tests {
                 st.output = "script failed: line 3".into();
                 st.output_err = true;
             }
+            // the check a newly opened file gets runs on its own thread: idle means after it landed
+            for _ in 0..2000 {
+                frame(&ctx, &mut |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        assert!(show(ui, &mut st).is_empty());
+                    });
+                });
+                if !st.intel.busy() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            assert!(!st.intel.busy(), "the check finished");
             for _ in 0..30 {
                 frame(&ctx, &mut |ctx| {
                     egui::CentralPanel::default().show(ctx, |ui| {
@@ -675,6 +1086,66 @@ mod tests {
             }
             assert!(!ctx.has_requested_repaint(), "an idle Script Editor must not repaint (open: {open})");
         }
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // ---- feat/script-intellisense ----
+    fn keys(ctx: &egui::Context, st: &mut ScriptEditor, events: Vec<egui::Event>) {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(900.0, 700.0))),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = show(ui, st);
+            });
+        });
+    }
+
+    fn key(k: Key) -> egui::Event {
+        egui::Event::Key { key: k, physical_key: None, pressed: true, repeat: false, modifiers: Modifiers::NONE }
+    }
+
+    #[test]
+    fn typing_a_member_opens_the_list_and_enter_takes_it() {
+        let d = std::env::temp_dir().join(format!("se-script-intel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let path = crate::scripting::create_in(&d).unwrap();
+        std::fs::write(&path, "").unwrap();
+        let mut st = ScriptEditor::default();
+        st.load(&path).unwrap();
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("se-script-editor-code");
+        keys(&ctx, &mut st, vec![]);
+        ctx.memory_mut(|m| m.request_focus(id));
+        keys(&ctx, &mut st, vec![]);
+        keys(&ctx, &mut st, vec![egui::Event::Text("editor.".into())]);
+        let labels: Vec<String> = st.intel.list.as_ref().map(|(c, _)| c.items.iter().map(|i| i.label.clone()).collect()).unwrap_or_default();
+        assert_eq!(labels, ["log", "tool", "tools"], "the list after `editor.`");
+        // Down, Enter: the second row goes in and the list closes
+        keys(&ctx, &mut st, vec![key(Key::ArrowDown)]);
+        keys(&ctx, &mut st, vec![key(Key::Enter)]);
+        assert_eq!(st.text, "editor.tool");
+        assert!(st.intel.list.is_none());
+        // `(` opens signature help on the first parameter
+        keys(&ctx, &mut st, vec![egui::Event::Text("(".into())]);
+        let (sig, arg, _) = st.intel.sig.clone().expect("signature help");
+        assert_eq!((sig.name.as_str(), arg), ("editor.tool", 0));
+        // Esc closes the list; a later word opens it again
+        keys(&ctx, &mut st, vec![egui::Event::Text("\"x\", pa".into())]);
+        assert!(st.intel.list.as_ref().is_some_and(|(c, _)| c.items[0].label == "pairs"));
+        keys(&ctx, &mut st, vec![key(Key::Escape)]);
+        assert!(st.intel.list.is_none() && st.text.ends_with("pa"), "Esc closes the list and keeps the text: {:?} {:?}", st.text, st.intel.list.as_ref().map(|(c, _)| c.items.len()));
+        // the check runs after typing stops and finds the unfinished call
+        for _ in 0..2000 {
+            keys(&ctx, &mut st, vec![]);
+            if !st.intel.busy() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(st.intel.diags.iter().any(|d| d.error && d.line == 1), "{:?}", st.intel.diags);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

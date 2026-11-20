@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Script Editor IntelliSense
+- **Completion while you type**: names, keywords and the file's own locals as you type a word, a table's members after `.` or `:` (`editor.`, `math.`, `s:`), tool names inside `editor.tool("…`, and Ctrl+Space anywhere. Prefix matches come first, then fuzzy ones. Each row shows its kind, name and signature, with the doc underneath. Up/Down pick, Tab or Enter accept, Esc closes.
+- **Signature help** inside a call's parentheses, with the current argument highlighted (nested calls, strings and tables count correctly).
+- **Hover docs** on any API name, and on a tool name in `editor.tool`.
+- **Problems underlined as you type**: Luau's own compiler checks the script 300 ms after you stop typing (on a background thread, never running it), and unknown globals get a warning underline. The message shows on hover and in the status line.
+- The API is described once (`src/scripting_api.rs`), checked against what the scripting runtimes really register, and published as `docs/scripting-api.md`.
+
 ### Crash recovery
 - **The recovery prompt says what happened**: after a crash, the next start names what the editor was doing ("closed unexpectedly while playing clip.mp4", "while applying an effect to a.mov (Glow)", "while exporting final.mp4") and offers **Recover**, **Recover Without Media** (every file offline for that session) and **Recover Without Effects** (one Undo turns them back on). It can reopen the project even when there is no newer autosave.
 - **A file that crashes the editor no longer crashes it again**: the file it died on is taken offline, so the project opens and shows it as missing; **Bring the File Back** tries it again. A file whose import hangs or fails is skipped after 30 seconds instead of holding up the rest of the import.
