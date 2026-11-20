@@ -135,6 +135,7 @@ mod tools_timeline;
 mod tools_timeline_pro;
 // ---- ws:text-titles ----
 mod tools_titles;
+mod tools_timeremap; // ws:time-remap
 // ---- ws:transcript-captions ----
 mod tools_transcript;
 mod tools_trim;
@@ -1888,6 +1889,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     emulator_ctl::TOOLS,
     // ---- ws:preview-audio-only ----
     audio_only::TOOLS,
+    // ---- ws:time-remap ----
+    tools_timeremap::TOOLS,
     // ---- ws:assistant-luau ----
     media_api::TOOLS,
     script_ctl::TOOLS,

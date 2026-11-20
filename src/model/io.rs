@@ -80,6 +80,11 @@ impl Project {
                 if !c.speed_curve.is_animated() {
                     c.speed_curve.value = c.speed; // older files have no curve at all
                 }
+                // a hand-edited or broken time map: keep it only if it still has two good keys
+                if c.time_map.as_mut().is_some_and(|m| !m.normalize()) {
+                    c.time_map = None;
+                }
+                c.sync_time_map();
                 for e in &mut c.effects {
                     // older files / edited files: make sure every parameter exists
                     let specs = e.specs();

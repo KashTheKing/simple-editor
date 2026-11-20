@@ -36,6 +36,7 @@ section's title to open or close it, and **right-click a title** for that sectio
 | **Opacity & blend** | Opacity, blend mode (Multiply, Screen, Overlay…), fade in and out |
 | **Audio** (clips on an audio track) | Volume, pan, fades, **Role** and **Bus**. Right-click the title for Repair, Clarity, Open in Mixer, Duck Music under Dialogue and Normalize Selection ([Audio](audio.mdx#clip-audio)) |
 | **Speed** | Speed %, Reverse and Freeze. Right-click for **Speed / Retime…** (<kbd>Ctrl+R</kbd>) and **Freeze Frame at Playhead** |
+| **Time Remap** (video, audio and sequence clips) | Speed keys, freeze holds and backward stretches ([Time remapping](#time-remapping)) |
 | **Color** | The grading controls ([Color](color.mdx#the-color-section)) |
 | **Effects** | The clip's effect stack ([Effects](effects.mdx#the-effect-stack)). Right-click the title to open it in the node editor |
 | **Shape**, **Mask**, **Path** | A shape's fill, stroke and size; the clip's mask (right-click: Add mask, Edit in viewport, Remove mask); saving the clip's motion as a path |
@@ -49,6 +50,32 @@ Drag a number left or right to change it, or click it to type a value. Dragging 
 [Preview](viewer.mdx#move-scale-rotate-and-crop) changes the same values.
 
 ![The Inspector with a text clip selected](/img/tutorial/inspector-text.png)
+
+## Time remapping
+
+Time remapping changes how fast a clip plays from moment to moment: smooth speed ramps, freeze holds and
+stretches that play backwards. Open the **Time Remap** section and click **Turn On**: the clip keeps playing
+exactly as before (its speed, ramp, reverse or freeze become keys), and the section shows its **speed lane**:
+the speed over the clip, 100 % on the bright line, a hold on the 0 % line, backwards below it.
+
+- **◆** or a double-click on the lane adds a key. A key on its own changes nothing; it splits the clip into
+  segments you can change one by one.
+- Click a segment to pick it. **Speed** sets how fast it plays, **Length** how long it lasts, **Smooth**
+  eases the speed through its keys (off: one constant speed, a jump at each key).
+- Drag a segment up or down to change its speed, or drag a key left or right to move it in time.
+- **Hold** freezes the frame at the playhead for the length beside it (1 s to start with).
+- **Reverse** plays the segment under the playhead backwards right after itself, then forwards again, so the
+  picture never jumps.
+- **Turn Off** goes back to one constant speed over the same footage and length.
+
+Every change that makes a segment longer or shorter changes the clip's length, and the clips after it on its
+track move with it. A video clip and its linked sound take each edit together. Each edit is one undo step.
+
+The sound follows the remap: faster is higher, slower is lower, as with a plain speed change. Holds and
+backward stretches are silent, faded in and out over 2 ms so they never click. The speed ramp blocks
+(Speed Ramp In / Out, Slow-mo Hit, Speed Up) keep working as before on clips without time remapping; on a
+remapped clip the time map is what plays. The [Animator's Speed view](animator.mdx#views-blocks-curves-flow-speed)
+shows the same lane.
 
 ## Keyframes
 

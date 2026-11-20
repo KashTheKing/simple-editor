@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Editing
+- **Time remapping**: speed keys on a clip for smooth speed ramps, freeze holds and stretches that play backwards then forwards again, in the Inspector's new Time Remap section and the Animator's Speed view. Changing a segment's speed or length changes the clip's length and moves the rest of its track; a linked picture and sound change together. The sound follows the speed and is silent in holds and backward stretches. `clip.time_remap` over MCP.
+
 ## 1.4.0
 
 ### Media player

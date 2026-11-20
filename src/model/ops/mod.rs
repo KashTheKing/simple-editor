@@ -29,6 +29,7 @@ mod shapes;
 // `ui::app::tools_transcript` to name it.
 pub mod subtitles;
 mod templates;
+mod timeremap; // ws:time-remap
 // ws:trim-model: `TrackFlag`/`EditPoint`/`Side` are free-standing types (not `impl Project` methods),
 // so - unlike every other ops file, which never needs a module-path to be usable from outside
 // `model::ops` (method calls resolve through the already-`pub` `Project` type regardless of the

@@ -679,6 +679,7 @@ mod repair;
 mod shape;
 mod subtitle;
 mod text;
+mod timemap;
 mod track;
 mod transition;
 
@@ -701,6 +702,7 @@ pub use project::*;
 pub use shape::*;
 pub use subtitle::*;
 pub use text::*;
+pub use timemap::*;
 pub use track::*;
 pub use transition::*;
 

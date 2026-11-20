@@ -1188,6 +1188,14 @@ fn clip_section(
         folds.primary = primary;
     }
 
+    // ws:time-remap: Time Remap - keys, holds, backward stretches; committed by its own ops
+    let mut remap_changed = false;
+    if !multi && matches!(clip.kind, ClipKind::Video | ClipKind::Audio | ClipKind::Sequence) {
+        fold(ui, &mut folds, "time_remap", "Time Remap", None, |ui| {
+            remap_changed = crate::ui::time_remap_ui::section(ui, project, id, playhead, palette, undo);
+        });
+    }
+
     // Color: Primaries/Curves/Levels/HueShift/Vignette, added lazily on first touch - nothing to grade
     // on an audio track
     if !audio {
@@ -1539,6 +1547,7 @@ fn clip_section(
         || effects_changed
         || html_changed // ws:html-layer
         || visualizer_changed // ws:audio-visualizer
+        || remap_changed // ws:time-remap
 }
 
 /// Text style presets, at the end of the Text section: save the clip's (or the selected characters')
