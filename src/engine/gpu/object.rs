@@ -85,7 +85,7 @@ impl GpuRenderer {
                 glow::PixelUnpackData::Slice(Some(&m.px)),
             );
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 4);
-            self.textures.insert(key, LayerTex { tex, w, h, rev, used });
+            self.textures.insert(key, LayerTex { tex, w, h, rev, used, deep: false });
             tex
         }
     }
