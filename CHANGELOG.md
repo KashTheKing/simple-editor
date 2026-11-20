@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Processing mode
+- **Settings ▸ Performance ▸ Processing mode**: **8-bit** (the fast default, unchanged), **16-bit float** (effects and blends keep float precision between passes, no 8-bit rounding in the middle) and **16-bit float, linear** (layers, opacity, scaling and crossfades mix in linear light, so fades and soft edges look the way light does). The GPU compositor follows it; the CPU compositor stays 8-bit. The performance HUD shows the mode.
+- **10-bit exports from the float modes**: HEVC and AV1 exports are written 10-bit (Main 10), and HDR exports get real 16-bit frames instead of 8-bit ones in a 10-bit file. H.264 and VP9 stay 8-bit.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

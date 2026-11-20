@@ -30,6 +30,9 @@ pub const CHANNELS: usize = 2;
 /// `rgba` at all - they are in a D3D11 texture that `engine::gpu::upload` shares into GL. Such frames
 /// only ever reach a `LayerSet` (`DecoderPool::frames_arc`); `to_rgba` / `make_rgba` / `copy_from`
 /// read them back for a CPU reader all the same.
+/// ws:parity-color-pipeline: and `deep`: `rgba` holds 16-bit RGBA (`rgba64le`, 8 bytes a pixel) from a
+/// decoder of a >8-bit source in a float processing mode. Like `gpu`, such frames only reach a `LayerSet`;
+/// `to_rgba` / `make_rgba` / `copy_from` narrow them for any CPU reader.
 #[derive(Clone, Default)]
 pub struct Frame {
     pub width: u32,
@@ -41,16 +44,21 @@ pub struct Frame {
     pub bgrx: bool,
     /// The pixels are on the GPU (`rgba` is empty). See above.
     pub gpu: Option<Arc<d3d::GpuFrame>>,
+    /// `rgba` is 16-bit RGBA, little-endian (ws:parity-color-pipeline). See above.
+    pub deep: bool,
 }
 
 impl Frame {
     pub fn new(width: u32, height: u32) -> Self {
-        Self { width, height, pts: 0.0, rgba: vec![0; (width * height * 4) as usize], bgrx: false, gpu: None }
+        Self { width, height, pts: 0.0, rgba: vec![0; (width * height * 4) as usize], bgrx: false, gpu: None, deep: false }
     }
     /// Resize (contents undefined/zero when the size changes). The writer is about to fill it as RGBA.
     pub fn resize(&mut self, width: u32, height: u32) {
         self.bgrx = false;
         self.gpu = None;
+        if std::mem::take(&mut self.deep) {
+            self.width = 0; // a deep buffer is twice the size: always reallocate below
+        }
         if self.width != width || self.height != height {
             self.width = width;
             self.height = height;
@@ -62,7 +70,7 @@ impl Frame {
     /// a fresh one comes zeroed from the allocator (lazily, page by page) instead of by a memset.
     pub fn resize_for_overwrite(&mut self, width: u32, height: u32) {
         let n = (width * height * 4) as usize;
-        (self.width, self.height, self.bgrx, self.gpu) = (width, height, false, None);
+        (self.width, self.height, self.bgrx, self.gpu, self.deep) = (width, height, false, None, false);
         if self.rgba.capacity() < n {
             self.rgba = vec![0; n];
         } else {
@@ -76,6 +84,9 @@ impl Frame {
             g.read(self);
             self.pts = pts;
         }
+        if std::mem::take(&mut self.deep) {
+            narrow_rgba16(&mut self.rgba);
+        }
         if std::mem::take(&mut self.bgrx) {
             for px in self.rgba.chunks_exact_mut(4) {
                 px.swap(0, 2);
@@ -86,7 +97,7 @@ impl Frame {
     /// This frame as RGBA: itself, or a converted copy of a `bgrx` one - for CPU readers of a
     /// frame that may have come from `DecoderPool::frame_arc`.
     pub fn to_rgba(&self) -> std::borrow::Cow<'_, Frame> {
-        if !self.bgrx && self.gpu.is_none() {
+        if !self.bgrx && self.gpu.is_none() && !self.deep {
             return std::borrow::Cow::Borrowed(self);
         }
         let mut f = self.clone();
@@ -116,10 +127,32 @@ impl Frame {
             return;
         }
         self.resize_for_overwrite(f.width, f.height);
-        self.rgba.copy_from_slice(&f.rgba);
+        if f.deep {
+            // ws:parity-color-pipeline: the copy is for a CPU reader - narrowed to RGBA8
+            for (d, s) in self.rgba.iter_mut().zip(f.rgba.chunks_exact(2)) {
+                *d = narrow16(u16::from_le_bytes([s[0], s[1]]));
+            }
+        } else {
+            self.rgba.copy_from_slice(&f.rgba);
+        }
         self.pts = f.pts;
         self.bgrx = f.bgrx;
     }
+}
+
+// ---- ws:parity-color-pipeline ----
+/// A 16-bit channel value to 8 bits, rounded (`v / 257`).
+pub fn narrow16(v: u16) -> u8 {
+    ((v as u32 + 128) / 257) as u8
+}
+
+/// `rgba64le` → RGBA8 in place (the buffer halves).
+pub fn narrow_rgba16(buf: &mut Vec<u8>) {
+    let n = buf.len() / 2;
+    for i in 0..n {
+        buf[i] = narrow16(u16::from_le_bytes([buf[2 * i], buf[2 * i + 1]]));
+    }
+    buf.truncate(n);
 }
 
 pub trait VideoSource: Send {
@@ -1254,10 +1287,35 @@ mod tests {
         assert!(!pool.has_video(&path(0)) && !pool.has_video(&path(2)) && pool.has_video(&path(3)));
     }
 
+    /// ws:parity-color-pipeline: a deep (16-bit) frame reads as RGBA8 for every CPU reader.
+    #[test]
+    fn deep_frames_narrow_for_cpu_readers() {
+        let px16 = |v: [u16; 4]| v.iter().flat_map(|c| c.to_le_bytes()).collect::<Vec<u8>>();
+        let mut rgba = px16([0, 257, 0x8080, 0xffff]);
+        rgba.extend(px16([128, 383, 65535 - 129, 1000]));
+        let f = Frame { width: 2, height: 1, rgba, deep: true, ..Frame::default() };
+        let want = [0u8, 1, 128, 255, 0, 1, 254, 4];
+        assert_eq!(f.to_rgba().rgba, want);
+        assert!(!f.to_rgba().deep && f.deep);
+        let mut c = Frame::default();
+        c.copy_from(&f);
+        assert_eq!((c.rgba.as_slice(), c.deep), (&want[..], false));
+        let mut m = f.clone();
+        m.make_rgba();
+        assert_eq!((m.rgba.as_slice(), m.deep), (&want[..], false));
+        // a recycled deep buffer resized for an 8-bit writer is RGBA8-sized again
+        let mut r = f.clone();
+        r.resize(2, 1);
+        assert_eq!((r.rgba.len(), r.deep), (8, false));
+        let mut r = f;
+        r.resize_for_overwrite(2, 1);
+        assert_eq!((r.rgba.len(), r.deep), (8, false));
+    }
+
     /// A BGRX frame reads as RGBA through `to_rgba` / `make_rgba`; an RGBA one is not copied.
     #[test]
     fn bgrx_frames_convert_to_rgba() {
-        let mut f = Frame { width: 2, height: 1, pts: 0.5, rgba: vec![1, 2, 3, 0, 4, 5, 6, 9], bgrx: true, gpu: None };
+        let mut f = Frame { width: 2, height: 1, pts: 0.5, rgba: vec![1, 2, 3, 0, 4, 5, 6, 9], bgrx: true, gpu: None, deep: false };
         assert_eq!(f.to_rgba().rgba, [3, 2, 1, 255, 6, 5, 4, 255]);
         assert!(!f.to_rgba().bgrx && f.bgrx, "to_rgba leaves the frame itself alone");
         f.make_rgba();

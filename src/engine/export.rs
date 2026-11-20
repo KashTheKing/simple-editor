@@ -27,6 +27,9 @@ pub struct GpuFrameRequest {
     pub h: u32,
     /// ws:export-pipeline: read back as NV12 bytes (`w*h*3/2` in `rgba`, BT.709 limited) instead of RGBA.
     pub nv12: bool,
+    /// ws:parity-color-pipeline: read back as 16-bit RGBA (`w*h*8` bytes, `rgba64le`) for a 10-bit encode.
+    /// Wins over `nv12`.
+    pub deep: bool,
     /// The buffer to read into and reply with (recycled by the sender; `Frame::default()` is fine).
     pub buf: Frame,
     /// The rendered frame, or None / a dropped sender when the renderer died (the export falls back
@@ -40,14 +43,16 @@ pub enum FrameSource {
     /// Composite on this thread with `engine::compose` (no GPU-only effects, no node graphs).
     Cpu,
     /// Decode here, composite on the UI thread's GL context - identical to what the preview shows.
-    Gpu(std::sync::mpsc::Sender<GpuFrameRequest>),
+    /// ws:parity-color-pipeline: the bool is "the renderer is in a float processing mode": a 10-bit
+    /// encode is then fed 16-bit frames, and SDR HEVC / AV1 exports are written with 10 bits.
+    Gpu(std::sync::mpsc::Sender<GpuFrameRequest>, bool),
 }
 
 impl std::fmt::Debug for FrameSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             FrameSource::Cpu => "Cpu",
-            FrameSource::Gpu(_) => "Gpu",
+            FrameSource::Gpu(..) => "Gpu",
         })
     }
 }
@@ -420,7 +425,8 @@ fn output_filters(opts: &ExportOptions, project: (u32, u32), audio: bool, args: 
 /// CPU/odd-size path matches the GPU's NV12 colour instead of ffmpeg's untagged BT.601 default.
 /// Anything else (gif, images, audio, NV12 input) passes through with no tags.
 fn rgba_bt709(mut vf: String, rgba_in: bool, args: &[String]) -> (String, Vec<String>) {
-    let Some(pf) = args.iter().find(|a| *a == "yuv420p" || *a == "nv12").filter(|_| rgba_in) else {
+    let yuv = |a: &&String| matches!(a.as_str(), "yuv420p" | "nv12" | "yuv420p10le" | "p010le");
+    let Some(pf) = args.iter().find(yuv).filter(|_| rgba_in) else {
         return (vf, Vec::new());
     };
     if !vf.is_empty() {
@@ -758,25 +764,35 @@ fn run_export_with(
         prog.set(0.0, enc_note.trim_start_matches(" · "));
     }
     let mut args = codec_args(&ext, &encoder, opts.crf.max(CRF_BEST as u32), &opts.preset, &detect_encoders());
+    // ws:parity-color-pipeline: a float processing mode on the GPU path feeds ffmpeg 16-bit frames
+    let float_gpu = matches!(opts.frames, FrameSource::Gpu(_, true)) && opts.overlay.is_none() && !audio_only && !is_gif;
     if hdr {
         args = hdr_args(args, &encoder, project.color);
+    } else if float_gpu {
+        args = deep_args(args, &encoder);
     }
     args.extend(gop_args(&ext, fps));
     if let Some(bytes) = opts.target_bytes.filter(|_| !audio_only && !is_gif) {
         args = target_args(args, target_video_kbps(bytes, dur, &ext, main_audio as u32));
     }
     let gpu_tx = match &opts.frames {
-        FrameSource::Gpu(tx) => Some(tx.clone()),
+        FrameSource::Gpu(tx, _) => Some(tx.clone()),
         FrameSource::Cpu => None,
     };
+    let deep = float_gpu && ten_bit(&args);
     let nv12 = NV12_READBACK
         && !hdr
+        && !deep
         && opts.overlay.is_none()
         && gpu_tx.is_some()
         && w % 2 == 0
         && h % 2 == 0
         && args.iter().any(|a| a == "yuv420p" || a == "nv12");
-    let video = (!audio_only).then_some(if nv12 { VideoIn::Nv12 } else { VideoIn::Rgba });
+    let video = (!audio_only).then_some(match (deep, nv12) {
+        (true, _) => VideoIn::Rgba64,
+        (false, true) => VideoIn::Nv12,
+        _ => VideoIn::Rgba,
+    });
 
     // 3. ffmpeg
     let mut cmd = ffpipe::command(&ffmpeg);
@@ -786,7 +802,7 @@ fn run_export_with(
     let recycle = fed == (w, h);
     cmd.args(input_args(video, fed, fps, &ports, main_audio));
     let (vf, af) = output_filters(opts, fed, !inputs.is_empty(), &args);
-    let (vf, colour_tags) = if hdr { hdr_vf(vf, &args, project.color) } else { rgba_bt709(vf, video == Some(VideoIn::Rgba), &args) };
+    let (vf, colour_tags) = if hdr { hdr_vf(vf, &args, project.color) } else { rgba_bt709(vf, matches!(video, Some(VideoIn::Rgba | VideoIn::Rgba64)), &args) };
     let vf = if is_gif {
         let pre = if vf.is_empty() { String::new() } else { format!("{vf},") };
         format!("{pre}fps=15,scale='min(iw,720)':-2:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle")
@@ -872,7 +888,7 @@ fn run_export_with(
             let mut cpu_rgba = Frame::new(w, h);
             // GPU path: decode here (off the UI thread), composite there (the GL context lives on the UI
             // thread), so an export runs the very same shaders the preview does.
-            let mut gpu = gpu_tx.map(|tx| GpuScratch::new(backend, tx, nv12));
+            let mut gpu = gpu_tx.map(|tx| GpuScratch::new(backend, tx, nv12, deep));
             let mut gaps = if gpu.is_some() { String::new() } else { cpu_gaps(project) };
             let end = start + dur;
             let mut next_req = 0u64;
@@ -907,7 +923,12 @@ fn run_export_with(
                     None => {
                         let mut out = back_rx.try_recv().unwrap_or_default();
                         let mut tr = text.lock().unwrap_or_else(|e| e.into_inner());
-                        if nv12 {
+                        if deep {
+                            // ws:parity-color-pipeline: ffmpeg was promised rgba64le
+                            comp.render(project, t, w, h, &mut pool, &mut tr, &mut cpu_rgba);
+                            out.resize(w, h);
+                            widen_rgba16(&cpu_rgba.rgba, &mut out.rgba);
+                        } else if nv12 {
                             // ffmpeg was promised NV12: convert the CPU frame the same way the GPU does
                             comp.render(project, t, w, h, &mut pool, &mut tr, &mut cpu_rgba);
                             out.resize(w, h);
@@ -982,6 +1003,8 @@ enum VideoIn {
     Rgba,
     /// BT.709 limited range, declared on the input so ffmpeg never guesses.
     Nv12,
+    /// ws:parity-color-pipeline: 16-bit RGBA (`rgba64le`) from a float processing mode.
+    Rgba64,
 }
 
 /// One audio stream of the export: headerless `f32le` stereo at `SAMPLE_RATE`, mixed from `project`
@@ -1034,6 +1057,7 @@ fn input_args(video: Option<VideoIn>, size: (u32, u32), fps: f64, audio_ports: &
         a.extend(["-f", "rawvideo"].map(String::from));
         match v {
             VideoIn::Rgba => a.extend(["-pix_fmt", "rgba"].map(String::from)),
+            VideoIn::Rgba64 => a.extend(["-pix_fmt", "rgba64le"].map(String::from)),
             VideoIn::Nv12 => a.extend(
                 [
                     "-pix_fmt",
@@ -1152,6 +1176,50 @@ fn feed_audio(
     let _ = sock.shutdown(std::net::Shutdown::Write);
 }
 
+// ---- ws:parity-color-pipeline ----
+/// The output pixel format carries more than 8 bits a channel.
+fn ten_bit(args: &[String]) -> bool {
+    args.iter().skip_while(|a| *a != "-pix_fmt").nth(1).is_some_and(|pf| {
+        pf.starts_with("p01") || pf.contains("10le") || pf.contains("12le") || pf.starts_with("rgba64")
+    })
+}
+
+/// An SDR export from a float processing mode: encoders that write 10 bits (HEVC, AV1) get a 10-bit
+/// pixel format (`p010le` for hardware encoders, else `yuv420p10le`) and HEVC the Main10 profile. H.264,
+/// VP9 and the rest keep 8 bits (10-bit H.264 plays almost nowhere).
+pub fn deep_args(mut args: Vec<String>, encoder: &str) -> Vec<String> {
+    let hevc = encoder.starts_with("hevc") || encoder == "libx265";
+    let av1 = encoder.contains("av1");
+    if !hevc && !av1 {
+        return args;
+    }
+    let hw = ["nvenc", "qsv", "amf"].iter().any(|h| encoder.contains(h));
+    let pf = if hw { "p010le" } else { "yuv420p10le" };
+    match args.iter().position(|a| a == "-pix_fmt") {
+        Some(i) if i + 1 < args.len() => args[i + 1] = pf.into(),
+        _ => {
+            // after the codec, before any audio arguments (`-c:v X` is always first)
+            let at = args.iter().position(|a| a == "-c:v").map_or(0, |i| (i + 2).min(args.len()));
+            args.splice(at..at, ["-pix_fmt".to_string(), pf.into()]);
+        }
+    }
+    if hevc && !args.iter().any(|a| a == "-profile:v") {
+        let at = args.iter().position(|a| a == "-pix_fmt").map_or(args.len(), |i| i + 2);
+        args.splice(at..at, ["-profile:v".to_string(), "main10".into()]);
+    }
+    args
+}
+
+/// RGBA8 → `rgba64le` (each byte to its 16-bit value, `v * 257`), for a deep GPU export that finishes on
+/// the CPU after ffmpeg was already promised 16-bit frames.
+fn widen_rgba16(rgba: &[u8], out: &mut Vec<u8>) {
+    out.clear();
+    out.reserve(rgba.len() * 2);
+    for &v in rgba {
+        out.extend_from_slice(&(v as u16 * 257).to_le_bytes());
+    }
+}
+
 /// RGBA → NV12 with `NV12_MAIN`'s maths (BT.709 limited, 2x2 box chroma), for a GPU export that
 /// finishes on the CPU after ffmpeg was already promised NV12. `w`, `h` even.
 fn rgba_to_nv12(rgba: &[u8], w: u32, h: u32, out: &mut Vec<u8>) {
@@ -1228,10 +1296,11 @@ struct GpuScratch {
     tx: std::sync::mpsc::Sender<GpuFrameRequest>,
     window: ReplyWindow,
     nv12: bool,
+    deep: bool,
 }
 
 impl GpuScratch {
-    fn new(backend: Backend, tx: std::sync::mpsc::Sender<GpuFrameRequest>, nv12: bool) -> Self {
+    fn new(backend: Backend, tx: std::sync::mpsc::Sender<GpuFrameRequest>, nv12: bool, deep: bool) -> Self {
         Self {
             pool: DecoderPool::new(backend),
             spare: Vec::new(),
@@ -1240,6 +1309,7 @@ impl GpuScratch {
             tx,
             window: ReplyWindow::new(GPU_WINDOW),
             nv12,
+            deep,
         }
     }
     /// Decode the layers for `t` and queue them for the UI thread to composite into `buf`. False = the
@@ -1269,7 +1339,7 @@ impl GpuScratch {
             )
         };
         let (reply, rx) = std::sync::mpsc::sync_channel(1);
-        if self.tx.send(GpuFrameRequest { layers, t, w, h, nv12: self.nv12, buf, reply }).is_err() {
+        if self.tx.send(GpuFrameRequest { layers, t, w, h, nv12: self.nv12, deep: self.deep, buf, reply }).is_err() {
             return false;
         }
         self.window.push(rx);
@@ -2677,6 +2747,85 @@ pub(crate) mod tests {
 
     /// HDR10 / HLG exports are 10-bit HEVC with BT.2020 + PQ / HLG tags and (PQ) HDR10 mastering
     /// metadata; an SDR export keeps BT.709 8-bit. Read back with ffprobe.
+    #[test]
+    fn deep_args_make_hevc_and_av1_10_bit_and_leave_h264_alone() {
+        let args = |enc: &str| codec_args("mp4", enc, 23, "medium", &[]);
+        let has = |v: &[String], k: &str, val: &str| v.windows(2).any(|w| w[0] == k && w[1] == val);
+        let x265 = deep_args(args("libx265"), "libx265");
+        assert!(has(&x265, "-pix_fmt", "yuv420p10le") && has(&x265, "-profile:v", "main10"), "{x265:?}");
+        assert!(ten_bit(&x265));
+        let nv = deep_args(args("hevc_nvenc"), "hevc_nvenc");
+        assert!(has(&nv, "-pix_fmt", "p010le") && has(&nv, "-profile:v", "main10"), "{nv:?}");
+        let svt = deep_args(args("libsvtav1"), "libsvtav1");
+        assert!(has(&svt, "-pix_fmt", "yuv420p10le") && !svt.iter().any(|a| a == "-profile:v"), "{svt:?}");
+        // AMF's args carry no -pix_fmt: one is added right after the codec, before the audio
+        let amf = deep_args(args("hevc_amf"), "hevc_amf");
+        let i = amf.iter().position(|a| a == "-pix_fmt").expect("added");
+        assert_eq!(amf[i + 1], "p010le");
+        assert!(i < amf.iter().position(|a| a == "-c:a").unwrap_or(usize::MAX), "{amf:?}");
+        for enc in ["libx264", "h264_nvenc", "libvpx-vp9", "mpeg4"] {
+            assert_eq!(deep_args(args(enc), enc), args(enc), "{enc} stays 8-bit");
+            assert!(!ten_bit(&args(enc)));
+        }
+        // the 10-bit CPU / odd-size path still converts as BT.709 limited and tags the output
+        let (vf, tags) = rgba_bt709(String::new(), true, &x265);
+        assert!(vf.contains("format=yuv420p10le") && vf.contains("out_color_matrix=bt709"), "{vf}");
+        assert!(tags.contains(&"bt709".to_string()));
+    }
+
+    #[test]
+    fn rgba64_input_and_the_cpu_widening_are_16_bit_little_endian() {
+        let a = input_args(Some(VideoIn::Rgba64), (64, 32), 30.0, &[], 0).join(" ");
+        assert!(a.starts_with("-f rawvideo -pix_fmt rgba64le -s 64x32"), "{a}");
+        let mut out = Vec::new();
+        widen_rgba16(&[0, 1, 128, 255], &mut out);
+        assert_eq!(out, [0, 0, 1, 1, 128, 128, 255, 255], "v * 257, little-endian");
+        use crate::engine::gpu::{GpuRenderer, Readout};
+        assert_eq!(GpuRenderer::export_bytes(64, 32, Readout::Rgba16), 64 * 32 * 8);
+        assert_eq!(Readout::of(true, true), Readout::Rgba16, "deep wins over nv12");
+        assert_eq!(Readout::of(true, false), Readout::Nv12);
+    }
+
+    /// A float processing mode's export, end to end through ffmpeg, with a stand-in for the UI thread
+    /// (no GL here): HEVC gets 16-bit frames and comes out Main 10; H.264 from the same mode stays 8-bit
+    /// NV12.
+    #[test]
+    fn a_float_mode_export_writes_10_bit_hevc() {
+        let dir = temp_dir("deep");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        let p = Project::from_media(asset(&src.to_string_lossy(), 2));
+        let run = |enc: &str, name: &str| -> (String, Vec<(bool, bool)>) {
+            let (tx, rx) = std::sync::mpsc::channel::<GpuFrameRequest>();
+            let seen = std::thread::spawn(move || {
+                let mut seen = Vec::new();
+                for mut r in rx {
+                    seen.push((r.deep, r.nv12));
+                    let bytes = crate::engine::gpu::GpuRenderer::export_bytes(r.w, r.h, crate::engine::gpu::Readout::of(r.nv12, r.deep));
+                    r.buf.resize(r.w, r.h);
+                    r.buf.rgba.clear();
+                    r.buf.rgba.resize(bytes, 0x80);
+                    let _ = r.reply.send(Some(r.buf));
+                }
+                seen
+            });
+            let out = dir.join(name);
+            let o = ExportOptions { encoder: enc.into(), frames: FrameSource::Gpu(tx, true), ..opts_for(out.clone()) };
+            assert_eq!(wait_done(&start_export(p.clone(), o, text.clone())), None, "{enc}");
+            (probe_streams(&out), seen.join().unwrap())
+        };
+        let (hevc, seen) = run("libx265", "deep.mkv");
+        assert!(hevc.contains("pix_fmt=yuv420p10le") && hevc.contains("profile=Main 10"), "{hevc}");
+        assert!(!seen.is_empty() && seen.iter().all(|&(d, _)| d), "every frame asked for 16 bits: {seen:?}");
+        let (avc, seen) = run("libx264", "eight.mp4");
+        assert!(avc.contains("pix_fmt=yuv420p\n"), "{avc}");
+        assert!(seen.iter().all(|&(d, n)| !d && n), "H.264 keeps the NV12 readback: {seen:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn hdr_export_is_10_bit_bt2020_and_sdr_stays_709() {
         let dir = temp_dir("hdr");

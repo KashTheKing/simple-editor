@@ -95,7 +95,7 @@ fn a_see_through_html_render_does_not_black_out_the_export() {
     };
     let mut r = GpuRenderer::new(Arc::new(gl)).expect("renderer");
     let mut out = Frame::default();
-    assert!(r.render_export_sync(&p, 1.0, w, h, &set, false, &mut out));
+    assert!(r.render_export_sync(&p, 1.0, w, h, &set, Readout::Rgba, &mut out));
     let c = &out.rgba[((h / 2 * w + w / 2) * 4) as usize..][..4];
     assert!(c[0] > 200 && c[1] < 60 && c[2] < 60, "the red footage shows through: {c:?}");
 }

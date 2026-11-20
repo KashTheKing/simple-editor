@@ -190,6 +190,38 @@ void main() {
 }
 "#;
 
+// ---- ws:parity-color-pipeline ----
+/// What an export frame is read back as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Readout {
+    /// 8-bit RGBA, 4 bytes a pixel (ffmpeg `rgba`).
+    Rgba,
+    /// The `NV12_MAIN` pack, 1.5 bytes a pixel (ffmpeg `nv12`, BT.709 limited).
+    Nv12,
+    /// 16-bit RGBA, 8 bytes a pixel little-endian (ffmpeg `rgba64le`): a float processing mode's frame
+    /// for a 10-bit encode, with nothing rounded to 8 bits on the way.
+    Rgba16,
+}
+
+impl Readout {
+    /// From a `GpuFrameRequest`'s flags (`deep` wins: the 16-bit read is never packed).
+    pub fn of(nv12: bool, deep: bool) -> Self {
+        match (deep, nv12) {
+            (true, _) => Readout::Rgba16,
+            (false, true) => Readout::Nv12,
+            _ => Readout::Rgba,
+        }
+    }
+    /// `glReadPixels`'s (format, type) and the bytes it writes per pixel of the target read.
+    fn gl(self) -> (u32, u32, usize) {
+        match self {
+            Readout::Rgba => (glow::RGBA, glow::UNSIGNED_BYTE, 4),
+            Readout::Nv12 => (glow::RED, glow::UNSIGNED_BYTE, 1),
+            Readout::Rgba16 => (glow::RGBA, glow::UNSIGNED_SHORT, 8),
+        }
+    }
+}
+
 /// Pixel-pack buffers in the export readback ring: frame k is read back while k+1 and k+2 render.
 pub const READBACK_RING: usize = 3;
 
@@ -235,6 +267,8 @@ struct LayerTex {
     rev: (usize, u64),
     /// `GpuRenderer::renders` when it was last drawn.
     used: u64,
+    /// ws:parity-color-pipeline: RGBA16 (a `Frame::deep` layer) rather than RGBA8.
+    deep: bool,
 }
 
 /// RGBA8 bytes of layer textures kept before the least recently drawn are freed. There is one per
@@ -250,7 +284,7 @@ const LAYER_TEX_KEEP: u64 = 4;
 /// The keys to free so that the rest fits `budget`: least recently drawn first, none drawn at
 /// render `keep` or later.
 fn stale_textures(textures: &HashMap<u64, LayerTex>, budget: usize, keep: u64) -> Vec<u64> {
-    let bytes = |t: &LayerTex| t.w as usize * t.h as usize * 4;
+    let bytes = |t: &LayerTex| t.w as usize * t.h as usize * if t.deep { 8 } else { 4 };
     let mut total: usize = textures.values().map(bytes).sum();
     let mut old: Vec<(&u64, &LayerTex)> = textures.iter().filter(|(_, t)| t.used < keep).collect();
     old.sort_by_key(|(_, t)| t.used);
@@ -466,9 +500,12 @@ impl GpuRenderer {
         // the texture's alpha swizzle reads 1 for the undefined X byte, so no shader sees the
         // difference and no CPU loop swizzles it.
         let (format, alpha) = if frame.bgrx { (glow::BGRA, glow::ONE) } else { (glow::RGBA, glow::ALPHA) };
+        // ws:parity-color-pipeline: a deep frame is 16 bits a channel, kept at 16 bits on the GPU
+        let deep = frame.deep && !frame.bgrx;
+        let (internal, ty) = if deep { (glow::RGBA16, glow::UNSIGNED_SHORT) } else { (glow::RGBA8, glow::UNSIGNED_BYTE) };
         unsafe {
             match self.textures.get_mut(&key) {
-                Some(lt) if lt.w == w && lt.h == h => {
+                Some(lt) if lt.w == w && lt.h == h && lt.deep == deep => {
                     lt.used = used;
                     if lt.rev == rev {
                         return lt.tex;
@@ -484,7 +521,7 @@ impl GpuRenderer {
                         w as i32,
                         h as i32,
                         format,
-                        glow::UNSIGNED_BYTE,
+                        ty,
                         glow::PixelUnpackData::Slice(Some(&frame.rgba)),
                     );
                     return lt.tex;
@@ -501,15 +538,15 @@ impl GpuRenderer {
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                glow::RGBA8 as i32,
+                internal as i32,
                 w as i32,
                 h as i32,
                 0,
                 format,
-                glow::UNSIGNED_BYTE,
+                ty,
                 glow::PixelUnpackData::Slice(Some(&frame.rgba)),
             );
-            self.textures.insert(key, LayerTex { tex, w, h, rev, used });
+            self.textures.insert(key, LayerTex { tex, w, h, rev, used, deep });
             tex
         }
     }
@@ -569,22 +606,22 @@ impl GpuRenderer {
     }
 
     // ---- ws:export-pipeline ----
-    /// Bytes an export frame reads back: RGBA, or NV12 (`w*h*3/2`; `w`, `h` even).
-    pub fn export_bytes(w: u32, h: u32, nv12: bool) -> usize {
+    /// Bytes an export frame reads back: RGBA, NV12 (`w*h*3/2`; `w`, `h` even) or 16-bit RGBA.
+    pub fn export_bytes(w: u32, h: u32, read: Readout) -> usize {
         let px = w as usize * h as usize;
-        if nv12 {
-            px * 3 / 2
-        } else {
-            px * 4
+        match read {
+            Readout::Nv12 => px * 3 / 2,
+            Readout::Rgba => px * 4,
+            Readout::Rgba16 => px * 8,
         }
     }
 
     /// Render the canvas for an export frame and, for `nv12`, pack it (see `NV12_MAIN`). The returned
     /// target is what `glReadPixels` reads (`GL_RED` for NV12, `GL_RGBA` otherwise); the caller puts it
     /// back in the pool. Caller does `reclaim`/`host_fbo`/`restore`.
-    fn export_target(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet, nv12: bool) -> Option<Target> {
+    fn export_target(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet, read: Readout) -> Option<Target> {
         let canvas = self.render_canvas(project, t, w, h, layers)?;
-        if !nv12 {
+        if read != Readout::Nv12 {
             return Some(canvas);
         }
         let packed = match self.ensure(K_NV12) {
@@ -615,22 +652,23 @@ impl GpuRenderer {
         w: u32,
         h: u32,
         layers: &LayerSet,
-        nv12: bool,
+        read: Readout,
         out: &mut Frame,
     ) -> bool {
         self.reclaim();
         let host = self.host_fbo();
         out.resize(w, h);
         out.pts = t;
-        out.rgba.resize(Self::export_bytes(w, h, nv12), 0);
+        out.rgba.resize(Self::export_bytes(w, h, read), 0);
         if w == 0 || h == 0 {
             self.restore(host);
             return false;
         }
-        let target = self.export_target(project, t, w, h, layers, nv12);
+        let target = self.export_target(project, t, w, h, layers, read);
         let ok = target.is_some();
         if let Some(target) = target {
             let gl = self.gl.clone();
+            let (format, ty, _) = read.gl();
             unsafe {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.fbo));
                 gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
@@ -639,8 +677,8 @@ impl GpuRenderer {
                     0,
                     target.w as i32,
                     target.h as i32,
-                    if nv12 { glow::RED } else { glow::RGBA },
-                    glow::UNSIGNED_BYTE,
+                    format,
+                    ty,
                     glow::PixelPackData::Slice(Some(&mut out.rgba)),
                 );
             }
@@ -654,15 +692,15 @@ impl GpuRenderer {
     /// ring. False = nothing was queued (ring full, a buffer call failed - then for good - or the render
     /// failed): the caller uses `render_export_sync` instead. Completed in FIFO order by
     /// `render_export_finish`.
-    pub fn render_export_begin(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet, nv12: bool) -> bool {
+    pub fn render_export_begin(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet, read: Readout) -> bool {
         if self.readback.broken || self.readback.pending.len() >= READBACK_RING || w == 0 || h == 0 {
             return false;
         }
         self.reclaim();
         let host = self.host_fbo();
-        let ok = match self.export_target(project, t, w, h, layers, nv12) {
+        let ok = match self.export_target(project, t, w, h, layers, read) {
             Some(target) => {
-                let ok = self.pbo_read(&target, nv12, (w, h), t);
+                let ok = self.pbo_read(&target, read, (w, h), t);
                 self.pool.put(target);
                 ok
             }
@@ -695,9 +733,10 @@ impl GpuRenderer {
 
     /// Queue `glReadPixels` of `target` into the next free ring buffer. False (and the ring marked
     /// broken) when GL reports an error, so the caller degrades to the synchronous read.
-    fn pbo_read(&mut self, target: &Target, nv12: bool, size: (u32, u32), t: f64) -> bool {
+    fn pbo_read(&mut self, target: &Target, read: Readout, size: (u32, u32), t: f64) -> bool {
         let gl = self.gl.clone();
-        let bytes = target.w as usize * target.h as usize * if nv12 { 1 } else { 4 };
+        let (format, ty, bpp) = read.gl();
+        let bytes = target.w as usize * target.h as usize * bpp;
         let rb = &mut self.readback;
         let slot = unsafe {
             // drop stale error flags so the check below only sees ours (bounded: a lost context repeats)
@@ -732,8 +771,8 @@ impl GpuRenderer {
                 0,
                 target.w as i32,
                 target.h as i32,
-                if nv12 { glow::RED } else { glow::RGBA },
-                glow::UNSIGNED_BYTE,
+                format,
+                ty,
                 glow::PixelPackData::BufferOffset(0),
             );
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
@@ -3527,7 +3566,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         let mut m = HashMap::new();
         for (key, used) in [(1u64, 1u64), (2, 5), (3, 3), (4, 9)] {
             let tex = glow::NativeTexture(NonZeroU32::new(key as u32).unwrap());
-            m.insert(key, LayerTex { tex, w: 10, h: 10, rev: (0, 0), used }); // 400 bytes each
+            m.insert(key, LayerTex { tex, w: 10, h: 10, rev: (0, 0), used, deep: false }); // 400 bytes each
         }
         assert!(stale_textures(&m, 1600, 10).is_empty(), "within the budget everything stays");
         assert_eq!(stale_textures(&m, 800, 10), [1, 3], "oldest first, down to the budget");

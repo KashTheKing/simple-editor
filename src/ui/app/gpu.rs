@@ -13,7 +13,8 @@ fn serve_export_request(
     req: crate::engine::export::GpuFrameRequest,
     inflight: &mut std::collections::VecDeque<ExportReply>,
 ) {
-    let crate::engine::export::GpuFrameRequest { layers, t, w, h, nv12, mut buf, reply } = req;
+    let crate::engine::export::GpuFrameRequest { layers, t, w, h, nv12, deep, mut buf, reply } = req;
+    let read = crate::engine::gpu::Readout::of(nv12, deep); // ws:parity-color-pipeline
     // `inflight` mirrors the renderer's pending queue one for one
     if g.export_pending() >= crate::engine::gpu::READBACK_RING {
         if let Some((r, mut b)) = inflight.pop_front() {
@@ -21,7 +22,7 @@ fn serve_export_request(
             let _ = r.send(Some(b));
         }
     }
-    if g.render_export_begin(project, t, w, h, &layers, nv12) {
+    if g.render_export_begin(project, t, w, h, &layers, read) {
         inflight.push_back((reply, buf));
     } else {
         // keep replies in order: everything queued before this one goes first
@@ -30,7 +31,7 @@ fn serve_export_request(
             let _ = r.send(Some(b));
         }
         // a failed render has no picture (zeros = green in NV12): None finishes this export on the CPU
-        let ok = g.render_export_sync(project, t, w, h, &layers, nv12, &mut buf);
+        let ok = g.render_export_sync(project, t, w, h, &layers, read, &mut buf);
         let _ = reply.send(ok.then_some(buf));
     }
 }
@@ -133,7 +134,11 @@ impl App {
     /// the queue below) when it is up, else the CPU compositor on the export thread.
     pub(super) fn export_frames(&self) -> crate::engine::export::FrameSource {
         match self.gpu {
-            Some(_) => crate::engine::export::FrameSource::Gpu(self.gpu_export.0.clone()),
+            // ws:parity-color-pipeline: a float processing mode reads 10-bit encodes back at 16 bits
+            Some(_) => crate::engine::export::FrameSource::Gpu(
+                self.gpu_export.0.clone(),
+                self.settings.processing_mode.is_float(),
+            ),
             None => crate::engine::export::FrameSource::Cpu,
         }
     }
