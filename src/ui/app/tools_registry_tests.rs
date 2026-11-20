@@ -94,6 +94,7 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("rename_track", "track.set"),
     ("set_track_color", "track.set"),
     ("set_track_waveform", "track.set"),
+    ("set_track_audio_edges", "track.audio_edges"), // ws:parity-audio
     ("move_track", "track.move"),
     // ---- ws:forum-ui ----
     ("duplicate_track", "track.duplicate"),

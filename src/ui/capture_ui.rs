@@ -1007,6 +1007,7 @@ mod tests {
         assert_eq!(st.cam.format.as_ref().map(|f| f.w), Some(1280));
         assert_eq!(not_ready(&st), None);
         s.cam_bubble = true;
+        s.capture_name = "{source}-{time}".into(); // the default name pattern has no {source}
         let o = new_screen_options(&s, &st, &monitors());
         assert_eq!(o.source, CaptureSource::Webcam(st.cam.clone()));
         assert!(o.bubble.is_none(), "no bubble of the camera over itself");

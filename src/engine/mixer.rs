@@ -1552,6 +1552,8 @@ mod tests {
     /// One 1024-frame block from 4.99 s: frame 480 is the cut at 5.0 s.
     fn around_cut(p: &Project) -> Vec<f32> {
         let (mut pool, mut mx) = (pool(), Mixer::new());
+        // both halves sound in this block: the second reads the same file as voice 1
+        pool.insert_audio_voice("Z:\\nope\\fake.wav", 0, 1, Box::new(Const(0.5)));
         let mut out = vec![0.0f32; 2048];
         mx.mix(p, 4.99, &mut pool, &mut out);
         out

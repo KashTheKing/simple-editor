@@ -358,7 +358,12 @@ impl App {
             let rows = [
                 (BakeKind::Deinterlace, "Deinterlace", "Turn interlaced fields into whole frames (bwdif), frame rate kept"),
                 (BakeKind::Stabilize, "Stabilize", "Smooth out camera shake (deshake); the clip's effects are rendered in"),
-                (BakeKind::Denoise, "Denoise Audio", "Reduce steady background noise (afftdn); the clip's effects are rendered in"),
+                (
+                    // ws:addon-deepfilternet: DeepFilterNet when installed, else afftdn (export.denoise's default)
+                    BakeKind::Denoise(super::denoise_ctl::bake_engine(&serde_json::json!({})).unwrap_or(None)),
+                    "Denoise Audio",
+                    "Reduce background noise (DeepFilterNet when installed, else afftdn); the clip's effects are rendered in",
+                ),
             ];
             for (kind, name, tip) in rows {
                 if menu::row(ui, None, name, "").on_hover_text(tip).clicked() {

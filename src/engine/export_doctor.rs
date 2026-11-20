@@ -630,6 +630,7 @@ mod tests {
             fps: Some(60.0),
             target_bytes: Some(1 << 30),
             alpha: false,
+            chapters: vec![(0.0, "Intro".into())],
         };
         let t = test_options(&o, PathBuf::from("t.mp4"), (1.0, 2.0), &p);
         assert_eq!(t.encoder, "libx264");

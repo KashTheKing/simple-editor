@@ -1328,7 +1328,7 @@ mod tests {
             assert!(k.from_source(), "{k:?}");
             assert_eq!(k.factor(), 1.0, "{k:?}: same timing as the source");
         }
-        for k in [BakeKind::Render, BakeKind::Stabilize, BakeKind::Denoise, BakeKind::SlowMo(0.5)] {
+        for k in [BakeKind::Render, BakeKind::Stabilize, BakeKind::Denoise(None), BakeKind::SlowMo(0.5)] {
             assert!(!k.from_source(), "{k:?} still renders the clip first");
         }
         assert_eq!(
