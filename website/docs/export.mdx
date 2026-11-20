@@ -88,6 +88,46 @@ Closed at first.
 
 Hover over any option for a short explanation.
 
+The line above **Export…** shows the estimated file size and how long the export should take on this PC. The time
+starts as a rough guess and gets closer after each export you finish. With a TikTok, Shorts or Reels card picked,
+a note reminds you that those apps re-encode every upload, so export at 1080×1920 and high quality.
+
+## Before the export starts
+
+Simple Editor checks the timeline when you open the Export panel:
+
+- **Missing files**: lists them (they would export as black and silence). **Relink…** finds them in a folder you
+  pick; **Export Anyway** carries on.
+- **A clip that would hang or balloon the export**, such as a clip slowed to 0.0025× speed or one with a broken
+  length. **Go to Clip** selects it and moves the playhead there; **Export Anyway** carries on.
+
+Each project file remembers the preset card it last exported with, and the Export panel opens on it.
+
+## When an export fails
+
+A failed export says what went wrong in one sentence, with one button that fixes it:
+
+| Message | Button |
+|---|---|
+| The video encoder stopped working. | **Retry in Software** |
+| The disk is full. / The file can't be written. | **Choose Another File** |
+| A file used on the timeline is missing. | **Relink…** |
+| The encoder can't use this frame rate / picture size. / The audio layout doesn't fit this file type. / The computer ran out of memory. | **Change Settings** |
+| A file used on the timeline can't be read. / The export stopped. | **Find the Problem** |
+
+- **Hardware encoders fall back on their own.** If an NVIDIA, Intel or AMD encoder fails, at the start or partway
+  through, the export starts again with the software encoder (x264) and the Jobs list says so. A full disk, a locked
+  file or a missing file is not retried, because a different encoder can't fix it.
+- **Stuck exports.** If an export makes no progress for a minute, its row in the Jobs list says so and offers
+  **Retry in Software**, which stops it and runs it again on x264. Your export queue is kept.
+- **Find the Problem** (also <kbd>Ctrl+P</kbd> `>Find Export Problem` at any time) exports the
+  timeline in halves at a small size and low quality in the background, narrowing down to the section that fails
+  or hangs. It then selects the clip in that section and moves the playhead to it. If the test export of the whole
+  timeline works, the clips are fine and the encoder or the size settings are the problem.
+- When an export finishes, its message has **Play**, which opens the file in your media player.
+
+The assistant can do the same: `export.diagnose`, `export.find_problem` and `export.retry_software`.
+
 ## Quick Export
 
 The **Quick Export** button at the top right of the window (also **File ▸ Export ▸ Quick Export…** and

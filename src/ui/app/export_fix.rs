@@ -28,6 +28,9 @@ pub(super) struct ExportFix {
     last_error: Option<String>,
     /// The last finished export (Play on its toast).
     last_done: Option<PathBuf>,
+    /// The project file whose remembered preset card the Export pane was last opened on (applied once
+    /// per project, so a card picked since then is not undone by reopening the pane).
+    tile_for: Option<PathBuf>,
 }
 
 fn action_for(fix: Fix) -> Action {
@@ -264,8 +267,12 @@ pub(super) fn preflight(app: &mut App, offline: &[String]) -> bool {
 /// Open the Export pane, on the preset card this project last exported with.
 pub(super) fn open_pane(app: &mut App) {
     app.export_ui.open = true;
-    let Some(key) = app.project_path.as_ref().map(|p| p.to_string_lossy().into_owned()) else { return };
-    let Some(name) = app.settings.export_tile_by_project.get(&key).cloned() else { return };
+    let Some(path) = app.project_path.clone() else { return };
+    if app.export_fix.tile_for.as_ref() == Some(&path) {
+        return;
+    }
+    app.export_fix.tile_for = Some(path.clone());
+    let Some(name) = app.settings.export_tile_by_project.get(&*path.to_string_lossy()).cloned() else { return };
     if app.export_ui.tile.as_deref() == Some(name.as_str()) {
         return;
     }

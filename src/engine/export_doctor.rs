@@ -79,7 +79,11 @@ pub fn classify(err: &str) -> Diagnosis {
     let has = |needles: &[&str]| needles.iter().any(|n| e.contains(n));
     let d = |problem, sentence: &str, fix| Diagnosis { problem, sentence: sentence.to_string(), fix };
     if has(&["no space left", "disk full", "not enough space", "enospc", "disk quota"]) {
-        return d(Problem::DiskFull, "The disk is full. Free some space or save to another drive.", Fix::ChooseAnotherFile);
+        return d(
+            Problem::DiskFull,
+            "The disk is full. Free some space or save to another drive.",
+            Fix::ChooseAnotherFile,
+        );
     }
     if has(&[
         "permission denied",

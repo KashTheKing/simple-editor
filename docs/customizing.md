@@ -290,13 +290,15 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `editor.context` | Read | - | What the user is looking at: playhead, in/out, selected clips (name, kind, track, times), transitions, subtitle cues, markers (with notes), edit point, selected transcript words (text, start, end), sequence and page. Call it first in every request. |
 
-**`export.*`** (11 tools)
+**`export.*`** (14 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `export.bake` | Job | clip_ids | Render the given clip(s) in place (effects flattened into a new asset) and swap them onto it; the original asset stays in the library. Blocks until the swap lands. |
 | `export.denoise` | Job | clip_ids | Bake the clip(s) through ffmpeg afftdn spectral audio denoise, then swap them onto the result. |
+| `export.diagnose` | Read | - | Why an export would fail or did fail: clips that hang or balloon it (lint: clip id, time, sentence), missing files, and the last failure as a plain sentence with its fix. |
 | `export.edl` | Read | path | Write the main timeline as CMX 3600 EDL (for Avid): one file per video track (the first at path, others as <stem>_V2.edl …), the first also carrying every audio track; dissolves as D events. |
+| `export.find_problem` | Ui | - | Find the clip that makes the export fail: tests the timeline in halves at low quality (a background job in the Jobs list), then selects the clip and moves the playhead to it. Uses the last failed export's settings, else the current ones. |
 | `export.preset_apply` | Ui | name | Apply an export preset card (any kind) to the Export pane, as clicking it does. |
 | `export.preset_delete` | Ui | name | Delete a custom export preset. Built-in and platform presets refuse. |
 | `export.preset_rename` | Ui | color, icon, name, new_name | Rename a custom export preset (optionally a new icon and #rrggbb color, or color none). Built-in and platform presets refuse. |
@@ -304,6 +306,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `export.presets` | Read | - | List every export preset card in order: the 2 built-ins (project size; max quality / fast preview), the platform tiles, then the user's own. width/height 0 = the project's size; kind = builtin \| platform \| custom. |
 | `export.queue` | Ui | audio, path, preset, range_in, range_out, stem_by | Append an export job to the render queue; returns immediately with its queue position. audio: mix \| streams \| stems, stem_by: track \| bus \| role (default the Export pane's). |
 | `export.quick` | Job | path, preset | Export with the last-used (or given) preset/options; blocks until the file is written (up to 30 min). |
+| `export.retry_software` | Ui | - | Retry the running (stuck) or last failed export with the software x264 encoder. |
 | `export.slowmo` | Job | clip_ids, factor | Bake the clip(s) through setpts+minterpolate optical-flow slow motion, then swap them onto the result (the clip keeps its length and now shows the first part of the slowed footage — extend its end to reveal the rest). |
 | `export.stabilize` | Job | clip_ids | Bake the clip(s) through ffmpeg deshake, then swap them onto the result. |
 | `export.status` | Read | - | Current export progress (fraction, status, ETA seconds) and the queue / bake counts. |
