@@ -317,6 +317,8 @@ pub(super) fn section(
             fades(ui, &mut clip, &mut g);
             // Role + Bus write straight to the project, with their own undo
             changed |= role_and_bus(ui, project, ids, &orig, undo);
+            // ---- ws:addon-deepfilternet ---- Clean Audio: [Clean] [Strength] [A | B]
+            changed |= crate::ui::denoise_ui::row(ui, project, ids, undo);
         });
         match cmd {
             Some(AudioCmd::Repair(preset)) => {

@@ -63,6 +63,11 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         ui.horizontal(enhancer_row);
         ui.end_row();
 
+        // ---- ws:addon-deepfilternet ----
+        ui.label("Speech denoise");
+        ui.horizontal(denoise_row);
+        ui.end_row();
+
         ui.label("Downloads folder");
         ui.horizontal(|ui| {
             changed |= ui
@@ -267,6 +272,43 @@ fn enhancer_row(ui: &mut egui::Ui) {
         match enhance::install_error() {
             Some(e) => ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}")),
             None => ui.weak("optional, about 45 MB"),
+        };
+    }
+}
+
+// ---- ws:addon-deepfilternet ----
+/// Install / remove the optional speech-denoise add-on (DeepFilterNet, used by Clean Audio and Denoise).
+fn denoise_row(ui: &mut egui::Ui) {
+    use crate::engine::deepfilter;
+    if let Some(p) = deepfilter::installing() {
+        ui.add(egui::Spinner::new());
+        ui.weak(format!("{:.0}% · {}", p.fraction() * 100.0, p.status()));
+    } else if deepfilter::available() {
+        ui.weak(match deepfilter::version() {
+            Some(v) => format!("installed ({v})"),
+            None => "installed".into(),
+        });
+        let id = egui::Id::new("denoise_uninstall_error");
+        if ui.button("Remove").on_hover_text("Removes the add-on; Clean Audio then uses ffmpeg afftdn").clicked() {
+            let r = deepfilter::uninstall().err();
+            ui.data_mut(|d| d.insert_temp(id, r));
+        }
+        if let Some(e) = ui.data(|d| d.get_temp::<Option<String>>(id)).flatten() {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+    } else {
+        if ui
+            .button("Install")
+            .on_hover_text(
+                "DeepFilterNet removes fans, traffic and room noise from speech: Inspector ▸ Audio ▸ Clean Audio,                  and the Denoise bake. Without it they use ffmpeg afftdn. About 27 MB, downloaded once.",
+            )
+            .clicked()
+        {
+            deepfilter::start_install();
+        }
+        match deepfilter::install_error() {
+            Some(e) => ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}")),
+            None => ui.weak("optional, about 27 MB"),
         };
     }
 }

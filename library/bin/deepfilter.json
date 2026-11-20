@@ -1,0 +1,8 @@
+{
+  "name": "Speech denoise (DeepFilterNet deep-filter CLI)",
+  "version": "0.5.6",
+  "url": "https://github.com/Rikorose/DeepFilterNet/releases/download/v0.5.6/deep-filter-0.5.6-x86_64-pc-windows-msvc.exe",
+  "sha256": "75e11fa16445f560cb6b021521ddb89e89270d13b83089705d98776f58fd7915",
+  "size": 26912256,
+  "license": "MIT OR Apache-2.0 (https://github.com/Rikorose/DeepFilterNet/blob/main/LICENSE)"
+}

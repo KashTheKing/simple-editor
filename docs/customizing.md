@@ -210,7 +210,10 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `audio.filter_add` | Mutate | bus_id, kind, params | Append a filter to a bus's chain (any FilterKind incl. DeHum\|Limiter\|DeEsser) with optional {param name: value} overrides. |
 | `audio.match_loudness` | Mutate | clip_ids, dry_run | Scale every listed clip's gain toward the selection's average (bucket-)RMS. |
 | `audio.normalize` | Mutate | clip_ids, dry_run, mode, target_dbfs | Set each clip's constant gain so its own peak/RMS reaches target_dbfs. Clips with keyframed volume are skipped (reported, not silently ignored). |
-| `audio.repair` | Mutate | clip_ids, preset | Route clips through a one-click DSP chain (a named bus + filters), left fully editable in the Mixer; re-applying reuses the bus. Returns the bus id. |
+| `audio.repair` | Mutate | clip_ids, preset, engine, strength | Route clips through a one-click DSP chain (a named bus + filters), left fully editable in the Mixer; re-applying reuses the bus. Returns the bus id. Preset `clean` runs Clean Audio instead (see `audio.clean`). |
+| `audio.clean` | Job | clip_ids, engine, strength, ab | Clean Audio: speech denoise over just the source range the clips play (+1 s handles), cached per source/range/strength, then the clips are re-pointed at the cleaned WAV (one undo; original untouched). `engine` deepfilter \| ffmpeg (default deepfilter when installed); `ab` a \| b flips original / cleaned instead. |
+| `denoise.status` | Read | | The speech-denoise add-on (DeepFilterNet): installed, version, path, default engine, running install and jobs. |
+| `denoise.install` | Job | uninstall | Download and verify the DeepFilterNet CLI (~27 MB, `library/bin/deepfilter.json`); `uninstall=true` removes it. |
 | `audio.role` | Mutate | clip_ids, role | Tag clips with an Essential-Sound role; drives the inspector's audio defaults and future ducking target selection. |
 | `audio.route` | Mutate | bus, clip_id, from_bus, track | Send a clip, a track or a bus into a bus (bus 0 = Main / inherit). |
 | `audio.sync_offset` | Read | clip_a, clip_b, max_lag_s | Best lag (seconds) that aligns clip_b to clip_a via cross-correlation of their waveform envelopes. For multicam sync; the angle-grid UI is a later (pro-monitor) workstream. |
@@ -295,7 +298,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `export.bake` | Job | clip_ids | Render the given clip(s) in place (effects flattened into a new asset) and swap them onto it; the original asset stays in the library. Blocks until the swap lands. |
-| `export.denoise` | Job | clip_ids | Bake the clip(s) through ffmpeg afftdn spectral audio denoise, then swap them onto the result. |
+| `export.denoise` | Job | clip_ids, engine, strength | Bake the clip(s) through speech denoise (DeepFilterNet when installed, else ffmpeg afftdn; `engine` deepfilter \| ffmpeg), then swap them onto the result. |
 | `export.edl` | Read | path | Write the main timeline as CMX 3600 EDL (for Avid): one file per video track (the first at path, others as <stem>_V2.edl …), the first also carrying every audio track; dissolves as D events. |
 | `export.preset_apply` | Ui | name | Apply an export preset card (any kind) to the Export pane, as clicking it does. |
 | `export.preset_delete` | Ui | name | Delete a custom export preset. Built-in and platform presets refuse. |

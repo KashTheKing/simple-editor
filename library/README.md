@@ -310,6 +310,12 @@ Optional programs the app installs on a click, never bundled in the exe. Each ma
      General ▸ AI enhancer ▸ Install (or the `enhance.install` tool).
   4. Commit `library/bin/enhancer.json` on `main` and push: the manifest on `main` is the switch (same rule
      and throwaway-worktree trick as the se-html manifest). Existing installs update by Uninstall + Install.
+- `bin/deepfilter.json`: speech denoise, DeepFilterNet's prebuilt `deep-filter` CLI for Windows (one exe with
+  the model built in, MIT / Apache-2.0; `engine::deepfilter::install` copies it into
+  `%APPDATA%\SimpleEditor\bin\deepfilter`). It points straight at the upstream release
+  (Rikorose/DeepFilterNet v0.5.6, `deep-filter-0.5.6-x86_64-pc-windows-msvc.exe`), pinned by size and SHA-256.
+  Publish or update it the same way as the enhancer (the download is the exe itself, not a zip; try it with
+  Settings ▸ General ▸ Speech denoise ▸ Install or `denoise.install`).
 
 ## index.json (generated)
 

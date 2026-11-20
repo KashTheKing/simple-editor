@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Audio
+- **Clean Audio with speech denoise**: Inspector ▸ Audio ▸ Clean Audio removes fans, traffic and room noise from speech, with a Strength control and A / B to compare the original and the cleaned sound. It runs in the Jobs pane (with cancel), cleans only the part of the file the clips use, caches the result and never changes the original. The optional speech denoise add-on (DeepFilterNet, about 27 MB, Settings ▸ General ▸ Speech denoise) does the cleaning; without it Clean Audio and the Denoise bake use ffmpeg afftdn. MCP: `audio.clean`, `audio.repair` preset `clean`, `denoise.status`, `denoise.install`, and `engine` / `strength` on `export.denoise`.
+
 ## 1.4.0
 
 ### Media player

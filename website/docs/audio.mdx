@@ -30,6 +30,42 @@ Right-click the **Audio** title for one-click fixes: **Repair** adds a clean-up 
 noise gate, compressor, limiter) and **Clarity** a presence boost, both on a new Mixer bus so you can
 adjust them; **Open in Mixer**; and **Duck Music under Dialogue** and **Normalize Selection** (below).
 
+## Clean Audio
+
+**Clean Audio** in the Inspector's **Audio** section removes background noise from speech: fans, air
+conditioning, traffic, keyboard clicks and room hum.
+
+- **Clean** cleans the selected clips (a video clip's sound too). It runs in the background in the
+  **Jobs** pane, where you can cancel it, and only works on the part of the file the clips use, plus a second
+  either side for trims. When it is done the clips play the cleaned sound; their timing, volume, fades and
+  keyframes stay the same.
+- **Strength** (0–100 %) sets how much of the noise goes. 100 % removes all of it; a little lower keeps some
+  of the room so a voice sounds natural. Change it and click **Clean** again.
+- **A** / **B** switches between the original (**A**) and the cleaned sound (**B**), so you can compare them
+  while it plays. Each switch is one undo step.
+
+Your original file is never changed. The cleaned sound is a WAV file in the app's cache folder, shown in the
+Library's **Cleaned audio** bin. Cleaning the same part at the same strength again reuses it at once.
+
+### Speech denoise add-on
+
+Clean Audio works best with **speech denoise**, an optional add-on that uses
+[DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) (MIT / Apache-2.0), a speech model that runs on the
+processor. Install it from **Settings ▸ General ▸ Speech denoise ▸ Install**, or the **Install speech
+denoise** button under Clean Audio. It is about 27 MB, downloaded once and checked before it is used; nothing
+else is sent anywhere. **Remove** takes it off again.
+
+Without the add-on, Clean Audio and the Denoise bake use ffmpeg's built-in `afftdn` filter, which is fine on
+steady hiss but weaker on everything else.
+
+On a test recording (a voice over loud pink noise), the noise floor went from −28.6 dB to −57.4 dB with
+DeepFilterNet at full strength, against −29.5 dB with `afftdn`.
+
+For assistants and scripts: `audio.clean` (with `engine`, `strength`, or `ab` to switch A / B),
+`audio.repair` with preset `clean`, `export.denoise` (with `engine` and `strength`), and `denoise.status` /
+`denoise.install`. `engine` is `deepfilter` or `ffmpeg`; the default is `deepfilter` when the add-on is
+installed.
+
 ## The Mixer
 
 ![The Mixer](/img/tutorial/mixer.png)
