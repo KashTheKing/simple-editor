@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### I/O and monitoring
+- **Media Properties**: right-click a Library item ▸ **Properties…** (or the Info window's button, or **Media Properties…** in the palette) shows the container, duration, size and bitrate, the file's tags, and every stream: codec and profile, resolution, frame rate, pixel format, colour (primaries, transfer, matrix and range), rotation, field order, sample rate, channels, language. **Copy** takes it all as text.
+- **Bitrate graph**: **Show Graph** in Media Properties measures the video or audio stream second by second (bars, an average line and keyframe ticks; hover for the time and rate). It reads the file in the background.
+- **Rotation and range overrides**: Media Properties ▸ **Decode** turns a video regardless of the rotation stored in it (0 / 90 / 180 / 270, or From file) and reads its levels as tagged, **Limited** or **Full**, for phone and screen footage flagged wrong (washed-out or crushed blacks). It applies to every clip of the file in the preview and the export, as one Undo step.
+- **Full-range export**: **Settings ▸ Export ▸ Levels ▸ Full range** writes SDR H.264 / HEVC at 0-255, tagged full range, instead of 16-235.
+- **Network streams**: **File ▸ Import ▸ Open Network Stream…** takes an HTTP(S) / HLS / DASH, RTMP, RTSP, SRT, UDP or RTP address, shows what's there (live or its length, codecs, size) and a live preview, and **Record to Library** saves it as it comes (no re-encode, an optional **Stop after**) and adds the file to the Library. Recent addresses are one click away.
+- **Search in recent projects**: the Home page's Projects list and **File ▸ Open Recent** (with more than 6 projects) have a search box that matches the name and folder.
+- **GPU choice**: **Settings ▸ Performance ▸ GPU** picks Automatic, Power saving, High performance or a specific graphics card on a PC with more than one; it applies after a restart (the preview and hardware decoding move together).
+- **Contour ShuttlePRO / ShuttlePRO v2 / ShuttleXpress**: plug one in and the outer ring shuttles (further = faster, both ways, centre pauses), the inner wheel steps frames, and the buttons run the actions set in **Settings ▸ Hotkeys ▸ Jog / Shuttle** (mark in / out, markers, transport, split, undo and zoom out of the box).
+- MCP: `media.properties`, `media.bitrate`, `media.set_io`, `stream.open`, `stream.record`, `gpu.list`, `shuttle.status`; `settings.set` takes `gpu_adapter`, `export_full_range` and `shuttle`.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

@@ -39,6 +39,10 @@ const SCALAR_WHITELIST: &[&str] = &[
     "cache_folder", // get: the folder in use; set: a new one ("" = default), the old cache moves there
     "web_browser",  // an exe path, "" = the Windows default browser
     "timeline_waveform", // simple | detailed
+    // ---- ws:parity-io ----
+    "gpu_adapter",       // "" | power | performance | an adapter name (gpu.list); applies after a restart
+    "export_full_range", // SDR exports at 0-255 levels
+    "shuttle",           // read a Contour ShuttlePRO / ShuttleXpress
 ];
 
 fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
@@ -68,6 +72,9 @@ fn get_scalar(s: &Settings, key: &str) -> Option<Value> {
         "web_browser" => json!(s.web_browser),
         "export_guide" => json!(s.export_guide),
         "timeline_waveform" => json!(s.timeline_waveform),
+        "gpu_adapter" => json!(s.gpu_adapter), // ws:parity-io
+        "export_full_range" => json!(s.export_full_range),
+        "shuttle" => json!(s.shuttle),
         "export_captions" => json!(s.export_captions.map_or("follow".to_string(), |b| b.to_string())),
         _ => return None,
     })
@@ -131,6 +138,10 @@ fn set_scalar(s: &mut Settings, key: &str, value: &str) -> Result<(), String> {
             "simple" | "detailed" => s.timeline_waveform = value.to_string(),
             _ => return Err("timeline_waveform: simple | detailed".into()),
         },
+        // ---- ws:parity-io ----
+        "gpu_adapter" => s.gpu_adapter = crate::engine::gpu_pick::Choice::parse(value).setting(),
+        "export_full_range" => s.export_full_range = parse_bool(value)?,
+        "shuttle" => s.shuttle = parse_bool(value)?,
         // "follow" = burn captions in when the preview shows them (the old behaviour)
         "export_captions" => s.export_captions = if value == "follow" { None } else { Some(parse_bool(value)?) },
         _ => return Err(format!("'{key}' is not a whitelisted setting")),
@@ -150,6 +161,8 @@ pub(super) fn bool_settings(s: &Settings) -> Vec<(&'static str, &'static str, bo
         ("assistant_guard", "Ask before an agent exports or opens"),
         ("voice_autosend", "Send voice requests automatically"),
         ("start_maximized", "Start maximized"),
+        ("export_full_range", "Full-range export"), // ws:parity-io
+        ("shuttle", "Use a ShuttlePRO"),
     ];
     ROWS.iter().filter_map(|&(k, l)| Some((k, l, get_scalar(s, k)?.as_bool()?))).collect()
 }

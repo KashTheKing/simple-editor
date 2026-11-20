@@ -1,0 +1,80 @@
+---
+title: Streams, media properties and devices
+description: Record a network stream, read everything about a file, fix its rotation or levels, pick a GPU, and edit with a ShuttlePRO.
+---
+
+## Media properties
+
+Right-click a Library item ▸ **Properties…** (the Info window has the same button, and the <kbd>Ctrl+P</kbd>
+palette has **Media Properties…** for the selected clip). The window lists:
+
+- the **container**: format, duration, size, overall bitrate and the file's tags (title, encoder, creation time…);
+- each **stream**: codec and profile, resolution, frame rate, pixel format, **colour** (primaries, transfer,
+  matrix, and whether it's limited or full range), rotation, field order, sample rate, channels, language.
+
+**Copy** puts it all on the clipboard as text, handy for a bug report or a client.
+
+### Bitrate graph
+
+**Show Graph** measures the video stream (or **Audio**) second by second: one bar per second, a line at the
+average and a tick at every keyframe. Hover a bar for its time and bitrate. Long files take a few
+seconds: the file is read once in the background, and the window stays usable.
+
+### Rotation and range
+
+Under **Decode** (Library videos only):
+
+- **Rotation** turns the picture regardless of what the file says: **From file**, or 0°, 90°, 180°, 270°.
+  Use it when a phone video comes in on its side. A quarter turn swaps the clip's width and height.
+- **Range** says how to read the video's levels. Some phones and screen recorders store full-range video but
+  label it limited (blacks look grey and washed out): pick **Full (0-255)**. The reverse (crushed blacks,
+  clipped whites): pick **Limited (16-235)**. **As tagged** goes back to the file's own label.
+
+Both apply to every clip of that file, in the preview and the export, as one **Undo** step. A video with an
+override always decodes through FFmpeg and skips its proxy.
+
+## Full-range export
+
+**Settings ▸ Export ▸ Levels ▸ Full range** writes SDR H.264 and HEVC exports with 0-255 levels, tagged as full
+range. Leave it off for YouTube, social platforms and TVs, which expect the usual 16-235.
+
+## Network streams
+
+**File ▸ Import ▸ Open Network Stream…** opens a stream by its address:
+
+- **HTTP(S)**, including **HLS** (`.m3u8`) and **DASH** (`.mpd`) playlists,
+- **RTMP**, **RTSP** (IP cameras), **SRT**, **UDP** and **RTP**.
+
+Press **Open** (or <kbd>Enter</kbd>): the window says whether the stream is live or how long it is, and its
+codecs and size, and shows a live preview of the picture. **Record to Library** saves the stream as it comes
+in, without re-encoding, so it keeps up with any bitrate; tick **Stop after** to end it on its own. When it
+stops, the file (Matroska, `.mkv`) goes into the Library. Recordings are saved in a **Streams** folder inside
+your recordings folder (Settings ▸ Capture). The **Recent** list remembers the last ten addresses.
+
+A live stream takes a few seconds to start: if you stop it before the first picture arrives, nothing is saved
+and the window says so.
+
+## Search in recent projects
+
+The Home page's **Projects** list has a **Search** box: type any part of a project's name or folder (several
+words narrow it down). **File ▸ Open Recent** gets one too once it holds more than six projects.
+
+## Choosing a GPU
+
+On a laptop with built-in and separate graphics, or a PC with two cards, **Settings ▸ Performance ▸ GPU**
+picks which one Simple Editor uses: **Automatic** (Windows decides), **Power saving**, **High performance**, or
+a card by name. The preview and hardware decoding move together, and the choice applies the next time you
+start Simple Editor. It's the same setting as Windows' **Settings ▸ System ▸ Display ▸ Graphics** for this app.
+
+## Contour ShuttlePRO
+
+Plug in a Contour **ShuttlePRO**, **ShuttlePRO v2** or **ShuttleXpress**; there's nothing to install. A
+message says when it's connected.
+
+- The outer **shuttle ring** plays forwards or backwards; turn it further for faster (¼× up to 16×). Let go
+  and playback pauses.
+- The inner **jog wheel** steps one frame per click.
+- The **buttons** run actions. Out of the box: Mark In, Mark Out, Clear In / Out, Add Marker, then Go to Start,
+  Previous Cut, Play / Pause, Next Cut and Go to End (the ShuttleXpress's five buttons), then Split, Ripple
+  Delete, Undo, Redo, Zoom Out and Zoom In. Change any of them in **Settings ▸ Hotkeys ▸ Jog / Shuttle ▸
+  Buttons**, or switch the device off there.
