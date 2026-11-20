@@ -87,9 +87,13 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
         Action::LoopInOut => {
             if app.player.loop_range().is_some() {
                 app.player.set_loop(None);
+                app.inout_loop = None;
             } else {
                 match (app.project.in_point, app.project.out_point) {
-                    (Some(a), Some(b)) if b > a => app.player.set_loop(Some((a, b))),
+                    (Some(a), Some(b)) if b > a => {
+                        app.player.set_loop(Some((a, b)));
+                        app.inout_loop = Some((a, b));
+                    }
                     _ => app.toast("Mark In and Out first (I / O)"),
                 }
             }

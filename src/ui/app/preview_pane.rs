@@ -162,6 +162,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         if let Some(m) = resp.mark {
             drag_mark(app, m);
         }
+        follow_inout_loop(app);
         app.pending_actions.extend(resp.actions);
         if let Some(q) = resp.set_quality {
             app.settings.preview_quality = q;
@@ -241,7 +242,24 @@ fn bar_transport(app: &mut App, speed: Option<f64>, reverse: bool, toggle_loop: 
     }
     if toggle_loop {
         let range = loop_range(app.project.in_point, app.project.out_point, app.project.duration());
-        app.player.set_loop(if app.player.loop_range().is_some() { None } else { range });
+        let new = if app.player.loop_range().is_some() { None } else { range };
+        app.player.set_loop(new);
+        app.inout_loop = new;
+    }
+}
+
+/// Each frame: a Loop the bar or Loop In/Out turned on follows In / Out when they move (a drag, Mark In,
+/// Clear). Another loop (the Animator's) replaced it: leave that alone.
+pub(super) fn follow_inout_loop(app: &mut App) {
+    let Some(ours) = app.inout_loop else { return };
+    if app.player.loop_range() != Some(ours) {
+        app.inout_loop = None;
+        return;
+    }
+    let want = loop_range(app.project.in_point, app.project.out_point, app.project.duration());
+    if want.is_some() && want != Some(ours) {
+        app.player.set_loop(want);
+        app.inout_loop = want;
     }
 }
 

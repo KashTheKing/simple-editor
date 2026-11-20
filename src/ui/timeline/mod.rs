@@ -520,6 +520,8 @@ enum Act {
     /// Right-click quick-change: "Stretch to Screen" on every selected clip with a native size -
     /// `Project::fit_clip_to_screen(id, true)`, applied per clip (each against its own native size).
     StretchToScreen,
+    /// Right-click ▸ Transform: flip / rotate / fit every selected visual clip.
+    Transform(crate::model::ops::Xf),
     /// Right-click quick-change: "Fit to Screen" on every selected clip with a native size -
     /// `Project::fit_clip_to_screen(id, false)`.
     FitToScreen,
@@ -2454,6 +2456,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             Act::FitToScreen => {
                 for &id in &ids {
                     p.fit_clip_to_screen(id, false);
+                }
+            }
+            Act::Transform(op) => {
+                for &id in &ids {
+                    p.transform_clip(id, op);
                 }
             }
             Act::SetEase(cid, t, e) => {

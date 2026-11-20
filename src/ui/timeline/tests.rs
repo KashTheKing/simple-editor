@@ -1602,7 +1602,7 @@ fn transform_menu_bulk_stretches_selection_with_one_undo() {
     h.frame(vec![]);
     // the clip menu is taller than this 400 px harness screen (groups, layouts, censor...): scroll down to it
     for _ in 0..8 {
-        if h.painted_text("Video").is_some() {
+        if h.painted_text("Transform").is_some() {
             break;
         }
         h.frame(vec![
@@ -1612,7 +1612,7 @@ fn transform_menu_bulk_stretches_selection_with_one_undo() {
     }
     h.settle(); // let the scroll animation finish before reading positions
     h.settle();
-    let xf = h.painted_text("Video").expect("Video submenu button painted") + vec2(4.0, 4.0);
+    let xf = h.painted_text("Transform").expect("Transform submenu button painted") + vec2(4.0, 4.0);
     h.press(xf);
     h.release(xf);
     let stretch = h.painted_text("Stretch to Screen").expect("Stretch to Screen listed") + vec2(4.0, 4.0);
@@ -2657,8 +2657,8 @@ fn clip_menu_is_grouped_without_the_adjustment_row() {
     probe.run(vec![], &mut draw);
     assert!(probe.has("Match Frame") && probe.has("Reveal in Library"), "{:?}", probe.texts());
     let rows = probe.texts().iter().filter(|t| t.chars().count() > 1).count(); // not the icon glyphs
-    // (25 since ws:animator's "Show Animations" joined the top level)
-    assert!(rows <= 25, "grouped into submenus, not ~32 flat rows: {rows}");
+    // (26 since ws:animator's "Show Animations" and the Transform submenu joined the top level)
+    assert!(rows <= 26, "grouped into submenus, not ~32 flat rows: {rows}");
     assert!(probe.has("Show Animations"));
     assert!(!probe.texts().iter().any(|t| t.contains("Adjustment")));
     probe.click("Add", &mut draw);

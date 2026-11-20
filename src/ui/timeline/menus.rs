@@ -277,14 +277,14 @@ pub(super) fn clip_menu(
         });
         // video/image/sequence only - Project::fit_clip_to_screen skips the rest of a mixed selection.
         // One Video submenu for the picture: fit, upscale, background removal, split-screen layouts, blur.
+        // Transform: fit / stretch / flip / rotate, for anything with a picture (shapes included)
+        if m.native_size || m.shape {
+            if let Some(op) = menu::sub(ui, None, "Transform", menu::transform_rows).flatten() {
+                *act = Some(Act::Transform(op));
+            }
+        }
         if m.native_size {
             menu::sub(ui, None, "Video", |ui| {
-                if menu::row(ui, None, "Stretch to Screen", "").clicked() {
-                    *act = Some(Act::StretchToScreen);
-                }
-                if menu::row(ui, None, "Fit to Screen", "").clicked() {
-                    *act = Some(Act::FitToScreen);
-                }
                 if upscalable && !zoomed {
                     menu::sub(ui, None, "AI Upscale", upscale_rows);
                 }

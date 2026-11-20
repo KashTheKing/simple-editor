@@ -370,3 +370,50 @@ mod tests {
         assert!(take_queued().is_empty(), "take drains");
     }
 }
+
+/// Right-click ▸ Transform (timeline clip menu and the Preview's): fit, stretch, flip, rotate by a preset
+/// or any angle. `Some` on a pick.
+pub fn transform_rows(ui: &mut egui::Ui) -> Option<crate::model::ops::Xf> {
+    use crate::model::ops::Xf;
+    let mut out = None;
+    if row(ui, None, "Fit to Screen", "").on_hover_text("Centred and upright, as large as fits the frame").clicked() {
+        out = Some(Xf::Fit);
+    }
+    if row(ui, None, "Stretch to Screen", "").on_hover_text("Fill the frame edge to edge, ignoring the aspect").clicked() {
+        out = Some(Xf::Stretch);
+    }
+    ui.separator();
+    if row(ui, None, "Flip Horizontal", "").clicked() {
+        out = Some(Xf::FlipH);
+    }
+    if row(ui, None, "Flip Vertical", "").clicked() {
+        out = Some(Xf::FlipV);
+    }
+    ui.separator();
+    let presets = [
+        ("Rotate 45° Right", 45.0),
+        ("Rotate 45° Left", -45.0),
+        ("Rotate 90° Right", 90.0),
+        ("Rotate 90° Left", -90.0),
+        ("Rotate 180°", 180.0),
+    ];
+    for (label, d) in presets {
+        if row(ui, None, label, "").clicked() {
+            out = Some(Xf::Rotate(d));
+        }
+    }
+    // any angle: type it, then Rotate (remembered for the next time)
+    let id = egui::Id::new("menu_rotate_by");
+    let mut deg: f64 = ui.data(|d| d.get_temp(id)).unwrap_or(15.0);
+    ui.horizontal(|ui| {
+        ui.label("Rotate by");
+        if ui.add(egui::DragValue::new(&mut deg).suffix("°").speed(1.0).range(-360.0..=360.0)).changed() {
+            ui.data_mut(|d| d.insert_temp(id, deg));
+        }
+        if ui.button("Rotate").clicked() {
+            out = Some(Xf::Rotate(deg));
+            ui.close();
+        }
+    });
+    out
+}

@@ -784,3 +784,27 @@ fn bench_trim_commit() {
     *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = None;
     let _ = std::fs::remove_dir_all(&scratch);
 }
+
+/// User report: with Loop on, moving In / Out kept looping the old range. An In / Out loop follows the
+/// marks; a loop someone else set (the Animator's) is left alone.
+#[test]
+fn the_in_out_loop_follows_the_marks() {
+    let scratch = std::env::temp_dir().join(format!("se-inout-loop-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&scratch);
+    *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(scratch.clone());
+    let mut app = App::build(&egui::Context::default(), None, None);
+    app.project.add_text_clip(0.0, 20.0);
+    app.player.set_project(&app.project);
+    (app.project.in_point, app.project.out_point) = (Some(2.0), Some(6.0));
+    app.act(Action::LoopInOut);
+    assert_eq!(app.player.loop_range(), Some((2.0, 6.0)));
+    app.project.out_point = Some(9.0);
+    super::preview_pane::follow_inout_loop(&mut app);
+    assert_eq!(app.player.loop_range(), Some((2.0, 9.0)), "follows the moved Out");
+    app.player.set_loop(Some((1.0, 3.0))); // another loop took over
+    app.project.in_point = Some(4.0);
+    super::preview_pane::follow_inout_loop(&mut app);
+    assert_eq!(app.player.loop_range(), Some((1.0, 3.0)), "someone else's loop stays");
+    *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let _ = std::fs::remove_dir_all(&scratch);
+}

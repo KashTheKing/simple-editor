@@ -68,6 +68,18 @@ impl Project {
     /// additionally sets independent scale_x/scale_y so the footage fills the canvas edge to edge,
     /// ignoring native aspect ratio. No-op (`false`) for a clip with no native size.
     pub fn fit_clip_to_screen(&mut self, id: Id, stretch: bool) -> bool {
+        // a shape: its own size (half-sizes in project px) made to fill the frame, centred and upright
+        let (pw, ph) = (self.width as f64 / 2.0, self.height as f64 / 2.0);
+        if let Some(c) = self.clip_mut(id).filter(|c| c.shape.is_some()) {
+            let s = c.shape.as_mut().unwrap();
+            let (w, h) = (s.w.value.abs().max(1.0), s.h.value.abs().max(1.0));
+            let k = (pw / w).min(ph / h);
+            let (nw, nh) = if stretch { (pw, ph) } else { (w * k, h * k) };
+            (s.w, s.h) = (Animated::new(nw), Animated::new(nh));
+            (c.x, c.y, c.rotation, c.scale) = (a0(), a0(), a0(), a1());
+            (c.scale_x, c.scale_y) = (a1(), a1());
+            return true;
+        }
         let Some((nw, nh)) = self.clip(id).and_then(|c| self.clip_native_size(c)) else { return false };
         let (sx, sy) = if stretch {
             let canvas_aspect = self.width as f64 / self.height as f64;
@@ -87,6 +99,47 @@ impl Project {
         clip.rotation = a0(); // a rotated quad can't fill the canvas - "to screen" implies upright
         clip.scale_x = Animated::new(sx);
         clip.scale_y = Animated::new(sy);
+        true
+    }
+    /// Right-click ▸ Transform: flip, rotate or fit a clip (keys included, so an animation flips with it).
+    pub fn transform_clip(&mut self, id: Id, op: Xf) -> bool {
+        match op {
+            Xf::Fit => return self.fit_clip_to_screen(id, false),
+            Xf::Stretch => return self.fit_clip_to_screen(id, true),
+            _ => {}
+        }
+        let Some(c) = self.clip_mut(id).filter(|c| c.is_visual()) else { return false };
+        match op {
+            // a flip is the Flip effect's Horizontal / Vertical switch (the renderers need positive sizes);
+            // switched both off, the effect goes
+            Xf::FlipH | Xf::FlipV => {
+                use crate::model::{Effect, EffectKind};
+                let i = (op == Xf::FlipV) as usize;
+                let at = match c.effects.iter().position(|e| e.kind == EffectKind::Flip) {
+                    Some(at) => at,
+                    None => {
+                        let mut e = Effect::new(EffectKind::Flip);
+                        e.params[0].value = 0.0;
+                        c.effects.push(e);
+                        c.effects.len() - 1
+                    }
+                };
+                let e = &mut c.effects[at];
+                e.enabled = true;
+                e.params[i].value = if e.params[i].value > 0.5 { 0.0 } else { 1.0 };
+                if e.params.iter().all(|p| p.value < 0.5) {
+                    c.effects.remove(at);
+                }
+            }
+            // a rotation adds the angle, keys included
+            Xf::Rotate(d) => {
+                c.rotation.value += d;
+                for k in &mut c.rotation.keys {
+                    k.v += d;
+                }
+            }
+            Xf::Fit | Xf::Stretch => unreachable!(),
+        }
         true
     }
     /// Re-bake every live link (path / expression) whose inputs changed. Called once per frame;
@@ -222,4 +275,45 @@ pub fn path_angle_keys(points: &[(f32, f32, f32)], duration: f64) -> Vec<Keyfram
             Keyframe { t, v: a, ease: Ease::Linear }
         })
         .collect()
+}
+
+/// Right-click ▸ Transform's rows (`Project::transform_clip`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Xf {
+    Fit,
+    Stretch,
+    FlipH,
+    FlipV,
+    /// Add this many degrees to the rotation.
+    Rotate(f64),
+}
+
+#[cfg(test)]
+mod xf_tests {
+    use super::*;
+
+    #[test]
+    fn flips_rotates_and_fits_a_shape() {
+        let mut p = Project::new();
+        let id = p.add_shape_clip(crate::model::ShapeKind::Rect, 0.0, 2.0);
+        p.clip_mut(id).unwrap().rotation.keys.push(Keyframe { t: 1.0, v: 10.0, ease: Default::default() });
+        let flip = |p: &Project| {
+            let e = p.clip(id).unwrap().effects.iter().find(|e| e.kind == crate::model::EffectKind::Flip).cloned();
+            e.map(|e| (e.params[0].value, e.params[1].value))
+        };
+        assert!(p.transform_clip(id, Xf::FlipH));
+        assert_eq!(flip(&p), Some((1.0, 0.0)));
+        assert!(p.transform_clip(id, Xf::FlipV));
+        assert_eq!(flip(&p), Some((1.0, 1.0)));
+        p.transform_clip(id, Xf::FlipH);
+        p.transform_clip(id, Xf::FlipV);
+        assert_eq!(flip(&p), None, "flipped back twice: no effect left");
+        assert!(p.transform_clip(id, Xf::Rotate(45.0)));
+        let c = p.clip(id).unwrap();
+        assert!(!c.rotation.keys.is_empty() && c.rotation.keys.iter().all(|k| (k.v - 55.0).abs() < 1e-9), "keys rotate too");
+        assert!(p.transform_clip(id, Xf::Stretch));
+        let s = p.clip(id).unwrap().shape.clone().unwrap();
+        assert_eq!((s.w.value, s.h.value), (p.width as f64 / 2.0, p.height as f64 / 2.0));
+        assert!(p.transform_clip(id, Xf::Fit));
+    }
 }

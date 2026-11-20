@@ -599,6 +599,9 @@ pub struct App {
     script_editor: crate::ui::script_editor::ScriptEditor,
     /// The pane's Run was pressed: `scripts_ctl::tick` runs it next frame, outside the pane draw.
     script_editor_run: bool,
+    /// The loop range the In / Out Loop set: while the player still loops exactly that, it follows the
+    /// marks as they move (`preview_pane::follow_inout_loop`).
+    inout_loop: Option<(f64, f64)>,
     // ---- ws:project-color-fps ----
     /// "Match project to this video?" waiting for an answer (`project_match`).
     match_offer: Option<project_match::MatchOffer>,
@@ -1256,6 +1259,7 @@ impl App {
             styles_ctx_can_transcribe: false,
             script_editor: Default::default(), // feat/scripts-editor
             script_editor_run: false,
+            inout_loop: None,
             match_offer: None, // ws:project-color-fps
             footage: Default::default(), // ws:mixed-footage
             tabs: Default::default(), // ws:timeline-tabs

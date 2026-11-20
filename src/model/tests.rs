@@ -299,8 +299,9 @@ fn polygon_points_round_trip() {
 
 #[test]
 fn fit_clip_to_screen_noop_without_native_size() {
+    // (a shape fits by its own size now: `xf_tests`; a text clip has neither)
     let mut p = Project::new();
-    let id = p.add_shape_clip(ShapeKind::Rect, 0.0, 2.0);
+    let id = p.add_text_clip(0.0, 2.0);
     assert!(!p.fit_clip_to_screen(id, false));
     assert!(!p.fit_clip_to_screen(id, true));
 }

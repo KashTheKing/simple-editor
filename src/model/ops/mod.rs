@@ -25,6 +25,7 @@ mod media_io; // ws:parity-io
 // ---- ws:pro-monitor ----
 mod multicam;
 mod paths;
+pub use paths::Xf;
 mod planner;
 pub mod playlists; // ws:music-burn (`spaced_length`)
 mod queries;

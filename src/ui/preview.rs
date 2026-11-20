@@ -1170,13 +1170,12 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
                     if menu::row(ui, None, "Fill Frame", "").on_hover_text(tip).clicked() {
                         edit(&fill_frame);
                     }
-                    let tip = "Fill the frame edge to edge, ignoring the aspect";
-                    if menu::row(ui, None, "Stretch to Frame", "").on_hover_text(tip).clicked() {
-                        edit(&|p: &mut Project, id| {
-                            p.fit_clip_to_screen(id, true);
-                        });
-                    }
                 });
+                if let Some(op) = menu::sub(ui, None, "Transform", menu::transform_rows).flatten() {
+                    edit(&move |p: &mut Project, id| {
+                        p.transform_clip(id, op);
+                    });
+                }
                 if menu::check(ui, state.crop_mode, "Crop Handles", "").clicked() {
                     state.crop_mode = !state.crop_mode;
                     c.tools.tool = Tool::Select; // the handles sit on the Select tool's outline
@@ -1443,6 +1442,10 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
         painter.image(id, lb, uv, Color32::WHITE);
     } else if let Some(t) = &state.texture {
         painter.image(t.id(), lb, uv, Color32::WHITE);
+    }
+    // a 1 px outline round the frame, so its edge shows on an all-black picture
+    if device.is_none() && !c.fullscreen {
+        painter.rect_stroke(lb, 0.0, egui::Stroke::new(1.0, Color32::from_gray(70)), egui::StrokeKind::Outside);
     }
     // ---- ws:social-guides ----
     if let (Some(s), Some(g)) = (&device, &guide) {
