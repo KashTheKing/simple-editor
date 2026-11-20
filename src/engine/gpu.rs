@@ -349,6 +349,9 @@ pub struct GpuRenderer {
     view: crate::engine::browser::LayerView,
     // ---- ws:export-pipeline ----
     readback: Readback,
+    /// ws:gap-alpha-export: the canvas clear for the frames being rendered now, instead of the project's
+    /// `preview_bg` (a transparent export renders on `Custom([0, 0, 0, 0])`). Set around one export frame.
+    pub bg_override: Option<BackgroundMode>,
     /// #158: D3D11 textures shared into GL for zero-copy decoded layers (`interop`); None = no sharing.
     interop: Option<interop::Interop>,
 }
@@ -397,6 +400,7 @@ impl GpuRenderer {
                 key_tag: 0,
                 view: crate::engine::browser::LayerView::NONE,
                 readback: Readback::default(), // ws:export-pipeline
+                bg_override: None,
                 interop: None,
             };
             r.interop = interop::Interop::open(&r.gl);
@@ -1538,7 +1542,7 @@ impl GpuRenderer {
     fn render_canvas(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet) -> Option<Target> {
         let t = layers.t.unwrap_or(t);
         let mut canvas = self.acquire(w, h)?;
-        match clear_color(project.preview_bg) {
+        match clear_color(self.bg_override.unwrap_or(project.preview_bg)) {
             Some(c) => self.clear(&canvas, c),
             None => self.clear_checker(&canvas),
         }

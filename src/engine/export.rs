@@ -27,6 +27,9 @@ pub struct GpuFrameRequest {
     pub h: u32,
     /// ws:export-pipeline: read back as NV12 bytes (`w*h*3/2` in `rgba`, BT.709 limited) instead of RGBA.
     pub nv12: bool,
+    /// ws:gap-alpha-export: clear the canvas to this instead of the live project's background (a
+    /// transparent export sends `Custom([0, 0, 0, 0])`). None = the project's own.
+    pub bg: Option<crate::model::BackgroundMode>,
     /// The buffer to read into and reply with (recycled by the sender; `Frame::default()` is fine).
     pub buf: Frame,
     /// The rendered frame, or None / a dropped sender when the renderer died (the export falls back
@@ -106,6 +109,10 @@ pub struct ExportOptions {
     /// Target size: aim the file at about this many bytes (average bitrate, `target_args`) instead
     /// of the constant quality `crf`. None = quality mode.
     pub target_bytes: Option<u64>,
+    // ---- ws:gap-alpha-export ----
+    /// Keep transparency: no background fill, written with an alpha channel (MOV ProRes 4444 / PNG /
+    /// Animation, WebM VP9, PNG / TIFF sequences). Other formats ignore it and say so in the status.
+    pub alpha: bool,
 }
 
 // ---- ws:pro-schema ----
@@ -296,6 +303,9 @@ pub struct ExportPreset {
     /// Output frame rate; 0 = the project's.
     #[serde(default)]
     pub fps: f64,
+    /// ws:gap-alpha-export: export with a transparent background.
+    #[serde(default)]
+    pub alpha: bool,
 }
 
 /// The 4 shipped tiles - also the serde field default for `Settings.export_presets`, so a
@@ -355,12 +365,27 @@ pub fn builtin_export_presets() -> Vec<ExportPreset> {
             color: Some([0, 172, 193]),
             ..Default::default()
         },
+        // ws:gap-alpha-export: titles / lower thirds over nothing, for another editor's timeline
+        ExportPreset {
+            name: PRESET_OVERLAY.into(),
+            ext: "mov".into(),
+            crf: CRF_BEST as u32,
+            loudnorm: false,
+            // "" = auto: a transparent MOV is ProRes 4444 unless the Codec row picks PNG / Animation
+            icon: "layers".into(),
+            color: Some([150, 90, 220]),
+            alpha: true,
+            ..Default::default()
+        },
     ]
 }
 
-/// Is `name` one of the two built-ins (which can't be renamed, edited or deleted)?
+/// The built-in transparent card: project size, ProRes 4444 `.mov` with alpha.
+pub const PRESET_OVERLAY: &str = "Overlay (ProRes 4444)";
+
+/// Is `name` one of the built-ins (which can't be renamed, edited or deleted)?
 pub fn is_builtin_preset(name: &str) -> bool {
-    name.eq_ignore_ascii_case(PRESET_MAX_QUALITY) || name.eq_ignore_ascii_case(PRESET_FAST_PREVIEW)
+    builtin_export_presets().iter().any(|p| p.name.eq_ignore_ascii_case(name))
 }
 
 /// Every preset card in order: the 2 built-ins, then the platform tiles, then the user's own.
@@ -420,7 +445,9 @@ fn output_filters(opts: &ExportOptions, project: (u32, u32), audio: bool, args: 
 /// CPU/odd-size path matches the GPU's NV12 colour instead of ffmpeg's untagged BT.601 default.
 /// Anything else (gif, images, audio, NV12 input) passes through with no tags.
 fn rgba_bt709(mut vf: String, rgba_in: bool, args: &[String]) -> (String, Vec<String>) {
-    let Some(pf) = args.iter().find(|a| *a == "yuv420p" || *a == "nv12").filter(|_| rgba_in) else {
+    // (ws:gap-alpha-export: the alpha-carrying 4:2:0 / 4:4:4 YUV too - swscale keeps the alpha plane)
+    let yuv = ["yuv420p", "nv12", "yuva420p", "yuva444p10le"];
+    let Some(pf) = args.iter().find(|a| yuv.contains(&a.as_str())).filter(|_| rgba_in) else {
         return (vf, Vec::new());
     };
     if !vf.is_empty() {
@@ -655,6 +682,60 @@ pub(crate) fn ext_of(path: &Path) -> String {
     path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default()
 }
 
+// ---- ws:gap-alpha-export ----
+/// Image-sequence formats (`<name>_%05d.<ext>` into a folder).
+pub const SEQUENCE_EXTS: &[&str] = &["png", "jpg", "tif"];
+
+/// An image-sequence export: the output's file name carries ffmpeg's frame-number pattern.
+pub fn is_sequence(out: &Path) -> bool {
+    out.file_name().is_some_and(|n| n.to_string_lossy().contains("%05d"))
+}
+
+/// Where a sequence called `name` goes inside `dir`: its own `<name>` folder, frames `<name>_%05d.<ext>`.
+pub fn sequence_path(dir: &Path, name: &str, ext: &str) -> PathBuf {
+    dir.join(name).join(format!("{name}_%05d.{ext}"))
+}
+
+/// `export.video`'s / the Format row's sequence token ("png_sequence") → its frame extension.
+pub fn sequence_ext(format: &str) -> Option<&'static str> {
+    match format {
+        "png_sequence" => Some("png"),
+        "jpg_sequence" | "jpeg_sequence" => Some("jpg"),
+        "tiff_sequence" | "tif_sequence" => Some("tif"),
+        _ => None,
+    }
+}
+
+/// Why `ext` can't carry transparency (None = it can): the export then goes out on the background.
+pub fn alpha_refusal(ext: &str, seq: bool) -> Option<String> {
+    let ok = if seq { matches!(ext, "png" | "tif" | "tiff") } else { matches!(ext, "mov" | "webm") };
+    let what = if seq { format!("{} sequence", ext.to_uppercase()) } else { ext.to_uppercase() };
+    (!ok).then(|| {
+        format!("{what} has no transparency - exported on the background (MOV, WebM, PNG or TIFF sequences keep it)")
+    })
+}
+
+/// The video half of the ffmpeg args for a transparent export or an image sequence (None = neither:
+/// `codec_args` decides). MOV with alpha: ProRes 4444 unless `encoder` names PNG or QuickTime Animation.
+fn special_video_args(ext: &str, encoder: &str, crf: u32, alpha: bool, seq: bool) -> Option<String> {
+    let rgb = if alpha { "rgba" } else { "rgb24" };
+    Some(match (ext, seq) {
+        ("png", true) => format!("-c:v png -pix_fmt {rgb}"),
+        ("jpg" | "jpeg", true) => "-c:v mjpeg -q:v 2 -pix_fmt yuvj444p".into(),
+        ("tif" | "tiff", true) => format!("-c:v tiff -compression_algo deflate -pix_fmt {rgb}"),
+        ("mov", false) if alpha => match encoder {
+            "png" => "-c:v png -pix_fmt rgba -movflags +faststart".into(),
+            "qtrle" => "-c:v qtrle -pix_fmt argb -movflags +faststart".into(),
+            _ => "-c:v prores_ks -profile:v 4444 -pix_fmt yuva444p10le -alpha_bits 16 -vendor apl0 -movflags +faststart".into(),
+        },
+        ("webm", false) if alpha => format!(
+            "-c:v libvpx-vp9 -crf {} -b:v 0 -row-mt 1 -cpu-used 2 -pix_fmt yuva420p -auto-alt-ref 0",
+            (crf as f64 * 63.0 / 51.0).round() as u32
+        ),
+        _ => return None,
+    })
+}
+
 /// Frames an "auto"-picked hardware encoder may have been sent before an ffmpeg failure still counts
 /// as "it could not start" (driver/GPU changed since the probe) rather than a mid-export error.
 const HW_START_FRAMES: u64 = 30;
@@ -691,7 +772,22 @@ fn run_export_with(
 ) -> Result<(), String> {
     let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     let ext = ext_of(&opts.out_path);
-    let tmp = temp_output(&opts.out_path);
+    // ---- ws:gap-alpha-export: a sequence renders into a hidden sibling folder, moved into place on success ----
+    let seq = is_sequence(&opts.out_path);
+    let seq_dir = match opts.out_path.parent().filter(|_| seq) {
+        Some(dir) => {
+            let name = dir.file_name().unwrap_or_default().to_string_lossy();
+            let d = TempDir(dir.with_file_name(format!(".{name}.simple-editor-tmp")));
+            let _ = std::fs::remove_dir_all(&d.0); // a leftover from a crashed run
+            std::fs::create_dir_all(&d.0).map_err(|e| format!("sequence folder: {e}"))?;
+            Some((d, dir.to_path_buf()))
+        }
+        None => None,
+    };
+    let tmp = match &seq_dir {
+        Some((d, _)) => TempFile(d.0.join(opts.out_path.file_name().unwrap_or_default())),
+        None => temp_output(&opts.out_path),
+    };
     let audio_only = AUDIO_EXTS.contains(&ext.as_str());
     let is_gif = ext == "gif";
     let fps = opts.fps.filter(|f| *f > 0.0).unwrap_or(project.fps).max(1.0);
@@ -702,6 +798,23 @@ fn run_export_with(
     if let Some(why) = color_refusal(project.color, &ext, &opts.encoder) {
         return Err(why);
     }
+    // ws:gap-alpha-export: transparent = the canvas starts clear (no project background) and stays RGBA
+    let mut alpha_note = String::new();
+    let alpha = opts.alpha && !audio_only && {
+        let why = alpha_refusal(&ext, seq)
+            .or_else(|| hdr.then(|| "HDR exports have no transparency - exported on the background".to_string()));
+        if let Some(why) = &why {
+            alpha_note = format!(" · {why}");
+        }
+        why.is_none()
+    };
+    let clear;
+    let project = if alpha {
+        clear = Project { preview_bg: crate::model::BackgroundMode::Custom([0, 0, 0, 0]), ..project.clone() };
+        &clear
+    } else {
+        project
+    };
     let (w, h) = (project.width.max(1), project.height.max(1));
     let mut pool = DecoderPool::new(opts.backend);
     let backend = opts.backend;
@@ -714,7 +827,7 @@ fn run_export_with(
     } else {
         ""
     };
-    let inputs = audio_inputs(project, is_gif, layout, opts.stem_by, (start, start + dur));
+    let inputs = audio_inputs(project, is_gif || seq, layout, opts.stem_by, (start, start + dur));
     // Stems: the file gets the mix (input 0 of the audio), the rest go to their own WAV outputs
     let main_audio = if layout == AudioLayout::Stems { inputs.len().min(1) } else { inputs.len() };
     let stem_dir = if inputs.len() > main_audio {
@@ -748,7 +861,9 @@ fn run_export_with(
         Some(n) => ("auto".to_string(), Some(n)),
         None => resolve_encoder(&ext, &opts.encoder),
     };
+    let special = special_video_args(&ext, &opts.encoder, opts.crf.max(CRF_BEST as u32), alpha, seq);
     let auto_hw = !is_retry
+        && special.is_none()
         && !hdr
         && (opts.encoder.is_empty() || opts.encoder == "auto" || note.is_some())
         && crate::engine::encoders::CANDIDATES.contains(&encoder.as_str());
@@ -758,11 +873,18 @@ fn run_export_with(
         prog.set(0.0, enc_note.trim_start_matches(" · "));
     }
     let mut args = codec_args(&ext, &encoder, opts.crf.max(CRF_BEST as u32), &opts.preset, &detect_encoders());
+    if let Some(v) = &special {
+        // the codec's own video args; a file keeps codec_args' audio half, a sequence has none
+        let audio = args.iter().position(|a| a == "-c:a").filter(|_| !seq).map(|i| args[i..].to_vec());
+        args = v.split(' ').map(String::from).chain(audio.unwrap_or_default()).collect();
+    }
     if hdr {
         args = hdr_args(args, &encoder, project.color);
     }
-    args.extend(gop_args(&ext, fps));
-    if let Some(bytes) = opts.target_bytes.filter(|_| !audio_only && !is_gif) {
+    if !seq {
+        args.extend(gop_args(&ext, fps));
+    }
+    if let Some(bytes) = opts.target_bytes.filter(|_| !audio_only && !is_gif && special.is_none()) {
         args = target_args(args, target_video_kbps(bytes, dur, &ext, main_audio as u32));
     }
     let gpu_tx = match &opts.frames {
@@ -805,7 +927,7 @@ fn run_export_with(
     for (k, v) in opts.metadata.iter().filter(|(k, _)| !k.trim().is_empty()) {
         cmd.args(["-metadata", &format!("{}={}", k.trim(), v)]);
     }
-    if is_gif {
+    if is_gif || seq {
         cmd.arg("-an");
     }
     // (no `-shortest`: it drops the last video frame when dur isn't a whole number of frames; video and
@@ -872,7 +994,8 @@ fn run_export_with(
             let mut cpu_rgba = Frame::new(w, h);
             // GPU path: decode here (off the UI thread), composite there (the GL context lives on the UI
             // thread), so an export runs the very same shaders the preview does.
-            let mut gpu = gpu_tx.map(|tx| GpuScratch::new(backend, tx, nv12));
+            let bg = alpha.then_some(project.preview_bg);
+            let mut gpu = gpu_tx.map(|tx| GpuScratch::new(backend, tx, nv12, bg));
             let mut gaps = if gpu.is_some() { String::new() } else { cpu_gaps(project) };
             let end = start + dur;
             let mut next_req = 0u64;
@@ -930,7 +1053,7 @@ fn run_export_with(
                 sent += 1;
                 prog.set(
                     (i + 1) as f32 / n as f32,
-                    format!("Encoding {t:.1} / {end:.1} s{gaps}{audio_note}{enc_note}{}", audio_status(&audio_done)),
+                    format!("Encoding {t:.1} / {end:.1} s{gaps}{audio_note}{enc_note}{alpha_note}{}", audio_status(&audio_done)),
                 );
             }
             if prog.is_cancelled() {
@@ -956,7 +1079,13 @@ fn run_export_with(
     // move the finished file into place (decoders released first so an in-place export over the source
     // can replace it)
     drop(pool);
-    tmp.commit(&opts.out_path)?;
+    match &seq_dir {
+        Some((d, dir)) => {
+            std::mem::forget(tmp); // (the pattern is no file of its own)
+            d.commit(dir)?;
+        }
+        None => tmp.commit(&opts.out_path)?,
+    }
     // the stems folder only appears once the whole export succeeded (a failure drops `stem_dir`,
     // which deletes the partial WAVs)
     match &stem_dir {
@@ -1228,10 +1357,16 @@ struct GpuScratch {
     tx: std::sync::mpsc::Sender<GpuFrameRequest>,
     window: ReplyWindow,
     nv12: bool,
+    bg: Option<crate::model::BackgroundMode>,
 }
 
 impl GpuScratch {
-    fn new(backend: Backend, tx: std::sync::mpsc::Sender<GpuFrameRequest>, nv12: bool) -> Self {
+    fn new(
+        backend: Backend,
+        tx: std::sync::mpsc::Sender<GpuFrameRequest>,
+        nv12: bool,
+        bg: Option<crate::model::BackgroundMode>,
+    ) -> Self {
         Self {
             pool: DecoderPool::new(backend),
             spare: Vec::new(),
@@ -1240,6 +1375,7 @@ impl GpuScratch {
             tx,
             window: ReplyWindow::new(GPU_WINDOW),
             nv12,
+            bg,
         }
     }
     /// Decode the layers for `t` and queue them for the UI thread to composite into `buf`. False = the
@@ -1269,7 +1405,7 @@ impl GpuScratch {
             )
         };
         let (reply, rx) = std::sync::mpsc::sync_channel(1);
-        if self.tx.send(GpuFrameRequest { layers, t, w, h, nv12: self.nv12, buf, reply }).is_err() {
+        if self.tx.send(GpuFrameRequest { layers, t, w, h, nv12: self.nv12, bg: self.bg, buf, reply }).is_err() {
             return false;
         }
         self.window.push(rx);
@@ -2140,6 +2276,7 @@ pub(crate) mod tests {
                     encoder: enc.into(),
                     preset: "balanced".into(),
                     target_bytes: Some(target),
+                    alpha: false,
                     ..opts_for(out.clone())
                 };
                 assert_eq!(wait_done(&start_export(p.clone(), opts, text.clone())), None);
@@ -2584,6 +2721,7 @@ pub(crate) mod tests {
             stem_by: Default::default(),
             overlay: None,
             fps: None,
+            alpha: false,
             target_bytes: None,
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
@@ -2625,6 +2763,7 @@ pub(crate) mod tests {
             audio: Default::default(),
             stem_by: Default::default(),
             overlay: None,
+            alpha: false,
             fps: None,
             target_bytes: None,
         };
@@ -2787,6 +2926,7 @@ pub(crate) mod tests {
             // ---- ws:pro-schema ----
             audio: Default::default(),
             stem_by: Default::default(),
+            alpha: false,
             overlay: None,
             fps: None,
             target_bytes: None,
@@ -2982,5 +3122,141 @@ pub(crate) mod tests {
             let secs = t0.elapsed().as_secs_f64();
             eprintln!("export 10 s 1080p60, 2 layers, CPU path, {enc}: {:.1} fps ({secs:.1} s) {err:?}", 600.0 / secs);
         }
+    }
+
+    // ---- ws:gap-alpha-export ----
+    /// A 160x90, 1 s, 30 fps project: one white rect (half 40x20, turned 10 degrees so its edges are
+    /// soft) over nothing, on a Black background the transparent export must ignore.
+    pub(crate) fn shape_over_nothing() -> Project {
+        let mut p = Project::new();
+        (p.width, p.height, p.fps, p.preview_bg) = (160, 90, 30.0, crate::model::BackgroundMode::Black);
+        let mut c = crate::model::Clip::new(p.new_id(), ClipKind::Shape, "rect", 0.0, 1.0);
+        let mut s = crate::model::ShapeStyle::new(crate::model::ShapeKind::Rect);
+        (s.fill, s.stroke_width) = ([255, 255, 255, 255], 0.0);
+        (s.w, s.h) = (crate::model::Animated::new(40.0), crate::model::Animated::new(20.0));
+        c.shape = Some(s);
+        c.rotation = crate::model::Animated::new(10.0);
+        let v = p.tracks.iter().position(|t| t.kind == TrackKind::Video).expect("a video track");
+        p.tracks[v].clips.push(c);
+        p.show_subtitles = false;
+        p
+    }
+
+    /// The first frame of `file` as 160x90 RGBA, decoded by ffmpeg.
+    fn first_rgba(file: &Path) -> Vec<u8> {
+        let o = ffpipe::command(&ffpipe::ffmpeg_exe().unwrap())
+            .args(["-v", "error", "-i"])
+            .arg(file)
+            .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgba", "-"])
+            .output()
+            .unwrap();
+        assert_eq!(o.stdout.len(), 160 * 90 * 4, "{}", String::from_utf8_lossy(&o.stderr));
+        o.stdout
+    }
+
+    /// Clear corners, an opaque white middle, and soft edges that stay white (no dark fringe).
+    pub(crate) fn assert_overlay(px: &[u8], what: &str) {
+        let at = |x: usize, y: usize| &px[(y * 160 + x) * 4..(y * 160 + x) * 4 + 4];
+        for (x, y) in [(0, 0), (159, 0), (0, 89), (159, 89)] {
+            assert!(at(x, y)[3] <= 2, "{what}: corner ({x},{y}) is not transparent: {:?}", at(x, y));
+        }
+        let mid = at(80, 45);
+        assert!(mid[3] >= 253 && mid[..3].iter().all(|&c| c >= 250), "{what}: the shape is not opaque white: {mid:?}");
+        let edges: Vec<&[u8]> = px.chunks_exact(4).filter(|p| p[3] > 40 && p[3] < 215).collect();
+        assert!(!edges.is_empty(), "{what}: no soft edge pixels");
+        for e in edges {
+            assert!(e[..3].iter().all(|&c| c >= 200), "{what}: dark fringe at a soft edge: {e:?}");
+        }
+    }
+
+    fn ffprobe_pix_fmt(file: &Path) -> String {
+        let o = ffpipe::command(&ffpipe::ffprobe_exe().unwrap())
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"])
+            .arg(file)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn alpha_formats_and_fallback_message() {
+        assert_eq!(alpha_refusal("mov", false), None);
+        assert_eq!(alpha_refusal("webm", false), None);
+        assert_eq!(alpha_refusal("png", true), None);
+        assert_eq!(alpha_refusal("tif", true), None);
+        let why = alpha_refusal("mp4", false).expect("mp4 has no alpha");
+        assert!(why.starts_with("MP4 has no transparency") && why.contains("MOV"), "{why}");
+        assert!(alpha_refusal("jpg", true).unwrap().starts_with("JPG sequence has no transparency"));
+        assert!(special_video_args("mov", "auto", 16, true, false).unwrap().contains("prores_ks -profile:v 4444 -pix_fmt yuva444p10le"));
+        assert!(special_video_args("mov", "qtrle", 16, true, false).unwrap().contains("-pix_fmt argb"));
+        assert!(special_video_args("webm", "auto", 16, true, false).unwrap().contains("yuva420p"));
+        assert_eq!(special_video_args("mov", "auto", 16, false, false), None, "an opaque MOV keeps codec_args");
+        assert!(special_video_args("png", "", 16, false, true).unwrap().contains("rgb24"));
+        assert!(is_sequence(&sequence_path(Path::new("C:/out"), "shot", "png")));
+        assert_eq!(sequence_path(Path::new("C:/out"), "shot", "png"), Path::new("C:/out/shot/shot_%05d.png"));
+        assert!(!is_sequence(Path::new("C:/out/shot.png")));
+        assert_eq!(sequence_ext("tiff_sequence"), Some("tif"));
+    }
+
+    /// A shape over nothing written as transparent ProRes 4444 reads back with an alpha channel:
+    /// clear corners, an opaque shape, no dark fringe. On the CPU compositor.
+    #[test]
+    fn transparent_prores_keeps_alpha() {
+        let dir = temp_dir("alpha-prores");
+        if ffpipe::ffmpeg_exe().is_none() {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        }
+        let out = dir.join("overlay.mov");
+        let opts = ExportOptions { alpha: true, ..opts_for(out.clone()) };
+        let prog = start_export(shape_over_nothing(), opts, Arc::new(Mutex::new(TextRasterizer::new())));
+        assert_eq!(wait_done(&prog), None);
+        assert!(ffprobe_pix_fmt(&out).starts_with("yuva444p"), "pix_fmt {}", ffprobe_pix_fmt(&out));
+        assert_overlay(&first_rgba(&out), "prores");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// PNG sequence with alpha: `<name>_%05d.png` in its own folder, one file per frame (or per Nth
+    /// frame), each with an alpha channel; nothing left in the hidden work folder.
+    #[test]
+    fn png_sequence_names_counts_and_alpha() {
+        let dir = temp_dir("alpha-seq");
+        if ffpipe::ffmpeg_exe().is_none() {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        }
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        for (name, fps, count) in [("all", None, 30usize), ("third", Some(10.0), 10)] {
+            let out = sequence_path(&dir, name, "png");
+            let opts = ExportOptions { alpha: true, fps, ..opts_for(out) };
+            assert_eq!(wait_done(&start_export(shape_over_nothing(), opts, text.clone())), None);
+            let folder = dir.join(name);
+            let mut files: Vec<String> =
+                std::fs::read_dir(&folder).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+            files.sort();
+            let want: Vec<String> = (1..=count).map(|i| format!("{name}_{i:05}.png")).collect();
+            assert_eq!(files, want, "{name}");
+            assert_eq!(ffprobe_pix_fmt(&folder.join(&want[0])), "rgba");
+            assert_overlay(&first_rgba(&folder.join(&want[0])), name);
+            assert!(!dir.join(format!(".{name}.simple-editor-tmp")).exists(), "work folder left behind");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Transparent on a format without alpha still exports (opaque) and says why in the status.
+    #[test]
+    fn alpha_on_mp4_falls_back_with_a_message() {
+        let dir = temp_dir("alpha-mp4");
+        if ffpipe::ffmpeg_exe().is_none() {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        }
+        let out = dir.join("flat.mp4");
+        let opts = ExportOptions { alpha: true, ..opts_for(out.clone()) };
+        let prog = start_export(shape_over_nothing(), opts, Arc::new(Mutex::new(TextRasterizer::new())));
+        assert_eq!(wait_done(&prog), None);
+        assert!(prog.status().contains("MP4 has no transparency"), "status: {}", prog.status());
+        assert_eq!(ffprobe_pix_fmt(&out), "yuv420p");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -72,7 +72,27 @@ pub struct ExportUi {
     // ---- ws:max-duration ----
     /// Include what runs past the timeline's Max length (off: the export stops at it).
     pub overflow: bool,
+    // ---- ws:gap-alpha-export ----
+    /// "Transparent background": no background fill, written with alpha (`alpha_ok` formats only).
+    pub alpha: bool,
+    /// A transparent MOV's codec: "" = ProRes 4444, "png", "qtrle" (QuickTime Animation).
+    pub alpha_codec: String,
+    /// Image sequences: keep every Nth frame (0 / 1 = every frame).
+    pub every: u32,
 }
+
+// ---- ws:gap-alpha-export ----
+/// Does the Format row's choice (`default_ext`) keep transparency?
+pub fn alpha_ok(ext: &str) -> bool {
+    matches!(ext, "mov" | "webm" | "png_sequence" | "tiff_sequence")
+}
+
+/// The Format row's sequence choice -> its frame extension (None = a file format).
+pub fn seq_ext(state: &ExportUi) -> Option<&'static str> {
+    export::sequence_ext(default_ext(state))
+}
+
+const ALPHA_CODECS: [(&str, &str); 3] = [("", "ProRes 4444"), ("png", "PNG"), ("qtrle", "Animation")];
 
 /// The inline preset form: a new preset from the current settings (`editing` None) or an edit of the
 /// user preset called `editing` (name, icon, colour).
@@ -116,6 +136,7 @@ pub fn apply_preset(state: &mut ExportUi, settings: &mut Settings, p: &ExportPre
     }
     state.ext = if p.ext.is_empty() { "mp4".into() } else { p.ext.clone() };
     state.fps = p.fps;
+    state.alpha = p.alpha; // ws:gap-alpha-export
     state.lossless = false;
     state.pct_cache = None;
     settings.crf = p.crf;
@@ -146,6 +167,7 @@ pub fn preset_matches(p: &ExportPreset, state: &ExportUi, settings: &Settings, p
         && matches!(settings.preset.as_str(), "" | "auto")
         && (p.audio.is_empty() || p.audio == settings.export_audio)
         && out_fps(p.fps, project) == out_fps(state.fps, project)
+        && state.alpha == p.alpha
 }
 
 /// The output frame rate `fps` asks for: None = the project's own (0, or the same rate).
@@ -171,6 +193,7 @@ pub fn current_as_preset(state: &ExportUi, settings: &Settings, project: &Projec
         icon: String::new(),
         color: None,
         fps: out_fps(state.fps, project).unwrap_or(0.0),
+        alpha: state.alpha,
     }
 }
 
@@ -302,6 +325,8 @@ pub fn export_span(project: &Project, state: &ExportUi) -> Option<(f64, f64)> {
 /// re-encode.
 pub fn lossless_allowed(state: &ExportUi, project: &Project) -> bool {
     !state.range
+        && !state.alpha
+        && seq_ext(state).is_none()
         && export_span(project, state).is_none()
         && out_fps(state.fps, project).is_none() && export::lossless_segments(project).is_some()
 }
@@ -320,14 +345,32 @@ pub fn build_choice(
         Some(name) => ExportPresetRef::Preset(name.clone()),
         None => {
             let (width, height) = size.unwrap_or((0, 0));
-            ExportPresetRef::Custom { ext, width, height }
+            ExportPresetRef::Custom { ext: ext.clone(), width, height }
         }
     };
     let lossless = state.lossless && lossless_allowed(state, project);
+    // ---- ws:gap-alpha-export ----
+    let seq = export::is_sequence(&out_path);
+    // a sequence is no Quick Export target: Ctrl+M keeps re-running the last file export
+    let last = if seq {
+        settings.last_export.clone().unwrap_or(ExportPresetRef::Custom { ext: "mp4".into(), width: 0, height: 0 })
+    } else {
+        last
+    };
+    let alpha = state.alpha && (seq || alpha_ok(&ext));
+    let encoder = if alpha && ext == "mov" && !state.alpha_codec.is_empty() {
+        state.alpha_codec.clone()
+    } else {
+        settings.encoder.clone()
+    };
+    let fps = match out_fps(state.fps, project) {
+        f if seq && state.every > 1 => Some(f.unwrap_or(project.fps) / state.every as f64),
+        f => f,
+    };
     ExportChoice {
         opts: ExportOptions {
             out_path,
-            encoder: settings.encoder.clone(),
+            encoder,
             crf: settings.crf,
             preset: export::effective_preset(&settings.preset, &settings.export_speed),
             backend: Backend::parse(&settings.decoder),
@@ -344,8 +387,9 @@ pub fn build_choice(
             audio: export::AudioLayout::parse(&settings.export_audio),
             stem_by: export::StemBy::parse(&settings.export_stem_by),
             overlay: None,
-            fps: out_fps(state.fps, project),
+            fps,
             target_bytes: settings.export_target_bytes(),
+            alpha,
         },
         lossless,
         use_project_bg: state.use_project_bg,
@@ -371,7 +415,7 @@ pub const SCALERS: [(&str, &str); 6] = [
     ("spline", "Spline"),
 ];
 /// The Format row: every container the exporter writes, video first.
-const FORMATS: [(&str, &str); 10] = [
+const FORMATS: [(&str, &str); 13] = [
     ("mp4", "MP4"),
     ("mov", "MOV"),
     ("mkv", "MKV"),
@@ -382,6 +426,10 @@ const FORMATS: [(&str, &str); 10] = [
     ("wav", "WAV"),
     ("m4a", "M4A"),
     ("flac", "FLAC"),
+    // ---- ws:gap-alpha-export ----
+    ("png_sequence", "PNG sequence"),
+    ("jpg_sequence", "JPEG sequence"),
+    ("tiff_sequence", "TIFF sequence"),
 ];
 const SPEEDS: [(&str, &str, &str); 3] = [
     ("speed", "Fast", "Encodes quickest; the file is a little bigger."),
@@ -514,10 +562,23 @@ pub fn body(
 /// burn-in. True when settings changed.
 fn project_extras(ui: &mut egui::Ui, state: &mut ExportUi, project: &Project, settings: &mut Settings) -> bool {
     let mut save = false;
-    ui.checkbox(&mut state.use_project_bg, "Use project background").on_hover_text(
-        "Off: the export renders on black. On: the Background above is baked in (checkerboard as grey \
-         squares; real transparency needs an alpha-capable codec).",
-    );
+    // ---- ws:gap-alpha-export ----
+    let ok = alpha_ok(default_ext(state));
+    let ext = default_ext(state).to_string();
+    ui.add_enabled(ok, egui::Checkbox::new(&mut state.alpha, "Transparent background"))
+        .on_hover_text(
+            "No background: where no clip covers the frame stays see-through, for an overlay in another editor. MOV is ProRes 4444 (or PNG / Animation), WebM is VP9, sequences are PNG or TIFF.",
+        )
+        .on_disabled_hover_text(format!(
+            "{} can't hold transparency - pick MOV, WebM, or a PNG or TIFF sequence",
+            FORMATS.iter().find(|(e, _)| *e == ext).map(|(_, l)| *l).unwrap_or(&ext)
+        ));
+    let transparent = state.alpha && ok;
+    ui.add_enabled(!transparent, egui::Checkbox::new(&mut state.use_project_bg, "Use project background"))
+        .on_hover_text(
+            "Off: the export renders on black. On: the Background above is baked in (checkerboard as grey squares; real transparency needs Transparent background).",
+        )
+        .on_disabled_hover_text("Transparent background is on: nothing is drawn behind the clips");
     // follows the preview's subtitle toggle until ticked here
     if !project.subtitles.is_empty() {
         let mut caps = settings.export_captions.unwrap_or(project.show_subtitles);
@@ -942,6 +1003,23 @@ fn video_section(ui: &mut egui::Ui, state: &mut ExportUi, project: &Project, set
             }
             ui.end_row();
 
+            // ---- ws:gap-alpha-export ----
+            if state.alpha && default_ext(state) == "mov" {
+                ui.label("Codec").on_hover_text(
+                    "How the transparent MOV is stored. ProRes 4444 suits most editors; PNG and Animation are lossless and larger.",
+                );
+                combo(ui, "export_alpha_codec", &mut state.alpha_codec, &ALPHA_CODECS, Some(130.0));
+                ui.end_row();
+            }
+            if seq_ext(state).is_some() {
+                ui.label("Frame step").on_hover_text("1 = every frame, 2 = every second frame, and so on.");
+                let mut n = state.every.max(1);
+                if ui.add(egui::DragValue::new(&mut n).range(1..=1000)).changed() {
+                    state.every = n;
+                }
+                ui.end_row();
+            }
+
             if !state.lossless {
                 ui.label("Quality").on_hover_text("Higher = sharper picture and a bigger file.");
                 ui.vertical(|ui| {
@@ -1284,9 +1362,16 @@ fn output_bar(
         if project.color.is_hdr() {
             parts.push(format!("{} 10-bit", project.color.short())); // ws:project-color-fps
         }
+        if state.alpha && alpha_ok(&ext) {
+            parts.push("Transparent".into()); // ws:gap-alpha-export
+        }
     }
     parts.push(duration_text(export_dur));
-    if !state.lossless && !export::AUDIO_EXTS.contains(&ext.as_str()) {
+    if seq_ext(state).is_some() {
+        // ws:gap-alpha-export: a sequence's size is its frame count
+        let fps = out_fps(state.fps, project).unwrap_or(project.fps) / state.every.max(1) as f64;
+        parts.push(format!("{} frames", (export_dur * fps).ceil().max(1.0) as u64));
+    } else if !state.lossless && !export::AUDIO_EXTS.contains(&ext.as_str()) {
         // ws:export-audio-tracks: "Separate tracks in file" adds one stream per stem
         let streams = if export::effective_layout(export::AudioLayout::parse(&settings.export_audio), &ext)
             == export::AudioLayout::Streams
@@ -1535,6 +1620,15 @@ fn pick_and_build(state: &mut ExportUi, project: &Project, settings: &Settings) 
     } else {
         state.out_name.trim().to_string()
     };
+    // ---- ws:gap-alpha-export: a sequence picks a folder; its frames go in a "<name>" folder inside ----
+    if let Some(fext) = seq_ext(state) {
+        if let Some(dir) = out_folder(state, project) {
+            d = d.set_directory(dir);
+        }
+        let dir = d.set_title("Folder for the image sequence").pick_folder()?;
+        state.out_dir = Some(dir.clone());
+        return Some(build_choice(state, project, settings, export::sequence_path(&dir, &stem, fext)));
+    }
     if state.lossless {
         let src = project.source_video.clone().or_else(|| project.assets.first().map(|a| a.path.clone()));
         let ext = src

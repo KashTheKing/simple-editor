@@ -123,6 +123,7 @@ pub fn sample(
             loudnorm: false, // no effect on size, and a second audio pass
             metadata: Vec::new(),
             target_bytes: None,
+            alpha: false,
             audio: if opts.audio == export::AudioLayout::Stems { export::AudioLayout::Mix } else { opts.audio },
             ..opts.clone()
         };

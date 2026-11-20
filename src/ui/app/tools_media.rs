@@ -102,7 +102,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "export.video",
-        desc: "Export the timeline to a file (blocks until done, up to 30 min); encoder/crf/audio/stem_by default to settings. audio=streams adds one audio track per stem after the mix (mp4/mov/mkv/m4v, else one mix); audio=stems writes '<name> stems/NN <stem>.wav' beside the file.",
+        desc: "Export the timeline to a file or an image sequence (blocks until done, up to 30 min); encoder/crf/audio/stem_by default to settings. audio=streams adds one audio track per stem after the mix (mp4/mov/mkv/m4v, else one mix); audio=stems writes '<name> stems/NN <stem>.wav' beside the file.",
         args: &[
             "path:string:true:",
             "guide:boolean:false:burn in the platform guide (default: the Export setting)",
@@ -115,6 +115,11 @@ pub const TOOLS: &[ToolDef] = &[
             "audio:string:false:mix | streams | stems",
             "stem_by:string:false:track | bus | role",
             "overflow:boolean:false:include what runs past the Max length (default: stop at it)",
+            // ---- ws:gap-alpha-export ----
+            "alpha:boolean:false:transparent background (mov = ProRes 4444, or encoder png / qtrle; webm = VP9; png / tiff sequences)",
+            "format:string:false:png_sequence | jpg_sequence | tiff_sequence - path is then the folder, frames <folder>_00001.png",
+            "every:integer:false:sequences: keep every Nth frame (default 1)",
+            "in_out:boolean:false:only the In/Out range (default: the whole timeline)",
         ],
         kind: ToolKind::Job,
         run: |app, args| app.start_tool_job("export.video", args).map(|(p, o)| ToolOutcome::Job(p, o)),
