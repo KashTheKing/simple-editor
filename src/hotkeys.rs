@@ -818,6 +818,8 @@ pub fn group(a: Action) -> &'static str {
         SeparateStems | SeparateStemsToTracks | RemoveVocals | KeepOnlyVocals => "Clip",
         // ---- ws:addon-sam2 ----
         ObjectMask | ObjectMaskTrack => "Clip",
+        // ---- ws:addon-bg-removal ----
+        RemoveBackgroundFast | RemoveBackgroundBest | RemoveBackgroundOff => "Clip",
         // ---- ws:perf-window ----
         PerfWindow => "Playback",
         // ---- ws:quick-export ----

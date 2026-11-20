@@ -93,7 +93,7 @@ pub fn software_gl_dirs() -> Vec<PathBuf> {
         v.push(d);
     }
     if let Some(l) = std::env::var_os("LOCALAPPDATA") {
-        v.push(PathBuf::from(l).join("SimpleEditor").join("compat-gl"));
+        v.push(PathBuf::from(l).join(crate::settings::APP_DIR).join("compat-gl"));
     }
     v
 }

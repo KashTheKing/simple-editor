@@ -446,6 +446,8 @@ mod tests {
         c.src_in = 3.0;
         c.speed = 1.0;
         p.tracks[ti].clips.push(c);
+        // hand-made ids: keep new_id clear of them (else a stem clip can be handed id 10 too)
+        p.next_id = p.next_id.max(100);
         (p, ids)
     }
 

@@ -986,10 +986,10 @@ mod tests {
         };
         let prog = Progress::new();
         let t0 = std::time::Instant::now();
-        let e = run_in(&empty, &empty.join("cache"), &req, &prog, &|| {}).unwrap_err();
+        let e = run_in(&empty, &empty.join("no-cache"), &req, &prog, &|| {}).unwrap_err();
         assert!(e.contains("not installed"), "{e}");
         assert!(t0.elapsed() < std::time::Duration::from_secs(2), "nothing was started");
-        assert!(!empty.join("cache").exists(), "no cache folder made");
+        assert!(!empty.join("no-cache").exists(), "no cache folder made");
         // the playback side: no matte = None = the clip draws unkeyed
         assert!(matte_frame("C:/nowhere/clip.mp4", BgQuality::Fast, 25.0, 0.5, false, 0.0).is_none());
         let _ = std::fs::remove_dir_all(&empty);
