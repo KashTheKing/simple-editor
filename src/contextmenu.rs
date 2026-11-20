@@ -65,3 +65,40 @@ fn notify() {
     use windows::Win32::UI::Shell::{SHChangeNotify, SHCNE_ASSOCCHANGED, SHCNF_IDLIST};
     unsafe { SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None) };
 }
+
+/// Show `path` in File Explorer: its folder opens with the file selected (a folder path opens itself;
+/// a missing file opens the nearest existing parent). The one place every "Reveal / Open file location"
+/// goes through: explorer only understands `/select,"C:\dir\file"` as ONE raw argument with backslashes -
+/// std's `.arg()` quotes the whole `/select,...` when the path has spaces (explorer then opens Documents)
+/// and asset paths are stored with forward slashes (no match, nothing selected).
+pub(crate) fn reveal(path: &std::path::Path) {
+    let win = path.to_string_lossy().replace('/', "\\");
+    let p = std::path::Path::new(&win);
+    let mut cmd = std::process::Command::new("explorer.exe");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        if p.is_file() {
+            cmd.raw_arg(format!("/select,\"{win}\""));
+        } else if p.is_dir() {
+            cmd.raw_arg(format!("\"{win}\""));
+        } else if let Some(d) = p.ancestors().skip(1).find(|a| a.is_dir()) {
+            cmd.raw_arg(format!("\"{}\"", d.display()));
+        }
+    }
+    let _ = cmd.spawn();
+}
+
+/// The argument `reveal` hands explorer for a file (pure, for the test).
+#[cfg(test)]
+fn select_arg(path: &str) -> String {
+    format!("/select,\"{}\"", path.replace('/', "\\"))
+}
+
+#[cfg(test)]
+mod reveal_tests {
+    #[test]
+    fn select_is_one_quoted_backslash_argument() {
+        assert_eq!(super::select_arg("C:/My Videos/a b.mp4"), r#"/select,"C:\My Videos\a b.mp4""#);
+    }
+}

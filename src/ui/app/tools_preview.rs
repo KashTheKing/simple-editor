@@ -5,19 +5,18 @@
 use super::tools_helpers::*;
 use super::*;
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
-use crate::ui::preview::{self, MaskTarget};
+use crate::ui::preview::MaskTarget;
 
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "clip.crop",
-        desc: "Find-or-append a Crop effect on the clip and set its fraction params (0..0.5 each) at time `at`.",
+        desc: "Set the clip's built-in crop (Crop Left / Right / Top / Bottom, the share of the layer cut off each edge, 0..0.5) at time `at`. Keys it when that property is already keyframed.",
         args: &[
             "clip_id:integer:true:",
             "left:number:false:0..0.5",
             "right:number:false:0..0.5",
             "top:number:false:0..0.5",
             "bottom:number:false:0..0.5",
-            "feather:number:false:0..0.5",
             "at:number:false:default playhead",
         ],
         kind: ToolKind::Mutate,
@@ -25,14 +24,17 @@ pub const TOOLS: &[ToolDef] = &[
             let id = req(arg_u64(args, "clip_id"), "clip_id")?;
             let at = arg_f64(args, "at").unwrap_or(app.playhead);
             let c = app.project.clip_mut(id).ok_or("no such clip")?;
+            if !c.is_visual() {
+                return Err("that clip is audio - crop cuts pixels, and audio has none".into());
+            }
             let lt = c.local(at);
-            let e = preview::crop_effect(c);
-            for (i, k) in ["left", "right", "top", "bottom", "feather"].iter().enumerate() {
+            for (k, p) in [("left", "crop_left"), ("right", "crop_right"), ("top", "crop_top"), ("bottom", "crop_bottom")] {
                 if let Some(v) = arg_f64(args, k) {
-                    e.params[i].set_at(lt, v.clamp(0.0, 0.5));
+                    crate::model::prop_mut(c, p).ok_or("crop")?.set_at(lt, v.clamp(0.0, 0.5));
                 }
             }
-            Ok(ToolOutcome::Done(json!({"ok": true})))
+            let [l, r, t, b] = c.crop_at(lt);
+            Ok(ToolOutcome::Done(json!({"ok": true, "left": l, "right": r, "top": t, "bottom": b})))
         },
     },
     ToolDef {

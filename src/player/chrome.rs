@@ -714,7 +714,7 @@ fn toast(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette, full: Rect, ch
                         let _ = std::process::Command::new("explorer.exe").arg(&shown).spawn();
                     }
                     if ui.button("Open Folder").clicked() {
-                        let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", shown.display())).spawn();
+                        crate::contextmenu::reveal(&shown);
                     }
                     if !crate::engine::convert::is_sequence(&out) && ui.button("Add to Project").clicked() {
                         app.toast = None;
@@ -1173,8 +1173,6 @@ fn more_flyout(app: &mut PlayerApp, ui: &mut Ui, pal: &Palette) {
         app.flyout = None;
     }
     let up = flyout_row(ui, pal, None, Some(icon::UPSCALE), "Upscale…");
-    let at = pos2(up.rect.left() + 48.0 + ui.painter().layout_no_wrap("Upscale…".into(), FontId::proportional(14.0), pal.text).size().x, up.rect.center().y);
-    crate::ui::experimental::tip(ui, crate::ui::experimental::paint(ui.painter(), at), up.id);
     if up.clicked() {
         app.upscale = Some(Default::default());
         app.flyout = None;

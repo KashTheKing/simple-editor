@@ -905,7 +905,10 @@ fn renderer_row(ui: &mut egui::Ui, clip: Id, current: crate::model::HtmlRenderer
                     ui.add(egui::Spinner::new());
                     ui.weak("installing, see Jobs");
                 } else if ui
-                    .add(egui::Button::new(egui::RichText::new("Install").strong()).fill(ui.visuals().selection.bg_fill))
+                    .add(
+                        egui::Button::new(egui::RichText::new("Install").strong().color(crate::ui::tools::on_accent_over(ui.visuals().selection.bg_fill, ui.visuals().panel_fill)))
+                            .fill(ui.visuals().selection.bg_fill),
+                    )
                     .on_hover_text("Downloads it from the library once; until then layers are drawn with Edge, which starts slower and uses ~700 MB")
                     .clicked()
                 {

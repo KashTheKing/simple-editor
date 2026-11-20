@@ -87,7 +87,7 @@ pub const TOOLS: &[ToolDef] = &[
             if entry.category == HistoryCategory::Layout {
                 return Err("Layout history entries can't be restored".into());
             }
-            app.project = Project::from_json(&entry.json)?;
+            app.project = entry.json.project()?;
             Ok(ToolOutcome::Done(json!({"ok": true})))
         },
     },

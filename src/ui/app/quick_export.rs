@@ -70,8 +70,9 @@ pub(crate) fn bak_path(original: &Path) -> PathBuf {
 
 /// Replace `original` with `temp` (same folder). The original is first kept as `<name>.bak` (a hard
 /// link, or a copy where the volume has none), then `temp` is renamed over it in one atomic step
-/// (retrying briefly: a killed decoder releases its handle a few ms late). Success deletes the
-/// backup; on failure the original is untouched and the backup is kept.
+/// (retrying for up to 3 s: a killed decoder, Explorer's preview or a virus scan releases its handle
+/// late). Success deletes the backup. On failure the original is untouched, so the backup is deleted
+/// too - the caller keeps the edit as a visible copy (`keep_as_copy`), never as hidden leftovers.
 pub(crate) fn swap_with_backup(temp: &Path, original: &Path) -> std::io::Result<()> {
     if !temp.is_file() {
         return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "the rendered file is missing"));
@@ -82,15 +83,34 @@ pub(crate) fn swap_with_backup(temp: &Path, original: &Path) -> std::io::Result<
         std::fs::copy(original, &bak)?;
     }
     let mut r = std::fs::rename(temp, original);
-    let deadline = Instant::now() + Duration::from_millis(500);
+    let deadline = Instant::now() + Duration::from_millis(3000);
+    let mut wait = 10;
     while r.is_err() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(wait));
+        wait = (wait * 2).min(250);
         r = std::fs::rename(temp, original);
     }
-    if r.is_ok() {
-        let _ = std::fs::remove_file(&bak);
-    }
+    // either way the backup has done its job: replaced, or the original was never touched
+    let _ = std::fs::remove_file(&bak);
     r
+}
+
+/// The original couldn't be replaced: keep the edit beside it as `<stem> (edited).<ext>` (then
+/// `(edited 2)`, ...) instead of the hidden temp file. Returns the copy's path.
+pub(crate) fn keep_as_copy(temp: &Path, original: &Path) -> std::io::Result<PathBuf> {
+    let stem = original.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    let ext = original.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let dir = original.parent().unwrap_or(Path::new("."));
+    let mut n = 1;
+    loop {
+        let name = if n == 1 { format!("{stem} (edited){ext}") } else { format!("{stem} (edited {n}){ext}") };
+        let p = dir.join(name);
+        if !p.exists() {
+            std::fs::rename(temp, &p)?;
+            return Ok(p);
+        }
+        n += 1;
+    }
 }
 
 /// Open a finished file in the default app for its type (the user's media player).
@@ -366,7 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_failure_mid_swap_keeps_a_backup() {
+    fn overwrite_failure_leaves_the_original_and_a_visible_copy() {
         let d = tmp_dir("swaplock");
         let (orig, temp) = (d.join("clip.mp4"), d.join(".clip.tmp.mp4"));
         std::fs::write(&orig, b"old").unwrap();
@@ -376,8 +396,15 @@ mod tests {
         let held = std::fs::OpenOptions::new().read(true).share_mode(1 /* FILE_SHARE_READ */).open(&orig).unwrap();
         assert!(swap_with_backup(&temp, &orig).is_err());
         drop(held);
-        assert_eq!(std::fs::read(&orig).unwrap(), b"old".to_vec());
-        assert_eq!(std::fs::read(bak_path(&orig)).unwrap(), b"old".to_vec(), "the backup stays after a failed swap");
+        let _ = std::fs::remove_file(bak_path(&orig)); // a link the held handle kept from deleting
+        assert_eq!(std::fs::read(&orig).unwrap(), b"old".to_vec(), "the original is untouched");
+        // the edit is kept as a visible copy beside it, not as a hidden temp file
+        let copy = keep_as_copy(&temp, &orig).unwrap();
+        assert_eq!(copy.file_name().unwrap(), "clip (edited).mp4");
+        assert_eq!(std::fs::read(&copy).unwrap(), b"new".to_vec());
+        assert!(!temp.exists());
+        std::fs::write(&temp, b"newer").unwrap();
+        assert_eq!(keep_as_copy(&temp, &orig).unwrap().file_name().unwrap(), "clip (edited 2).mp4");
     }
 
     #[test]

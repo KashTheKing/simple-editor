@@ -82,6 +82,10 @@ pub(super) fn anim_of<'a>(clip: &'a mut Clip, name: &str) -> Option<&'a mut crat
         "width" | "scale x" => Some("scale_x"),
         "height" | "scale y" => Some("scale_y"),
         "rotation" | "rot" => Some("rotation"),
+        "crop left" => Some("crop_left"),
+        "crop right" => Some("crop_right"),
+        "crop top" => Some("crop_top"),
+        "crop bottom" => Some("crop_bottom"),
         "opacity" => Some("opacity"),
         "volume" => Some("volume"),
         "pan" => Some("pan"),
@@ -255,6 +259,12 @@ pub(super) fn apply_clip_fields(clip: &mut Clip, fields: &Value) -> Result<(), S
                 a.keys.clear(); // "constant value": drop any animation
                 a.value = val;
             }
+            "crop_left" | "crop_right" | "crop_top" | "crop_bottom" => {
+                let val = v.as_f64().ok_or_else(|| format!("{k}: number (0..0.5)"))?.clamp(0.0, 0.5);
+                let a = crate::model::prop_mut(clip, k).ok_or("crop")?;
+                a.keys.clear();
+                a.value = val;
+            }
             // text style fields
             _ => {
                 let Some(t) = clip.text.as_mut() else {
@@ -290,6 +300,10 @@ pub(super) fn apply_clip_fields(clip: &mut Clip, fields: &Value) -> Result<(), S
                     }
                     "box_color" => t.box_color = color_arg(v).ok_or("box_color: [r,g,b,a]")?,
                     "box_padding" => t.box_padding = v.as_f64().ok_or("box_padding: number")? as f32,
+                    "box_mode" => {
+                        t.box_mode = v.as_u64().filter(|&m| m <= 2).ok_or("box_mode: 0 block, 1 lines, 2 bar")? as u8
+                    }
+                    "box_radius" => t.box_radius = v.as_f64().ok_or("box_radius: number")?.max(0.0) as f32,
                     _ => return Err(format!("unknown clip field '{k}'")),
                 }
             }

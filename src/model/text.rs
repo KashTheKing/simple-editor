@@ -35,6 +35,11 @@ pub struct TextStyle {
     /// Background box behind the text; alpha 0 = none.
     pub box_color: [u8; 4],
     pub box_padding: f32,
+    /// How the box is drawn (`BOX_BLOCK` / `BOX_LINES` / `BOX_BAR`). 0 for every project saved before
+    /// it existed: one box around the whole block, as before.
+    pub box_mode: u8,
+    /// Box corner radius in project px (0 = square corners, as before).
+    pub box_radius: f32,
     /// Styled sub-ranges of `text` (char-indexed, `[start, end)`) that override some of the run-level
     /// fields above for just that range; every field left `None` keeps inheriting this clip's style.
     /// Empty for every project saved before spans existed (`#[serde(default)]` on the struct covers it).
@@ -123,6 +128,8 @@ impl Default for TextStyle {
             letter_spacing: a0(),
             box_color: [0, 0, 0, 0],
             box_padding: 8.0,
+            box_mode: BOX_BLOCK,
+            box_radius: 0.0,
             spans: Vec::new(),
             reveal: a1(),
             wave: a0(),
@@ -158,7 +165,20 @@ pub struct TextSpan {
     pub letter_spacing: Option<f32>,
 }
 
+/// `TextStyle::box_mode`: one box around the whole text block.
+pub const BOX_BLOCK: u8 = 0;
+/// `TextStyle::box_mode`: a box per line that hugs that line's width; neighbouring boxes merge with
+/// rounded inner corners (the short-video app "background" text look).
+pub const BOX_LINES: u8 = 1;
+/// `TextStyle::box_mode`: a band the full width of the frame behind the text (a caption bar). The
+/// clip keeps its vertical position but is centred horizontally and never rotated.
+pub const BOX_BAR: u8 = 2;
+
 impl TextStyle {
+    /// A full-frame-width caption bar (`BOX_BAR` with a visible box).
+    pub fn is_bar(&self) -> bool {
+        self.box_mode == BOX_BAR && self.box_color[3] > 0
+    }
     /// Default look for burnt-in subtitles.
     pub fn subtitle_default() -> Self {
         Self { text: String::new(), size: Animated::new(48.0), outline_width: Animated::new(3.0), ..Self::default() }
@@ -168,13 +188,14 @@ impl TextStyle {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         self.text.hash(&mut h);
         self.font.hash(&mut h);
-        for f in [self.shadow_x, self.shadow_y, self.shadow_blur, self.line_spacing, self.box_padding] {
+        for f in [self.shadow_x, self.shadow_y, self.shadow_blur, self.line_spacing, self.box_padding, self.box_radius]
+        {
             f.to_bits().hash(&mut h);
         }
         for a in [&self.size, &self.outline_width, &self.letter_spacing, &self.reveal, &self.wave] {
             hash_animated(&mut h, a);
         }
-        (self.bold, self.italic, self.shadow, self.align).hash(&mut h);
+        (self.bold, self.italic, self.shadow, self.align, self.box_mode).hash(&mut h);
         (self.color, self.outline_color, self.shadow_color, self.box_color).hash(&mut h);
         self.spans.len().hash(&mut h);
         for s in &self.spans {
