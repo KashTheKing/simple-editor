@@ -74,18 +74,10 @@ pub fn glyph_for(icons: &BTreeMap<String, String>, a: Action) -> Option<Glyph> {
 
 /// The row every menu entry is: icon gutter, label, shortcut. The gutter is there with or without an
 /// icon, so every label in a menu starts at the same x.
-fn row_ui(ui: &mut egui::Ui, glyph: Option<Glyph>, label: &str, shortcut: &str, enabled: bool, badge: bool) -> egui::Response {
+fn row_ui(ui: &mut egui::Ui, glyph: Option<Glyph>, label: &str, shortcut: &str, enabled: bool) -> egui::Response {
     let icon_id = ui.id().with(("menu-icon", label));
     let gutter = egui::Atom::custom(icon_id, egui::vec2(18.0, 16.0));
-    // an experimental feature's row: the badge after its label (`ui::experimental`)
-    let badge_id = ui.id().with(("menu-badge", label));
-    let button = if badge {
-        let pill = egui::Atom::custom(badge_id, crate::ui::experimental::size(ui) + egui::vec2(6.0, 0.0));
-        egui::Button::new((gutter, label, pill))
-    } else {
-        egui::Button::new((gutter, label))
-    };
-    let button = button.shortcut_text(shortcut);
+    let button = egui::Button::new((gutter, label)).shortcut_text(shortcut);
     ui.add_enabled_ui(enabled, |ui| {
         let r = button.atom_ui(ui);
         for (id, rect) in r.custom_rects() {
@@ -94,9 +86,6 @@ fn row_ui(ui: &mut egui::Ui, glyph: Option<Glyph>, label: &str, shortcut: &str, 
                     // this ui's painter already fades for a disabled row
                     tools::draw_glyph(ui.painter(), rect, g, ui.style().interact(&r.response).text_color());
                 }
-            } else if id == badge_id {
-                let pill = crate::ui::experimental::paint(ui.painter(), rect.left_center() + egui::vec2(6.0, 0.0));
-                crate::ui::experimental::tip(ui, pill, badge_id);
             }
         }
         r.response
@@ -108,12 +97,7 @@ fn row_ui(ui: &mut egui::Ui, glyph: Option<Glyph>, label: &str, shortcut: &str, 
 /// A row that isn't an `Action` (a recent file, a pane, a profile, Exit...), drawn exactly like `item`
 /// so a menu mixing both lines up. The menu closes on a click; grey it out with `ui.add_enabled_ui`.
 pub fn row(ui: &mut egui::Ui, glyph: Option<Glyph>, label: &str, shortcut: &str) -> egui::Response {
-    row_badged(ui, glyph, label, shortcut, false)
-}
-
-/// `row` for an experimental feature (`badge`): the Experimental badge after its label.
-pub fn row_badged(ui: &mut egui::Ui, glyph: Option<Glyph>, label: &str, shortcut: &str, badge: bool) -> egui::Response {
-    let r = row_ui(ui, glyph, label, shortcut, true, badge);
+    let r = row_ui(ui, glyph, label, shortcut, true);
     if r.clicked() {
         ui.close();
     }
@@ -127,12 +111,7 @@ pub fn check(ui: &mut egui::Ui, on: bool, label: &str, shortcut: &str) -> egui::
 
 /// `check` that leaves the menu open, for a list of toggles picked several at a time.
 pub fn check_keep(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response {
-    row_ui(ui, on.then_some(Glyph::Letter('✓')), label, "", true, false)
-}
-
-/// `check` with the Experimental badge while `badge`.
-pub fn check_badged(ui: &mut egui::Ui, on: bool, label: &str, shortcut: &str, badge: bool) -> egui::Response {
-    row_badged(ui, on.then_some(Glyph::Letter('✓')), label, shortcut, badge)
+    row_ui(ui, on.then_some(Glyph::Letter('✓')), label, "", true)
 }
 
 // egui's popups (`Popup::show`, `SubMenu::show`, `MenuButton::ui`) are generic over the body closure
@@ -232,8 +211,7 @@ pub fn item_as(ui: &mut egui::Ui, a: Action, label: &str, enabled: bool) -> bool
         let s = s.borrow();
         (glyph_for(&s.icons, a), s.shortcuts.get(&a).map(Hotkeys::format), s.disabled.get(&a).copied())
     });
-    let badge = crate::ui::experimental::action(a);
-    let r = row_ui(ui, glyph, label, &shortcut.unwrap_or_default(), enabled && reason.is_none(), badge);
+    let r = row_ui(ui, glyph, label, &shortcut.unwrap_or_default(), enabled && reason.is_none());
     let r = match reason {
         Some(why) => r.on_disabled_hover_text(why),
         None => r,

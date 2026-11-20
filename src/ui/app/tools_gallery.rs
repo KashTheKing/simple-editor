@@ -177,7 +177,7 @@ fn apply_card(
             let style = crate::engine::presets::builtin_caption_styles()
                 .into_iter()
                 .chain(app.settings.caption_presets.iter().cloned())
-                .find(|s| s.text.eq_ignore_ascii_case(name))
+                .find(|s| crate::engine::presets::preset_name_eq(&s.text, name))
                 .ok_or_else(|| format!("no such caption style '{name}'"))?;
             app.project.subtitle_style = style;
             Ok(json!({"ok": true}))
@@ -719,7 +719,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "subtitles.style_preset",
-        desc: "Set project.subtitle_style from a named caption style (builtin or Settings.caption_presets).",
+        desc: "Set project.subtitle_style from a named caption style (builtin or Settings.caption_presets). Names match loosely (case, spaces, _ ignored): \"tiktok_background\" (a box per line hugging it) and \"snapchat_bar\" (a full-width band) are the social looks.",
         args: &["name:string:true:builtin or Settings.caption_presets"],
         kind: ToolKind::Mutate,
         run: |app, args| {
@@ -727,7 +727,7 @@ pub const TOOLS: &[ToolDef] = &[
             let style = crate::engine::presets::builtin_caption_styles()
                 .into_iter()
                 .chain(app.settings.caption_presets.iter().cloned())
-                .find(|s| s.text.eq_ignore_ascii_case(name))
+                .find(|s| crate::engine::presets::preset_name_eq(&s.text, name))
                 .ok_or_else(|| format!("no such caption style '{name}'"))?;
             app.project.subtitle_style = style;
             done(json!({"ok": true}))

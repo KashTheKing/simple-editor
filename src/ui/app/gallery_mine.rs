@@ -610,11 +610,7 @@ pub(crate) fn do_act(app: &mut App, what: MineAct, r: MineRef) -> Result<String,
 /// Show the item's file in Explorer.
 pub(crate) fn reveal(item: &Item) {
     let p = item.file.as_ref().unwrap_or(&item.path);
-    if p.exists() {
-        let _ = std::process::Command::new("explorer").arg("/select,").arg(p).spawn();
-    } else if let Some(d) = p.parent() {
-        let _ = std::process::Command::new("explorer").arg(d).spawn();
-    }
+    crate::contextmenu::reveal(p);
 }
 
 /// Open the gallery folder (of one kind: `Some`).

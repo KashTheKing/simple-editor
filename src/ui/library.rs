@@ -3112,7 +3112,7 @@ impl Tree<'_, '_> {
                 menu::action_item(ui, Action::RelinkMedia);
             }
             if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
-                let _ = std::process::Command::new("explorer").arg(format!("/select,{}", first.path)).spawn();
+                crate::contextmenu::reveal(std::path::Path::new(&first.path));
             }
             let videos: Vec<String> = ids
                 .iter()
@@ -3422,7 +3422,7 @@ impl Tree<'_, '_> {
                 self.resp.open_paths.extend(sel.map(PathBuf::from));
             }
             if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
-                let _ = std::process::Command::new("explorer").arg(format!("/select,{first}")).spawn();
+                crate::contextmenu::reveal(std::path::Path::new(&first));
             }
             if !recent {
                 return;

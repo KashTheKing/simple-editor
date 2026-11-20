@@ -725,6 +725,7 @@ fn tab_cats(tab: GalleryTab, lib: Option<&LibView>, lib_tab: bool, now: f64) -> 
         GalleryTab::Effects => crate::ui::effects_ui::categories().into_iter().map(String::from).collect(),
         GalleryTab::Transitions => TR_CATS.iter().map(|s| s.to_string()).collect(),
         GalleryTab::Animate => crate::ui::animator::block_sections().into_iter().map(String::from).collect(),
+        GalleryTab::Titles => crate::engine::presets::TITLE_CATEGORIES.iter().map(|s| s.to_string()).collect(),
         _ => Vec::new(),
     };
     let mut extra: Vec<String> = Vec::new();
@@ -1620,6 +1621,7 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
         GalleryTab::Sounds => mine_items(GKind::Sound, 0.0).iter().map(|i| i.name.clone()).collect(),
         GalleryTab::Effects => crate::model::EffectKind::ALL
             .into_iter()
+            .filter(|k| k.in_catalogue())
             .map(|k| k.name().to_string())
             .chain(mine_items(GKind::Effect, 0.0).iter().map(|i| i.name.clone()))
             .collect(),
@@ -2072,6 +2074,10 @@ pub fn show(
                     // the category menu's sections: the "+ Animation" menu's kinds
                     tags.push(crate::ui::animator::block_group(&n, origin == Src::Mine).to_string());
                 }
+                // ws:social-text: a built-in title's category (Basic / Social) is a tag the menu filters on
+                if tab == GalleryTab::Titles && origin == Src::BuiltIn {
+                    tags.push(crate::engine::presets::title_category(&n).to_string());
+                }
                 (n, short, origin, tags, created)
             })
             .filter(|(_, short, origin, tags, _)| {
@@ -2363,6 +2369,11 @@ pub(crate) fn template_field_widget(ui: &mut egui::Ui, field: &str, clip: &mut C
             "text.color" => {
                 if let Some(t) = clip.text.as_mut() {
                     changed |= ui.color_edit_button_srgba_unmultiplied(&mut t.color).changed();
+                }
+            }
+            "text.box_color" => {
+                if let Some(t) = clip.text.as_mut() {
+                    changed |= ui.color_edit_button_srgba_unmultiplied(&mut t.box_color).changed();
                 }
             }
             "text.size" => {
@@ -3527,7 +3538,8 @@ mod tests {
         let text_id = p.add_text_clip(0.0, 2.0);
         settings.templates.push(crate::engine::presets::capture_template("My Title", &p, &[text_id]));
         let names = card_names(GalleryTab::Titles, &settings);
-        assert_eq!(names.len(), 4 + 1, "4 builtins (ws:browser-layer added Browser Window) + the one saved text template");
+        let social = crate::engine::presets::social_title_names().len(); // ws:social-text
+        assert_eq!(names.len(), 4 + social + 1, "4 builtins (ws:browser-layer added Browser Window), the Social ones, + the one saved text template");
         assert!(names.contains(&"My Title".to_string()));
         assert!(names.contains(&"Lower Third".to_string()));
     }
@@ -3574,7 +3586,7 @@ mod tests {
         let mut g = Gx::new(GalleryTab::Effects);
         g.cells = vec![("effects/glow", "Glow", Kind::Effect, true), ("effects/rain", "Rain", Kind::Effect, false)];
         g.frame(vec![]);
-        let built = EffectKind::ALL.len();
+        let built = EffectKind::ALL.iter().filter(|k| k.in_catalogue()).count();
         assert_eq!(g.state.count, (built + 2, built + 2), "everything, unfiltered");
         for (chip, src, shown) in [
             ("Online", Src::Online, 1),
@@ -3736,7 +3748,8 @@ mod tests {
         let f = |src| Filters { src, ..Default::default() };
         assert_eq!(names(GalleryTab::Effects, &f(Src::Online)), ["Rain"]);
         assert_eq!(names(GalleryTab::Effects, &f(Src::Installed)), ["Glow"]);
-        assert!(names(GalleryTab::Effects, &f(Src::BuiltIn)).len() == crate::model::EffectKind::ALL.len());
+        let built = crate::model::EffectKind::ALL.iter().filter(|k| k.in_catalogue()).count();
+        assert_eq!(names(GalleryTab::Effects, &f(Src::BuiltIn)).len(), built, "Crop is built in, not a catalogue effect");
         let q = Filters { q: "weather".into(), ..Default::default() };
         assert_eq!(names(GalleryTab::Effects, &q), ["Rain"], "the search reads tags");
         let cat = Filters { cat: "Shader".into(), ..Default::default() };

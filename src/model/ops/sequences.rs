@@ -51,6 +51,21 @@ impl Project {
         }
         outer == inner || self.sequence_tracks(outer).map(|t| walk(self, t, inner, 0)).unwrap_or(false)
     }
+    /// ws:timeline-tabs: the timelines open as tabs, in order (None = main): the saved list minus deleted
+    /// sequences and repeats, always holding the one being edited. Nothing saved (an old file) = Main.
+    pub fn timeline_tabs(&self) -> Vec<Option<Id>> {
+        let saved: &[Option<Id>] = if self.timeline_tabs.is_empty() { &[None] } else { &self.timeline_tabs };
+        let mut out: Vec<Option<Id>> = Vec::with_capacity(saved.len() + 1);
+        for &t in saved {
+            if !out.contains(&t) && t.is_none_or(|id| self.sequence(id).is_some()) {
+                out.push(t);
+            }
+        }
+        if !out.contains(&self.editing) {
+            out.push(self.editing);
+        }
+        out
+    }
     /// Swap sequence `id` into `tracks` for editing (closing any other open sequence first).
     pub fn open_sequence(&mut self, id: Id) -> bool {
         if self.editing == Some(id) {
