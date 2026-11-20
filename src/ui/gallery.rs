@@ -571,7 +571,7 @@ fn type_tile(p: &egui::Painter, t: Rect, tint: Color32, g: Option<crate::ui::too
 
 /// `g` from Windows' icon font at `px` (the font `tools::draw_glyph` uses, at any size); the few
 /// vector-only glyphs fall back to `draw_glyph`'s own size.
-fn big_glyph(p: &egui::Painter, at: egui::Pos2, g: crate::ui::tools::Glyph, px: f32, col: Color32) {
+pub(crate) fn big_glyph(p: &egui::Painter, at: egui::Pos2, g: crate::ui::tools::Glyph, px: f32, col: Color32) {
     let Some(ch) = g.icon() else {
         return crate::ui::tools::draw_glyph(p, Rect::from_center_size(at, egui::vec2(px, px)), g, col);
     };
@@ -1081,6 +1081,10 @@ pub struct GalleryState {
     /// caller (`ui::app::gallery_ctl::draw`) right after a Titles card is placed - a plain state field
     /// rather than an `egui::Id`-keyed temp, since `App` already owns `GalleryState` per frame.
     pub customize: Vec<(Id, String)>,
+    // ---- ws:gallery-stock ----
+    /// The Stock tab is open (instead of `tab` / `lib`); drawn by `ui::app::stock_ctl` under the tab strip.
+    pub stock: bool,
+    pub stock_ui: crate::ui::stock_ui::StockUi,
 }
 
 #[derive(Default)]
@@ -1518,7 +1522,7 @@ fn drag_lifted(ui: &egui::Ui, id: egui::Id) -> bool {
 /// card is also a drag source: the payload is only handed to egui once the pointer has travelled past the
 /// normal drag threshold (`ui::drag_intent`), so a click is never mistaken for a drag; the card is then
 /// lifted under the cursor (a faint placeholder stays in its slot) and Esc cancels (egui's own dnd).
-fn card(
+pub(crate) fn card(
     ui: &mut egui::Ui,
     salt: impl std::hash::Hash,
     name: &str,
@@ -1954,8 +1958,16 @@ pub fn show(
     let over = ui.rect_contains_pointer(ui.max_rect());
     auto_side(state, settings, project, selection, over);
     let mut audio = state.lib.is_none() && state.tab.is_audio();
+    // ---- ws:gallery-stock ---- Stock is on both sides: its own kind filter picks video / pictures / sounds
+    if state.stock {
+        audio = state.stock_ui.q.kind.is_audio();
+    }
     ui.horizontal(|ui| {
         if crate::ui::animator::segmented(ui, &mut audio, &[(false, "Video"), (true, "Audio")]) {
+            if state.stock {
+                // ws:gallery-stock: the switch picks the matching stock kind and leaves Stock open
+                state.stock_ui.q.kind = if audio { crate::engine::stock::Kind::Music } else { crate::engine::stock::Kind::Video };
+            }
             set_side(state, settings, audio);
             settings.gallery_audio = audio; // the user's own pick is remembered; an auto-pick is not
         }
@@ -1965,22 +1977,32 @@ pub fn show(
         ui.spacing_mut().item_spacing.x = 4.0;
         let tabs: &[GalleryTab] = if audio { &GalleryTab::AUDIO } else { &GalleryTab::VIDEO };
         for &tab in tabs {
-            if ui.selectable_label(state.lib.is_none() && state.tab == tab, tab.label()).clicked() {
+            if ui.selectable_label(!state.stock && state.lib.is_none() && state.tab == tab, tab.label()).clicked() {
                 state.tab = tab;
                 state.lib = None;
+                state.stock = false;
                 remember_tab(settings, tab);
             }
         }
         // ---- ws:online-library ----
         if !audio {
             for (kind, label) in LIB_TABS {
-                if ui.selectable_label(state.lib == Some(kind), label).clicked() {
+                if ui.selectable_label(!state.stock && state.lib == Some(kind), label).clicked() {
                     state.lib = Some(kind);
+                    state.stock = false;
                 }
             }
         }
+        // ---- ws:gallery-stock ----
+        let r = ui.selectable_label(state.stock, "Stock").on_hover_text("Free stock video, pictures, music and sound effects online");
+        if r.clicked() {
+            state.stock = true;
+        }
     });
     ui.separator();
+    if state.stock {
+        return out; // `ui::app::stock_ctl` draws the Stock tab below the strip
+    }
     // a new tab starts unfiltered (the search, chip and category of the old one mean nothing here)
     let key = (state.tab, state.lib);
     if state.seen != Some(key) {

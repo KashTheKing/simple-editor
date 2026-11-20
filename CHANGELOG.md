@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Gallery
+- **Stock footage in the Gallery** (Gallery ▸ Stock): search free stock video, pictures, music and sound effects from Wikimedia Commons, the Internet Archive, NASA and Openverse with no account or key (and Pexels, Pixabay and Freesound with your own free key in Settings ▸ Stock), filter by shape, size and licence (no-credit-needed by default), preview on hover, and Add or drag a card onto the timeline. Each file keeps its credit, and ⋯ ▸ Export credits writes them all to a text file. MCP: `stock.search`, `stock.add`, `stock.credits`.
+
 ## 1.4.0
 
 ### Media player

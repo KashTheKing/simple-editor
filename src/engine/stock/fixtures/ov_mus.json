@@ -1,0 +1,192 @@
+{
+ "result_count": 240,
+ "page_count": 80,
+ "page_size": 3,
+ "page": 1,
+ "results": [
+  {
+   "id": "5d029c9d-1ab7-4f58-a90e-73d58eb03a28",
+   "title": "Le piano troix",
+   "indexed_on": "2022-02-24T01:34:42.275707Z",
+   "foreign_landing_url": "https://www.jamendo.com/track/150810",
+   "url": "https://prod-1.storage.jamendo.com/?trackid=150810&format=mp32",
+   "creator": "Torley on Piano",
+   "creator_url": "https://www.jamendo.com/artist/338247/Torley_on_Piano",
+   "license": "by-sa",
+   "license_version": "3.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+   "provider": "jamendo",
+   "source": "jamendo",
+   "category": "music",
+   "genres": [
+    "classical"
+   ],
+   "filesize": null,
+   "filetype": "mp32",
+   "tags": [
+    {
+     "name": "instrumental",
+     "accuracy": null,
+     "unstable__provider": "jamendo"
+    },
+    {
+     "name": "neutral",
+     "accuracy": null,
+     "unstable__provider": "jamendo"
+    },
+    {
+     "name": "piano",
+     "accuracy": null,
+     "unstable__provider": "jamendo"
+    }
+   ],
+   "alt_files": null,
+   "attribution": "\"Le piano troix\" by Torley on Piano is licensed under CC BY-SA 3.0. To view a copy of this license, visit https://creativecommons.org/licenses/by-sa/3.0/.",
+   "fields_matched": [
+    "title",
+    "tags.name"
+   ],
+   "mature": false,
+   "audio_set": {
+    "title": "solo piano 7: Improvisations for a New Age",
+    "foreign_landing_url": "https://www.jamendo.com/album/21576/solo-piano-7-improvisations-for-a-new-age",
+    "creator": "Torley on Piano",
+    "creator_url": "https://www.jamendo.com/artist/338247/Torley_on_Piano",
+    "url": null,
+    "filesize": null,
+    "filetype": null
+   },
+   "duration": 129000,
+   "bit_rate": null,
+   "sample_rate": null,
+   "thumbnail": "https://api.openverse.org/v1/audio/5d029c9d-1ab7-4f58-a90e-73d58eb03a28/thumb/",
+   "detail_url": "https://api.openverse.org/v1/audio/5d029c9d-1ab7-4f58-a90e-73d58eb03a28/",
+   "related_url": "https://api.openverse.org/v1/audio/5d029c9d-1ab7-4f58-a90e-73d58eb03a28/related/",
+   "waveform": "https://api.openverse.org/v1/audio/5d029c9d-1ab7-4f58-a90e-73d58eb03a28/waveform/",
+   "unstable__sensitivity": []
+  },
+  {
+   "id": "5db133d0-cd7f-43ef-9d4a-c3e6134f85c4",
+   "title": "Le piano",
+   "indexed_on": "2022-02-24T01:34:42.275707Z",
+   "foreign_landing_url": "https://www.jamendo.com/track/150798",
+   "url": "https://prod-1.storage.jamendo.com/?trackid=150798&format=mp32",
+   "creator": "Torley on Piano",
+   "creator_url": "https://www.jamendo.com/artist/338247/Torley_on_Piano",
+   "license": "by-sa",
+   "license_version": "3.0",
+   "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+   "provider": "jamendo",
+   "source": "jamendo",
+   "category": "music",
+   "genres": [
+    "classical"
+   ],
+   "filesize": null,
+   "filetype": "mp32",
+   "tags": [
+    {
+     "name": "instrumental",
+     "accuracy": null,
+     "unstable__provider": "jamendo"
+    },
+    {
+     "name": "neutral",
+     "accuracy": null,
+     "unstable__provider": "jamendo"
+    },
+    {
+     "name": "piano",
+     "accuracy": null,
+     "unstable__provider": "jamendo"
+    }
+   ],
+   "alt_files": null,
+   "attribution": "\"Le piano\" by Torley on Piano is licensed under CC BY-SA 3.0. To view a copy of this license, visit https://creativecommons.org/licenses/by-sa/3.0/.",
+   "fields_matched": [
+    "title",
+    "tags.name"
+   ],
+   "mature": false,
+   "audio_set": {
+    "title": "solo piano 7: Improvisations for a New Age",
+    "foreign_landing_url": "https://www.jamendo.com/album/21576/solo-piano-7-improvisations-for-a-new-age",
+    "creator": "Torley on Piano",
+    "creator_url": "https://www.jamendo.com/artist/338247/Torley_on_Piano",
+    "url": null,
+    "filesize": null,
+    "filetype": null
+   },
+   "duration": 122000,
+   "bit_rate": null,
+   "sample_rate": null,
+   "thumbnail": "https://api.openverse.org/v1/audio/5db133d0-cd7f-43ef-9d4a-c3e6134f85c4/thumb/",
+   "detail_url": "https://api.openverse.org/v1/audio/5db133d0-cd7f-43ef-9d4a-c3e6134f85c4/",
+   "related_url": "https://api.openverse.org/v1/audio/5db133d0-cd7f-43ef-9d4a-c3e6134f85c4/related/",
+   "waveform": "https://api.openverse.org/v1/audio/5db133d0-cd7f-43ef-9d4a-c3e6134f85c4/waveform/",
+   "unstable__sensitivity": []
+  },
+  {
+   "id": "6c70aa6f-60d4-41b3-b575-24c767096f30",
+   "title": "My Piano Sings (Part 4) (with Joana Smith)",
+   "indexed_on": "2021-12-23T02:09:52.493845Z",
+   "foreign_landing_url": "https://www.jamendo.com/track/6576",
+   "url": "https://prod-1.storage.jamendo.com/?trackid=6576&format=mp32",
+   "creator": "Tryad",
+   "creator_url": "https://www.jamendo.com/artist/104/tryad",
+   "license": "by-sa",
+   "license_version": "2.5",
+   "license_url": "https://creativecommons.org/licenses/by-sa/2.5/",
+   "provider": "jamendo",
+   "source": "jamendo",
+   "category": "music",
+   "genres": [
+    "electronic",
+    "pop",
+    "triphop"
+   ],
+   "filesize": null,
+   "filetype": "mp32",
+   "tags": [
+    {
+     "name": "electricguitar",
+     "accuracy": null,
+     "unstable__provider": "jamendo"
+    },
+    {
+     "name": "electroamplified",
+     "accuracy": null,
+     "unstable__provider": "jamendo"
+    },
+    {
+     "name": "female",
+     "accuracy": null,
+     "unstable__provider": "jamendo"
+    }
+   ],
+   "alt_files": null,
+   "attribution": "\"My Piano Sings (Part 4) (with Joana Smith)\" by Tryad is licensed under CC BY-SA 2.5. To view a copy of this license, visit https://creativecommons.org/licenses/by-sa/2.5/.",
+   "fields_matched": [
+    "title"
+   ],
+   "mature": false,
+   "audio_set": {
+    "title": "Public Domain",
+    "foreign_landing_url": "https://www.jamendo.com/album/1003/public-domain",
+    "creator": "Tryad",
+    "creator_url": "https://www.jamendo.com/artist/104/tryad",
+    "url": null,
+    "filesize": null,
+    "filetype": null
+   },
+   "duration": 205000,
+   "bit_rate": null,
+   "sample_rate": null,
+   "thumbnail": "https://api.openverse.org/v1/audio/6c70aa6f-60d4-41b3-b575-24c767096f30/thumb/",
+   "detail_url": "https://api.openverse.org/v1/audio/6c70aa6f-60d4-41b3-b575-24c767096f30/",
+   "related_url": "https://api.openverse.org/v1/audio/6c70aa6f-60d4-41b3-b575-24c767096f30/related/",
+   "waveform": "https://api.openverse.org/v1/audio/6c70aa6f-60d4-41b3-b575-24c767096f30/waveform/",
+   "unstable__sensitivity": []
+  }
+ ]
+}

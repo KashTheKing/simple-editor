@@ -1,0 +1,67 @@
+{
+ "responseHeader": {
+  "status": 0,
+  "QTime": 387,
+  "params": {
+   "query": "(text:piano OR text:piano OR text__reviews:piano) AND mediatype:audio AND (licenseurl:*publicdomain* OR licenseurl:*\\/by\\/* OR licenseurl:*by-sa*)",
+   "qin": "(piano) AND mediatype:audio AND (licenseurl:*publicdomain* OR licenseurl:*\\/by\\/* OR licenseurl:*by-sa*)",
+   "fields": "identifier,title,creator,licenseurl,collection,mediatype",
+   "wt": "json",
+   "rows": 4,
+   "start": 0
+  }
+ },
+ "response": {
+  "numFound": 9517,
+  "start": 0,
+  "docs": [
+   {
+    "collection": [
+     "opensource_audio"
+    ],
+    "creator": "jeri",
+    "identifier": "randomly-decided-playings",
+    "licenseurl": "https://creativecommons.org/publicdomain/mark/1.0/",
+    "mediatype": "audio",
+    "title": "Keyboard/Piano"
+   },
+   {
+    "collection": [
+     "emilios78heritage",
+     "78rpm",
+     "audio_music"
+    ],
+    "creator": "Ninon VALLIN - Sopran",
+    "identifier": "vallin-si-mes-vers",
+    "licenseurl": "http://creativecommons.org/publicdomain/mark/1.0/",
+    "mediatype": "audio",
+    "title": "Si mes vers avaient des ailes (Hahn)"
+   },
+   {
+    "collection": [
+     "hifidelity_potpourri",
+     "hifidelity",
+     "fav-tmtm750"
+    ],
+    "creator": [
+     "Eddy Brown",
+     "J. S. Bach"
+    ],
+    "identifier": "gavotte_202505",
+    "licenseurl": "https://creativecommons.org/publicdomain/zero/1.0/",
+    "mediatype": "audio",
+    "title": "Gavotte"
+   },
+   {
+    "collection": [
+     "opensource_audio"
+    ],
+    "creator": "Twin Musicom (twinmusicom.org)",
+    "identifier": "twin-musicom-classical-carnivale",
+    "licenseurl": "https://creativecommons.org/licenses/by/4.0/",
+    "mediatype": "audio",
+    "title": "Classical Carnivale"
+   }
+  ]
+ }
+}

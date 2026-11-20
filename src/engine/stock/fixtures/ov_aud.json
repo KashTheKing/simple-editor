@@ -1,0 +1,195 @@
+{
+ "result_count": 240,
+ "page_count": 80,
+ "page_size": 3,
+ "page": 1,
+ "results": [
+  {
+   "id": "9df463a7-c243-4e7d-9251-20ca3b8f8cce",
+   "title": "Rain Sound and Rainforest.mp3",
+   "indexed_on": "2024-05-21T15:00:07.873258Z",
+   "foreign_landing_url": "https://freesound.org/people/INNORECORDS/sounds/457447",
+   "url": "https://cdn.freesound.org/previews/457/457447_9518146-hq.mp3",
+   "creator": "INNORECORDS",
+   "creator_url": "https://freesound.org/people/INNORECORDS",
+   "license": "cc0",
+   "license_version": "1.0",
+   "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+   "provider": "freesound",
+   "source": "freesound",
+   "category": null,
+   "genres": null,
+   "filesize": 5468620,
+   "filetype": "mp3",
+   "tags": [
+    {
+     "name": "AudioShare",
+     "accuracy": null,
+     "unstable__provider": "freesound"
+    },
+    {
+     "name": "Rain",
+     "accuracy": null,
+     "unstable__provider": "freesound"
+    },
+    {
+     "name": "Rainforest",
+     "accuracy": null,
+     "unstable__provider": "freesound"
+    }
+   ],
+   "alt_files": [
+    {
+     "url": "https://freesound.org/apiv2/sounds/457447/download/",
+     "bit_rate": 128000,
+     "filesize": 3842615,
+     "filetype": "mp3",
+     "sample_rate": 44100
+    }
+   ],
+   "attribution": "\"Rain Sound and Rainforest.mp3\" by INNORECORDS is marked with CC0 1.0. To view the terms, visit https://creativecommons.org/publicdomain/zero/1.0/.",
+   "fields_matched": [
+    "description",
+    "title",
+    "tags.name"
+   ],
+   "mature": false,
+   "audio_set": null,
+   "duration": 240079,
+   "bit_rate": 128000,
+   "sample_rate": null,
+   "thumbnail": null,
+   "detail_url": "https://api.openverse.org/v1/audio/9df463a7-c243-4e7d-9251-20ca3b8f8cce/",
+   "related_url": "https://api.openverse.org/v1/audio/9df463a7-c243-4e7d-9251-20ca3b8f8cce/related/",
+   "waveform": "https://api.openverse.org/v1/audio/9df463a7-c243-4e7d-9251-20ca3b8f8cce/waveform/",
+   "unstable__sensitivity": []
+  },
+  {
+   "id": "c48df7a7-3761-4c48-9a86-024496893316",
+   "title": "THUNDER / Rain low frequencies 4-CHANNEL-48kHz.wav",
+   "indexed_on": "2024-05-21T15:00:07.873258Z",
+   "foreign_landing_url": "https://freesound.org/people/BlueDelta/sounds/367222",
+   "url": "https://cdn.freesound.org/previews/367/367222_1790434-hq.mp3",
+   "creator": "BlueDelta",
+   "creator_url": "https://freesound.org/people/BlueDelta",
+   "license": "cc0",
+   "license_version": "1.0",
+   "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+   "provider": "freesound",
+   "source": "freesound",
+   "category": null,
+   "genres": null,
+   "filesize": 2862624,
+   "filetype": "mp3",
+   "tags": [
+    {
+     "name": "360-degree",
+     "accuracy": null,
+     "unstable__provider": "freesound"
+    },
+    {
+     "name": "4-ch",
+     "accuracy": null,
+     "unstable__provider": "freesound"
+    },
+    {
+     "name": "4-channel-audio",
+     "accuracy": null,
+     "unstable__provider": "freesound"
+    }
+   ],
+   "alt_files": [
+    {
+     "url": "https://freesound.org/apiv2/sounds/367222/download/",
+     "bit_rate": 0,
+     "filesize": 70272736,
+     "filetype": "wav",
+     "sample_rate": 48000
+    }
+   ],
+   "attribution": "\"THUNDER / Rain low frequencies 4-CHANNEL-48kHz.wav\" by BlueDelta is marked with CC0 1.0. To view the terms, visit https://creativecommons.org/publicdomain/zero/1.0/.",
+   "fields_matched": [
+    "description",
+    "title",
+    "tags.name"
+   ],
+   "mature": false,
+   "audio_set": null,
+   "duration": 122000,
+   "bit_rate": 128000,
+   "sample_rate": null,
+   "thumbnail": null,
+   "detail_url": "https://api.openverse.org/v1/audio/c48df7a7-3761-4c48-9a86-024496893316/",
+   "related_url": "https://api.openverse.org/v1/audio/c48df7a7-3761-4c48-9a86-024496893316/related/",
+   "waveform": "https://api.openverse.org/v1/audio/c48df7a7-3761-4c48-9a86-024496893316/waveform/",
+   "unstable__sensitivity": []
+  },
+  {
+   "id": "a3fcc6d0-c4aa-4c1d-abfe-47287f48777e",
+   "title": "1 Minute Rain (Medium)",
+   "indexed_on": "2024-05-21T15:00:07.873258Z",
+   "foreign_landing_url": "https://freesound.org/people/yzhamua/sounds/188655",
+   "url": "https://cdn.freesound.org/previews/188/188655_1178799-hq.mp3",
+   "creator": "yzhamua",
+   "creator_url": "https://freesound.org/people/yzhamua",
+   "license": "cc0",
+   "license_version": "1.0",
+   "license_url": "https://creativecommons.org/publicdomain/zero/1.0/",
+   "provider": "freesound",
+   "source": "freesound",
+   "category": null,
+   "genres": null,
+   "filesize": 1229551,
+   "filetype": "mp3",
+   "tags": [
+    {
+     "name": "light",
+     "accuracy": null,
+     "unstable__provider": "freesound"
+    },
+    {
+     "name": "outdoors",
+     "accuracy": null,
+     "unstable__provider": "freesound"
+    },
+    {
+     "name": "patio",
+     "accuracy": null,
+     "unstable__provider": "freesound"
+    }
+   ],
+   "alt_files": [
+    {
+     "url": "https://freesound.org/apiv2/sounds/188655/download/",
+     "bit_rate": 320000,
+     "filesize": 2074122,
+     "filetype": "mp3",
+     "sample_rate": 44100
+    }
+   ],
+   "attribution": "\"1 Minute Rain (Medium)\" by yzhamua is marked with CC0 1.0. To view the terms, visit https://creativecommons.org/publicdomain/zero/1.0/.",
+   "fields_matched": [
+    "title",
+    "tags.name"
+   ],
+   "mature": false,
+   "audio_set": {
+    "title": "Rain",
+    "foreign_landing_url": "https://freesound.org/apiv2/packs/11936/",
+    "creator": "yzhamua",
+    "creator_url": "https://freesound.org/people/yzhamua/",
+    "url": null,
+    "filesize": null,
+    "filetype": null
+   },
+   "duration": 51841,
+   "bit_rate": 128000,
+   "sample_rate": null,
+   "thumbnail": null,
+   "detail_url": "https://api.openverse.org/v1/audio/a3fcc6d0-c4aa-4c1d-abfe-47287f48777e/",
+   "related_url": "https://api.openverse.org/v1/audio/a3fcc6d0-c4aa-4c1d-abfe-47287f48777e/related/",
+   "waveform": "https://api.openverse.org/v1/audio/a3fcc6d0-c4aa-4c1d-abfe-47287f48777e/waveform/",
+   "unstable__sensitivity": []
+  }
+ ]
+}

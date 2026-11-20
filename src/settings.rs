@@ -706,6 +706,17 @@ pub struct Settings {
     // ---- ws:player-metadata ----
     /// Saved tag sets (Settings ▸ Metadata), applied in one click in the player, the Library and Export.
     pub metadata_presets: Vec<crate::engine::tags::MetaPreset>,
+    // ---- ws:gallery-stock ----
+    /// Gallery ▸ Stock: keyless sources the user switched off (`engine::stock::Source::id`).
+    pub stock_off: Vec<String>,
+    /// Keyed sources the user switched on (their key lives in Windows Credential Manager, never here).
+    pub stock_on: Vec<String>,
+    /// Downloads go to `Stock Footage` beside a saved project (else the app's own `Stock Footage` folder).
+    #[serde(default = "default_true")]
+    pub stock_in_project: bool,
+    /// Hovering a stock card previews it (a few frames, or a quiet sound snippet).
+    #[serde(default = "default_true")]
+    pub stock_preview: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1002,6 +1013,11 @@ impl Default for Settings {
             emulator: BTreeMap::new(),
             match_import: true, // ws:project-color-fps
             metadata_presets: Vec::new(), // ws:player-metadata
+            // ---- ws:gallery-stock ----
+            stock_off: Vec::new(),
+            stock_on: Vec::new(),
+            stock_in_project: true,
+            stock_preview: true,
         }
     }
 }

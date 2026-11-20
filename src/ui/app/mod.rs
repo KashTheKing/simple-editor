@@ -182,6 +182,7 @@ mod emulator_ctl; // ws:device-emulator
 mod audio_only; // ws:preview-audio-only
 mod media_api; // ws:assistant-luau
 mod script_ctl; // ws:assistant-luau
+mod stock_ctl; // ws:gallery-stock
 #[path = "windows.rs"]
 mod windows_dlg;
 mod project_match; // ws:project-color-fps
@@ -1257,6 +1258,7 @@ impl App {
         let paths = media_sync::intercept_sequences(self, &paths);
         let mut ids = Vec::new();
         let mut fresh: Vec<(Id, String)> = Vec::new();
+        let mut added = false;
         for path in &paths {
             let p = path.to_string_lossy().into_owned();
             // a re-import of a file already in the library must not re-probe it: adopting the result
@@ -1265,12 +1267,22 @@ impl App {
                 ids.push(a.id);
                 continue;
             }
-            if fresh.is_empty() {
+            if fresh.is_empty() && !added {
                 self.push_undo();
             }
             let id = self.project.add_asset(crate::engine::import::placeholder(&p));
             ids.push(id);
+            added = true;
+            // ---- ws:gallery-stock ---- a stock file carries its credit; one still downloading (a Stock card
+            // dropped on the timeline) is probed when it lands
+            stock_ctl::stamp_path(&mut self.project, id, &p);
+            if stock_ctl::defer(id, &p) {
+                continue;
+            }
             fresh.push((id, p));
+        }
+        if added && fresh.is_empty() {
+            self.after_edit();
         }
         if !fresh.is_empty() {
             self.probes.push(crate::engine::import::probe_async(fresh, self.backend()));
@@ -1891,6 +1903,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:assistant-luau ----
     media_api::TOOLS,
     script_ctl::TOOLS,
+    // ---- ws:gallery-stock ----
+    stock_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2078,6 +2092,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     music_ctl::frame,
     // ---- ws:preview-audio-only ----
     audio_only::tick,
+    // ---- ws:gallery-stock ----
+    stock_ctl::frame,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[

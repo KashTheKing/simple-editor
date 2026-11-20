@@ -72,6 +72,7 @@ pub(super) fn progress_jobs(app: &App) -> Vec<ProgJob> {
     v.extend(enhance_ctl::progress_jobs()); // ws:ai-enhancer
     v.extend(caches::move_jobs()); // ws:neutral-web: Settings ▸ General ▸ Cache folder
     v.extend(music_ctl::progress_jobs()); // ws:music-burn: burns, erases, visualizer video prep
+    v.extend(stock_ctl::progress_jobs()); // ws:gallery-stock: stock downloads
     if let Some((c, out)) = &app.screen_rec {
         v.push((JobKind::ScreenRec, format!("Recording screen · {}", file_name(out)), c.progress()));
     }

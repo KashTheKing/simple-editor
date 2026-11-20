@@ -43,6 +43,7 @@ pub mod html_lint;
 #[cfg(test)]
 mod blitz_tests;
 pub mod library;
+pub mod stock; // ws:gallery-stock
 pub mod shaderlib;
 pub mod skills;
 pub mod webcap;
