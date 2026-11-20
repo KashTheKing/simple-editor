@@ -323,6 +323,8 @@ impl App {
                     }
                 }
             }
+            // a screenshot or files copied outside the app are newer than any internal clip copy
+            PasteClips | PasteInsert | PasteAtTop if os_paste::try_paste(self) => {}
             PasteClips | PasteInPlace | PasteInsert | PasteAtTop => {
                 match self.clipboard.as_ref().and_then(crate::engine::presets::decode_template) {
                     Some((clips, assets)) => {
