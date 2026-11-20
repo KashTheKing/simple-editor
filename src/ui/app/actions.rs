@@ -534,6 +534,7 @@ impl App {
                 timeline_tabs::switch(self, None);
             }
             SaveToGallery => gallery_mine::open_dialog(self, None),
+            SaveClipAsFile => self.save_clip_as_file(), // ws:parity-editing
             SaveTemplate => {
                 if self.selection.is_empty() {
                     self.toast("Select the clips to save as a template");

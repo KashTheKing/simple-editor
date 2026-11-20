@@ -355,6 +355,9 @@ pub(super) fn clip_menu(
             }
         }
         acts(ui, &[None, Some(MatchFrame), Some(RevealInLibrary)]);
+        if !m.sequence && !m.html && !m.shape {
+            acts(ui, &[Some(SaveClipAsFile)]); // ws:parity-editing
+        }
         if menu::item(ui, ReplaceWithLibrarySelection, m.library_selected.is_some()) {
             *act = Some(Act::ReplaceClip(m.id));
         }

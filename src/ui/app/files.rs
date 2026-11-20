@@ -687,6 +687,54 @@ impl App {
         self.downloads.push(crate::media::ytdlp::start_download(opts));
     }
 
+    // ---- ws:parity-editing ----
+    /// Clip ▸ Save Clip as File…: the part of the source the selected clip uses, re-encoded on its own
+    /// (frame-accurate, no effects), then imported into the Library. Shotcut's "export selected clip".
+    pub(super) fn save_clip_as_file(&mut self) {
+        if self.ffmpeg_missing() {
+            return;
+        }
+        let pick = self.selection.iter().filter_map(|&id| self.project.clip(id)).find(|c| c.uses_asset());
+        let Some(c) = pick else {
+            self.toast("Select a video or audio clip to save");
+            return;
+        };
+        let Some(a) = self.project.asset(c.asset) else { return };
+        let Some((src, range, streams, ext)) = clip_file_plan(c, a) else {
+            self.toast("This clip has no media of its own to save");
+            return;
+        };
+        let stem = src.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "clip".into());
+        let mut d = rfd::FileDialog::new().set_file_name(format!("{stem} (clip).{ext}")).add_filter(ext.to_uppercase(), &[ext]);
+        if let Some(dir) = src.parent() {
+            d = d.set_directory(dir);
+        }
+        let Some(mut out) = d.save_file() else { return };
+        if out.extension().is_none() {
+            out.set_extension(ext);
+        }
+        if out == src {
+            self.toast("Pick a different name: the source file is never overwritten");
+            return;
+        }
+        let opts = crate::engine::convert::ConvertOptions {
+            audio_streams: streams,
+            src,
+            out: out.clone(),
+            encoder: self.settings.encoder.clone(),
+            crf: self.settings.crf,
+            preset: self.settings.preset.clone(),
+            out_size: None,
+            scaler: self.settings.export_scaler.clone(),
+            gif_fps: 15,
+            target_bytes: None,
+            vf_extra: None,
+            af_extra: None,
+            range: Some(range),
+        };
+        self.toast(format!("Saving the clip to {}…", out.file_name().unwrap_or_default().to_string_lossy()));
+        self.convert_jobs.push((crate::engine::convert::start_convert(opts), out));
+    }
     /// "Convert To…" on a library asset: transcode next to the source, then import the result.
     pub(super) fn start_asset_convert(&mut self, asset: Id, ext: &str) {
         if self.ffmpeg_missing() {
@@ -940,5 +988,80 @@ mod tests {
         assert_eq!(src.matches("fire_hook(\"export_done\"").count(), 2);
         let finish = fn_body(src, "pub(super) fn finish_export(");
         assert_eq!(finish.matches("fire_hook(\"export_done\"").count(), 2);
+    }
+}
+
+// ---- ws:parity-editing ----
+/// What Save Clip as File writes for `c`: the source, the source range it uses, the audio streams to keep
+/// and the output extension. An audio clip writes its own stream to a WAV (or the source's audio format);
+/// a video clip keeps the source's container when ffmpeg can write it, else MP4. None for a still or a
+/// clip without a source range.
+pub(crate) fn clip_file_plan(
+    c: &crate::model::Clip,
+    a: &crate::model::Asset,
+) -> Option<(PathBuf, (f64, f64), Option<Vec<usize>>, &'static str)> {
+    use crate::model::ClipKind;
+    if a.path.is_empty() || matches!(c.kind, ClipKind::Image) || c.freeze.is_some() {
+        return None;
+    }
+    let src = PathBuf::from(&a.path);
+    let len = c.duration * c.speed.max(1e-6);
+    let mut b = c.src_in + len;
+    if a.duration > 0.0 {
+        b = b.min(a.duration);
+    }
+    let r = (c.src_in.max(0.0), b);
+    if r.1 - r.0 <= 0.0 {
+        return None;
+    }
+    let src_ext = crate::engine::export::ext_of(&src);
+    let audio = c.kind == ClipKind::Audio;
+    let ext: &'static str = if audio {
+        crate::engine::export::AUDIO_EXTS.iter().copied().find(|e| *e == src_ext).unwrap_or("wav")
+    } else {
+        ["mp4", "mov", "mkv", "webm", "m4v"].into_iter().find(|e| *e == src_ext).unwrap_or("mp4")
+    };
+    let streams = audio.then(|| vec![c.audio_stream]);
+    Some((src, r, streams, ext))
+}
+
+#[cfg(test)]
+mod parity_editing_tests {
+    use super::clip_file_plan;
+    use crate::model::{Asset, Clip, ClipKind};
+
+    fn asset(path: &str, dur: f64) -> Asset {
+        serde_json::from_value(serde_json::json!({
+            "id": 1, "path": path, "kind": "Video", "duration": dur, "width": 1920, "height": 1080, "fps": 30.0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn save_clip_as_file_takes_the_used_source_range() {
+        let a = asset(r"C:\footage\take3.mov", 20.0);
+        let mut c = Clip::new(5, ClipKind::Video, "take3", 10.0, 4.0);
+        c.asset = 1;
+        c.src_in = 3.0;
+        let (src, range, streams, ext) = clip_file_plan(&c, &a).unwrap();
+        assert_eq!(src, std::path::PathBuf::from(r"C:\footage\take3.mov"));
+        assert_eq!(range, (3.0, 7.0), "timeline position does not matter, the source window does");
+        assert_eq!((streams, ext), (None, "mov"), "a video clip keeps every audio track and the container");
+        // a 2x clip uses twice its length of source; the end is clamped to the file
+        c.speed = 2.0;
+        c.src_in = 15.0;
+        assert_eq!(clip_file_plan(&c, &a).unwrap().1, (15.0, 20.0));
+        // an audio clip writes its own stream to a WAV
+        let mut au = Clip::new(6, ClipKind::Audio, "take3", 0.0, 2.0);
+        au.asset = 1;
+        au.audio_stream = 1;
+        let (_, _, streams, ext) = clip_file_plan(&au, &a).unwrap();
+        assert_eq!((streams, ext), (Some(vec![1]), "wav"));
+        // stills and frozen frames have no range to save
+        let mut f = c.clone();
+        f.freeze = Some(1.0);
+        assert!(clip_file_plan(&f, &a).is_none());
+        // an odd container falls back to MP4
+        assert_eq!(clip_file_plan(&Clip { speed: 1.0, src_in: 0.0, ..c }, &asset("C:/a.mts", 9.0)).unwrap().3, "mp4");
     }
 }
