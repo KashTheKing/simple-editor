@@ -221,8 +221,31 @@ fn stamp() -> PathBuf {
     dir().join("installed.json")
 }
 
+/// Installed? Asked every frame (the Transcribe section, `transcript_ctl::tick`), so the two file
+/// checks are cached for a couple of seconds; install and uninstall drop the cache.
 pub fn available() -> bool {
-    stamp().is_file() && python_exe().is_file()
+    let mut slot = AVAILABLE.lock().unwrap_or_else(|e| e.into_inner());
+    match *slot {
+        Some((at, v)) if at.elapsed() < std::time::Duration::from_secs(2) => v,
+        _ => {
+            let v = stamp().is_file() && python_exe().is_file();
+            *slot = Some((std::time::Instant::now(), v));
+            v
+        }
+    }
+}
+
+static AVAILABLE: Mutex<Option<(std::time::Instant, bool)>> = Mutex::new(None);
+
+struct Forget;
+impl Drop for Forget {
+    fn drop(&mut self) {
+        forget_available();
+    }
+}
+
+fn forget_available() {
+    *AVAILABLE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// The installed faster-whisper version ("1.2.1").
@@ -459,6 +482,7 @@ pub fn install(model_file: &str, prog: &Progress) -> Result<(), String> {
             write_runner(&dest)?;
             let stamp_text = serde_json::json!({"version": m.version, "python": m.python.name, "bytes": walk(&dest)}).to_string();
             std::fs::write(stamp(), stamp_text).map_err(|e| e.to_string())?;
+            forget_available();
         } else {
             at += m.runtime_size();
         }
@@ -508,6 +532,7 @@ pub fn download_model(ggml_file: &str) -> Arc<Progress> {
 
 /// Remove the add-on, the aligner and the faster-whisper models (transcripts already made stay).
 pub fn uninstall() -> Result<(), String> {
+    let _forget = Forget; // even when a folder will not go (a file in use), the next look is fresh
     for d in std::iter::once(dir()).chain([align_dir()]).chain(manifest().models.keys().map(|k| model_dir(k))) {
         if d.exists() {
             std::fs::remove_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
