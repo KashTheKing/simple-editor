@@ -39,27 +39,51 @@ struct TrackingRun {
     outer: Arc<Progress>,
 }
 
-/// A `tts::speak_to_wav` job; on success the WAV is imported and placed at `at`, linked to `link_to`.
+/// A `tts::speak_to_wav` job; on success the WAV is imported onto the Voiceover track at its `Place`,
+/// linked to `link_to`.
 struct TtsRun {
     inner: Arc<Progress>,
     /// The WAV, probed on the TTS worker - `finish_tts` adopts it instead of running ffprobe here.
     probed: tts::ProbedWav,
     out: PathBuf,
     link_to: Option<Id>,
-    at: f64,
+    place: Place,
     outer: Arc<Progress>,
 }
+
+// ---- ws:addon-voice ----
+/// Where a spoken clip lands: at a time, or right after the previous clip of its group (a script's
+/// untimed lines, one after another from where the group started).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Place {
+    At(f64),
+    After(u64),
+}
+
+/// A request waiting for the one speech job at a time (a neural engine loads its model per job: two at
+/// once would double the memory and both run slower).
+struct QueuedSpeech {
+    speech: tts::Speech,
+    link_to: Option<Id>,
+    place: Place,
+    outer: Arc<Progress>,
+}
+
+/// Seconds between the clips of a spoken script.
+const LINE_GAP: f64 = 0.3;
 
 #[derive(Default)]
 pub(super) struct TranscriptState {
     runs: Vec<TranscribeRun>,
     tracking: Vec<TrackingRun>,
     tts: Vec<TtsRun>,
+    // ---- ws:addon-voice ----
+    tts_queue: std::collections::VecDeque<QueuedSpeech>,
+    /// Group -> where its next clip goes (`Place::After`).
+    tts_cursors: std::collections::HashMap<u64, f64>,
+    tts_groups: u64,
     /// A model download started from the clip menu / palette; `Some(clip)` = transcribe it when done.
     download: Option<(Arc<Progress>, Option<Id>)>,
-    /// `tts::voices()` running on a thread (a second of powershell - never on the UI thread, never
-    /// at startup: only once the Speech panel is first opened).
-    voices_rx: Option<Receiver<Vec<String>>>,
     /// Last finished whisper run per clip: None = ok, Some(error). What `transcribe.status` reports
     /// once a run has left `runs` (an `async:true` caller has no other way to see a failure).
     finished: Vec<(Id, Option<String>)>,
@@ -407,23 +431,29 @@ impl App {
         Ok(outer)
     }
 
-    /// `tts.speak` / the Speech panel: synthesize `text` into a cached WAV, imported at `at` (linked
+    /// `tts.speak`: synthesize `speech` into a cached WAV, placed on the Voiceover track at `at` (linked
     /// to `link_to`, a text clip) once it is written.
-    pub(super) fn speak(
-        &mut self,
-        text: &str,
-        voice: Option<&str>,
-        link_to: Option<Id>,
-        at: f64,
-    ) -> Result<Arc<Progress>, String> {
-        if text.trim().is_empty() {
+    pub(super) fn speak(&mut self, speech: tts::Speech, link_to: Option<Id>, at: f64) -> Result<Arc<Progress>, String> {
+        if speech.text.trim().is_empty() {
             return Err("nothing to say".into());
         }
-        let out = Settings::cache_dir().join("tts").join(format!("tts-{}.wav", Settings::now()));
-        let (inner, probed) = tts::speak_to_wav(text, voice, &out, self.backend());
+        Ok(self.queue_speech(speech, link_to, Place::At(at.max(0.0))))
+    }
+
+    /// Queue one spoken clip (the Speech panel, `tts.speak`). The returned progress completes once the
+    /// clip is on the timeline.
+    pub(super) fn queue_speech(&mut self, speech: tts::Speech, link_to: Option<Id>, place: Place) -> Arc<Progress> {
         let outer = Progress::new();
-        self.transcript.tts.push(TtsRun { inner, probed, out, link_to, at: at.max(0.0), outer: outer.clone() });
-        Ok(outer)
+        self.transcript.tts_queue.push_back(QueuedSpeech { speech, link_to, place, outer: outer.clone() });
+        outer
+    }
+
+    /// A new group of one-after-another clips starting at `start` (`Place::After`).
+    pub(super) fn transcript_new_group(&mut self, start: f64) -> u64 {
+        self.transcript.tts_groups += 1;
+        let g = self.transcript.tts_groups;
+        self.transcript.tts_cursors.insert(g, start.max(0.0));
+        g
     }
 }
 
@@ -490,10 +520,23 @@ fn finish_tracking(app: &mut App, run: TrackingRun) {
 
 fn finish_tts(app: &mut App, run: TtsRun) {
     if let Some(e) = run.inner.error() {
-        app.push_toast(Toast::new(format!("Speech failed: {e}")).kind(ToastKind::Error));
+        if run.inner.is_cancelled() {
+            // cancelling one line of a script cancels the lines still waiting behind it
+            if let Place::After(g) = run.place {
+                let (gone, keep): (Vec<_>, Vec<_>) =
+                    app.transcript.tts_queue.drain(..).partition(|q| q.place == Place::After(g));
+                app.transcript.tts_queue = keep.into();
+                for q in gone {
+                    q.outer.finish(Some(export::CANCELLED.into()));
+                }
+            }
+        } else {
+            app.push_toast(Toast::new(format!("Speech failed: {e}")).kind(ToastKind::Error));
+        }
         run.outer.finish(Some(e));
         return;
     }
+    let note = Some(run.inner.status()).filter(|s| s.contains("not installed"));
     // ws:job-completion-hitches: the WAV was probed on the TTS worker; the add/insert/link below still
     // runs synchronously right here, so the clip ids are final and the link survives - an async import
     // whose later `adopt` re-creates the clips would break it (`tts_finish_keeps_link_ids_final`)
@@ -505,19 +548,41 @@ fn finish_tts(app: &mut App, run: TtsRun) {
             return;
         }
     };
+    let len = asset.duration;
+    let at = match run.place {
+        Place::At(t) => t,
+        Place::After(g) => app.transcript.tts_cursors.get(&g).copied().unwrap_or(app.playhead),
+    };
+    if let Place::After(g) = run.place {
+        app.transcript.tts_cursors.insert(g, at + len + LINE_GAP);
+    }
     let before = app.project.to_json();
-    place_tts(&mut app.project, asset, run.at, run.link_to);
+    place_tts(&mut app.project, asset, at, run.link_to);
     app.push_undo_labeled(before, "Speak");
     app.after_edit();
-    app.toast_with_folder("Speech placed on the timeline", run.out.clone());
+    match note {
+        Some(n) => app.push_toast(Toast::new(n).kind(ToastKind::Error)),
+        None => app.toast_with_folder("Speech placed on the Voiceover track", run.out.clone()),
+    }
     run.outer.finish(None);
+}
+
+/// The audio track named "Voiceover" (made at the bottom when there is none).
+fn voiceover_track(project: &mut Project) -> usize {
+    if let Some(i) = project.tracks.iter().position(|t| t.kind == TrackKind::Audio && t.name == "Voiceover") {
+        return i;
+    }
+    let i = project.add_track(TrackKind::Audio);
+    project.tracks[i].name = "Voiceover".into();
+    i
 }
 
 /// Add the probed WAV, lay its clips down at `at` and link them to `link_to` (when it still exists) -
 /// all in one synchronous pass so the ids being linked are the ones that stay. Returns the new clips.
 fn place_tts(project: &mut Project, asset: crate::model::Asset, at: f64, link_to: Option<Id>) -> Vec<Id> {
     let aid = project.add_asset(asset);
-    let new = project.insert_asset_clips(aid, at, None);
+    let track = voiceover_track(project);
+    let new = project.insert_asset_clips_ranged(aid, at, None, Some(track), None);
     if let Some(tc) = link_to.filter(|&tc| project.clip(tc).is_some()) {
         let link = match project.clip(tc).map(|c| c.link) {
             Some(l) if l != 0 => l,
@@ -553,31 +618,9 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     for clip in wants.into_iter().flatten() {
         transcribe_or_offer(app, clip);
     }
-    if let Some((text, voice)) = app.subtitles_ui.transcript.tts_request.take() {
-        let link_to =
-            app.selection.iter().find(|&&id| app.project.clip(id).is_some_and(|c| c.kind == ClipKind::Text)).copied();
-        let at = app.playhead;
-        match app.speak(&text, voice.as_deref(), link_to, at) {
-            Ok(p) => progress_toast(app, "Speaking…", &p),
-            Err(e) => app.toast(e),
-        }
-    }
-    if app.subtitles_ui.transcript.show_tts && app.subtitles_ui.transcript.tts_voices.is_none() {
-        match &app.transcript.voices_rx {
-            None => {
-                let (tx, rx) = std::sync::mpsc::channel();
-                std::thread::spawn(move || {
-                    let _ = tx.send(tts::voices().to_vec());
-                });
-                app.transcript.voices_rx = Some(rx);
-            }
-            Some(rx) => {
-                if let Ok(v) = rx.try_recv() {
-                    app.subtitles_ui.transcript.tts_voices = Some(v);
-                    app.transcript.voices_rx = None;
-                }
-            }
-        }
+    // ws:addon-voice: the menu's Speak text... opens the Speech section of the Voiceover pane
+    if std::mem::take(&mut app.subtitles_ui.transcript.want_speech) {
+        app.surface(Pane::Voiceover);
     }
     if let Some((p, clip)) = app.transcript.download.clone() {
         if p.is_done() {
@@ -627,12 +670,20 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
             i += 1;
         }
     }
+    // ws:addon-voice: one speech job at a time, in order (so a script's lines land one after another)
+    if app.transcript.tts.is_empty() {
+        if let Some(q) = app.transcript.tts_queue.pop_front() {
+            let out = Settings::cache_dir().join("tts").join(q.speech.cache_name());
+            let (inner, probed) = tts::speak_to_wav(&q.speech, &out, app.backend());
+            app.transcript.tts.push(TtsRun { inner, probed, out, link_to: q.link_to, place: q.place, outer: q.outer });
+        }
+    }
     let t = &app.transcript;
     let busy = t.download.is_some()
         || !t.runs.is_empty()
         || !t.tracking.is_empty()
         || !t.tts.is_empty()
-        || t.voices_rx.is_some();
+        || !t.tts_queue.is_empty();
     if busy {
         ctx.request_repaint_after(Duration::from_millis(150));
     }

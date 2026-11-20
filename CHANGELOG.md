@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Text to speech
+- **Natural voices for Speak**: the Voiceover panel has a Speech section with three engines: Windows, **Kokoro** (28 natural English voices on the processor, a 160 MB add-on) and **Chatterbox** (expressive voices with an Intensity slider and voice cloning from 5-15 s of a voice you have permission to use, a 1.6 GB add-on that uses the graphics card). Play previews a voice, Speed and Pitch shape it, a script becomes one clip per line on a Voiceover track (at the playhead or at each line's time), and Speak selection voices selected text clips or transcript words. Install / Remove in Settings ▸ General; without an add-on Speak falls back to a Windows voice. The assistant's `tts.speak` takes engine, voice, speed, pitch, intensity and clone_ref; new `tts.voices`, `tts.status`, `tts.install`.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

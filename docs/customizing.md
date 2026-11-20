@@ -739,11 +739,14 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 | `transcript.search` | Read | query | Word hits across every transcribed clip: [{clip_id, index, t}] (case/punctuation-insensitive; a phrase matches consecutive words). |
 | `transcript.set` | Mutate | clip_id, words | Write (replace) a clip's transcript: words as [{start,end,text}] in timeline seconds; an empty list removes it. |
 
-**`tts.*`** (1 tool)
+**`tts.*`** (4 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
-| `tts.speak` | Job | at, clip_id, text, voice | Windows SAPI text-to-speech (job): writes a WAV and imports it at `at` (default: the playhead), linked to the text clip `clip_id` when given. OS voices only. |
+| `tts.install` | Job | engine | Install a voice add-on: kokoro (about 160 MB) or chatterbox (about 1.6 GB). One download at a time. |
+| `tts.speak` | Job | at, clip_id, clone_ref, engine, intensity, pitch, speed, text, voice | Text to speech: a cached WAV placed on the Voiceover track at `at` (default: the playhead), linked to `clip_id`. engine windows / kokoro / chatterbox; a missing add-on falls back to Windows and says so. Chatterbox: intensity and clone_ref (a voice the user may clone). |
+| `tts.status` | Read |  | Installed, install progress, download size and licences of the Kokoro and Chatterbox add-ons. |
+| `tts.voices` | Read | engine | Voices of an engine as [{id, label}]; pass an id as tts.speak's voice. |
 
 **`ui.*`** (6 tools)
 

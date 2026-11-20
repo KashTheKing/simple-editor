@@ -63,12 +63,11 @@ impl JobKind {
     }
     /// Sets `Progress.cancel` (or its equivalent) and the job really stops.
     pub fn can_cancel(self) -> bool {
-        !matches!(self, JobKind::Tts | JobKind::Tracking | JobKind::Probes | JobKind::QueuedProxy) && !self.is_cache()
+        !matches!(self, JobKind::Tracking | JobKind::Probes | JobKind::QueuedProxy) && !self.is_cache()
     }
     /// Why Cancel is greyed out (shown as the disabled button's tooltip).
     pub fn cancel_hint(self) -> Option<&'static str> {
         match self {
-            JobKind::Tts => Some("Speech finishes in under a second"),
             JobKind::Tracking => Some("Close the Tracking pane to stop"),
             JobKind::Probes => Some("Probing finishes on its own"),
             _ => None,
@@ -396,7 +395,7 @@ mod tests {
 
     #[test]
     fn cancel_button_only_on_cancellable_rows() {
-        let mut h = H::new(vec![row(JobKind::Tts, 0, JobState::Running), row(JobKind::Convert, 0, JobState::Running)]);
+        let mut h = H::new(vec![row(JobKind::Tracking, 0, JobState::Running), row(JobKind::Convert, 0, JobState::Running)]);
         h.frame(vec![]);
         assert!(!h.rows[0].can_cancel && h.rows[1].can_cancel);
         let tts = h.text_at("Cancel", 0);

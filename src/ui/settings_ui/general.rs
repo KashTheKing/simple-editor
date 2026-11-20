@@ -60,6 +60,14 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         ui.horizontal(enhancer_row);
         ui.end_row();
 
+        // ---- ws:addon-voice ----
+        ui.label("Kokoro voices");
+        ui.horizontal(|ui| crate::ui::app::speech_addon_row(ui, crate::engine::tts_addon::Addon::Kokoro));
+        ui.end_row();
+        ui.label("Chatterbox voices");
+        ui.horizontal(|ui| crate::ui::app::speech_addon_row(ui, crate::engine::tts_addon::Addon::Chatterbox));
+        ui.end_row();
+
         ui.label("Downloads folder");
         ui.horizontal(|ui| {
             changed |= ui

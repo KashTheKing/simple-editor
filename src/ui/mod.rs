@@ -10,6 +10,7 @@ pub mod beat_aligner; // ws:beat-aligner
 pub mod music_ui; // ws:music-burn
 pub mod capture_ui;
 pub mod voiceover_ui; // ws:panels-multiscreen
+pub mod speech_ui; // ws:addon-voice
 pub mod screens; // ws:panels-multiscreen
 pub mod cheatsheet;
 // ---- ws:inspector-gallery ----

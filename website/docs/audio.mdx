@@ -1,6 +1,6 @@
 ---
 title: Audio page
-description: Levels, buses and filters in the Mixer, ducking and loudness, and recording a voiceover.
+description: Levels, buses and filters in the Mixer, ducking and loudness, recording a voiceover, and text to speech.
 ---
 
 ![The Audio page](/img/tutorial/page-audio.png)
@@ -87,3 +87,53 @@ timeline is listed under the buttons: click its time to jump there, or **×** to
 FFmpeg.
 
 To record your screen, a window or a game with its sound, see [Screen recording](screen-recording.mdx).
+
+## Text to speech
+
+The **Speech** section sits under the takes in the **Voiceover** panel (the Transcript panel's **⋯ ▸ Speak
+text…** opens it too). Pick an **Engine**:
+
+| Engine | What it is | Download |
+|---|---|---|
+| **Windows** | The voices built into Windows. Always there. | none |
+| **Kokoro** | Natural voices (28 American and British English voices) that run on the processor. | about 160 MB |
+| **Chatterbox** | Expressive voices with an **Intensity** slider, and voice cloning. Fastest with a graphics card (DirectML), works on the processor too. | about 1.6 GB |
+
+Kokoro and Chatterbox are add-ons: click **Install** next to the engine, or in **Settings ▸ General**, where
+**Remove** deletes them again and shows how much space they take. Until an add-on is installed, Speak uses a
+Windows voice and tells you so.
+
+1. Pick a **Voice**. **Play** speaks a short sample through your speakers (nothing plays until you click it,
+   and it stays silent while the Main bus is muted in the Mixer).
+2. Set **Speed** and **Pitch** (in semitones); for Chatterbox also **Intensity** (0.5 is neutral, higher is
+   more emotional and a little faster).
+3. Type a script, one clip per line. A line that starts with a time (`0:12 Welcome back`) is placed at that
+   time; the others go one after another from the playhead.
+4. Click **Speak at playhead**. Each line becomes a clip on the **Voiceover** track (made for you).
+
+**Speak selection** speaks the selected text clips (titles, plan cards) at their start and links the sound to
+them, or, with transcript words selected in the Transcript panel, speaks those words where they are.
+
+Speech runs as a job in the Jobs panel, one at a time, and can be cancelled (cancelling a script line also
+cancels the lines after it). The WAV files are kept in the cache folder, so speaking the same line again is
+instant.
+
+### Clone a voice (Chatterbox)
+
+Select 5 to 15 seconds of a voice: a clip in the Library or on the timeline, or record a take first. Type a
+**Name** and click **Clone**. The voice is saved in `%APPDATA%\SimpleEditor\voices` and shows up in the voice
+list; **×** next to the list deletes it. **Only clone voices you have permission to use.**
+
+### Licences
+
+The add-ons are downloaded from their publishers, checked against a fixed size and SHA-256, and never become
+part of the editor:
+
+- **Kokoro**: the Kokoro-82M model and voices (Apache-2.0), run by sherpa-onnx (Apache-2.0) with ONNX Runtime
+  (MIT). Words are turned into sounds with the misaki pronunciation lists (Apache-2.0); there is no espeak-ng
+  and no Python. Words missing from the lists are pieced together from known parts, and numbers are read out.
+- **Chatterbox**: Resemble AI's Chatterbox (MIT), the onnx-community ONNX export (MIT), run by a small script
+  (MIT) in the official Windows embeddable Python (PSF licence) with ONNX Runtime DirectML (MIT; DirectML is
+  Microsoft's redistributable), NumPy (BSD-3-Clause) and tokenizers (Apache-2.0).
+
+XTTS / Coqui and F5-TTS are not offered: their model licences forbid commercial use.

@@ -62,6 +62,7 @@ pub mod tracking;
 pub mod transcribe;
 // ---- ws:transcript-captions ----
 pub mod tts;
+pub mod tts_addon; // ws:addon-voice: Kokoro / Chatterbox voices, downloaded on demand
 pub mod visualizer; // ws:audio-visualizer
 // ---- ws:music-burn ----
 pub mod disc;
