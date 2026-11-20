@@ -108,6 +108,15 @@ impl Rows {
         self
     }
 
+    /// Light the row with `key` (None: no row), for a list whose selection the caller owns (the chat
+    /// on screen); a click still selects as usual.
+    pub fn select(&self, ui: &Ui, key: Option<u64>) {
+        ui.data_mut(|d| match key {
+            Some(k) => d.insert_temp(self.sel_id(), k),
+            None => d.remove::<u64>(self.sel_id()),
+        });
+    }
+
     fn drag_id(&self) -> Id {
         self.id.with("drag")
     }
@@ -122,12 +131,18 @@ impl Rows {
         let dragging = ui.data(|d| d.get_temp::<u64>(self.drag_id())) == Some(spec.key);
         let v = ui.visuals();
         let painter = ui.painter_at(rect);
+        let tint = v.selection.bg_fill.gamma_multiply(0.5);
         if selected {
-            painter.rect_filled(rect, 3.0, v.selection.bg_fill.gamma_multiply(0.5));
+            painter.rect_filled(rect, 3.0, tint);
         } else if body.hovered() {
             painter.rect_filled(rect, 3.0, v.widgets.hovered.weak_bg_fill);
         }
-        let ink = if spec.dim { v.weak_text_color() } else { v.text_color() };
+        // a selected row's label: white or black, whichever reads on the accent tint
+        let ink = match () {
+            _ if spec.dim => v.weak_text_color(),
+            _ if selected => crate::ui::tools::on_accent_over(tint, v.panel_fill),
+            _ => v.text_color(),
+        };
         let dot = v.weak_text_color();
         let font = FontId::proportional(13.0);
         let mut out = RowResp { toggled: false, ctrl: None, ctrl_x: 0.0, label: Rect::NOTHING, body: body.clone() };

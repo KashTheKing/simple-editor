@@ -239,10 +239,7 @@ pub(super) fn go(app: &mut App, target: &palette::Target, alt: bool) {
     }
     match plan.timeline {
         Some(Some(seq)) => app.enter_sequence(seq),
-        Some(None) => {
-            app.project.close_sequence();
-            app.sequence_view_changed(0.0);
-        }
+        Some(None) => drop(super::timeline_tabs::switch(app, None)), // ws:timeline-tabs
         None => {}
     }
     if let Some(t) = plan.seek {

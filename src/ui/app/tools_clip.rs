@@ -326,7 +326,7 @@ macro_rules! row {
 }
 
 pub const TOOLS: &[ToolDef] = &[
-    row!("clip.set", ToolKind::Mutate, "Set clip fields: name, enabled, label, speed, reverse, freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …).", &["clip_id:integer:true:", "fields:object:true:"]),
+    row!("clip.set", ToolKind::Mutate, "Set clip fields: name, enabled, label, speed, reverse, freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, crop_left, crop_right, crop_top, crop_bottom (0..0.5), opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …).", &["clip_id:integer:true:", "fields:object:true:"]),
     row!("clip.keyframe", ToolKind::Mutate, "Set (or remove with remove=true) a keyframe of a property at clip-local time t.", &["clip_id:integer:true:", "property:string:true:", "t:number:true:", "value:number:false:", "ease:string:false:Linear|EaseIn|EaseOut|EaseInOut|Hold|cubic-bezier(x1,y1,x2,y2)", "remove:boolean:false:"]),
     row!("clip.add_effect", ToolKind::Mutate, "Append an effect with optional params {name: value}.", &["clip_id:integer:true:", "kind:string:true:", "params:object:false:"]),
     row!("clip.remove_effect", ToolKind::Mutate, "Remove effect at index.", &["clip_id:integer:true:", "index:integer:true:"]),
