@@ -190,6 +190,7 @@ mod windows_dlg;
 mod project_match; // ws:project-color-fps
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
+mod os_paste; // Ctrl+V of a screenshot / copied files
 
 enum ExportKind {
     File { path: PathBuf },
@@ -2208,6 +2209,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:interchange ----
     // ---- ws:assistant-pane ----
     assistant_ctl::tick,
+    os_paste::tick,
     // ---- ws:mcp-context ----
     tools_context::tick,
     // ---- ws:transcribe-islands ----
