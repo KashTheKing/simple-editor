@@ -478,6 +478,40 @@ fn rgba_bt709(mut vf: String, rgba_in: bool, args: &[String]) -> (String, Vec<St
     (vf, tags.map(String::from).to_vec())
 }
 
+// ---- ws:parity-io ----
+static FULL_RANGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Settings ▸ Export ▸ Levels ▸ Full range (`ui::app::io_ctl` keeps it in step with the setting).
+pub fn set_full_range(on: bool) {
+    FULL_RANGE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+fn full_range_on() -> bool {
+    FULL_RANGE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A 4:2:0 SDR encode at full range (0-255, tagged `pc`) instead of `rgba_bt709`'s limited 16-235: the
+/// RGBA path converts straight to full range; the GPU's limited NV12 is expanded. Anything else (gif,
+/// images, ProRes, audio) is left as it is.
+fn full_range(vf: String, tags: Vec<String>, nv12_in: bool, args: &[String]) -> (String, Vec<String>) {
+    if !args.iter().any(|a| a == "yuv420p" || a == "nv12") {
+        return (vf, tags);
+    }
+    let mut tags = tags;
+    let vf = if vf.contains("out_range=tv") {
+        vf.replace("out_range=tv", "out_range=pc").replace("range=tv", "range=pc")
+    } else if nv12_in {
+        let pre = if vf.is_empty() { String::new() } else { format!("{vf},") };
+        format!("{pre}scale=in_range=tv:out_range=pc,setparams=range=pc")
+    } else {
+        return (vf, tags);
+    };
+    match tags.iter().position(|t| t == "-color_range") {
+        Some(i) if i + 1 < tags.len() => tags[i + 1] = "pc".into(),
+        _ => tags.extend(["-color_range".to_string(), "pc".to_string()]),
+    }
+    (vf, tags)
+}
+
 // ---- ws:project-color-fps ----
 /// Why an export can't be written in the project's colour space (None = it can). HDR needs a 10-bit
 /// HEVC / AV1 file: no GIF, AVI or MPEG, and no 8-bit-only encoder picked by hand.
@@ -977,6 +1011,11 @@ fn run_export_with(
     };
     let (vf, af) = output_filters(opts, fed, !inputs.is_empty(), &args);
     let (vf, colour_tags) = if hdr { hdr_vf(vf, &args, project.color) } else { rgba_bt709(vf, video == Some(VideoIn::Rgba), &args) };
+    // ws:parity-io: Settings ▸ Export ▸ Levels ▸ Full range
+    let (vf, colour_tags) = match hdr || !full_range_on() {
+        true => (vf, colour_tags),
+        false => full_range(vf, colour_tags, video == Some(VideoIn::Nv12), &args),
+    };
     let vf = if is_gif {
         let pre = if vf.is_empty() { String::new() } else { format!("{vf},") };
         format!("{pre}fps=15,scale='min(iw,720)':-2:flags=lanczos,split[a][b];[a]palettegen=max_colors=128:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle")
@@ -2723,6 +2762,23 @@ pub(crate) mod tests {
         );
         // ws:export-audio-tracks: Stems maps only the mix into the main output
         assert!(s(input_args(Some(VideoIn::Rgba), (2, 2), 30.0, &[1, 2, 3], 1)).ends_with("-map 0:v -map 1:a"));
+    }
+
+    /// ws:parity-io: full-range export rewrites the limited conversion and tags, expands the GPU's NV12,
+    /// and leaves non-4:2:0 outputs alone.
+    #[test]
+    fn full_range_export_filters_and_tags() {
+        let x264: Vec<String> = ["-c:v", "libx264", "-pix_fmt", "yuv420p"].map(String::from).to_vec();
+        let (vf, tags) = rgba_bt709(String::new(), true, &x264);
+        let (vf, tags) = full_range(vf, tags, false, &x264);
+        assert_eq!(vf, "scale=out_color_matrix=bt709:out_range=pc,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=pc");
+        assert_eq!(tags.join(" "), "-colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range pc");
+        let nv12: Vec<String> = ["-c:v", "h264_nvenc", "-pix_fmt", "nv12"].map(String::from).to_vec();
+        let (vf, tags) = full_range("pad=2:2".into(), Vec::new(), true, &nv12);
+        assert_eq!(vf, "pad=2:2,scale=in_range=tv:out_range=pc,setparams=range=pc");
+        assert_eq!(tags, vec!["-color_range".to_string(), "pc".to_string()]);
+        let gif: Vec<String> = ["-f", "gif"].map(String::from).to_vec();
+        assert_eq!(full_range("x".into(), Vec::new(), true, &gif), ("x".to_string(), Vec::new()));
     }
 
     /// RGBA into a 4:2:0 encode converts and tags BT.709 limited like the NV12 path; gif/NV12 untouched.

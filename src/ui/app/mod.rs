@@ -205,6 +205,7 @@ mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
 mod group_sync; // ws:gap-group-sync
 mod plugins_ctl; // feat/plugins: the Plugins pane, plugin panels, Install from URL
+mod io_ctl; // ws:parity-io
 mod os_paste; // Ctrl+V of a screenshot / copied files
 mod export_fix; // ws:forum-export
 mod health_ctl; // ws:forum-preview
@@ -658,6 +659,9 @@ pub struct App {
     // ---- ws:parity-360 ----
     /// 360 Stabilize analyses in flight (`vr360_ctl`).
     vr360: vr360_ctl::State,
+    // ---- ws:parity-io ----
+    /// Media Properties, Open Network Stream, decode overrides, GPU choice, the ShuttlePRO.
+    io: io_ctl::IoState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -1012,6 +1016,7 @@ impl App {
         layout_ctl::migrate_to_pages(&mut settings);
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
         media::ytdlp::set_dir(&settings.ytdlp_dir);
+        crate::engine::gpu_pick::set_choice(&settings.gpu_adapter); // ws:parity-io: before any decoder opens
         theme::apply(ctx, &settings.theme, &settings.palette, &settings.ui_look);
         theme::clear_borders(ctx, settings.clear_borders); // ws:forum-ui
         crate::perf::startup_mark("app: theme + fonts");
@@ -1257,6 +1262,7 @@ impl App {
             group_sync: Default::default(), // ws:gap-group-sync
             plugins: Default::default(), // feat/plugins
             vr360: Default::default(), // ws:parity-360
+            io: Default::default(), // ws:parity-io
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -2191,6 +2197,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     formats_ctl::TOOLS,
     // ---- ws:parity-360 ----
     vr360_ctl::TOOLS,
+    // ---- ws:parity-io ----
+    io_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2306,6 +2314,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     scripts_ctl::act,
     // ---- ws:parity-audio ----
     tools_audio_parity::act,
+    // ---- ws:parity-io ----
+    io_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -2429,6 +2439,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     formats_ctl::tick,
     // ---- ws:parity-360 ----
     vr360_ctl::tick,
+    // ---- ws:parity-io ----
+    io_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -2520,6 +2532,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     tools_audio_parity::tick,
     // ---- ws:parity-formats ----
     formats_ctl::windows,
+    // ---- ws:parity-io ----
+    io_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[

@@ -473,6 +473,10 @@ actions! {
     // ---- ws:parity-audio ----
     // Clip ▸ Add ▸ Tone Generator… / the palette: makes a test tone or noise as a WAV and places it. Unbound.
     ToneGenerator => "tone_generator", "Tone Generator…", None;
+    // ---- ws:parity-io ----
+    // File ▸ Open Network Stream… (toggles its window) and Media Properties… (the selected asset). Unbound.
+    OpenStream => "open_stream", "Open Network Stream…", None;
+    MediaProperties => "media_properties", "Media Properties…", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -851,6 +855,8 @@ pub fn group(a: Action) -> &'static str {
         NudgeLeft10 | NudgeRight10 | SaveClipAsFile => "Clip",
         // ---- ws:parity-audio ----
         ToneGenerator => "Audio",
+        // ---- ws:parity-io ----
+        OpenStream | MediaProperties => "File",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

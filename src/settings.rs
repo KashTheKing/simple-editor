@@ -818,6 +818,20 @@ pub struct Settings {
     // ---- ws:parity-preview-tools ----
     /// The Preview's grid and action-safe / title-safe overlay (viewer-only; also snap targets).
     pub preview_overlay: crate::ui::guides::Overlay,
+    // ---- ws:parity-io ----
+    /// Settings ▸ Performance ▸ GPU: "" = Automatic, "power", "performance", or an adapter's name
+    /// (`engine::gpu_pick`). Applies at the next start.
+    pub gpu_adapter: String,
+    /// Settings ▸ Export ▸ Levels ▸ Full range: SDR 4:2:0 exports at 0-255 (tagged full) instead of 16-235.
+    pub export_full_range: bool,
+    /// Read a Contour ShuttlePRO / ShuttleXpress when one is plugged in (`engine::shuttle`).
+    #[serde(default = "default_true")]
+    pub shuttle: bool,
+    /// The Shuttle's buttons, button 1 first: an `Action` id each ("" = nothing).
+    #[serde(default = "crate::engine::shuttle::default_buttons")]
+    pub shuttle_buttons: Vec<String>,
+    /// Open Network Stream's recent addresses, newest first.
+    pub stream_urls: Vec<String>,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1161,6 +1175,12 @@ impl Default for Settings {
             export_chapters: true,
             export_subtitle_track: false, // ws:parity-formats
             preview_overlay: Default::default(), // ws:parity-preview-tools
+            // ---- ws:parity-io ----
+            gpu_adapter: String::new(),
+            export_full_range: false,
+            shuttle: true,
+            shuttle_buttons: crate::engine::shuttle::default_buttons(),
+            stream_urls: Vec::new(),
         }
     }
 }

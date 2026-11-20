@@ -1,0 +1,17 @@
+# ws:parity-io: runs the platform-neutral parts of the Windows-only app on Linux (a cloud session can't
+# build the app itself): engine::media_info, engine::netstream, engine::shuttle and media::io_override are
+# compiled straight from ../../src by #[path], with small stubs for the Windows bits (winstub, src/lib.rs).
+# tests/real.rs drives the real ffmpeg / ffprobe commands those modules build (needs ffmpeg on PATH).
+#   cd tools/linux-harness && cargo test -- --test-threads 1 --skip overridden_source_decodes
+[package]
+name = "linux-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows = { path = "winstub" }

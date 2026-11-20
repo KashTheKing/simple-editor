@@ -20,6 +20,7 @@ mod stacks; // ws:animator
 pub mod spans; // ws:animator (`MIN_SPAN`)
 mod markers;
 pub mod zones; // ws:zones-markers (`MIN_ZONE`)
+mod media_io; // ws:parity-io
 // ---- ws:pro-monitor ----
 mod multicam;
 mod paths;

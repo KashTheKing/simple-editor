@@ -355,6 +355,12 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `gallery.save` | Ui | clip_id, index, kind, name, replace, tags, transition_id | Save something of yours to your own Gallery (files in %APPDATA%\SimpleEditor\gallery\<kind>\, shown in the matching tab marked Mine). kind: look (a clip's effect stack) \| effect (index = one effect, else the whole stack, added on use) \| transition (transition_id, default the selected one: length, colour, direction, shader controls) \| caption (the project's style) \| speed (a clip's speed curve) \| animate (a clip's keyframes) \| template (the selected clips; titles too) \| sound (an audio clip: its whole file, or the trimmed range) \| shader_effect (index) \| shader_transition \| html (an HTML layer) \| lut (index) - the last four go to the local library. A taken name is numbered unless replace=true. No undo (it is a file). |
 | `gallery.tab` | Ui | tab | Open the Gallery pane on a tab (Looks\|Luts\|Captions\|SpeedRamps\|Effects\|Transitions\|Templates\|Titles\|Animate, or the library tabs HTML\|Icons\|Skills), the same as clicking it; the pane is shown if it was hidden. What Ctrl+3 (Effects) and Ctrl+4 (Transitions) do. UI-only, no undo. |
 
+**`gpu.*`** (1 tool)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `gpu.list` | Read | - | The graphics adapters (name, vendor / device id, video memory, Windows' high-performance and power-saving order) and Settings `gpu_adapter` ("" automatic, power, performance or an adapter name; `settings.set` it, applies after a restart). |
+
 **`help.*`** (1 tool)
 
 | Tool | Kind | Args | Description |
@@ -438,7 +444,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `markers.remove` | Mutate | id | Remove a marker by id. |
 | `markers.set` | Mutate | author, category, done, duration, icon, id, label, name, note, t | Edit a marker: only the fields given change (done=true ticks a comment off). t: timeline seconds (timeline markers only). |
 
-**`media.*`** (23 tools)
+**`media.*`** (26 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -464,6 +470,9 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `media.status` | Read | id | AssetStatus per asset id (Ready \| Decoding \| Offline \| ProxyBuilding, with percent) from the same tick that drives the library badge. |
 | `media.subclip` | Mutate | asset_id, in, name, out | Create a subclip asset (a named in/out range into an existing library asset). |
 | `media.transcribe` | Job | align, async, asset_id, clip_id, engine, islands, model | Transcribe a clip (or the first timeline clip of an asset) with whisper.cpp or the faster-whisper add-on (engine, align as in transcribe.run) — same job as transcribe.run without generating cues; fills Project.transcripts when done (read with media.transcript). islands / async as in transcribe.run (async: poll transcribe.status). |
+| `media.properties` | Read | asset_id, path, show | Detailed properties of a media file or stream URL: container, duration, size, overall bitrate, tags, and every stream (codec and profile, resolution, frame rate, pixel format, colour range / primaries / transfer / matrix, rotation, field order, sample rate, channels, language, bitrate), plus the decode override (`override`). show: also open the Media Properties window. |
+| `media.bitrate` | Read | asset_id, path, stream | Per-second bitrate of the video (default) or audio stream: kbps per bucket, average, peak, keyframe times. Measured once on a worker thread: the first call returns `pending: true`, call again for the data. |
+| `media.set_io` | Mutate | asset_id, path, rotate, range | Decode override for a library video and every clip of it: rotate auto (the file's) / 0 / 90 / 180 / 270, range auto / limited / full. A quarter turn swaps the asset's width and height. Decodes through ffmpeg, without the proxy. One undo step. |
 | `media.transcript` | Read | asset_id, clip_id | {clip_id, words:[{start,end,text}], text} for one clip (clip_id, or asset_id's first timeline clip), or every transcript when both are omitted. A clip without one gives empty words plus a hint. |
 
 **`mixer.*`** (1 tool)
@@ -643,6 +652,12 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `shapes.add` | Mutate | at, duration, fill, height, kind, sides, stroke, stroke_width, width | Add a vector shape clip. |
 
+**`shuttle.*`** (1 tool)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `shuttle.status` | Read | - | The Contour ShuttlePRO / ShuttleXpress: Settings `shuttle` (on / off), the connected model, and `buttons` (Action ids, button 1 first). |
+
 **`source.*`** (7 tools)
 
 | Tool | Kind | Args | Description |
@@ -661,6 +676,13 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `stills.apply` | Mutate | clip_id, name | Paste a saved still's effect stack onto a clip (engine::presets::apply_effects, one undo). |
 | `stills.save` | Ui | clip_id, name | Snapshot a clip's effect stack as a named preset (a 'Look') into Settings.effect_presets. |
+
+**`stream.*`** (2 tools)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `stream.open` | Ui | url | Open a network stream (http(s) / HLS / DASH, rtmp, rtsp, srt, udp, rtp) in the Open Network Stream window: probe and live preview. Waits for the Assistant guard's Allow. |
+| `stream.record` | Ui | action, url, seconds | start (url, optional seconds limit): copy the stream to a file (no re-encode) in the capture folder's Streams folder and add it to the Library when it stops; stop; status. start waits for the guard's Allow. |
 
 **`style.*`** (1 tool)
 

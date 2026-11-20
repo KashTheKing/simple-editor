@@ -234,6 +234,9 @@ pub struct LibraryResponse {
     // ---- ws:forum-ui ----
     /// Item menu ▸ Replace Media…: the app asks for a file, then `media.replace` repoints the asset.
     pub replace_media: Option<Id>,
+    // ---- ws:parity-io ----
+    /// Open Media Properties for this asset (item menu ▸ Properties…, the Info window's button).
+    pub properties: Option<Id>,
 }
 
 /// The bulk menu's placement verbs.
@@ -2006,7 +2009,13 @@ fn asset_info(
         state.tags_for = Some(a.id);
         state.tags_buf = a.tags.join(", ");
     }
-    ui.weak(format_line(a));
+    ui.horizontal(|ui| {
+        ui.weak(format_line(a));
+        // ---- ws:parity-io ----
+        if ui.small_button("Properties…").on_hover_text("Streams, codecs, colour and bitrate").clicked() {
+            resp.properties = Some(a.id);
+        }
+    });
     ui.add(egui::Label::new(RichText::new(&a.path).weak().small()).truncate()).on_hover_text(&a.path);
     if state.offline.contains(&a.id) {
         ui.horizontal(|ui| {
@@ -3206,6 +3215,10 @@ impl Tree<'_, '_> {
             }
             if menu::row(ui, Some(Glyph::Folder), "Reveal in Explorer", "").clicked() {
                 crate::contextmenu::reveal(std::path::Path::new(&first.path));
+            }
+            // ---- ws:parity-io ----
+            if menu::row(ui, None, "Properties…", "").on_hover_text("Streams, codecs, colour and bitrate").clicked() {
+                self.resp.properties = Some(first.id);
             }
             let videos: Vec<String> = ids
                 .iter()

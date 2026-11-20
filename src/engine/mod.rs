@@ -100,3 +100,8 @@ pub mod media_dates; // ws:parity-editing: Library ▸ Sort by Date Created / Da
 pub mod formats;
 pub mod lottie;
 pub mod synth;
+// ---- ws:parity-io ----
+pub mod gpu_pick; // Settings ▸ Performance ▸ GPU
+pub mod media_info; // Media Properties: streams, colour, bitrate graph
+pub mod netstream; // Open Network Stream: probe, preview, record
+pub mod shuttle; // Contour ShuttlePRO / ShuttleXpress

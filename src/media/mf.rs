@@ -18,7 +18,7 @@ use crate::model::{Asset, AudioStreamInfo, ClipKind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use windows::core::{Interface, BOOL, GUID, HSTRING};
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11Multithread, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
 };
@@ -89,20 +89,27 @@ fn dxgi() -> Option<&'static SharedDeviceManager> {
     static MANAGER: OnceLock<Option<SharedDeviceManager>> = OnceLock::new();
     MANAGER
         .get_or_init(|| unsafe {
-            let mut device: Option<ID3D11Device> = None;
-            D3D11CreateDevice(
-                None,
-                D3D_DRIVER_TYPE_HARDWARE,
-                Default::default(),
-                D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-                None,
-                D3D11_SDK_VERSION,
-                Some(&mut device),
-                None,
-                None,
-            )
-            .ok()?;
-            let device = device?;
+            // ws:parity-io: Settings ▸ Performance ▸ GPU (an explicit adapter needs the UNKNOWN driver type);
+            // a chosen card that can't make a video device falls back to the default one
+            let create = |adapter: Option<&windows::Win32::Graphics::Dxgi::IDXGIAdapter>| {
+                let driver = if adapter.is_some() { D3D_DRIVER_TYPE_UNKNOWN } else { D3D_DRIVER_TYPE_HARDWARE };
+                let mut device: Option<ID3D11Device> = None;
+                D3D11CreateDevice(
+                    adapter,
+                    driver,
+                    Default::default(),
+                    D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                    None,
+                    D3D11_SDK_VERSION,
+                    Some(&mut device),
+                    None,
+                    None,
+                )
+                .ok()
+                .and(device)
+            };
+            let chosen = crate::engine::gpu_pick::decode_adapter();
+            let device = chosen.as_ref().and_then(|a| create(Some(a))).or_else(|| create(None))?;
             // MF decoder MFTs call the device from their own thread; the app must opt the device into that.
             let mt: ID3D11Multithread = device.cast().ok()?;
             let _ = mt.SetMultithreadProtected(true);

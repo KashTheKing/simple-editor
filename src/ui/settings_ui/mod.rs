@@ -27,6 +27,7 @@ mod performance;
 pub(crate) mod permissions;
 // ---- ws:social-guides ----
 mod social;
+mod shuttle; // ws:parity-io
 // ---- ws:player-metadata ----
 pub(crate) mod metadata;
 // ---- ws:gallery-stock ----

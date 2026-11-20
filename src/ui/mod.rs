@@ -41,6 +41,7 @@ pub mod hud; // ws:perf-baseline
 pub mod health_chip; // ws:forum-preview
 pub mod perf_ui; // ws:perf-window
 pub mod import_ui;
+pub mod io_ui; // ws:parity-io: Media Properties, Open Network Stream
 pub mod inspector;
 pub mod inspector_audio;
 pub mod inspector_footage; // ws:mixed-footage

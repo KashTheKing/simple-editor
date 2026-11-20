@@ -147,6 +147,11 @@ pub struct Project {
     /// Where each reference clip came from and what is said in it (`model::RefSource`, Find a Reference).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<RefSource>,
+    // ---- ws:parity-io ----
+    /// Per-source decode overrides (rotation, YUV range), by source path: Media Properties /
+    /// `media.set_io`. The decoders follow it through `media::io_override::sync`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub media_io: std::collections::BTreeMap<String, crate::media::io_override::MediaIo>,
 }
 
 // ---- ws:project-color-fps ----

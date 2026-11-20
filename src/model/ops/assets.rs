@@ -83,6 +83,8 @@ impl Project {
             zones: Vec::new(),
             // ---- feat/reference-clips ----
             references: Vec::new(),
+            // ---- ws:parity-io ----
+            media_io: Default::default(),
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);

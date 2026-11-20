@@ -231,6 +231,13 @@ pub fn rename_in_recents(list: &mut Vec<String>, old: &str, new: &str) {
     }
 }
 
+/// ws:parity-io: search in recent files. Every word of `query` must appear (any case) in the file's name or
+/// its folder; an empty query matches everything.
+pub fn matches_recent(path: &str, query: &str) -> bool {
+    let hay = path.replace('\\', "/").to_lowercase();
+    query.split_whitespace().all(|w| hay.contains(&w.to_lowercase()))
+}
+
 /// Drop one project from the recents list.
 pub fn remove_from_recents(list: &mut Vec<String>, path: &str) -> bool {
     let n = list.len();
@@ -272,6 +279,9 @@ const MAX_W: f32 = 980.0;
 /// The page, centred in `ui` (the whole space the panes would take). `Some` on a click.
 pub fn show(ui: &mut egui::Ui, cards: &[CardInfo], rows: &[RowView]) -> Option<PageAction> {
     let mut out = None;
+    // ws:parity-io: the Projects search (kept in egui's memory for the visit)
+    let qid = egui::Id::new("home_recent_search");
+    let mut query: String = ui.data(|d| d.get_temp(qid)).unwrap_or_default();
     egui::ScrollArea::vertical().id_salt("home_page").auto_shrink([false, false]).show(ui, |ui| {
         let full = ui.available_width();
         let w = full.min(MAX_W) - 32.0;
@@ -299,13 +309,21 @@ pub fn show(ui: &mut egui::Ui, cards: &[CardInfo], rows: &[RowView]) -> Option<P
                         if ui.button("Open…").on_hover_text("Open a project that isn't in the list").clicked() {
                             out = Some(PageAction::Browse);
                         }
+                        if rows.len() > 1 {
+                            let r = ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search").desired_width(180.0));
+                            if r.on_hover_text("Find a recent project by its name or folder").changed() {
+                                ui.data_mut(|d| d.insert_temp(qid, query.clone()));
+                            }
+                        }
                     });
                 });
                 ui.add_space(6.0);
                 if rows.is_empty() {
                     ui.weak("No recent projects");
+                } else if !rows.iter().any(|r| matches_recent(r.path, &query)) {
+                    ui.weak("No recent projects match");
                 }
-                for r in rows {
+                for r in rows.iter().filter(|r| matches_recent(r.path, &query)) {
                     if let Some(a) = row(ui, r) {
                         out = Some(a);
                     }
@@ -575,6 +593,17 @@ mod tests {
         assert!(remove_from_recents(&mut l, "c:/C.sedit"));
         assert!(!remove_from_recents(&mut l, "C:/nope.sedit"));
         assert_eq!(l, ["C:/A.sedit"]);
+    }
+
+    /// ws:parity-io: the recents search matches words in the name or folder, any case, in any order.
+    #[test]
+    fn recents_search_matches_every_word() {
+        let p = r"D:\Clients\Acme\Launch Video v2.sedit";
+        assert!(matches_recent(p, ""));
+        assert!(matches_recent(p, "launch"));
+        assert!(matches_recent(p, "ACME v2"));
+        assert!(matches_recent(p, "clients/acme"), "a folder typed with forward slashes");
+        assert!(!matches_recent(p, "launch v3"));
     }
 
     /// The recents list survives a save + load of settings (with the page's own switch).
