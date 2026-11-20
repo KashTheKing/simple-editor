@@ -190,6 +190,7 @@ mod project_match; // ws:project-color-fps
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
 mod os_paste; // Ctrl+V of a screenshot / copied files
+mod tools_audio_parity; // ws:parity-audio
 
 enum ExportKind {
     File { path: PathBuf },
@@ -2042,6 +2043,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:home-page ----
     home_ctl::TOOLS,
     script_ctl::TOOLS,
+    // ---- ws:parity-audio ----
+    tools_audio_parity::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[

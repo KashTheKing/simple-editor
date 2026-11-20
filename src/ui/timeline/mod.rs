@@ -550,6 +550,9 @@ enum Act {
     ReorderTrack(usize, bool),
     /// Track menu ▸ Waveform -> `Project::set_track_waveform` (None = follow the setting).
     SetTrackWaveform(usize, Option<bool>),
+    // ---- ws:parity-audio ----
+    /// Track menu ▸ Auto Fade / Smooth Seams -> `Project::set_track_audio_edges`.
+    SetTrackAudioEdges(usize, Option<f32>, Option<bool>),
 }
 
 mod arm;
@@ -2224,6 +2227,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 | Act::SetTrackColor(..)
                 | Act::ReorderTrack(..)
                 | Act::SetTrackWaveform(..)
+                | Act::SetTrackAudioEdges(..)
         );
         let before = refusable.then(|| p.clone());
         let mut changed = true;
@@ -2455,6 +2459,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             Act::SetTrackWaveform(ti, d) => {
                 label = "Track waveform";
                 changed = p.set_track_waveform(ti, d);
+            }
+            // ---- ws:parity-audio ----
+            Act::SetTrackAudioEdges(ti, fade, seam) => {
+                label = "Track audio edges";
+                changed = p.set_track_audio_edges(ti, fade, seam);
             }
         }
         if let Some(b) = before {

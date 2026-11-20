@@ -34,6 +34,7 @@ pub mod import;
 pub mod lut;
 pub mod mixer;
 pub mod mixer_fx;
+pub mod audio_tools; // ws:parity-audio
 pub mod prerender;
 pub mod presets;
 pub mod templates; // ws:animator-templates

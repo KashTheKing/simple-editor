@@ -48,7 +48,25 @@ pub struct Track {
     /// `timeline_waveform` setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wave_detailed: Option<bool>,
+    // ---- ws:parity-audio ----
+    /// Audio tracks: a fade this long (ms) at every clip edge that has no fade, transition or seam of
+    /// its own, so cuts never click. 0 = off.
+    #[serde(default, skip_serializing_if = "is_zero_f32")]
+    pub auto_fade_ms: f32,
+    /// Audio tracks: where two clips butt together, each plays `SEAM_MS / 2` past the cut and they
+    /// cross-fade, so a cut inside continuous sound is seamless.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub seam: bool,
 }
+
+// ---- ws:parity-audio ----
+pub(crate) fn is_zero_f32(v: &f32) -> bool {
+    *v == 0.0
+}
+/// Length of a track seam's cross-fade, in ms.
+pub const SEAM_MS: f64 = 10.0;
+/// Auto-fade length the track menu turns on.
+pub const AUTO_FADE_MS: f32 = 10.0;
 
 impl Track {
     pub fn new(id: Id, kind: TrackKind, name: impl Into<String>) -> Self {
@@ -68,6 +86,8 @@ impl Track {
             color: None,
             volume: crate::model::a1(),
             wave_detailed: None,
+            auto_fade_ms: 0.0,
+            seam: false,
         }
     }
     /// The one resolver every Track-construction site calls so `ripple` is never left `None` outside

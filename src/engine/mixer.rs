@@ -19,9 +19,22 @@ use crate::model::{Clip, ClipKind, Id, Project, Track, TrackKind, Transition};
 
 const MAX_DEPTH: usize = 8;
 
-/// Transition windows touching a clip: (cut time, clamped half-window, transition, clip is the right
-/// side). At most one per clip edge.
-type Ext<'a> = [Option<(f64, f64, &'a Transition, bool)>; 2];
+/// What shapes a clip's two edges. `tr`: transition windows touching it - (cut time, clamped
+/// half-window, transition, clip is the right side), at most one per edge.
+/// ws:parity-audio: `fade` = its track's auto-fade (seconds, 0 = off) on an edge with no transition or
+/// seam; `seam[e]` = edge e butts against another clip on a Smooth Seams track (no transition): the clip
+/// plays `SEAM_MS / 2` past it and the two cross-fade.
+#[derive(Clone, Copy, Default)]
+struct Ext<'a> {
+    tr: [Option<(f64, f64, &'a Transition, bool)>; 2],
+    fade: f64,
+    seam: [bool; 2],
+}
+
+/// Half a track seam's cross-fade, in seconds.
+const SEAM_HALF: f64 = crate::model::SEAM_MS / 2000.0;
+/// Two clips closer than this (seconds) are touching, for a seam.
+const SEAM_TOUCH: f64 = 1e-3;
 
 /// Where a clip's samples go: a plain buffer (no buses / a nested sequence sub-mix) or the bus graph.
 enum Dest<'a> {
@@ -176,7 +189,7 @@ fn mix_tracks(
             if !clip.enabled || clip.freeze.is_some() {
                 continue;
             }
-            let ext = clip_transitions(track, clip);
+            let ext = clip_edges(track, clip);
             let (estart, eend) = play_range(clip, &ext);
             if eend <= t || estart >= t_end {
                 continue;
@@ -319,9 +332,18 @@ fn gain_add(clip: &Clip, ext: &Ext, t0: f64, wet: &[f32], out: &mut [f32], track
     let (l1, r1) = gains(clip, ext, t0 + n as f64 / SAMPLE_RATE as f64);
     let (l0, r0, l1, r1) = (l0 * track_gain, r0 * track_gain, l1 * track_gain, r1 * track_gain);
     let (dl, dr) = ((l1 - l0) / n as f32, (r1 - r0) / n as f32);
+    let edged = ext.edged();
     for (k, (o, w)) in out.chunks_exact_mut(2).zip(wet.chunks_exact(2)).enumerate() {
-        o[0] += w[0] * (l0 + dl * k as f32);
-        o[1] += w[1] * (r0 + dr * k as f32);
+        let e = if edged { edge_gain(clip, ext, t0 + k as f64 / SAMPLE_RATE as f64) as f32 } else { 1.0 };
+        o[0] += w[0] * (l0 + dl * k as f32) * e;
+        o[1] += w[1] * (r0 + dr * k as f32) * e;
+    }
+}
+
+impl Ext<'_> {
+    /// True when this clip's edges carry a per-frame gain (auto-fade or a seam).
+    fn edged(&self) -> bool {
+        self.fade > 0.0 || self.seam[0] || self.seam[1]
     }
 }
 
@@ -367,7 +389,7 @@ fn active_in(tracks: &[Track], i: usize) -> bool {
 
 /// The (still valid) transitions whose window this clip plays in (windows clamped to the cut's clips,
 /// so an over-long transition cannot drag a clip past its neighbours - same rule as the compositor).
-fn clip_transitions<'a>(track: &'a Track, clip: &Clip) -> Ext<'a> {
+fn clip_transitions<'a>(track: &'a Track, clip: &Clip) -> [Option<(f64, f64, &'a Transition, bool)>; 2] {
     let mut ext = [None, None];
     for tr in &track.transitions {
         let Some((l, r)) = track.transition_clips(tr) else { continue };
@@ -382,17 +404,68 @@ fn clip_transitions<'a>(track: &'a Track, clip: &Clip) -> Ext<'a> {
     ext
 }
 
-/// The clip's audible timeline range: its own extent, virtually extended into transition windows.
+// ---- ws:parity-audio ----
+/// `clip_transitions` plus the track's auto-fade and seams (see `Ext`).
+fn clip_edges<'a>(track: &'a Track, clip: &Clip) -> Ext<'a> {
+    let tr = clip_transitions(track, clip);
+    let mut seam = [false; 2];
+    if track.seam {
+        let touching = |t: f64| {
+            track.clips.iter().any(|o| {
+                o.id != clip.id
+                    && o.enabled
+                    && o.freeze.is_none()
+                    && ((t == clip.start && (o.end() - t).abs() < SEAM_TOUCH)
+                        || (t == clip.end() && (o.start - t).abs() < SEAM_TOUCH))
+            })
+        };
+        seam = [tr[0].is_none() && touching(clip.start), tr[1].is_none() && touching(clip.end())];
+    }
+    Ext { tr, fade: (track.auto_fade_ms.max(0.0) as f64) / 1000.0, seam }
+}
+
+/// The clip's audible timeline range: its own extent, virtually extended into transition windows
+/// (and half a seam past a seamed edge).
 fn play_range(clip: &Clip, ext: &Ext) -> (f64, f64) {
     let mut s = clip.start;
     let mut e = clip.end();
-    if let Some((cut, h, ..)) = ext[0] {
+    if let Some((cut, h, ..)) = ext.tr[0] {
         s = s.min(cut - h);
     }
-    if let Some((cut, h, ..)) = ext[1] {
+    if let Some((cut, h, ..)) = ext.tr[1] {
         e = e.max(cut + h);
     }
+    if ext.seam[0] {
+        s = s.min(clip.start - SEAM_HALF);
+    }
+    if ext.seam[1] {
+        e = e.max(clip.end() + SEAM_HALF);
+    }
     (s, e)
+}
+
+/// The auto-fade and seam gain at absolute time `tt` (1 away from the edges). A seam ramps linearly
+/// across [cut - half, cut + half] on both clips, so the two always sum to the clip's own level.
+/// Unlike the other gains this is evaluated for every frame (`edged`), since a 10 ms ramp is shorter
+/// than a block: lerped from the block ends, a seam's two halves would no longer sum to one.
+fn edge_gain(clip: &Clip, ext: &Ext, tt: f64) -> f64 {
+    let mut g = 1.0;
+    if ext.fade > 0.0 {
+        let lt = clip.local(tt).clamp(0.0, clip.duration);
+        if ext.tr[0].is_none() && !ext.seam[0] {
+            g *= (lt / ext.fade).clamp(0.0, 1.0);
+        }
+        if ext.tr[1].is_none() && !ext.seam[1] {
+            g *= ((clip.duration - lt) / ext.fade).clamp(0.0, 1.0);
+        }
+    }
+    if ext.seam[0] {
+        g *= ((tt - (clip.start - SEAM_HALF)) / (2.0 * SEAM_HALF)).clamp(0.0, 1.0);
+    }
+    if ext.seam[1] {
+        g *= ((clip.end() + SEAM_HALF - tt) / (2.0 * SEAM_HALF)).clamp(0.0, 1.0);
+    }
+    g
 }
 
 /// (left, right) gains at absolute time tt: volume × fade in/out × transition crossfade, panned.
@@ -400,7 +473,7 @@ fn play_range(clip: &Clip, ext: &Ext) -> (f64, f64) {
 fn gains(clip: &Clip, ext: &Ext, tt: f64) -> (f32, f32) {
     let lt = clip.local(tt).clamp(0.0, clip.duration);
     let mut g = clip.volume.at(lt) as f32 * clip.fade_mult(lt) as f32;
-    for e in ext.iter().flatten() {
+    for e in ext.tr.iter().flatten() {
         let (cut, h, tr, is_right) = *e;
         if tt >= cut - h && tt < cut + h {
             let p = crate::engine::compose::trans_progress_at(tr, cut, h, tt);
@@ -446,7 +519,9 @@ fn resample_add(clip: &Clip, ext: &Ext, t0: f64, buf: &[f32], out: &mut [f32], t
     let dl = (l1 - l0) / n as f32;
     let dr = (r1 - r0) / n as f32;
     let last = m - 1;
+    let edged = ext.edged(); // ws:parity-audio
     for (k, o) in out.chunks_exact_mut(2).enumerate() {
+        let e = if edged { edge_gain(clip, ext, t0 + k as f64 / SAMPLE_RATE as f64) as f32 } else { 1.0 };
         let pos = if clip.reverse { last as f64 - k as f64 * clip.speed } else { k as f64 * clip.speed };
         let pos = pos.max(0.0);
         let j = (pos as usize).min(last);
@@ -454,8 +529,8 @@ fn resample_add(clip: &Clip, ext: &Ext, t0: f64, buf: &[f32], out: &mut [f32], t
         let fr = (pos - j as f64) as f32;
         let a = &buf[j * 2..j * 2 + 2];
         let b = &buf[j1 * 2..j1 * 2 + 2];
-        o[0] += (a[0] + (b[0] - a[0]) * fr) * (l0 + dl * k as f32);
-        o[1] += (a[1] + (b[1] - a[1]) * fr) * (r0 + dr * k as f32);
+        o[0] += (a[0] + (b[0] - a[0]) * fr) * (l0 + dl * k as f32) * e;
+        o[1] += (a[1] + (b[1] - a[1]) * fr) * (r0 + dr * k as f32) * e;
     }
 }
 
@@ -684,8 +759,8 @@ mod tests {
         for t in [0.0, 0.25, 1.0, 9.99] {
             // the reference is what the pre-change mixer produced: clip gain × fade, no track factor
             mx.mix(&p, t, &mut pool, &mut out);
-            let (l0, _) = gains(&p.tracks[ai].clips[0], &[None, None], t);
-            let (l1, _) = gains(&p.tracks[ai].clips[0], &[None, None], t + 1024.0 / SAMPLE_RATE as f64);
+            let (l0, _) = gains(&p.tracks[ai].clips[0], &Ext::default(), t);
+            let (l1, _) = gains(&p.tracks[ai].clips[0], &Ext::default(), t + 1024.0 / SAMPLE_RATE as f64);
             for (k, fr) in reference.chunks_exact_mut(2).enumerate() {
                 let tt = t + k as f64 / SAMPLE_RATE as f64;
                 let g = if (0.0..10.0).contains(&tt) { 0.5 * (l0 + (l1 - l0) * k as f32 / 1024.0) } else { 0.0 };
@@ -1182,5 +1257,55 @@ mod tests {
         mx.mix(&p, 30.0, &mut pool, &mut out);
         assert!(mx.scratch.2 .1.is_empty(), "past the clip its echo memory goes");
         assert!(out.iter().all(|s| *s == 0.0));
+    }
+
+    /// A clip of `Const(0.5)` split at 5 s: two clips that touch, the source continuous across the cut.
+    fn split_project() -> (Project, usize) {
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        let id = p.tracks[ai].clips[0].id;
+        p.split_at(5.0, Some(&[id]));
+        assert_eq!(p.tracks[ai].clips.len(), 2, "split into two touching clips");
+        (p, ai)
+    }
+
+    /// One 1024-frame block from 4.99 s: frame 480 is the cut at 5.0 s.
+    fn around_cut(p: &Project) -> Vec<f32> {
+        let (mut pool, mut mx) = (pool(), Mixer::new());
+        let mut out = vec![0.0f32; 2048];
+        mx.mix(p, 4.99, &mut pool, &mut out);
+        out
+    }
+
+    #[test]
+    fn track_auto_fade_dips_at_every_cut() {
+        let (mut p, ai) = split_project();
+        let plain = around_cut(&p);
+        assert!(plain.iter().all(|s| (s - 0.5).abs() < 1e-5), "a plain cut in continuous audio is untouched");
+        assert!(p.set_track_audio_edges(ai, Some(10.0), None));
+        let out = around_cut(&p);
+        assert!(out[480 * 2].abs() < 1e-3, "silent at the cut: {}", out[480 * 2]);
+        assert!((out[0] - 0.5).abs() < 1e-5, "10 ms before the cut the fade has not begun");
+        assert!((out[(480 - 240) * 2] - 0.25).abs() < 0.01, "half way down 5 ms before: {}", out[(480 - 240) * 2]);
+        assert!((out[(480 + 240) * 2] - 0.25).abs() < 0.01, "half way up 5 ms after");
+        // the timeline's very first frame is faded in too
+        let (mut pool, mut mx) = (pool(), Mixer::new());
+        let mut head = vec![0.0f32; 64];
+        mx.mix(&p, 0.0, &mut pool, &mut head);
+        assert!(head[0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn track_seam_cross_fades_touching_clips_at_unity() {
+        let (mut p, ai) = split_project();
+        assert!(p.set_track_audio_edges(ai, Some(10.0), Some(true)));
+        let out = around_cut(&p);
+        // the auto-fade gives way to the seam, and the two halves always sum to the source level
+        assert!(out.iter().all(|s| (s - 0.5).abs() < 1e-4), "worst {:?}", out.iter().map(|s| (s - 0.5).abs()).fold(0.0f32, f32::max));
+        // a gap breaks the seam: the edges fade on their own again
+        let id = p.tracks[ai].clips[1].id;
+        p.clip_mut(id).unwrap().start += 0.5;
+        let out = around_cut(&p);
+        assert!(out[480 * 2].abs() < 1e-3, "no neighbour, no seam: {}", out[480 * 2]);
     }
 }
