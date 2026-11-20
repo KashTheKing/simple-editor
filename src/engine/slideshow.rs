@@ -139,6 +139,7 @@ fn ken_burns(i: usize) -> KeyBlock {
             tr("y", vec![k(0.0, BlockVal::Add(0.0)), k(1.0, BlockVal::Add(dy))]),
         ],
         gen: None,
+        proc: None,
     }
 }
 

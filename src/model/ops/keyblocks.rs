@@ -87,6 +87,10 @@ impl Project {
     pub fn loop_key_block(&mut self, id: Id, i: usize, count: u32, pingpong: bool) -> bool {
         let Some(c) = self.clip_mut(id) else { return false };
         let Some(b) = c.blocks.get(i).cloned() else { return false };
+        // a procedural block already repeats for as long as it lasts
+        if b.is_proc() {
+            return false;
+        }
         let mut ctl = match b.ctl.clone().filter(|c| !c.edited) {
             Some(ctl) => ctl,
             None => BlockCtl::new(abs_block(c, &b.name, &b.props, b.t, b.end())),
@@ -136,7 +140,7 @@ impl Project {
                 }
             }
             // a block whose span the copies landed in has hand-made keys now: its controls pause
-            for b in c.blocks.iter_mut().filter(|b| n > before && b.props.contains(p) && b.end() > to + BK_EPS && b.t < end) {
+            for b in c.blocks.iter_mut().filter(|b| n > before && !b.is_proc() && b.props.contains(p) && b.end() > to + BK_EPS && b.t < end) {
                 if let Some(ctl) = b.ctl.as_mut() {
                     ctl.edited = true;
                 }
@@ -314,7 +318,7 @@ impl Project {
             if b.path[2].iter().any(|v| v.abs() > 1e-6) {
                 tracks.push(fit("rotation", &b.path[2], BlockVal::Add));
             }
-            let block = KeyBlock { name: "Collide".into(), dur, tracks, gen: None };
+            let block = KeyBlock { name: "Collide".into(), dur, tracks, gen: None, proc: None };
             if self.place_key_block(b.id, &block, b.lt, Some(dur)).is_none() {
                 continue;
             }
@@ -371,6 +375,7 @@ impl Project {
         }
         c.blocks[i].t = t;
         c.blocks[i].dur = dur;
+        c.sync_procs();
         // a simulation runs in real seconds: re-run it at the new length rather than stretching it
         if let Some(ctl) = c.blocks[i].ctl.clone().filter(|c| c.is_sim() && !c.edited) {
             self.set_block_ctl(id, i, ctl);
@@ -405,6 +410,20 @@ impl Project {
         let (w, h) = (self.width as f64, self.height as f64);
         let Some(c) = self.clip_mut(id) else { return false };
         let Some(b) = c.blocks.get(i).cloned() else { return false };
+        // a procedural block: its layers again from the controls (same pid, so it stays tied to them)
+        if let Some(pc) = ctl.proc.as_mut() {
+            pc.pid = b.proc().map_or_else(|| c.next_pid(), |o| o.pid);
+            let pc = *pc;
+            ctl.edited = false;
+            let props = c.write_proc(&pc, b.t, b.dur, w, h);
+            let ab = &mut c.blocks[i];
+            ab.props = props;
+            ab.ctl = Some(ctl);
+            return true;
+        }
+        if let Some(pid) = b.proc().map(|p| p.pid) {
+            c.clear_proc(pid);
+        }
         clear_block_keys(c, i);
         ctl.edited = false;
         // a simulation with walls: how far the clip is from the frame's edges as the block starts
@@ -425,6 +444,9 @@ impl Project {
         if i >= c.blocks.len() {
             return false;
         }
+        if let Some(pid) = c.blocks[i].proc().map(|p| p.pid) {
+            c.clear_proc(pid);
+        }
         clear_block_keys(c, i);
         c.blocks.remove(i);
         true
@@ -434,6 +456,9 @@ impl Project {
     /// follows, so it is left alone). A block with live controls takes it as its Ease control, so the
     /// Inspector shows it and the next control change keeps it.
     pub fn ease_key_block(&mut self, id: Id, i: usize, ease: Ease) -> bool {
+        if self.clip(id).and_then(|c| c.blocks.get(i)).is_some_and(|b| b.is_proc()) {
+            return false; // its fades are its ease
+        }
         let live = self.clip(id).and_then(|c| c.blocks.get(i)).and_then(|b| b.ctl.clone());
         if let Some(mut ctl) = live.filter(|c| !c.edited && !c.is_sim()) {
             // an ease picked by hand replaces what Flow bent the ends to
@@ -458,7 +483,7 @@ impl Project {
     pub fn split_key_block(&mut self, id: Id, i: usize, t: f64) -> bool {
         let Some(c) = self.clip_mut(id) else { return false };
         let Some(b) = c.blocks.get(i).cloned() else { return false };
-        if t < b.t + 0.02 || t > b.end() - 0.02 {
+        if b.is_proc() || t < b.t + 0.02 || t > b.end() - 0.02 {
             return false;
         }
         // the halves as plain origin -> target moves: each segment's ease cut at the split
@@ -486,7 +511,7 @@ impl Project {
     /// the motion unchanged (the keys stay; only the bookkeeping and the controls become one). Returns its index.
     pub fn link_key_blocks(&mut self, id: Id, idx: &[usize]) -> Option<usize> {
         let c = self.clip_mut(id)?;
-        let mut idx: Vec<usize> = idx.iter().copied().filter(|&i| i < c.blocks.len()).collect();
+        let mut idx: Vec<usize> = idx.iter().copied().filter(|&i| i < c.blocks.len() && !c.blocks[i].is_proc()).collect();
         idx.sort();
         idx.dedup();
         if idx.len() < 2 {
@@ -516,7 +541,8 @@ impl Project {
     /// one's start, length and - when one was picked by hand - ease. Returns how many pairs it joined.
     pub fn flow_key_blocks(&mut self, sel: &[(Id, usize)], mode: Match) -> usize {
         let at = |p: &Project, (id, i): (Id, usize)| p.clip(id).and_then(|c| Some(c.start + c.blocks.get(i)?.t));
-        let mut sel: Vec<(Id, usize)> = sel.iter().copied().filter(|&s| at(self, s).is_some()).collect();
+        let proc = |p: &Project, (id, i): (Id, usize)| p.clip(id).and_then(|c| c.blocks.get(i)).is_some_and(|b| b.is_proc());
+        let mut sel: Vec<(Id, usize)> = sel.iter().copied().filter(|&s| at(self, s).is_some() && !proc(self, s)).collect();
         sel.sort_by(|a, b| at(self, *a).unwrap_or(0.0).total_cmp(&at(self, *b).unwrap_or(0.0)));
         let mut n = 0;
         for w in sel.windows(2) {
@@ -578,18 +604,18 @@ impl Project {
 
 /// The keys of `props` in clip-local [from, to] as a block of absolute values: a plain origin -> target move
 /// whose controls rewrite exactly these keys.
-fn abs_block(c: &Clip, name: &str, props: &[String], from: f64, to: f64) -> KeyBlock {
+pub(crate) fn abs_block(c: &Clip, name: &str, props: &[String], from: f64, to: f64) -> KeyBlock {
     let track = |p: &String| {
         let keys = prop_ref(c, p)?.keys.iter().filter(|k| k.t >= from - BK_EPS && k.t <= to + BK_EPS);
         let keys = keys.map(|k| BlockKey { f: (k.t - from) / (to - from), v: BlockVal::Abs(k.v), ease: k.ease });
         Some(BlockTrack { prop: p.clone(), keys: keys.collect() })
     };
-    KeyBlock { name: name.into(), dur: to - from, tracks: props.iter().filter_map(track).collect(), gen: None }
+    KeyBlock { name: name.into(), dur: to - from, tracks: props.iter().filter_map(track).collect(), gen: None, proc: None }
 }
 
 /// Put a key on `a` at `t` without changing the curve: the segment it lands in is cut in two, each half a
 /// bezier following the old ease (de Casteljau). Nothing when a key is already there or `a` has no keys.
-fn cut_at(a: &mut Animated, t: f64) {
+pub(crate) fn cut_at(a: &mut Animated, t: f64) {
     if a.keys.is_empty() || a.key_index_at(t).is_some() {
         return;
     }
@@ -682,7 +708,7 @@ impl Clip {
             .into_iter()
             .filter(|(a, b, props)| {
                 b - a > BK_EPS
-                    && !self.blocks.iter().any(|bl| bl.t < *b && bl.end() > *a && bl.props.iter().any(|p| props.contains(&p.as_str())))
+                    && !self.blocks.iter().any(|bl| !bl.is_proc() && bl.t < *b && bl.end() > *a && bl.props.iter().any(|p| props.contains(&p.as_str())))
             })
             .map(|(a, b, _)| (a, b))
             .collect()
@@ -715,6 +741,13 @@ mod tests {
         builtin_blocks().into_iter().find(|b| b.name == name).unwrap()
     }
 
+    /// The keyed Pulse from before procedural blocks (scale 1 -> 1.08 -> 1 over 0.6 s).
+    fn keyed_pulse() -> KeyBlock {
+        let k = |f, v, ease| BlockKey { f, v: BlockVal::Mul(v), ease };
+        let keys = vec![k(0.0, 1.0, Ease::EaseInOut), k(0.5, 1.08, Ease::EaseInOut), k(1.0, 1.0, Ease::Linear)];
+        KeyBlock { name: "Pulse".into(), dur: 0.6, tracks: vec![BlockTrack { prop: "scale".into(), keys }], ..Default::default() }
+    }
+
     #[test]
     fn ships_about_25_unique_blocks_on_real_props() {
         let all = builtin_blocks();
@@ -733,7 +766,7 @@ mod tests {
     #[test]
     fn looping_a_block_grows_it_and_looping_keys_repeats_them() {
         let (mut p, id) = proj();
-        p.apply_key_block(id, &find("Pulse"), Some(1.0), None).unwrap(); // 0.6 s, scale 1 -> 1.08 -> 1
+        p.apply_key_block(id, &keyed_pulse(), Some(1.0), None).unwrap(); // 0.6 s, scale 1 -> 1.08 -> 1
         assert!(p.loop_key_block(id, 0, 3, false));
         let c = p.clip(id).unwrap();
         assert!((c.blocks[0].dur - 1.8).abs() < 1e-9 && c.blocks[0].ctl.as_ref().unwrap().loops == 3);
@@ -951,7 +984,9 @@ mod tests {
         let c = p.clip(id).unwrap();
         assert!((c.x.at(1.0) - w * 0.5).abs() < 1e-6, "now starts half a frame to the right");
         assert_eq!(c.x.keys.len(), 2, "the old keys went");
-        p.apply_key_block(id, &find("Camera Shake"), Some(3.0), Some(1.0));
+        // (the simulated Camera Shake older projects have; the Gallery's is procedural now)
+        let old_shake = KeyBlock { name: "Camera Shake".into(), dur: 1.0, gen: Some(Gen::Shake), ..Default::default() };
+        p.apply_key_block(id, &old_shake, Some(3.0), Some(1.0));
         let n = p.clip(id).unwrap().x.keys.len();
         assert!(p.retime_key_block(id, 1, 3.0, 2.0));
         let c = p.clip(id).unwrap();

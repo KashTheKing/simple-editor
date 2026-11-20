@@ -449,6 +449,10 @@ pub fn kind_of(name: &str, gen: Option<Gen>) -> (&'static str, Color32) {
         } else {
             "Physics"
         }
+    } else if has("wobble") {
+        "Physics"
+    } else if has("camera shake") {
+        "Camera"
     } else if has("collide") {
         "Collide"
     } else if has("speed") || has("slow-mo") {
@@ -1088,6 +1092,9 @@ fn kind_dot(ui: &Ui, y0: f32, kind: &str) {
 
 /// A block as a preset: its controls' result when it has them (so a simulation saves its keys), else its keys.
 fn capture(c: &Clip, b: &AppliedBlock, w: f64, h: f64) -> KeyBlock {
+    if let Some(pc) = b.proc() {
+        return KeyBlock { name: format!("{} (mine)", b.name), dur: b.dur, proc: Some(pc.kind), ..Default::default() };
+    }
     match &b.ctl {
         Some(ctl) if !ctl.edited => {
             let mut k = ctl.resolve(b.dur);
@@ -1339,6 +1346,52 @@ fn drop_collide(
 }
 
 /// Loop block `i` of clip `id` `n` times (1 = off).
+/// feat/procedural-blocks: Convert to Keyframes on block `i` of clip `id` (one undo step, like every `Act`).
+fn bake_act(id: Id, i: usize) -> Act {
+    Box::new(move |p, s, o| {
+        if p.bake_key_block(id, i) {
+            s.sel = Some((id, i));
+            o.toast = Some("Converted to keyframes: Make Procedural turns it back while the keys are unedited".into());
+        }
+    })
+}
+/// Make Procedural on block `i` of clip `id`.
+fn unbake_act(id: Id, i: usize) -> Act {
+    Box::new(move |p, s, o| {
+        if p.unbake_key_block(id, i) {
+            s.sel = Some((id, i));
+        } else {
+            o.toast = Some("Its keys were edited since: it stays keyframes".into());
+        }
+    })
+}
+
+/// feat/procedural-blocks: a procedural block's motion across its bar, live from its layers: the envelope
+/// shows as the wave tapering to nothing at both ends.
+fn proc_wave(p: &egui::Painter, c: &Clip, i: usize, r: Rect, col: Color32) {
+    let Some(b) = c.blocks.get(i) else { return };
+    let n = ((r.width() / 2.0) as usize).clamp(8, 400);
+    let mid = r.center().y;
+    let half = (r.height() / 2.0 - 3.0).max(2.0);
+    // the properties it moves, each scaled to its own peak, drawn over one another
+    for prop in b.props.iter().take(3) {
+        let peak = prop_ref(c, prop)
+            .and_then(|a| a.procs.iter().filter(|l| Some(l.pid) == b.proc().map(|p| p.pid)).map(|l| l.amp.abs()).reduce(f64::max))
+            .unwrap_or(0.0);
+        if peak <= 1e-12 {
+            continue;
+        }
+        let pts: Vec<Pos2> = (0..=n)
+            .map(|k| {
+                let f = k as f64 / n as f64;
+                let v = c.proc_offset(i, prop, b.t + b.dur * f) / peak;
+                pos2(r.left() + r.width() * f as f32, mid - (v as f32).clamp(-1.0, 1.0) * half)
+            })
+            .collect();
+        p.add(egui::Shape::line(pts, Stroke::new(1.2, col.lerp_to_gamma(Color32::WHITE, 0.6).gamma_multiply(0.7))));
+    }
+}
+
 fn loop_act(id: Id, i: usize, n: u32, pingpong: bool) -> Act {
     Box::new(move |p, _, o| {
         if p.loop_key_block(id, i, n, pingpong) {
@@ -1991,7 +2044,9 @@ fn lanes_view(
                     look::TEXT,
                 );
                 let mut tx0 = r.left() + 16.0;
-                if r.width() > 70.0 {
+                if b.is_proc() {
+                    proc_wave(&inner, &c, i, r, col);
+                } else if r.width() > 70.0 {
                     if let Some(a) = b.props.first().and_then(|pr| prop_ref(&c, pr)) {
                         let vs: Vec<f64> = (0..=16).map(|k| a.at(b.t + b.dur * k as f64 / 16.0)).collect();
                         let (lo, hi) = vs.iter().fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
@@ -2055,10 +2110,17 @@ fn lanes_view(
                 });
                 let resp =
                     resp.on_hover_cursor(if edge != 0 { CursorIcon::ResizeHorizontal } else { CursorIcon::Default });
-                let resp = resp.on_hover_text(format!(
-                    "{} · {:.2} s · drag to move, drag an end to stretch, click ▸ to shape how it moves, Shift-click to pick more",
-                    b.name, b.dur
-                ));
+                let resp = resp.on_hover_text(if b.is_proc() {
+                    format!(
+                        "{} · {:.2} s · procedural: no keys, it fades in and out from where the clip is placed. Drag to move, drag an end to make it longer (same speed), right-click to convert it to keyframes",
+                        b.name, b.dur
+                    )
+                } else {
+                    format!(
+                        "{} · {:.2} s · drag to move, drag an end to stretch, click ▸ to shape how it moves, Shift-click to pick more",
+                        b.name, b.dur
+                    )
+                });
                 if resp.clicked() {
                     let more = ui.input(|i| i.modifiers.shift || i.modifiers.command);
                     if more && st.sel.is_some_and(|s| s != (id, i)) {
@@ -2146,37 +2208,47 @@ fn lanes_view(
                     st.orig = None;
                     st.guide = None;
                 }
+                let proc = b.is_proc();
+                let unbake = !proc && b.ctl.as_ref().is_some_and(|c| c.unbaked.is_some()) && project.can_unbake(id, i);
                 menu::context(&resp, |ui| {
-                    menu::sub(ui, Some(crate::ui::tools::Glyph::CurveIcon), "Ease", |ui| {
-                        for (n, e) in Ease::ALL.iter().map(|e| (e.name(), *e)).chain(Ease::PRESETS) {
-                            if menu::row(ui, None, n, "").clicked() {
-                                act = Some(Box::new(move |p, _, _| {
-                                    p.ease_key_block(id, i, e);
-                                }));
+                    if proc && menu::row(ui, None, "Convert to Keyframes", "").on_hover_text("Bake the motion into keys at the project frame rate, to edit them by hand").clicked() {
+                        act = Some(bake_act(id, i));
+                    }
+                    if unbake && menu::row(ui, None, "Make Procedural", "").on_hover_text("Back to the procedural block it was converted from: no keys, live controls").clicked() {
+                        act = Some(unbake_act(id, i));
+                    }
+                    if !proc {
+                        menu::sub(ui, Some(crate::ui::tools::Glyph::CurveIcon), "Ease", |ui| {
+                            for (n, e) in Ease::ALL.iter().map(|e| (e.name(), *e)).chain(Ease::PRESETS) {
+                                if menu::row(ui, None, n, "").clicked() {
+                                    act = Some(Box::new(move |p, _, _| {
+                                        p.ease_key_block(id, i, e);
+                                    }));
+                                }
                             }
-                        }
-                    });
-                    let cur = b.ctl.as_ref().map_or((1, false), |c| (c.cycles(), c.pingpong));
-                    menu::sub(ui, None, "Loop", |ui| {
-                        for n in [1u32, 2, 3, 4, 8, 16] {
-                            let label = if n == 1 { "Off".to_string() } else { format!("{n} times") };
-                            if menu::check(ui, cur.0 == n, &label, "").clicked() {
-                                act = Some(loop_act(id, i, n, cur.1));
+                        });
+                        let cur = b.ctl.as_ref().map_or((1, false), |c| (c.cycles(), c.pingpong));
+                        menu::sub(ui, None, "Loop", |ui| {
+                            for n in [1u32, 2, 3, 4, 8, 16] {
+                                let label = if n == 1 { "Off".to_string() } else { format!("{n} times") };
+                                if menu::check(ui, cur.0 == n, &label, "").clicked() {
+                                    act = Some(loop_act(id, i, n, cur.1));
+                                }
                             }
-                        }
-                        ui.separator();
-                        if menu::check(ui, cur.1, "Ping-pong", "").clicked() {
-                            act = Some(loop_act(id, i, cur.0.max(2), !cur.1));
-                        }
-                    });
-                    if menu::row(ui, None, "Split at playhead", "Ctrl+B").clicked() {
-                        let t = ph - c.start;
-                        act = Some(Box::new(move |p, s, o| {
-                            s.multi.clear();
-                            if !p.split_key_block(id, i, t) {
-                                o.toast = Some("Move the playhead inside the block to split it there".into());
+                            ui.separator();
+                            if menu::check(ui, cur.1, "Ping-pong", "").clicked() {
+                                act = Some(loop_act(id, i, cur.0.max(2), !cur.1));
                             }
-                        }));
+                        });
+                        if menu::row(ui, None, "Split at playhead", "Ctrl+B").clicked() {
+                            let t = ph - c.start;
+                            act = Some(Box::new(move |p, s, o| {
+                                s.multi.clear();
+                                if !p.split_key_block(id, i, t) {
+                                    o.toast = Some("Move the playhead inside the block to split it there".into());
+                                }
+                            }));
+                    }
                     }
                     if picked(st).len() > 1 && menu::row(ui, None, "Flow together", "").clicked() {
                         act = Some(flow_act(picked(st), st.mode));
@@ -2554,7 +2626,8 @@ fn ch_moved(
 /// A key edited by hand inside a block pauses that block's controls (they would rewrite the key).
 fn touch_blocks(c: &mut Clip, p: &str, t: f64) {
     for b in &mut c.blocks {
-        if b.props.iter().any(|q| q == p) && t >= b.t - 1e-4 && t <= b.end() + 1e-4 {
+        // (a procedural block owns no keys: a key under it leaves its controls live)
+        if !b.is_proc() && b.props.iter().any(|q| q == p) && t >= b.t - 1e-4 && t <= b.end() + 1e-4 {
             if let Some(ctl) = b.ctl.as_mut() {
                 ctl.edited = true;
             }
@@ -3126,9 +3199,10 @@ fn graph(
                 // what is on screen, sampled as finely as it is drawn, plus the keys themselves (a shake's
                 // peaks fall between coarse samples)
                 let (q0, q1) = (f0, f1);
-                let mut vs: Vec<f64> = (0..=240)
+                let n = if a.procs.is_empty() { 240 } else { 960 };
+                let mut vs: Vec<f64> = (0..=n)
                     .map(|i| {
-                        let t = q0 + (q1 - q0) * i as f64 / 240.0;
+                        let t = q0 + (q1 - q0) * i as f64 / n as f64;
                         if st.velocity {
                             vel(a, t)
                         } else {
@@ -3183,10 +3257,18 @@ fn graph(
     order.extend(focus.filter(|f| props.contains(f)));
     for &p in &order {
         let a = prop_ref(c, p).unwrap();
+        let ghost = !st.velocity && !a.procs.is_empty();
+        // feat/procedural-blocks: the procedural motion on top, read-only (no keys to drag): a ghost of what
+        // plays, while the solid line stays the keys you edit
+        if ghost {
+            let n = (plot.width() as usize).clamp(240, 1600);
+            let pts: Vec<Pos2> = (0..=n).map(|i| f0 + (f1 - f0) * i as f64 / n as f64).map(|t| pos2(x(t), y(p, a.at(t)))).collect();
+            painter.with_clip_rect(plot).add(egui::Shape::line(pts, Stroke::new(1.2, prop_color(p).gamma_multiply(0.45))));
+        }
         let pts: Vec<Pos2> = (0..=240)
             .map(|i| {
                 let t = f0 + (f1 - f0) * i as f64 / 240.0;
-                pos2(x(t), y(p, if st.velocity { vel(a, t) } else { a.at(t) }))
+                pos2(x(t), y(p, if st.velocity { vel(a, t) } else if ghost { a.keyed_at(t) } else { a.at(t) }))
             })
             .collect();
         let foc = Some(p) == focus;
@@ -4327,6 +4409,124 @@ fn path_controls(
     edited
 }
 
+/// feat/procedural-blocks: a procedural block's controls - Strength, Speed, Fade In, Fade Out, Decay, Seed (with
+/// Randomise), the properties it moves, and Convert to Keyframes. True when it edited the project.
+#[allow(clippy::too_many_arguments)]
+fn proc_controls(
+    ui: &mut Ui,
+    project: &mut Project,
+    (id, i): (Id, usize),
+    was: f64,
+    mut ctl: BlockCtl,
+    mut pc: ProcCtl,
+    undo: &mut dyn FnMut(&Project),
+    toast: &mut Option<String>,
+) -> bool {
+    let (mut dur, mut changed, mut gesture) = (was, false, false);
+    let note = |r: &egui::Response, changed: &mut bool, gesture: &mut bool| {
+        *changed |= r.changed();
+        *gesture |= r.drag_started() || (r.changed() && !r.dragged());
+    };
+    let mut bake = false;
+    egui::Grid::new(("anim-proc", id, i)).num_columns(2).spacing([12.0, 9.0]).min_col_width(70.0).show(ui, |ui| {
+        let r = slider(ui, "Strength", &mut pc.strength, 0.0, 3.0, "×").on_hover_text("How far it moves: 1 = as designed");
+        note(&r, &mut changed, &mut gesture);
+        let r = slider(ui, "Speed", &mut pc.speed, 0.05, 30.0, " /s")
+            .on_hover_text("Cycles per second. Making the block longer keeps this speed: the motion just lasts longer");
+        note(&r, &mut changed, &mut gesture);
+        let r = slider(ui, "Duration", &mut dur, 0.05, 30.0, " s");
+        if r.changed() {
+            gesture |= r.drag_started() || !r.dragged();
+        }
+        let (mut fi, mut fo) = (pc.fade_in * 100.0, pc.fade_out * 100.0);
+        let r = slider(ui, "Fade In", &mut fi, 1.0, 100.0, "%")
+            .on_hover_text("How long the motion takes to build up from the clip's placed position, as a share of the block");
+        note(&r, &mut changed, &mut gesture);
+        let r2 = slider(ui, "Fade Out", &mut fo, 1.0, 100.0, "%")
+            .on_hover_text("How long it takes to settle back to the clip's placed position. Fade In and Fade Out never overlap");
+        note(&r2, &mut changed, &mut gesture);
+        if r.changed() || r2.changed() {
+            // the two never overlap: the one moved wins
+            if fi + fo > 100.0 {
+                if r.changed() {
+                    fo = 100.0 - fi;
+                } else {
+                    fi = 100.0 - fo;
+                }
+            }
+            (pc.fade_in, pc.fade_out) = ((fi / 100.0).max(MIN_FADE), (fo / 100.0).max(MIN_FADE));
+        }
+        field(ui, "Decay");
+        let r = ui.checkbox(&mut pc.decay, "").on_hover_text("The motion also dies down across the block");
+        note(&r, &mut changed, &mut gesture);
+        ui.end_row();
+        field(ui, "Seed");
+        ui.horizontal(|ui| {
+            let r = ui.add(egui::DragValue::new(&mut pc.seed).speed(0.2)).on_hover_text("Another number, another pattern of the same motion");
+            note(&r, &mut changed, &mut gesture);
+            if chip(ui, false, "Randomise").on_hover_text("Pick a new seed").clicked() {
+                pc.seed = randomish(pc.seed);
+                (changed, gesture) = (true, true);
+            }
+        });
+        ui.end_row();
+        field(ui, "Moves");
+        ui.horizontal_wrapped(|ui| {
+            for (a, label) in ["X", "Y", "Rotation", "Scale"].into_iter().enumerate() {
+                let mut on = pc.axes.get(a);
+                if ui.checkbox(&mut on, label).changed() {
+                    pc.axes.set(a, on);
+                    if !pc.axes.any() {
+                        pc.axes.set(a, true); // at least one
+                    }
+                    (changed, gesture) = (true, true);
+                }
+            }
+        });
+        ui.end_row();
+        if pc.kind == ProcKind::Shake {
+            field(ui, "Cover edges");
+            let r = ui.checkbox(&mut pc.cover, "").on_hover_text("Zoom in just enough that the frame's edges stay out of view while it shakes");
+            note(&r, &mut changed, &mut gesture);
+            ui.end_row();
+        }
+    });
+    ui.add_space(6.0);
+    if chip(ui, false, "Convert to Keyframes")
+        .on_hover_text("Bake the motion into keys at the project frame rate, to edit them by hand. Make Procedural turns it back while they are unedited")
+        .clicked()
+    {
+        bake = true;
+    }
+    if bake {
+        undo(project);
+        if project.bake_key_block(id, i) {
+            *toast = Some("Converted to keyframes".into());
+            return true;
+        }
+        return false;
+    }
+    if gesture {
+        undo(project);
+    }
+    let mut edited = false;
+    if (dur - was).abs() > 1e-9 {
+        let t = project.clip(id).map_or(0.0, |c| c.blocks[i].t);
+        edited |= project.retime_key_block(id, i, t, dur);
+    }
+    if changed {
+        ctl.proc = Some(pc);
+        edited |= project.set_block_ctl(id, i, ctl);
+    }
+    edited
+}
+
+/// A new seed from the old one and the clock (Randomise).
+fn randomish(seed: u32) -> u32 {
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    (seed ^ t).wrapping_mul(0x9E37_79B9).rotate_left(13) % 100_000
+}
+
 /// Side, strength, length, ease, physics and the block's hand-offs. True when it edited the project.
 fn block_controls(
     ui: &mut Ui,
@@ -4380,6 +4580,18 @@ fn block_controls(
                 }
             });
         return edited;
+    }
+    if let Some(pc) = ctl.proc {
+        return proc_controls(ui, project, (id, i), b.dur, ctl, pc, undo, toast);
+    }
+    // a block made by Convert to Keyframes, its keys untouched since: it can turn back
+    if ctl.unbaked.is_some() && project.can_unbake(id, i) {
+        let r = chip(ui, false, "Make Procedural")
+            .on_hover_text("Back to the procedural block it was converted from: no keys, live controls (only while the keys are unedited)");
+        if r.clicked() {
+            undo(project);
+            return project.unbake_key_block(id, i);
+        }
     }
     if let Some(path) = ctl.path.clone() {
         return path_controls(ui, project, (id, i), b.dur, ctl, path, undo);
@@ -5276,7 +5488,8 @@ mod tests {
         // zoomed all the way out is exactly the range; a window hanging over an end slides back in
         assert_eq!(clamp_win((-5.0, 50.0), (2.0, 8.0)), (2.0, 8.0));
         assert_eq!(clamp_win((7.0, 9.0), (2.0, 8.0)), (6.0, 8.0));
-        assert!(wiggles(&BlockCtl::new(f("Shake"))));
+        assert!(wiggles(&BlockCtl::new(f("Pan Swing"))));
+        assert!(!wiggles(&BlockCtl::new(f("Shake"))), "a procedural shake has no keys to wiggle");
         assert!(!wiggles(&BlockCtl::new(f("Slide In Left"))) && !wiggles(&BlockCtl::new(f("Fade Out"))));
     }
 

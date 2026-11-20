@@ -444,7 +444,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "keyblocks.set",
-        desc: "Set an applied block's controls and rewrite its keys: strength (0..2, 1 = as designed), dir (left/up/down/right), ease (a preset name or 'design' for the block's own), dur seconds, physics fields (stiffness, damping, bounce, gravity, spin -1..1, freq jolts/s, seed, cover; rigid body - Gravity Fall, Throw & Bounce, Collide: mass 0.1..10, gravity, gravity_dir Left/Up/Down/Right, bounce = elasticity, friction, drag, throw = initial velocity along dir, spin). On a Collide block it runs that drop again with the new body. Resets a hand-edited block.",
+        desc: "Set an applied block's controls and rewrite its keys: strength (0..2, 1 = as designed), dir (left/up/down/right), ease (a preset name or 'design' for the block's own), dur seconds, physics fields (stiffness, damping, bounce, gravity, spin -1..1, freq jolts/s, seed, cover; rigid body - Gravity Fall, Throw & Bounce, Collide: mass 0.1..10, gravity, gravity_dir Left/Up/Down/Right, bounce = elasticity, friction, drag, throw = initial velocity along dir, spin). On a Collide block it runs that drop again with the new body. Resets a hand-edited block. A procedural block (Shake, Wobble, ...) takes `params` {strength, speed, fade_in, fade_out, decay, seed, cover, axes} instead.",
         args: &[
             "clip_id:integer:true:",
             "index:integer:true:",
@@ -453,12 +453,26 @@ pub const TOOLS: &[ToolDef] = &[
             "ease:string:false:",
             "dur:number:false:seconds",
             "physics:object:false:{stiffness, damping, bounce, gravity, spin, freq, seed, cover, throw, mass, friction, drag, gravity_dir}",
+            "params:object:false:procedural blocks: {strength, speed, fade_in, fade_out, decay, seed, cover, axes}",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
             let (id, i) = clip_block(args)?;
             let b = app.project.clip(id).and_then(|c| c.blocks.get(i)).cloned().ok_or("no such block")?;
             let mut ctl = b.ctl.clone().unwrap_or_else(|| BlockCtl::new(find_block(&app.settings.key_blocks, &b.name).unwrap_or_default()));
+            if let Some(pc) = ctl.proc.as_mut() {
+                if let Some(s) = arg_f64(args, "strength") {
+                    pc.strength = s.clamp(0.0, 3.0);
+                }
+                if let Some(v) = args.get("params").filter(|v| !v.is_null()) {
+                    super::tools_keyblocks::proc_params(pc, v)?;
+                }
+                if let Some(d) = arg_f64(args, "dur") {
+                    app.project.retime_key_block(id, i, b.t, d);
+                }
+                app.project.set_block_ctl(id, i, ctl);
+                return done(json!({"ok": true}));
+            }
             if let Some(s) = arg_f64(args, "strength") {
                 ctl.strength = s.clamp(0.0, 3.0);
             }

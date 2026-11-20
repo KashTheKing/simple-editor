@@ -1743,10 +1743,10 @@ fn kind_mark(p: &egui::Painter, tile: Rect, col: Color32) {
 /// in the block's bar colour (the one its timeline bar uses).
 fn block_picture(p: &egui::Painter, tile: Rect, b: &crate::model::KeyBlock) {
     let col = crate::ui::animator::kind_of(&b.name, b.gen).1; // the kind's colour, as in the Animator
-    // a simulated block has no keys of its own: picture what it makes
+    // a simulated or procedural block has no keys of its own: picture what it makes
     let made;
-    let b = if b.gen.is_some() {
-        made = crate::model::BlockCtl::new(b.clone()).resolve(b.dur);
+    let b = if b.gen.is_some() || b.proc.is_some() {
+        made = crate::model::BlockCtl::new(b.clone()).sampled(b.dur);
         &made
     } else {
         b

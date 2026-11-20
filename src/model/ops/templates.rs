@@ -215,5 +215,6 @@ fn stretch_clip(c: &mut Clip, dur: f64) {
         b.t = s;
         b.dur = (e - s).max(0.0);
     }
+    c.sync_procs();
     c.duration = dur;
 }

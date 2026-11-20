@@ -8,6 +8,10 @@
 - **Hover docs** on any API name, and on a tool name in `editor.tool`.
 - **Problems underlined as you type**: Luau's own compiler checks the script 300 ms after you stop typing (on a background thread, never running it), and unknown globals get a warning underline. The message shows on hover and in the status line.
 - The API is described once (`src/scripting_api.rs`), checked against what the scripting runtimes really register, and published as `docs/scripting-api.md`.
+### Procedural motion blocks
+- **Camera Shake, Shake, Wobble, Wiggle, Pulse and Drift are procedural blocks**: dropping or double-clicking one from the Blocks tab adds the motion with no keyframes. It repeats for as long as the block lasts (stretching it makes it longer, not slower), and it fades in from exactly where the clip is placed and settles back there at the end, so it never starts or stops with a jump.
+- **Inspector**: Strength, Speed, Duration, Fade In, Fade Out, Decay, Seed with **Randomise**, the axes it moves (X, Y, Rotation, Scale) and, for shakes, Cover Edges. The Blocks lane shows the block's live waveform tapering at both ends; Curves shows the motion as a ghost over the keyed curve.
+- **Convert to Keyframes** (right-click or the Inspector) bakes it into keys at the project frame rate in one undo step; **Make Procedural** turns it back while the keys are unedited. Projects with shakes from earlier versions play unchanged. MCP: `keyblocks.apply` takes `params`, plus `keyblocks.bake` and `keyblocks.make_procedural`.
 
 ### Crash recovery
 - **The recovery prompt says what happened**: after a crash, the next start names what the editor was doing ("closed unexpectedly while playing clip.mp4", "while applying an effect to a.mov (Glow)", "while exporting final.mp4") and offers **Recover**, **Recover Without Media** (every file offline for that session) and **Recover Without Effects** (one Undo turns them back on). It can reopen the project even when there is no newer autosave.
