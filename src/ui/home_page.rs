@@ -255,8 +255,10 @@ pub enum PageAction {
     Rename(String),
     OpenFolder(String),
     Remove(String),
-    /// The Projects header's Open… button (File ▸ Open Project).
+    /// The Projects header's Open Project… button (File ▸ Open Project).
     Browse,
+    /// Open Media…: a video or sound file opened as a new project (File ▸ Open Video / Media).
+    OpenMedia,
 }
 
 /// One row of the Projects list.
@@ -306,8 +308,12 @@ pub fn show(ui: &mut egui::Ui, cards: &[CardInfo], rows: &[RowView]) -> Option<P
                 ui.horizontal(|ui| {
                     ui.heading("Projects");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Open…").on_hover_text("Open a project that isn't in the list").clicked() {
+                        // right to left: Open Project… sits right-most, Open Media… on its left
+                        if ui.button("Open Project…").on_hover_text("Open a project that isn't in the list").clicked() {
                             out = Some(PageAction::Browse);
+                        }
+                        if ui.button("Open Media…").on_hover_text("Open a video or sound file as a new project").clicked() {
+                            out = Some(PageAction::OpenMedia);
                         }
                         if rows.len() > 1 {
                             let r = ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search").desired_width(180.0));

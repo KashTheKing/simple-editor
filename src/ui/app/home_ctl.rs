@@ -209,6 +209,7 @@ fn handle(app: &mut App, a: PageAction) {
             remove(app, &path);
         }
         PageAction::Browse => app.pending_actions.push(Action::OpenProject),
+        PageAction::OpenMedia => app.pending_actions.push(Action::OpenFile),
     }
 }
 
