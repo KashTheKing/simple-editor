@@ -31,6 +31,19 @@ impl Project {
     pub fn is_empty(&self) -> bool {
         self.tracks.iter().all(|t| t.clips.is_empty())
     }
+    /// ws:timeline-tabs: no clips on any timeline - `is_empty` only sees the one being edited, which may be
+    /// an empty sequence tab while Main is full.
+    pub fn no_clips_anywhere(&self) -> bool {
+        let empty = |tracks: &[Track]| tracks.iter().all(|t| t.clips.is_empty());
+        self.is_empty()
+            && self.main_stash.as_ref().is_none_or(|s| empty(&s.tracks))
+            && self.sequences.iter().all(|s| empty(&s.tracks))
+    }
+    /// ws:timeline-tabs: a brand-new project - no clips, no sequences, no media. What the home cards, the
+    /// format presets and "open the one dropped file as the project" wait for (not just an empty tab).
+    pub fn is_blank(&self) -> bool {
+        self.is_empty() && self.sequences.is_empty() && self.assets.is_empty()
+    }
     pub fn frame_dur(&self) -> f64 {
         1.0 / self.fps.max(1.0)
     }

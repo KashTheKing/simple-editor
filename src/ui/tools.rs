@@ -3,8 +3,9 @@
 //!   triangle, polygon, star, line, arrow) · Draw (D) · Mask ▾ (G cycles; rect/ellipse/polygon/path)
 //! and, while a shape or Draw is active, `style_controls` in a strip along the viewer's top edge: fill
 //! and stroke colours and a stroke width; for Draw, a play/record button, the brush colour/width, the
-//! playback speed (0.5x / 1x / 2x) and a page toggle. The timeline tools (Cut C, Stretch R, Marker
-//! Shift+M, Spacer) are picked from the timeline's toolbar and their keys. Every tool key is its
+//! playback speed (0.5x / 1x / 2x) and a page toggle. The timeline's toolbar (`panel`) holds Selection,
+//! Ripple / Rolling, Slip / Slide, Razor and Hand / Zoom; Stretch (R), Marker (Shift+M), Pen (P), Track
+//! Select and Spacer have no slot and are picked by their keys. Every tool key is its
 //! `Action::Tool*` binding (`hotkeys.rs`), remappable in Settings ▸ Hotkeys; `handle_hotkeys` below polls
 //! the live binding and the rail's tooltips read it from the menu snapshot.
 //!
@@ -343,6 +344,8 @@ pub(crate) enum Glyph {
     // ---- ws:docs-release ----
     // ---- ws:quick-export ----
     Upload,
+    // ---- ws:home-page ----
+    Home,
 }
 
 impl Glyph {
@@ -503,6 +506,8 @@ impl Glyph {
         // ---- ws:docs-release ----
         // ---- ws:quick-export ----
         Glyph::Upload,
+        // ---- ws:home-page ----
+        Glyph::Home,
     ];
 
     /// Stable lower-case name of the variant, kept in sync with `from_name` - what a saved icon
@@ -573,6 +578,7 @@ impl Glyph {
             Glyph::ImportArrow => "import",
             Glyph::ExportArrow => "export",
             Glyph::Upload => "upload", // ws:quick-export
+            Glyph::Home => "home", // ws:home-page
             Glyph::Transition => "transition",
             Glyph::Subtitles => "subtitles",
             Glyph::Gear => "gear",
@@ -733,6 +739,7 @@ impl Glyph {
             Glyph::ImportArrow => 0xE8B5,               // Import
             Glyph::ExportArrow => 0xEDE1,               // Export
             Glyph::Upload => 0xE78B,                    // arrow up out of a box: Quick Export (ws:quick-export)
+            Glyph::Home => 0xE80F,                      // Home (ws:home-page)
             Glyph::Transition => 0xEF1F,                // two overlapping squares
             Glyph::Subtitles => 0xE7F0,                 // CC
             Glyph::Gear => 0xE713,                      // Settings
@@ -1044,73 +1051,28 @@ const fn pt(id: &'static str, name: &'static str, glyph: Glyph, tool: Option<Too
     PanelTool { id, name, glyph, tool, key }
 }
 
-/// The timeline's tool groups, left to right: Premiere's (one slot each, showing its active or last-used
-/// member; right-click or a long press opens the group), then ours. Every `Tool` has an entry, so the
-/// active tool is always lit somewhere.
+/// The timeline's tool groups, left to right (one slot each, showing its active or last-used member;
+/// right-click or a long press opens the group): only the timeline's own editing tools. What left the row
+/// still works from its key and its other home - Text / Draw / Shapes / Mask / Crop are the Preview's
+/// tool rail, Rate Stretch (R), Track Select, Marker (Shift+M), Spacer and Pen (P) keep their keys and
+/// `Action`s - and an id from older settings (`Settings.hidden_tools`) is simply never matched.
 pub(crate) const PANEL: &[&[PanelTool]] = &[
     &[pt("select", "Selection", Glyph::Cursor, Some(Tool::Select), Some(Action::ToolSelect))],
     &[
-        pt(
-            "track_fwd",
-            "Track Select Forward",
-            Glyph::Skip(Dir::Right),
-            Some(Tool::TrackForward),
-            Some(Action::ToolTrackForward),
-        ),
-        pt(
-            "track_back",
-            "Track Select Backward",
-            Glyph::Skip(Dir::Left),
-            Some(Tool::TrackBackward),
-            Some(Action::ToolTrackBackward),
-        ),
-    ],
-    &[
         pt("ripple", "Ripple Edit", Glyph::Jump(Dir::Right), Some(Tool::Ripple), Some(Action::ToolRipple)),
         pt("rolling", "Rolling Edit", Glyph::RollCursor, Some(Tool::Rolling), Some(Action::ToolRolling)),
-        pt("stretch", "Rate Stretch", Glyph::Speed, Some(Tool::Stretch), Some(Action::ToolStretch)),
     ],
-    &[pt("razor", "Razor", Glyph::Razor, Some(Tool::Cut), Some(Action::ToolCut))],
     &[
         pt("slip", "Slip", Glyph::SlipCursor, Some(Tool::Slip), Some(Action::ToolSlip)),
         pt("slide", "Slide", Glyph::Transition, Some(Tool::Slide), Some(Action::ToolSlide)),
     ],
-    &[pt(
-        "pen",
-        "Pen: click a clip for an opacity / volume keyframe",
-        Glyph::Diamond,
-        Some(Tool::Pen),
-        Some(Action::ToolPen),
-    )],
+    &[pt("razor", "Razor", Glyph::Razor, Some(Tool::Cut), Some(Action::ToolCut))],
     &[
         pt("hand", "Hand", Glyph::Maximize, Some(Tool::Hand), Some(Action::ToolHand)),
-        pt("zoom", "Zoom (Alt-click zooms out)", Glyph::Zoom, Some(Tool::Zoom), Some(Action::ToolZoom)),
+        pt("zoom", "Zoom", Glyph::Zoom, Some(Tool::Zoom), Some(Action::ToolZoom)),
     ],
-    &[pt("type", "Type", Glyph::Letter('T'), Some(Tool::Text), Some(Action::ToolText))],
-    // ours
-    &[pt("marker", "Marker (drag for a range)", Glyph::Flag, Some(Tool::Marker), Some(Action::ToolMarker))],
-    &[
-        pt("mask_rect", "Rectangle Mask", Glyph::Mask, Some(Tool::Mask(MaskShape::Rect)), Some(Action::ToolMask)),
-        pt("mask_ellipse", "Ellipse Mask", Glyph::Ellipse, Some(Tool::Mask(MaskShape::Ellipse)), None),
-        pt("mask_polygon", "Polygon Mask", Glyph::Poly(5), Some(Tool::Mask(MaskShape::Polygon)), None),
-        pt("mask_path", "Path Mask", Glyph::Pencil, Some(Tool::Mask(MaskShape::Path)), None),
-    ],
-    &[pt("crop", "Crop", Glyph::Crop, None, None)],
-    &[pt("draw", "Draw", Glyph::Pencil, Some(Tool::Draw), Some(Action::ToolDraw))],
-    &[
-        pt("rect", "Rectangle", Glyph::Rect, Some(Tool::Shape(ShapeKind::Rect)), None),
-        pt("ellipse", "Ellipse", Glyph::Ellipse, Some(Tool::Shape(ShapeKind::Ellipse)), None),
-        pt("triangle", "Triangle", Glyph::Poly(3), Some(Tool::Shape(ShapeKind::Triangle)), None),
-        pt("polygon", "Polygon", Glyph::Poly(5), Some(Tool::Shape(ShapeKind::Polygon)), None),
-        pt("star", "Star", Glyph::Star, Some(Tool::Shape(ShapeKind::Star)), None),
-        pt("line", "Line", Glyph::Line, Some(Tool::Shape(ShapeKind::Line)), None),
-        pt("arrow", "Arrow", Glyph::Arrow, Some(Tool::Shape(ShapeKind::Arrow)), None),
-    ],
-    &[pt("spacer", "Spacer", Glyph::Spacer, Some(Tool::Spacer), Some(Action::ToolSpacer))],
 ];
 
-/// Where our own groups start (a small gap after Premiere's).
-const PANEL_OURS: usize = 8;
 /// Seconds a press must be held to open a group (Premiere's long press).
 const LONG_PRESS: f64 = 0.4;
 
@@ -1132,11 +1094,12 @@ fn is_hidden(hidden: &[String], t: &PanelTool) -> bool {
     t.id != "select" && hidden.iter().any(|h| h == t.id)
 }
 
-/// There is always a lit tool: the active one unless it is hidden (just now, or in old settings), else
-/// Selection. Esc also goes back to Selection.
+/// A toolbar tool the user hid (just now, or in old settings) falls back to Selection, and Esc does too.
+/// A tool with no toolbar slot at all (the Preview rail's, or one picked by its key) stays active.
 pub(crate) fn ensure_tool(tool: &mut Tool, crop: &mut bool, hidden: &[String], escape: bool) {
-    let lit = PANEL.iter().flat_map(|g| g.iter()).any(|t| panel_active(t, *tool, *crop) && !is_hidden(hidden, t));
-    if escape || !lit {
+    let slots = || PANEL.iter().flat_map(|g| g.iter()).filter(|t| panel_active(t, *tool, *crop));
+    let hidden_now = slots().next().is_some() && slots().all(|t| is_hidden(hidden, t));
+    if escape || hidden_now {
         (*tool, *crop) = (Tool::Select, false);
     }
 }
@@ -1190,9 +1153,6 @@ pub(crate) fn panel(
     for (gi, group) in PANEL.iter().enumerate() {
         let shown: Vec<&PanelTool> = group.iter().filter(|t| !is_hidden(hidden, t)).collect();
         let Some(&first) = shown.first() else { continue };
-        if gi == PANEL_OURS {
-            ui.add_space(6.0);
-        }
         let last_id = egui::Id::new(("tools-panel-last", gi));
         let last: &str = ui.data(|d| d.get_temp(last_id)).unwrap_or("");
         let (cur, cur_crop) = (*tool, *crop);
@@ -1606,13 +1566,26 @@ pub(crate) fn color_chip<'a>(color: Color32, selected: bool, palette: &Palette) 
     egui::Button::new("").fill(color).stroke(ring).corner_radius(CornerRadius::same(8)).min_size(egui::vec2(15.0, 15.0))
 }
 
-/// Readable text colour on top of the accent fill.
+/// Readable text colour on top of an accent fill: white whenever it reaches the WCAG 4.5:1 text contrast
+/// (mid blues get white), else black - one of the two always does. A translucent fill is measured as its
+/// own colour (un-premultiplied); where it sits over something, use `on_accent_over`.
 pub(crate) fn on_accent(c: Color32) -> Color32 {
-    let l = 0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32;
-    if l > 140.0 {
-        Color32::BLACK
-    } else {
+    let [r, g, b, _] = c.to_srgba_unmultiplied();
+    pick_on([r, g, b])
+}
+
+/// `on_accent` for a fill as it shows over `bg` (`selection.bg_fill` is the accent at partial alpha).
+pub(crate) fn on_accent_over(fill: Color32, bg: Color32) -> Color32 {
+    let k = (255 - fill.a()) as u16;
+    let mix = |f: u8, b: u8| (f as u16 + b as u16 * k / 255).min(255) as u8;
+    pick_on([mix(fill.r(), bg.r()), mix(fill.g(), bg.g()), mix(fill.b(), bg.b())])
+}
+
+fn pick_on(c: [u8; 3]) -> Color32 {
+    if crate::theme::contrast(c, [255, 255, 255]) >= 4.5 {
         Color32::WHITE
+    } else {
+        Color32::BLACK
     }
 }
 
@@ -2145,35 +2118,66 @@ mod tests {
         }
     }
 
-    /// Every tool the app can be on has a slot, so the active one is always lit on the toolbar.
+    /// The toolbar is the timeline's own editing tools, in this order; every other tool has no slot
+    /// and keeps working (its key / the Preview rail), never pushed back to Selection.
     #[test]
-    fn every_tool_has_a_panel_slot() {
-        let mut tools = vec![
-            Tool::Select,
+    fn toolbar_contents() {
+        let ids: Vec<Vec<&str>> = PANEL.iter().map(|g| g.iter().map(|t| t.id).collect()).collect();
+        assert_eq!(
+            ids,
+            vec![vec!["select"], vec!["ripple", "rolling"], vec!["slip", "slide"], vec!["razor"], vec!["hand", "zoom"]],
+        );
+        for t in [Tool::Select, Tool::Ripple, Tool::Rolling, Tool::Slip, Tool::Slide, Tool::Cut, Tool::Hand, Tool::Zoom] {
+            let hit = PANEL.iter().flat_map(|g| g.iter()).filter(|e| panel_active(e, t, false)).count();
+            assert_eq!(hit, 1, "{t:?} lights exactly one slot");
+        }
+        let mut off = vec![
             Tool::Text,
             Tool::Draw,
-            Tool::Cut,
             Tool::Marker,
             Tool::Stretch,
             Tool::Spacer,
             Tool::TrackForward,
             Tool::TrackBackward,
-            Tool::Ripple,
-            Tool::Rolling,
-            Tool::Slip,
-            Tool::Slide,
-            Tool::Hand,
-            Tool::Zoom,
             Tool::Pen,
         ];
-        tools.extend(SHAPE_CYCLE.map(Tool::Shape));
-        tools.extend(MaskShape::ALL.map(Tool::Mask));
-        for t in tools {
-            let hit = PANEL.iter().flat_map(|g| g.iter()).filter(|e| panel_active(e, t, false)).count();
-            assert_eq!(hit, 1, "{t:?} lights exactly one slot");
+        off.extend(SHAPE_CYCLE.map(Tool::Shape));
+        off.extend(MaskShape::ALL.map(Tool::Mask));
+        for t in off {
+            assert!(!PANEL.iter().flat_map(|g| g.iter()).any(|e| panel_active(e, t, false)), "{t:?} has no slot");
+            let (mut tool, mut crop) = (t, false);
+            ensure_tool(&mut tool, &mut crop, &[], false);
+            assert_eq!(tool, t, "{t:?} stays active without a slot");
         }
-        let ids: std::collections::HashSet<_> = PANEL.iter().flat_map(|g| g.iter()).map(|e| e.id).collect();
-        assert_eq!(ids.len(), PANEL.iter().map(|g| g.len()).sum::<usize>(), "slot ids are unique (persisted)");
+        // the Preview rail's Crop (Select + crop mode) survives the toolbar's per-frame check
+        let (mut tool, mut crop) = (Tool::Select, true);
+        ensure_tool(&mut tool, &mut crop, &[], false);
+        assert!(crop, "Crop stays on");
+        let mut h = PanelHarness::new(&[]);
+        for gi in 0..PANEL.len() {
+            h.slot(gi);
+        }
+        assert!(h.ctx.read_response(egui::Id::new(("tools-panel", PANEL.len()))).is_none(), "no extra slot");
+    }
+
+    /// Settings from before the toolbar was trimmed hide tools that have no slot any more: they load,
+    /// those ids are ignored, and every slot still draws.
+    #[test]
+    fn old_settings_naming_removed_tools_still_load() {
+        let json = r#"{"hidden_tools": ["pen", "crop", "track_fwd", "mask_rect", "rect", "spacer", "type", "zoom"]}"#;
+        let s: crate::settings::Settings = serde_json::from_str(json).expect("old settings load");
+        assert_eq!(s.hidden_tools.len(), 8);
+        let hidden: Vec<&str> = s.hidden_tools.iter().map(|h| h.as_str()).collect();
+        let mut h = PanelHarness::new(&hidden);
+        for gi in 0..PANEL.len() {
+            h.slot(gi);
+        }
+        let hand = h.slot(4);
+        h.click(hand);
+        assert_eq!(h.tool, Tool::Hand, "the Hand/Zoom slot shows Hand while Zoom is hidden");
+        let (mut tool, mut crop) = (Tool::Pen, false);
+        ensure_tool(&mut tool, &mut crop, &s.hidden_tools, false);
+        assert_eq!(tool, Tool::Pen, "a hidden id with no slot never kicks its tool off");
     }
 
     /// A tool is always selected: hiding the active one, Esc and old settings that hid it all land on
@@ -2192,12 +2196,12 @@ mod tests {
 
         // live: pick Rolling from the ripple group's right-click flyout, then hide it from the same menu
         let mut h = PanelHarness::new(&[]);
-        let slot = h.slot(2);
+        let slot = h.slot(1);
         h.button(slot, egui::PointerButton::Secondary, 0.0);
         let row = h.text("Rolling Edit").expect("right-click opens the group");
         h.click(row);
         assert_eq!(h.tool, Tool::Rolling);
-        h.button(h.slot(2), egui::PointerButton::Secondary, 0.0);
+        h.button(h.slot(1), egui::PointerButton::Secondary, 0.0);
         let hide = h.text("Hide Rolling Edit").expect("the group menu offers Hide");
         h.click(hide);
         assert!(h.hidden.contains(&"rolling".to_string()));
@@ -2221,7 +2225,7 @@ mod tests {
         let mut h = PanelHarness::new(&[]);
         h.click(h.slot(3));
         assert_eq!(h.tool, Tool::Cut, "Razor slot");
-        let slot = h.slot(4);
+        let slot = h.slot(2);
         h.button(slot, egui::PointerButton::Primary, 0.6);
         assert_eq!(h.tool, Tool::Cut, "a long press does not pick");
         let row = h.text("Slide").expect("a long press opens the group");
@@ -2231,9 +2235,57 @@ mod tests {
         assert!(h.text("Slide").is_none(), "the flyout closed");
         // a hidden group member leaves the flyout; hiding every member drops the slot
         let mut h = PanelHarness::new(&["hand", "zoom"]);
-        assert!(h.ctx.read_response(egui::Id::new(("tools-panel", 6))).is_none(), "Hand/Zoom slot gone");
+        assert!(h.ctx.read_response(egui::Id::new(("tools-panel", 4))).is_none(), "Hand/Zoom slot gone");
         h.hidden.clear();
         h.frame(vec![]);
-        assert!(h.ctx.read_response(egui::Id::new(("tools-panel", 6))).is_some(), "Reset brings it back");
+        assert!(h.ctx.read_response(egui::Id::new(("tools-panel", 4))).is_some(), "Reset brings it back");
+    }
+
+    /// Text on every accent fill reads at WCAG AA (4.5:1): the default accent and a few user ones, the
+    /// stock and preset themes, dark and light - the opaque accent (active pane tab, panel toggles,
+    /// Send), the translucent selection over the bar / panel (page switcher, Export), and a selected
+    /// list row (`list_rows`: half the selection tint).
+    #[test]
+    fn text_on_accent_fills_is_readable() {
+        let rgb = |c: Color32| [c.r(), c.g(), c.b()];
+        let over = |f: Color32, b: Color32| {
+            let k = (255 - f.a()) as u16;
+            let m = |x: u8, y: u8| (x as u16 + y as u16 * k / 255).min(255) as u8;
+            [m(f.r(), b.r()), m(f.g(), b.g()), m(f.b(), b.b())]
+        };
+        let sys = crate::theme::system_accent();
+        let accents = [[sys.r(), sys.g(), sys.b()], [51, 95, 255], [0, 120, 215], [76, 194, 255], [255, 210, 0], [0, 255, 240], [120, 60, 200], [230, 70, 70], [16, 124, 16]];
+        let mut looks = vec![crate::theme::PaletteOverride::default()];
+        looks.extend(["GitHub Dark", "GitHub Light", "Catppuccin Latte"].iter().filter_map(|n| crate::theme::preset(n)));
+        let ctx = egui::Context::default();
+        let mut bad = Vec::new();
+        for a in accents {
+            for base in &looks {
+                for theme in ["dark", "light"] {
+                    let ov = crate::theme::PaletteOverride { accent: Some(a), ..base.clone() };
+                    crate::theme::apply_visuals(&ctx, theme, &ov, "");
+                    let v = ctx.style().visuals.clone();
+                    let accent = Color32::from_rgb(a[0], a[1], a[2]);
+                    let fills: [(&str, [u8; 3], Color32); 5] = [
+                        ("accent", a, on_accent(accent)),
+                        ("active tab", rgb(v.widgets.active.bg_fill), on_accent(v.widgets.active.bg_fill)),
+                        ("selection over bar", over(v.selection.bg_fill, v.extreme_bg_color), on_accent_over(v.selection.bg_fill, v.extreme_bg_color)),
+                        ("selection over panel", over(v.selection.bg_fill, v.panel_fill), on_accent_over(v.selection.bg_fill, v.panel_fill)),
+                        ("selected row", over(v.selection.bg_fill.gamma_multiply(0.5), v.panel_fill), on_accent_over(v.selection.bg_fill.gamma_multiply(0.5), v.panel_fill)),
+                    ];
+                    for (what, fill, text) in fills {
+                        let c = crate::theme::contrast(fill, rgb(text));
+                        if c < 4.5 {
+                            bad.push(format!("{what} {fill:?} text {:?} = {c:.2} ({theme}, accent {a:?}, preset '{}')", rgb(text), base.preset));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(bad.is_empty(), "low contrast:
+{}", bad.join("
+"));
+        // mid blues get white
+        assert_eq!(on_accent(Color32::from_rgb(51, 95, 255)), Color32::WHITE);
     }
 }

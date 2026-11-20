@@ -81,6 +81,17 @@ pub struct Clip {
     pub pos_linked: bool,
     #[serde(default = "crate::model::a0")]
     pub rotation: Animated,
+    /// Built-in crop: the share (0..0.5) of the layer cut off each edge, in the layer's own frame (before
+    /// rotation). Drawn as a coverage rectangle by both compositors, so it costs nothing extra to play.
+    /// Absent from projects from before it (and from clips that never crop).
+    #[serde(default = "crate::model::a0", skip_serializing_if = "crate::model::is_a0")]
+    pub crop_left: Animated,
+    #[serde(default = "crate::model::a0", skip_serializing_if = "crate::model::is_a0")]
+    pub crop_right: Animated,
+    #[serde(default = "crate::model::a0", skip_serializing_if = "crate::model::is_a0")]
+    pub crop_top: Animated,
+    #[serde(default = "crate::model::a0", skip_serializing_if = "crate::model::is_a0")]
+    pub crop_bottom: Animated,
     #[serde(default = "crate::model::a1")]
     pub opacity: Animated,
     #[serde(default)]
@@ -183,6 +194,10 @@ impl Clip {
             scale_unlinked: false,
             pos_linked: false,
             rotation: a0(),
+            crop_left: a0(),
+            crop_right: a0(),
+            crop_top: a0(),
+            crop_bottom: a0(),
             opacity: a1(),
             blend: BlendMode::Normal,
             effects: Vec::new(),
@@ -201,6 +216,39 @@ impl Clip {
             blocks: Vec::new(),
             browser: (kind == ClipKind::Browser).then(BrowserStyle::default),
         }
+    }
+    /// Built-in crop (left, right, top, bottom) at clip-local `lt`, each clamped to 0..0.5 - what both
+    /// compositors and the Preview's crop handles read.
+    pub fn crop_at(&self, lt: f64) -> [f32; 4] {
+        let f = |a: &Animated| (a.at(lt) as f32).clamp(0.0, 0.5);
+        [f(&self.crop_left), f(&self.crop_right), f(&self.crop_top), f(&self.crop_bottom)]
+    }
+    /// Fold an old `EffectKind::Crop` into the built-in crop when that renders the same: the effect is
+    /// on for the whole clip, has no mask and no feather, the clip has no crop of its own and no second
+    /// Crop, and nothing after it in the chain touches pixels (the built-in crop applies after every
+    /// effect; geometric ones only move the layer). Anything else keeps its effect, which still renders.
+    /// True when it moved.
+    pub fn migrate_crop_effect(&mut self) -> bool {
+        use crate::model::EffectKind;
+        let crops: Vec<usize> =
+            self.effects.iter().enumerate().filter(|(_, e)| e.kind == EffectKind::Crop).map(|(i, _)| i).collect();
+        let [i] = crops[..] else { return false };
+        let e = &self.effects[i];
+        let own = [&self.crop_left, &self.crop_right, &self.crop_top, &self.crop_bottom];
+        let feather = e.params.get(4).is_none_or(|f| f.is_default(0.0) && f.link.is_none());
+        let after_ok = self.effects[i + 1..].iter().all(|n| !n.enabled || n.kind.is_geometric());
+        if !e.enabled || e.mask.is_some() || e.start > 0.0 || e.len > 0.0 || !feather || !after_ok {
+            return false;
+        }
+        if own.iter().any(|a| !crate::model::is_a0(a)) || e.params.len() < 4 {
+            return false;
+        }
+        let e = self.effects.remove(i);
+        let mut p = e.params.into_iter();
+        for dst in [&mut self.crop_left, &mut self.crop_right, &mut self.crop_top, &mut self.crop_bottom] {
+            *dst = p.next().unwrap_or_else(crate::model::a0);
+        }
+        true
     }
     /// True when this container has no media (asset == 0 for video/image/audio).
     pub fn is_empty_container(&self) -> bool {
@@ -427,7 +475,7 @@ impl Clip {
             self.speed_curve.value = speed;
         }
     }
-    pub fn animated(&self) -> [&Animated; 10] {
+    pub fn animated(&self) -> [&Animated; 14] {
         [
             &self.x,
             &self.y,
@@ -435,6 +483,10 @@ impl Clip {
             &self.scale_x,
             &self.scale_y,
             &self.rotation,
+            &self.crop_left,
+            &self.crop_right,
+            &self.crop_top,
+            &self.crop_bottom,
             &self.opacity,
             &self.volume,
             &self.pan,
@@ -450,6 +502,10 @@ impl Clip {
             &mut self.scale_x,
             &mut self.scale_y,
             &mut self.rotation,
+            &mut self.crop_left,
+            &mut self.crop_right,
+            &mut self.crop_top,
+            &mut self.crop_bottom,
             &mut self.opacity,
             &mut self.volume,
             &mut self.pan,
@@ -523,6 +579,10 @@ impl Clip {
                 ("Scale X", &mut self.scale_x),
                 ("Scale Y", &mut self.scale_y),
                 ("Rotation", &mut self.rotation),
+                ("Crop Left", &mut self.crop_left),
+                ("Crop Right", &mut self.crop_right),
+                ("Crop Top", &mut self.crop_top),
+                ("Crop Bottom", &mut self.crop_bottom),
                 ("Opacity", &mut self.opacity),
             ]
         } else {

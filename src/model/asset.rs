@@ -38,7 +38,7 @@ pub const LABEL_COLORS: [(&str, [u8; 3]); 8] = [
     ("Gray", [150, 150, 150]),
 ];
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Asset {
     pub id: Id,
     pub path: String,

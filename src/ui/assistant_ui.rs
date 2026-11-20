@@ -18,7 +18,7 @@ pub use super::assistant_data::*;
 use super::layout::Pane;
 use super::list_rows::{RowSpec, Rows};
 use super::menu;
-use super::tools::{draw_glyph, glyph_text_button, Glyph};
+use super::tools::{draw_glyph, glyph_text_button, glyph_text_button_w, icon_button, on_accent, Glyph};
 use crate::engine::skills::{self, Skill, Source};
 use crate::mcp::perms::Mode;
 use crate::theme::Palette;
@@ -371,7 +371,7 @@ const SIDEBAR_FROM: f32 = 460.0;
 const SIDEBAR_W: f32 = 190.0;
 
 pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
-    let pal = crate::theme::palette(ui.ctx());
+    let pal = crate::ui::titlebar::palette(ui.ctx());
     let mut out = Out::None;
     state.seen(ui.ctx().cumulative_frame_nr());
     state.conv_mut();
@@ -385,7 +385,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
         egui::SidePanel::left(ui.id().with("assistant_sidebar"))
             .exact_width(SIDEBAR_W.min(ui.available_width() * 0.5))
             .resizable(false)
-            .frame(egui::Frame::NONE.fill(pal.panel).inner_margin(egui::Margin::symmetric(6, 6)))
+            .frame(egui::Frame::NONE.fill(ui.visuals().panel_fill).inner_margin(egui::Margin::symmetric(6, 6)))
             .show_inside(ui, |ui| sidebar(ui, state, v));
     }
     // a little air at the pane's edges: right-aligned controls (Send) sat on the pane border and lost
@@ -406,7 +406,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) -> Out {
 
 /// New chat, search, then the chats: pinned first, then the most recent, each with its date.
 fn sidebar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) {
-    let new = ui.add_sized([ui.available_width(), 24.0], egui::Button::new("+  New chat"));
+    let new = glyph_text_button_w(ui, Glyph::Letter('+'), "New chat", ui.available_width());
     if new.on_hover_text("Start a new chat").clicked() {
         state.new_chat();
     }
@@ -425,19 +425,23 @@ fn sidebar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) {
         }
         // a table: [label fills and truncates][date column]; no grip, the order is by date
         let mut rows = Rows::new(ui, "assistant_chat_rows", &[], &[34.0], false).fixed_order();
+        // the row lit with the accent is the chat on screen, whatever was clicked last
+        rows.select(ui, shown);
         let mut pinned_head = false;
         for (n, &i) in order.iter().enumerate() {
             let c = &state.convs[i];
             if c.pinned != pinned_head || n == 0 {
                 pinned_head = c.pinned;
-                ui.label(egui::RichText::new(if c.pinned { "Pinned" } else { "Recent" }).small().weak());
+                if n > 0 {
+                    ui.add_space(6.0);
+                }
+                // a section title, as the Library's
+                let head = egui::RichText::new(if c.pinned { "Pinned" } else { "Recent" }).small().strong();
+                ui.label(head.color(ui.visuals().weak_text_color()));
             }
             let (id, date) = (c.id, short_date(c.updated, now));
             let title = c.title().to_string();
             let r = rows.row(ui, n, &RowSpec { key: id, label: &title, values: &[&date], ..Default::default() });
-            if shown == Some(id) {
-                ui.painter().rect_stroke(r.body.rect, 3.0, egui::Stroke::new(1.0, ui.visuals().selection.stroke.color), egui::StrokeKind::Inside);
-            }
             if state.renaming.as_ref().is_some_and(|(r, _)| *r == id) {
                 rename_field(ui, state, r.label);
                 continue;
@@ -447,7 +451,8 @@ fn sidebar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View) {
             } else if r.body.clicked() {
                 open = Some(id);
             }
-            let r = r.body.on_hover_text(c.title());
+            let r = r.body.on_hover_text(format!("{}
+Double-click to rename, right-click for more", c.title()));
             menu::context(&r, |ui| {
                 if menu::row(ui, None, "Rename", "").clicked() {
                     state.renaming = Some((id, title.clone()));
@@ -506,9 +511,10 @@ fn rename_field(ui: &mut egui::Ui, state: &mut AssistantState, at: egui::Rect) {
 fn top_bar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, wide: bool, out: &mut Out) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
+        let pal = crate::ui::titlebar::palette(ui.ctx());
         let open = state.sidebar.unwrap_or(wide);
         let tip = if open { "Hide the chat list" } else { "Show the chat list" };
-        if glyph_text_button(ui, Glyph::ListIcon, "").on_hover_text(tip).clicked() {
+        if icon_button(ui, &pal, ui.id().with("assistant_list_toggle"), Glyph::ListIcon, tip, open).clicked() {
             state.sidebar = Some(!open);
         }
         if state.tab != Tab::Chat {
@@ -520,7 +526,8 @@ fn top_bar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, wide: bool, 
         if state.tab == Tab::Chat {
             // the title takes what the two buttons on the right leave, and truncates
             let title = state.conv().map_or("New chat", Conversation::title).to_string();
-            let w = (ui.available_width() - 64.0).max(20.0);
+            // (+ and ⋯, and the Full access badge when it shows: it overlapped a long title)
+            let w = (ui.available_width() - if v.full_access { 150.0 } else { 64.0 }).max(20.0);
             ui.allocate_ui_with_layout(egui::vec2(w, 20.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.add(egui::Label::new(egui::RichText::new(title).strong()).truncate());
             });
@@ -530,7 +537,7 @@ fn top_bar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, wide: bool, 
             if v.full_access {
                 full_access_badge(ui);
             }
-            if glyph_text_button(ui, Glyph::Letter('+'), "").on_hover_text("New chat").clicked() {
+            if icon_button(ui, &pal, ui.id().with("assistant_new_chat"), Glyph::Letter('+'), "New chat", false).clicked() {
                 state.new_chat();
             }
         });
@@ -611,7 +618,7 @@ fn model_picker(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, out: &m
         "external" => {}
         "claude" if !state.model_other && (v.model.is_empty() || CLAUDE_MODELS.iter().any(|(id, _)| *id == v.model)) => {
             let shown = if v.model.is_empty() { "Default model" } else { model_label(v.model).trim_end_matches(" (latest)") };
-            menu::button(ui, egui::RichText::new(shown).small(), |ui| {
+            menu::button(ui, egui::RichText::new(format!("{shown} ▾")).small(), |ui| {
                 const KEYS: [egui::Key; 4] = [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4];
                 for (i, &(id, label)) in CLAUDE_MODELS[..CLAUDE_ALIASES].iter().enumerate() {
                     let num = (i + 1).to_string();
@@ -1172,9 +1179,10 @@ fn user_msg(ui: &mut egui::Ui, state: &mut AssistantState, lines: &[Line], m: &M
     let w = natural.min(max - margin.sum().x);
     ui.horizontal(|ui| {
         ui.add_space((ui.available_width() - w - margin.sum().x).max(0.0));
-        egui::Frame::new().fill(pal.header).corner_radius(14u8).inner_margin(margin).show(ui, |ui| {
+        let fill = ui.visuals().widgets.inactive.weak_bg_fill;
+        egui::Frame::new().fill(fill).corner_radius(bubble_radius(ui)).inner_margin(margin).show(ui, |ui| {
             ui.set_max_width(w);
-            ui.add(egui::Label::new(egui::RichText::new(&text).color(pal.text)).wrap());
+            ui.add(egui::Label::new(egui::RichText::new(&text).color(ui.visuals().strong_text_color())).wrap());
         });
     });
     let chips: Vec<String> = lines[m.lines.clone()]
@@ -1207,17 +1215,36 @@ fn reply(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, lines: &[Line]
     let mut i = m.lines.start;
     while i < m.lines.end {
         match &lines[i] {
-            Line::Text(t) => crate::ui::markdown::show(ui, t, &crate::theme::palette(ui.ctx())),
+            Line::Text(t) => crate::ui::markdown::show(ui, t, &crate::ui::titlebar::palette(ui.ctx())),
             Line::Tool(_) => {
                 let n = lines[i..m.lines.end].iter().take_while(|l| matches!(l, Line::Tool(_))).count();
-                let label = egui::RichText::new(format!("{n} step{}", if n == 1 { "" } else { "s" })).small().weak();
-                egui::CollapsingHeader::new(label).id_salt(("assistant_tools", conv, i)).default_open(false).show(ui, |ui| {
-                    for l in &lines[i..i + n] {
-                        if let Line::Tool(t) = l {
-                            ui.add(egui::Label::new(egui::RichText::new(short(t, 300)).monospace().small().weak()).wrap());
-                        }
-                    }
-                });
+                let label = egui::RichText::new(format!("{n} step{}", if n == 1 { "" } else { "s" })).small();
+                let vis = ui.visuals().clone();
+                egui::Frame::new()
+                    .fill(vis.faint_bg_color)
+                    .stroke(vis.widgets.noninteractive.bg_stroke)
+                    .corner_radius(bubble_radius(ui))
+                    .inner_margin(egui::Margin::symmetric(6, 2))
+                    .show(ui, |ui| {
+                        let head = egui::CollapsingHeader::new(label).id_salt(("assistant_tools", conv, i)).default_open(false);
+                        head.show(ui, |ui| {
+                            for l in &lines[i..i + n] {
+                                if let Line::Tool(t) = l {
+                                    let t = short(t, 300);
+                                    let (name, args) = t.split_once(' ').unwrap_or((t.as_str(), ""));
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        ui.label(egui::RichText::new(name).monospace().small().color(vis.text_color()));
+                                        if !args.is_empty() {
+                                            ui.add(egui::Label::new(egui::RichText::new(args).monospace().small().weak()).wrap());
+                                        }
+                                    });
+                                }
+                            }
+                        })
+                        .header_response
+                        .on_hover_text("The edits the assistant made");
+                    });
                 i += n;
                 continue;
             }
@@ -1233,7 +1260,7 @@ fn reply(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, lines: &[Line]
                     let ok = undo_state(undo, v.undo_top);
                     // only the newest request can still be the top entry; older ones just show Copy
                     if Some(i) == last_done || ok.is_ok() {
-                        let r = ui.add_enabled(ok.is_ok() && !v.running, egui::Button::new(egui::RichText::new("Undo").small()).frame(false));
+                        let r = ui.add_enabled(ok.is_ok() && !v.running, egui::Button::new(egui::RichText::new("Undo").small()).frame_when_inactive(false));
                         let r = match ok {
                             Ok(()) => r.on_hover_text("Undo everything this request did, in one step"),
                             Err(why) => r.on_disabled_hover_text(why),
@@ -1243,12 +1270,12 @@ fn reply(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, lines: &[Line]
                         }
                     }
                     let text = msg_plain(lines, m);
-                    let copy = ui.add_enabled(!text.is_empty(), egui::Button::new(egui::RichText::new("Copy").small()).frame(false));
+                    let copy = ui.add_enabled(!text.is_empty(), egui::Button::new(egui::RichText::new("Copy").small()).frame_when_inactive(false));
                     if copy.on_hover_text("Copy the reply as plain text (right-click for Markdown)").clicked() {
                         ui.ctx().copy_text(text);
                     }
                     if Some(i) == last_done {
-                        let retry = ui.add_enabled(!v.running, egui::Button::new(egui::RichText::new("Retry").small()).frame(false));
+                        let retry = ui.add_enabled(!v.running, egui::Button::new(egui::RichText::new("Retry").small()).frame_when_inactive(false));
                         if retry.on_hover_text("Send the request again").clicked() {
                             msg_act(ui.ctx(), state, m, MsgAct::Retry, out);
                         }
@@ -1475,10 +1502,12 @@ pub fn area_overlay(ctx: &egui::Context, state: &mut AssistantState) -> Option<e
 /// A chip: a label and an ×, one widget so a row of them wraps. True when it was clicked (= remove).
 fn chip(ui: &mut egui::Ui, pal: &Palette, label: &str, pinned: bool) -> bool {
     let text = egui::RichText::new(format!("{label}  ×")).small();
+    // pinned: the accent's selection tint; live: a plain widget fill
+    let vis = ui.visuals();
     let button = egui::Button::new(text)
-        .fill(if pinned { pal.header } else { pal.panel })
-        .stroke(egui::Stroke::new(1.0, if pinned { pal.accent } else { pal.border }))
-        .corner_radius(8u8);
+        .fill(if pinned { vis.selection.bg_fill.gamma_multiply(0.35) } else { vis.widgets.inactive.weak_bg_fill })
+        .stroke(egui::Stroke::new(1.0, if pinned { pal.accent } else { vis.widgets.noninteractive.bg_stroke.color }))
+        .corner_radius(bubble_radius(ui));
     ui.add(button)
         .on_hover_text(if pinned {
             "Added on purpose: sent with the next message. Click to remove."
@@ -1491,14 +1520,20 @@ fn chip(ui: &mut egui::Ui, pal: &Palette, label: &str, pinned: bool) -> bool {
 /// The prompt box grows with the text up to this many rows, then scrolls.
 const PROMPT_ROWS: f32 = 8.0;
 
+/// Bubbles, the composer, chips and step rows: the theme's widget corners (Settings ▸ Appearance), as the
+/// Library and Inspector.
+fn bubble_radius(ui: &egui::Ui) -> egui::CornerRadius {
+    ui.visuals().widgets.inactive.corner_radius
+}
+
 fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palette, out: &mut Out) {
     ui.add_space(4.0);
     // ws:mcp-permissions: the running chat's questions ("Allow media.import for this chat?")
     for (i, q, detail) in v.asks {
         egui::Frame::new()
-            .fill(pal.panel)
+            .fill(ui.visuals().faint_bg_color)
             .stroke(egui::Stroke::new(1.0, pal.accent))
-            .corner_radius(10u8)
+            .corner_radius(bubble_radius(ui))
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -1514,11 +1549,16 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
     }
     let mode = state.conv().map_or(Mode::default(), |c| c.mode);
     let warn = ui.visuals().warn_fg_color;
-    let border = if mode == Mode::Bypass { warn } else { pal.border };
+    let typing = ui.memory(|m| m.has_focus(prompt_id()));
+    let border = match () {
+        _ if mode == Mode::Bypass => warn,
+        _ if typing => pal.accent,
+        _ => ui.visuals().widgets.noninteractive.bg_stroke.color,
+    };
     egui::Frame::new()
-        .fill(pal.bg)
+        .fill(ui.visuals().extreme_bg_color)
         .stroke(egui::Stroke::new(1.0, border))
-        .corner_radius(14u8)
+        .corner_radius(bubble_radius(ui))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1608,7 +1648,13 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
                             *out = Out::Stop;
                         }
                     } else {
-                        let send = egui::Button::new(egui::RichText::new("↵").strong()).corner_radius(12u8).min_size(egui::vec2(28.0, 24.0));
+                        let accent = pal.accent;
+                        let text = egui::RichText::new("↵").strong();
+                        let send = match can_send {
+                            true => egui::Button::new(text.color(on_accent(accent))).fill(accent),
+                            false => egui::Button::new(text),
+                        };
+                        let send = send.corner_radius(bubble_radius(ui)).min_size(egui::vec2(28.0, 24.0));
                         let r = ui.add_enabled(can_send, send).on_hover_text("Send (Enter)").on_disabled_hover_text("Type a request first");
                         if r.clicked() {
                             *out = Out::Send;
@@ -1622,10 +1668,9 @@ fn composer(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, pal: &Palet
                 });
             });
         });
-    // under the box: the Experimental badge on the left; model, effort, permission mode on the right
+    // under the box, on the right: model, effort, permission mode
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        crate::ui::experimental::badge(ui);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             mode_picker(ui, mode, out);
             if v.backend == "claude" {
@@ -1659,8 +1704,8 @@ pub fn answer_buttons(ui: &mut egui::Ui) -> Option<u8> {
 
 /// The chat's permission mode: Ask / Accept edits / Bypass. Bypass shows in the warning colour.
 fn mode_picker(ui: &mut egui::Ui, mode: Mode, out: &mut Out) {
-    let text = egui::RichText::new(mode.label()).small();
-    let text = if mode == Mode::Bypass { text.color(ui.visuals().warn_fg_color) } else { text.weak() };
+    let text = egui::RichText::new(format!("{} ▾", mode.label())).small();
+    let text = if mode == Mode::Bypass { text.color(ui.visuals().warn_fg_color) } else { text };
     menu::button(ui, text, |ui| {
         for m in Mode::ALL {
             if menu::check(ui, m == mode, m.label(), "").on_hover_text(m.hint()).clicked() {
