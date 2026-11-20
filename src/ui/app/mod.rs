@@ -185,6 +185,7 @@ mod script_ctl; // ws:assistant-luau
 #[path = "windows.rs"]
 mod windows_dlg;
 mod project_match; // ws:project-color-fps
+mod home_ctl; // ws:home-page
 
 enum ExportKind {
     File { path: PathBuf },
@@ -457,6 +458,9 @@ pub struct App {
     onboarding: Option<crate::ui::onboarding::Onboarding>,
     /// The home / empty-state cards were dismissed for this session (`ui::home`).
     home_dismissed: bool,
+    // ---- ws:home-page ----
+    /// The Home page (`home_ctl`): open, the recents read so far, the rename dialog.
+    home: home_ctl::HomeState,
     /// The selection `frame::tick` last reacted to, so auto-surface / glow fire once per change.
     sel_sig: frame::SelSig,
     // ---- ws:export-deliver ----
@@ -1021,6 +1025,8 @@ impl App {
             // ---- ws:layout-modes-onboarding ----
             onboarding: None,
             home_dismissed: false,
+            // ---- ws:home-page ----
+            home: Default::default(),
             sel_sig: frame::SelSig::default(),
             // ---- ws:export-deliver ----
             export_queue: std::collections::VecDeque::new(),
@@ -1163,6 +1169,9 @@ impl App {
 
     fn set_project(&mut self, project: Project, path: Option<PathBuf>) {
         self.probes.clear(); // import probes belong to the project that started them
+        // ---- ws:home-page ---- a project replaced ends Home; this window's lock on the old one goes
+        self.home.open = false;
+        home_ctl::release_lock(self.project_path.as_deref(), path.as_deref());
         self.project = project;
         self.project_path = path;
         assistant_ctl::project_changed(self, self.project_path.clone().as_deref());
@@ -1635,6 +1644,10 @@ impl eframe::App for App {
                     let t = self.settings.bg_tint;
                     ui.painter().rect_filled(r, 0.0, egui::Color32::from_rgba_unmultiplied(t[0], t[1], t[2], t[3]));
                 }
+                // ---- ws:home-page ---- the Home page takes the panes' place while it shows
+                if home_ctl::draw(self, ui) {
+                    return;
+                }
                 let mut l = std::mem::replace(&mut self.layout, Layout::new(egui_tiles::Tree::empty("layout")));
                 // cloned: the draw closure needs self mutably while the tab renderer reads the icons
                 let icons = self.settings.icon_overrides.clone();
@@ -1890,6 +1903,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     audio_only::TOOLS,
     // ---- ws:assistant-luau ----
     media_api::TOOLS,
+    // ---- ws:home-page ----
+    home_ctl::TOOLS,
     script_ctl::TOOLS,
 ];
 
@@ -1986,6 +2001,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     music_ctl::act,
     // ---- ws:preview-audio-only ----
     audio_only::act,
+    // ---- ws:home-page ----
+    home_ctl::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[

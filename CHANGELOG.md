@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Home page
+- **A Home page instead of the small start card**: the app opens on it. **New** is a row of cards (a **+** for a blank project, then one per format, Shorts / TikTok / Reels starting at Max length 1:00, then your saved formats) that go straight into the editor; **Projects** lists your recent projects with a thumbnail, **Rename**, **Open Folder** and **Open**, and a double-click opens one. Missing projects are greyed out with **Remove**. **File ▸ Quit to Project List**, the app icon and the house button go back (through the save prompt), **File ▸ New** goes there too; **Settings ▸ General ▸ Home page** turns it off for the old card. MCP: `home.show`, `project.recent`.
+
 ## 1.4.0
 
 ### Media player

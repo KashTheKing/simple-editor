@@ -521,6 +521,8 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `project.new` | Read | fps, height, width | New empty project (discards unsaved changes). |
 | `project.open` | Read | path | Open a .sedit project or a media file (creates a project around it). |
 | `project.recover` | Mutate | path | Loads an autosave/backup as the live project. Omit path for the newest candidate. |
+| `project.recent` | Ui | action, path, name | The recent projects list. action list (default): path, title, exists, width, height, fps per row; rename: renames the .sedit file at path to name (refuses a taken name, a missing file, or a project open in another window); remove: drops path from the list (the file stays). |
+| `home.show` | Ui | open | Shows the Home page (recent projects and New cards), closing the project through the usual save prompt; open:false returns to the editor. Needs Settings home_page on. |
 | `project.save` | Read | path | Save the project (.sedit). Without a path: the current project file (error if none). |
 | `project.set` | Mutate | fps, height, name, width | Change project format/name. |
 | `project.summary` | Read | - | Project overview: format, duration, tracks, clips per track, assets, sequences, subtitles count, planner progress, notes — and the markdown style summary. |

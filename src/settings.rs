@@ -467,6 +467,10 @@ pub struct Settings {
     pub workspace: String,
     /// Show the Open / Import / Templates / Recent cards over an empty project (the home screen).
     pub home_screen: bool,
+    // ---- ws:home-page ----
+    /// Open on the Home page (recent projects + New cards) instead of the start-screen card; File ▸ New and
+    /// File ▸ Quit to Project List go there too. Off = the `home_screen` card behaves exactly as before.
+    pub home_page: bool,
     // ---- ws:media-library ----
     /// Extra cells a Library list row shows after the name, in order - any of
     /// `library::COLUMNS` ("kind" | "duration" | "fps" | "size" | "label" | "tags" | "proxy").
@@ -870,6 +874,8 @@ impl Default for Settings {
             // ---- ws:layout-modes-onboarding ----
             workspace: "Edit".into(),
             home_screen: true,
+            // ---- ws:home-page ----
+            home_page: true,
             // ---- ws:media-library ----
             // "tags" too, so a fresh install's rows look exactly as they did before columns existed
             library_columns: vec!["kind".into(), "duration".into(), "tags".into()],

@@ -783,6 +783,10 @@ fn home_window(app: &mut App, ctx: &egui::Context) {
     if app.onboarding.is_some() {
         return; // the wizard comes first; the cards appear once it is done
     }
+    // ---- ws:home-page ---- the card is the Home page's off-switch fallback
+    if !super::home_ctl::popup_allowed(app) {
+        return;
+    }
     let empty = app.project.is_empty() && app.project.assets.is_empty();
     let Some(action) = home::show(ctx, &app.settings, &app.hotkeys, empty, app.home_dismissed) else { return };
     match action {

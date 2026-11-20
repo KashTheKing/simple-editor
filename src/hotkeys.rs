@@ -328,6 +328,9 @@ actions! {
     // ---- ws:pages ----
     // Reopens the angle grid a × closed (Clip menu / palette); unbound by design.
     MulticamAngles => "multicam_angles", "Multicam Angles…", None;
+    // ---- ws:home-page ----
+    // Unbound by design: File ▸ Quit to Project List, the app icon, the top bar's Home button, the palette.
+    GoHome => "home", "Quit to Project List", None;
     // ---- ws:timeline-surface ----
     // ---- ws:viewer-surface ----
     // ---- ws:library-surface ----
@@ -681,7 +684,7 @@ pub fn group(a: Action) -> &'static str {
     match a {
         NewProject | OpenFile | OpenProject | Save | SaveProjectAs | ImportMedia | ImportFolder | ImportTimeline
         | ExportVideo | QuickExport | ExportLossless | ExportXml | ExportFrame | ExportMarkers | ScreenCapture
-        | Voiceover | RestoreBackup | Settings => "File",
+        | Voiceover | RestoreBackup | Settings | GoHome => "File",
         Undo | Redo | CutClips | CopyClips | PasteClips | PasteInsert | PasteAtTop | PasteInPlace | CopyAttributes
         | PasteAttributes | Delete | RippleDelete | SelectAll | Deselect | SelectForward | SelectBackward
         | SelectAtPlayhead | Find => "Edit",
