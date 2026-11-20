@@ -193,6 +193,11 @@ pub(crate) fn before_restore(app: &App, p: &mut Project) -> (Option<Id>, TabView
     if !p.timeline_tabs.contains(&p.editing) {
         p.timeline_tabs.push(p.editing);
     }
+    // only the main timeline open = the default, stored as empty: an undo must give back the very same
+    // project (the save prompt compares it with the saved one, and `[null]` would read as a change)
+    if p.timeline_tabs == [None] {
+        p.timeline_tabs.clear();
+    }
     (app.project.editing, capture(app))
 }
 

@@ -714,7 +714,7 @@ fn toast(app: &mut PlayerApp, ctx: &egui::Context, pal: &Palette, full: Rect, ch
                         let _ = std::process::Command::new("explorer.exe").arg(&shown).spawn();
                     }
                     if ui.button("Open Folder").clicked() {
-                        let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", shown.display())).spawn();
+                        crate::contextmenu::reveal(&shown);
                     }
                     if !crate::engine::convert::is_sequence(&out) && ui.button("Add to Project").clicked() {
                         app.toast = None;
