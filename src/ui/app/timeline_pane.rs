@@ -19,11 +19,11 @@ fn tip(name: &str, a: Action) -> String {
 fn toolbar(
     ui: &mut egui::Ui,
     pal: &crate::theme::Palette,
-    snap: (bool, bool, bool),
+    snap: (bool, bool, bool, bool),
     zoom: &mut f32,
     over: Option<f64>,
 ) -> Vec<Action> {
-    let (snap, gaps, follow) = snap;
+    let (snap, linked, gaps, follow) = snap;
     let mut out = Vec::new();
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
@@ -31,6 +31,10 @@ fn toolbar(
             .clicked()
         {
             out.push(Action::ToggleSnap);
+        }
+        let ltip = tip("Linked Selection", Action::ToggleLinkedSelection);
+        if icon_button(ui, pal, ui.id().with("tl_linked"), Glyph::Chain, &ltip, linked).clicked() {
+            out.push(Action::ToggleLinkedSelection);
         }
         let gtip = tip("Auto Close Gaps", Action::ToggleAutoCloseGaps);
         if icon_button(ui, pal, ui.id().with("tl_gaps"), Glyph::Spacer, &gtip, gaps).clicked() {
@@ -92,7 +96,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         let s = &app.settings;
         let over = app.project.over_by();
-        acts = toolbar(ui, &app.palette, (s.snap, s.auto_close_gaps, s.assistant_follow), &mut zoom, over);
+        let flags = (s.snap, s.linked_selection, s.auto_close_gaps, s.assistant_follow);
+        acts = toolbar(ui, &app.palette, flags, &mut zoom, over);
     });
     app.pending_actions.extend(acts);
     if zoom != app.timeline.zoom {
@@ -164,7 +169,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         };
         // labelled like `App::push_undo_labeled` (which needs `&mut self` - the fields are split here)
         let mut push = |p: &Project, label: &'static str| {
-            push_undo_json(undo, redo, p.to_json());
+            push_undo_json(undo, redo, p.clone()); // a Snap: serialised only if read as text
             if !label.is_empty() {
                 if let Some(e) = undo.last_mut() {
                     e.label = label.to_string();
@@ -184,6 +189,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 palette,
                 snap: settings.snap,
                 snap_markers: settings.snap_markers,
+                linked: settings.linked_selection,
                 playing: player.is_playing() || play_gate.buffering(),
                 thumbs: Some(thumbs),
                 // only while the Auto-cut pane is on screen: a stale overlay would keep
@@ -325,7 +331,7 @@ mod tests {
                 ..Default::default()
             };
             let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| out = toolbar(ui, &pal, (true, false, true), &mut zoom, None));
+                egui::CentralPanel::default().show(ctx, |ui| out = toolbar(ui, &pal, (true, true, false, true), &mut zoom, None));
             });
             out
         };
@@ -341,11 +347,12 @@ mod tests {
             frame(vec![btn(true)]);
             frame(vec![btn(false)])
         };
-        // 24 x 22 icon buttons, 2 pt apart, from the panel's 8 pt margin: the magnet, then Auto Close Gaps
-        // (the tools moved to `tools::panel`, ahead of this part of the row)
+        // 24 x 22 icon buttons, 2 pt apart, from the panel's 8 pt margin: the magnet, Linked Selection,
+        // then Auto Close Gaps (the tools moved to `tools::panel`, ahead of this part of the row)
         assert_eq!(click(egui::pos2(8.0 + 12.0, 19.0)), vec![Action::ToggleSnap]);
-        assert_eq!(click(egui::pos2(8.0 + 26.0 + 12.0, 19.0)), vec![Action::ToggleAutoCloseGaps]);
-        assert_eq!(click(egui::pos2(8.0 + 52.0 + 12.0, 19.0)), vec![Action::ToggleAssistantFollow]);
+        assert_eq!(click(egui::pos2(8.0 + 26.0 + 12.0, 19.0)), vec![Action::ToggleLinkedSelection]);
+        assert_eq!(click(egui::pos2(8.0 + 52.0 + 12.0, 19.0)), vec![Action::ToggleAutoCloseGaps]);
+        assert_eq!(click(egui::pos2(8.0 + 78.0 + 12.0, 19.0)), vec![Action::ToggleAssistantFollow]);
         // right-aligned from the 792 pt edge, 4 pt in: Zoom to Fit
         assert_eq!(click(egui::pos2(792.0 - 4.0 - 12.0, 19.0)), vec![Action::ZoomFit]);
     }

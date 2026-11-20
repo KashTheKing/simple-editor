@@ -909,7 +909,7 @@ impl PlayerApp {
     }
 
     pub fn open_folder(&self) {
-        let _ = std::process::Command::new("explorer.exe").arg(format!("/select,{}", self.path().display())).spawn();
+        crate::contextmenu::reveal(&self.path());
     }
 
     fn poll(&mut self, ctx: &egui::Context) {

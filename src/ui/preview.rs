@@ -22,8 +22,9 @@
 //! ---- ws:canvas-handles-monitor ----
 //! The selection outline of a single asset-backed clip carries handles: corners scale uniformly
 //! (`clip.scale`), edge midpoints scale one axis (`scale_x` / `scale_y`), a knob above the top edge
-//! rotates (Shift snaps to 15°), and with the context menu's "Crop Handles" on the edge handles crop
-//! instead (one find-or-append `EffectKind::Crop`, fractions via `Animated::set_at`). Two or more
+//! rotates (Shift snaps to 15°), and with the Crop tool on (the rail, the timeline toolbar or the context
+//! menu's "Crop Handles") the edge handles crop instead: the clip's built-in `crop_left` / `crop_right` /
+//! `crop_top` / `crop_bottom`, via `Animated::set_at`, one undo step per drag. Two or more
 //! selected clips show one union box and move together (no handles). A drag-to-move snaps to the
 //! canvas centre / edges / thirds / other clips with guide lines (`ui::guides::canvas_snap`, gated by
 //! Settings.canvas_snap). Ctrl+wheel zooms and middle-drag pans the viewer (`PreviewState.view`, never
@@ -35,7 +36,7 @@ use crate::engine::compose::{placement, Placement};
 use crate::hotkeys::Action;
 use crate::media::Frame;
 use crate::model::{
-    Animated, BackgroundMode, Clip, ClipKind, Effect, EffectKind, Id, Mask, MaskShape, Project, ShapeKind, ShapeStyle,
+    Animated, BackgroundMode, ClipKind, Id, Mask, MaskShape, Project, ShapeKind, ShapeStyle,
     Stroke as ModelStroke,
 };
 use crate::theme::Palette;
@@ -191,28 +192,13 @@ struct HandleDrag {
     press: Pos2,
     /// (scale, scale_x, scale_y, rotation) at the press.
     start: (f64, f64, f64, f64),
+    /// The built-in crop (left, right, top, bottom) at the press.
+    crop: [f32; 4],
 }
 
 /// Single choke point for viewer zoom / pan: scale the fitted letterbox about its centre, then pan.
 pub(crate) fn apply_view(lb: Rect, (zoom, pan): (f32, Vec2)) -> Rect {
     Rect::from_center_size(lb.center() + pan, lb.size() * zoom)
-}
-
-/// The clip's `EffectKind::Crop` entry, appended when missing (same find-or-append shape as
-/// ToggleEffect / tools_color's `set_effect`). Shared with the `clip.crop` / `timeline.reframe` tools.
-pub(crate) fn crop_effect(clip: &mut Clip) -> &mut Effect {
-    let i = clip.effects.iter().position(|e| e.kind == EffectKind::Crop).unwrap_or_else(|| {
-        clip.effects.push(Effect::new(EffectKind::Crop));
-        clip.effects.len() - 1
-    });
-    &mut clip.effects[i]
-}
-
-/// Current (left, right, top, bottom) crop fractions of a clip at clip-local `lt`, if it has a Crop.
-fn crop_fractions(clip: &Clip, lt: f64) -> Option<[f32; 4]> {
-    let e = clip.effects.iter().find(|e| e.kind == EffectKind::Crop)?;
-    let v = |i: usize| e.params.get(i).map(|a| a.at(lt) as f32).unwrap_or(0.0);
-    Some([v(0), v(1), v(2), v(3)])
 }
 
 /// Apply one frame of a handle drag: the pointer at `now` against the press snapshot writes exactly one
@@ -253,7 +239,13 @@ fn handle_apply(d: &HandleDrag, now: Pos2, shift: bool, project: &mut Project, l
                 2 => (3, (hh - l.y) / (2.0 * hh)),
                 _ => (0, (l.x + hw) / (2.0 * hw)),
             };
-            crop_effect(cl).params[idx].set_at(lt, frac.clamp(0.0, 0.5) as f64);
+            let p = ["crop_left", "crop_right", "crop_top", "crop_bottom"][idx];
+            // the opposite edge stays put: the two never cross
+            let opp = [1, 0, 3, 2][idx];
+            let frac = frac.clamp(0.0, (1.0 - d.crop[opp] - 0.01).clamp(0.0, 0.5));
+            if let Some(a) = crate::model::prop_mut(cl, p) {
+                a.set_at(lt, frac as f64);
+            }
         }
     }
     true
@@ -318,7 +310,7 @@ pub struct PreviewState {
     // ---- ws:canvas-handles-monitor ----
     /// Active transform / crop handle drag.
     handle: Option<HandleDrag>,
-    /// Context menu "Crop Handles": the edge handles crop (one Crop effect) instead of scaling.
+    /// The Crop tool ("Crop Handles"): the edge handles set the clip's built-in crop instead of scaling.
     pub(crate) crop_mode: bool,
     /// Which mask the mask tool's drag writes (`clip.mask_target` / the context menu).
     pub(crate) mask_target: MaskTarget,
@@ -1567,7 +1559,7 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
             painter.line_segment([o - vec2(0.0, 6.0), o + vec2(0.0, 6.0)], stroke);
         } else if let Some(a) = c.project.asset(clip.asset) {
             let p = placement(c.project, clip, c.playhead, (a.width, a.height), cw, ch, true);
-            let crop = state.crop_mode.then(|| crop_fractions(clip, lt).unwrap_or([0.0; 4]));
+            let crop = state.crop_mode.then(|| clip.crop_at(lt));
             let mut o = Outline::new(&p, to_screen, crop);
             // keep the knob grabbable when the video fills the pane's height
             o.knob = o.knob.clamp(rect.min + vec2(6.0, 6.0), rect.max - vec2(6.0, 6.0));
@@ -1734,7 +1726,7 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
         if let (Some(h), Some(o), Some(pp), Some(cl)) = (handle_hit, ol, press, c.project.clip(id)) {
             let lt = cl.local(c.playhead);
             let start = (cl.scale.at(lt), cl.scale_x.at(lt), cl.scale_y.at(lt), cl.rotation.at(lt));
-            state.handle = Some(HandleDrag { handle: h, id, ol: o, press: pp, start });
+            state.handle = Some(HandleDrag { handle: h, id, ol: o, press: pp, start, crop: cl.crop_at(lt) });
         } else if poly_hit.is_some() {
             state.point_drag = poly_hit;
         } else {
@@ -1781,7 +1773,10 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
             for &(sid, x0, y0) in clips.iter() {
                 if let Some(cl) = c.project.clip_mut(sid) {
                     let lt = cl.local(c.playhead);
-                    cl.x.set_at(lt, x0 + dx as f64);
+                    // a caption bar spans the frame: it only moves up and down
+                    if !crate::engine::compose::is_bar(cl) {
+                        cl.x.set_at(lt, x0 + dx as f64);
+                    }
                     cl.y.set_at(lt, y0 + dy as f64);
                 }
             }
@@ -1919,7 +1914,7 @@ fn sample_stats_at(stats: &crate::engine::gpu::FrameStats, lb: Rect, pos: Pos2) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Clip, MaskShape};
+    use crate::model::{Clip, Effect, EffectKind, MaskShape};
     use eframe::egui::{Event, Modifiers, PointerButton, RawInput};
 
     #[test]
@@ -2684,7 +2679,7 @@ mod tests {
     }
 
     #[test]
-    fn crop_handle_appends_exactly_one_crop_effect() {
+    fn crop_handles_set_the_built_in_crop_one_undo_per_drag() {
         let mut h = H::new();
         h.with_asset();
         h.state.crop_mode = true;
@@ -2693,23 +2688,22 @@ mod tests {
         // centre) downwards by 60 px
         let right = pos2(lb.right(), lb.center().y);
         h.drag(right, right - vec2(120.0, 0.0));
+        assert_eq!(h.undos, 1, "one undo step for the drag");
         let top = pos2(lb.center().x - 60.0, lb.top());
         h.drag(top, top + vec2(0.0, 60.0));
         let c = h.project.clip(7).unwrap();
-        let crops: Vec<&Effect> = c.effects.iter().filter(|e| e.kind == EffectKind::Crop).collect();
-        assert_eq!(
-            c.effects.len(),
-            1,
-            "two crop drags, one effect: {:?}",
-            c.effects.iter().map(|e| e.kind).collect::<Vec<_>>()
-        );
-        let e = crops[0];
-        let (right_f, top_f) = (e.params[1].value, e.params[2].value);
+        assert!(c.effects.is_empty(), "no Crop effect: the crop is the clip's own");
+        let (right_f, top_f) = (c.crop_right.value, c.crop_top.value);
         assert!((right_f - 120.0 / lb.width() as f64).abs() < 0.01, "Right fraction {right_f}");
         assert!((top_f - 60.0 / lb.height() as f64).abs() < 0.01, "Top fraction {top_f}");
-        assert_eq!((e.params[0].value, e.params[3].value), (0.0, 0.0), "untouched sides stay 0");
+        assert_eq!((c.crop_left.value, c.crop_bottom.value), (0.0, 0.0), "untouched sides stay 0");
         assert_eq!(xform(&h).1, 1.0, "crop never scales");
         assert_eq!(h.undos, 2, "one undo per drag");
+        // dragging a handle past the opposite edge stops short of it
+        let left = pos2(lb.left(), lb.center().y);
+        h.drag(left, pos2(lb.right() + 50.0, lb.center().y));
+        let c = h.project.clip(7).unwrap();
+        assert!(c.crop_left.value <= 0.5 && c.crop_left.value + c.crop_right.value < 1.0, "never crossed");
     }
 
     #[test]
@@ -2722,6 +2716,7 @@ mod tests {
         h.drag(right, right + vec2(60.0, 0.0));
         let c = h.project.clip(7).unwrap();
         assert!(c.effects.is_empty(), "no Crop effect without the toggle");
+        assert_eq!(c.crop_at(0.0), [0.0; 4], "and no crop");
         assert!(c.scale_x.value > 1.05, "the edge handle scaled instead");
     }
 

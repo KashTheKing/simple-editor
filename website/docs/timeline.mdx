@@ -12,8 +12,17 @@ below, time running left to right, and the red **playhead** marking the frame th
 
 One row above the tracks:
 
-- **Tools**: **Select** (<kbd>V</kbd>), **Blade** (<kbd>C</kbd>) and **Rate stretch** (<kbd>R</kbd>).
-- **Snapping** (the magnet, <kbd>S</kbd>).
+- **Tools**: **Select** (<kbd>V</kbd>), **Ripple Edit** and **Rolling Edit** (<kbd>N</kbd>), **Slip**
+  (<kbd>Y</kbd>) and **Slide**, the **Blade** (<kbd>C</kbd>), and **Hand** (<kbd>H</kbd>) and **Zoom**
+  (<kbd>Z</kbd>). Tools that share a button (Ripple / Rolling, Slip / Slide, Hand / Zoom) show a small
+  corner mark: right-click the button, or hold it, to pick the other one. Right-click any tool to hide
+  it or bring hidden ones back.
+- **Snapping** (the magnet, <kbd>S</kbd>) and **Linked Selection** (the chain): with Linked Selection
+  on, clicking a clip also selects its linked audio or video.
+- A few tools have no button but still work from their key: **Rate stretch** (<kbd>R</kbd>), the
+  **Marker** tool (<kbd>Shift+M</kbd>), the **Pen** (<kbd>P</kbd>, a click puts an opacity or volume
+  keyframe on a clip) and, if you bind keys to them in Settings ▸ Hotkeys, Track Select and Spacer.
+  Text, shapes, Draw, Mask and Crop live on the [Preview's tool rail](viewer.mdx#the-tool-rail).
 - On the right: zoom out, the zoom slider, zoom in, and **Zoom to Fit** (<kbd>Shift+Z</kbd>).
 
 Scroll to move up and down, <kbd>Shift</kbd>+scroll to move sideways, <kbd>Ctrl</kbd>+scroll to zoom,
@@ -22,7 +31,7 @@ and drag with the middle mouse button to pan. Click or drag on the ruler to move
 ## Select
 
 - **Click** a clip to select it. Its linked audio or video comes with it; <kbd>Alt</kbd>+click takes just
-  the one clip.
+  the one clip. With **Linked Selection** off it is the other way round.
 - <kbd>Ctrl</kbd>+click adds or removes a clip, <kbd>Shift</kbd>+click adds one.
 - **Drag across empty track space** to select everything in the box (<kbd>Shift</kbd>+drag adds to the
   selection).

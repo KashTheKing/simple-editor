@@ -320,6 +320,9 @@ pub struct TimelineCtx<'a> {
     /// `Settings.snap_markers`: whether markers count as snap candidates (transitions/edges/in-out
     /// always do). ws:snap-engine.
     pub snap_markers: bool,
+    /// `Settings.linked_selection`: a click picks the whole link group (Alt+click: just the clip). Off,
+    /// the other way round.
+    pub linked: bool,
     pub playing: bool,
     /// Thumbnail cache for video/image filmstrips. None = no filmstrips (e.g. headless tests).
     pub thumbs: Option<&'a mut ThumbCache>,
@@ -2182,8 +2185,9 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         if !mods.ctrl && !mods.shift {
             c.sel_transitions.clear();
         }
-        // click = whole link group, Alt+click = just this clip, Ctrl toggles the group, Shift adds it
-        let group = if mods.alt { vec![cid] } else { c.project.expand_links(&[cid]) };
+        // click = whole link group, Alt+click = just this clip (the other way round with Linked Selection
+        // off), Ctrl toggles the group, Shift adds it
+        let group = if mods.alt == c.linked { vec![cid] } else { c.project.expand_links(&[cid]) };
         if mods.ctrl {
             if c.selection.contains(&cid) {
                 c.selection.retain(|x| !group.contains(x));

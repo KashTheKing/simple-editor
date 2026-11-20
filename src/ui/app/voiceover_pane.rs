@@ -10,7 +10,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if pane != Pane::Voiceover {
         return false;
     }
-    let devices = app.audio_inputs();
+    let mut devices = app.audio_inputs();
+    // ws:page-switch-freeze: while the list is still being probed the picked input stays on show
+    if app.audio_inputs_pending() && !app.settings.voice_device.is_empty() {
+        devices.push((app.settings.voice_device.clone(), false));
+    }
     let takes = voiceover_ui::takes(&app.project);
     let r = {
         let App { capture_ui, settings, voice_rec, playhead, palette, .. } = app;
