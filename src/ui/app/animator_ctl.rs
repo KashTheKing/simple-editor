@@ -7,6 +7,7 @@ use super::*;
 use crate::mcp::tools::{ToolDef, ToolKind, ToolOutcome};
 use crate::model::{find_block, AnimLink, BlockCtl, Dir, Match, PathCtl};
 use crate::ui::animator::AnimTool;
+use crate::ui::gallery::GalleryTab;
 use crate::ui::tools::Tool;
 
 /// Onion skin follows the Animator: off whenever it wasn't on screen last frame.
@@ -42,7 +43,15 @@ pub(super) fn frame(app: &mut App, ctx: &egui::Context) {
     // timeline's clips again after a press on the timeline or the Viewer
     if ctx.input(|i| i.pointer.any_pressed()) {
         match app.layout.hovered {
-            Some(Pane::Animator) => app.animator.here = true,
+            Some(Pane::Animator) => {
+                app.animator.here = true;
+                // a Gallery on screen shows the blocks, unless another tab was picked since
+                let shown = app.pane_drawn(Pane::Presets);
+                let g = &mut app.gallery;
+                if shown && !g.picked && (g.tab != GalleryTab::Animate || g.lib.is_some()) {
+                    (g.tab, g.lib) = (GalleryTab::Animate, None);
+                }
+            }
             Some(Pane::Timeline | Pane::Preview) => app.animator.here = false,
             _ => {}
         }
@@ -71,6 +80,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     let playing = app.player.is_playing();
     let resp = {
         let App { project, selection, playhead, undo, redo, animator: st, palette, settings, .. } = app;
+        // the property list's view (hidden properties, folded groups) is a setting: the same on every clip
+        if !std::mem::replace(&mut st.view_loaded, true) {
+            (st.props_off, st.folded) = (settings.anim_hidden_props.clone(), settings.anim_folded.clone());
+        }
         let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
         crate::ui::animator::show(
             ui,
@@ -84,6 +97,11 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             &mut push,
         )
     };
+    let st = &app.animator;
+    if st.props_off != app.settings.anim_hidden_props || st.folded != app.settings.anim_folded {
+        (app.settings.anim_hidden_props, app.settings.anim_folded) = (st.props_off.clone(), st.folded.clone());
+        app.settings.save();
+    }
     if resp.seeked {
         app.player.pause();
         app.player.seek(app.playhead);

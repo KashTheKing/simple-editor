@@ -420,6 +420,7 @@ pub(super) fn switch_page(app: &mut App, name: &str) -> bool {
         app.preview.crop_mode = false; // tools-panel: a page opens on its plain tool, never a leftover Crop
         if page == "Animate" {
             app.gallery.tab = crate::ui::gallery::GalleryTab::Animate; // the page's Gallery opens on the blocks
+            app.gallery.picked = false;
         }
         // ws:panels-multiscreen: the Audio page's music area - the Library's sounds, the Gallery's Audio side
         if page == "Audio" {

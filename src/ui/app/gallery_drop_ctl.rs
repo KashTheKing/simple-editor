@@ -29,6 +29,7 @@ pub(super) fn drop_len(app: &App, p: &DragPayload) -> f64 {
             crate::engine::gallery::find(&crate::engine::gallery::root(), crate::engine::gallery::Kind::Sound, name)
                 .and_then(|i| i.data.get("duration").and_then(|d| d.as_f64()))
         }
+        DragPayload::KeyBlock(name) => crate::model::find_block(&app.settings.key_blocks, name).map(|b| b.dur),
         DragPayload::LibItem(id) => match library::split_id(id) {
             Some((Kind::Html, short)) => {
                 library::read(Kind::Html, &short).ok().map(|h| crate::engine::html::parse(&h).duration)

@@ -165,11 +165,19 @@ pub(crate) fn paint(lp: &egui::Painter, pal: &Palette, state: &TimelineState, p:
         ))
     };
     match aim {
-        Aim::Clips { clips, .. } => {
+        Aim::Clips { clips, t, .. } => {
+            // ponytail: a keyframe block is told apart by the drag's key (`drag_key`, the payload's Debug)
+            let block = state.drag_key.starts_with("KeyBlock");
             for &id in clips {
                 if let Some(r) = p.track_of(id).zip(p.clip(id)).and_then(|(ti, c)| clip_rect(ti, c)) {
                     lp.rect_filled(r, 0, fill);
                     lp.rect_stroke(r, 0, stroke, StrokeKind::Inside);
+                    // a block: a ghost of its length from the drop time
+                    if block {
+                        let g = Rect::from_min_max(pos2(state.x_at(*t), r.top() + 3.0), pos2(state.x_at(*t + len), r.bottom() - 3.0));
+                        lp.rect_filled(g.intersect(r), 3, pal.selection.gamma_multiply(0.5));
+                        lp.line_segment([pos2(g.left(), r.top()), pos2(g.left(), r.bottom())], stroke);
+                    }
                 }
             }
         }

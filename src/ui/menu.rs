@@ -109,6 +109,11 @@ pub fn check(ui: &mut egui::Ui, on: bool, label: &str, shortcut: &str) -> egui::
     row(ui, on.then_some(Glyph::Letter('✓')), label, shortcut)
 }
 
+/// `check` that leaves the menu open, for a list of toggles picked several at a time.
+pub fn check_keep(ui: &mut egui::Ui, on: bool, label: &str) -> egui::Response {
+    row_ui(ui, on.then_some(Glyph::Letter('✓')), label, "", true)
+}
+
 // egui's popups (`Popup::show`, `SubMenu::show`, `MenuButton::ui`) are generic over the body closure
 // and never box it, so every `.context_menu(|ui| …)` / `ui.menu_button(…, |ui| …)` call site compiled
 // its own ~30 KB copy of them (~150 menus = 3.7 MB of exe after the simplify wave). `context`,
@@ -170,6 +175,8 @@ fn context_area_dyn(ui: &egui::Ui, id: egui::Id, rect: egui::Rect, add: &mut dyn
     let p = ctx.data(|d| d.get_temp::<egui::Pos2>(at)).unwrap_or(rect.min);
     egui::Popup::new(id, ctx.clone(), egui::PopupAnchor::Position(p), ui.layer_id())
         .kind(egui::PopupKind::Menu)
+        // its rows close it (`row`); a `check_keep` toggle leaves it open for the next pick
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
         .layout(egui::Layout::top_down_justified(egui::Align::Min))
         .open_memory(None)
         .show(|ui| add(ui));
