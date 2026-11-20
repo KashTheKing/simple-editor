@@ -169,9 +169,9 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         // Display Matrix rotation (phone portrait): ffmpeg autorotates frames, so report display dims.
         let rot = s.get("side_data_list").and_then(Value::as_array).into_iter().flatten();
         let rot = rot.map(|d| f64_of(d, "rotation")).find(|r| *r != 0.0).unwrap_or(0.0);
-        if (rot.abs().round() as i64) % 180 == 90 {
-            std::mem::swap(&mut a.width, &mut a.height);
-        }
+        // ws:parity-io: a rotation override (Media Properties) replaces the file's (ffprobe's is counter-clockwise)
+        let io = super::io_override::get(path).unwrap_or_default();
+        (a.width, a.height) = io.display_size((a.width, a.height), -rot.round() as i32);
         a.codec = str_of(s, "codec_name").to_string();
         remember_transfer(path, str_of(s, "color_transfer")); // ws:project-color-fps
         a.fps = parse_rate(str_of(s, "avg_frame_rate"));
@@ -310,9 +310,14 @@ impl VideoPipe {
             "-sn".into(),
             "pipe:1".into(),
         ];
-        if self.tonemap {
-            args.splice(6..6, ["-vf".to_string(), TONEMAP.to_string()]);
+        // ws:parity-io: a rotation / range override (`io_override`) after the tone map
+        let io = super::io_override::get(&self.path).unwrap_or_default();
+        let vf: Vec<String> = [self.tonemap.then(|| TONEMAP.to_string()), io.filters()].into_iter().flatten().collect();
+        if !vf.is_empty() {
+            args.splice(6..6, ["-vf".to_string(), vf.join(",")]);
         }
+        let pre = io.input_args();
+        args.splice(2..2, pre);
         match spawn(&args) {
             Ok(c) => {
                 self.child = Some(c);

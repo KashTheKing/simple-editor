@@ -72,3 +72,8 @@ pub mod tags;
 // ---- ws:voice-input ----
 pub mod voice;
 pub mod xmeml;
+// ---- ws:parity-io ----
+pub mod gpu_pick; // Settings ▸ Performance ▸ GPU
+pub mod media_info; // Media Properties: streams, colour, bitrate graph
+pub mod netstream; // Open Network Stream: probe, preview, record
+pub mod shuttle; // Contour ShuttlePRO / ShuttleXpress

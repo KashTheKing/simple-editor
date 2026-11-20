@@ -110,6 +110,17 @@ pub(super) fn export(ui: &mut egui::Ui, s: &mut Settings, encoders: &[String]) -
             std::iter::once(("auto", "auto (Speed)")).chain(ENCODER_PRESETS.iter().map(|p| (*p, *p))).collect();
         changed |= combo(ui, "preset", &mut s.preset, &opts, Some(260.0));
         ui.end_row();
+
+        // ---- ws:parity-io ----
+        ui.label("Levels");
+        changed |= ui
+            .checkbox(&mut s.export_full_range, "Full range")
+            .on_hover_text(
+                "SDR H.264 / HEVC exports use 0-255 levels, tagged full range, instead of the broadcast 16-235. \
+                 For screen recordings and players that expect full range; most platforms want it off.",
+            )
+            .changed();
+        ui.end_row();
     });
     changed
 }

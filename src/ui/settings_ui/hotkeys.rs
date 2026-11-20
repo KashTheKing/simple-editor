@@ -164,6 +164,7 @@ pub(super) fn hotkeys_tab(
     let sheet = hotkeys.text(Action::CheatSheet);
     let sheet = if sheet.is_empty() { format!("Help ▸ {}", Action::CheatSheet.label()) } else { sheet };
     ui.weak(format!("Mouse gestures and the few fixed keys are listed in the shortcuts overlay ({sheet})."));
+    changed |= super::shuttle::shuttle_section(ui, settings); // ws:parity-io
     changed
 }
 

@@ -131,6 +131,11 @@ pub struct Project {
     /// through `timeline_tabs()`, which drops deleted sequences and always holds the open one.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub timeline_tabs: Vec<Option<Id>>,
+    // ---- ws:parity-io ----
+    /// Per-source decode overrides (rotation, YUV range), by source path: Media Properties /
+    /// `media.set_io`. The decoders follow it through `media::io_override::sync`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub media_io: std::collections::BTreeMap<String, crate::media::io_override::MediaIo>,
 }
 
 // ---- ws:project-color-fps ----

@@ -19,6 +19,33 @@ pub(super) fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str, c
         });
         ui.end_row();
 
+        // ---- ws:parity-io ----
+        ui.label("GPU");
+        ui.horizontal(|ui| {
+            use crate::engine::gpu_pick::{adapters, Choice};
+            let cur = Choice::parse(&s.gpu_adapter);
+            let mut opts = vec![Choice::Auto, Choice::PowerSaving, Choice::HighPerformance];
+            opts.extend(adapters().iter().map(|a| Choice::Named(a.name.clone())));
+            if !opts.contains(&cur) {
+                opts.push(cur.clone()); // a card that is not plugged in right now
+            }
+            egui::ComboBox::from_id_salt("gpu_adapter").selected_text(cur.label()).width(260.0).show_ui(ui, |ui| {
+                for c in opts {
+                    let tip = match adapters().iter().find(|a| Choice::Named(a.name.clone()) == c) {
+                        Some(a) => format!("{} MB video memory", a.vram_mb),
+                        None => "Windows picks the GPU for this choice".to_string(),
+                    };
+                    if ui.selectable_label(c == cur, c.label()).on_hover_text(tip).clicked() {
+                        s.gpu_adapter = c.setting();
+                        changed = true;
+                    }
+                }
+            })
+            .response
+            .on_hover_text("The graphics card the preview and hardware decoding use. Applies after a restart.");
+        });
+        ui.end_row();
+
         ui.label("Preview quality");
         ui.horizontal(|ui| {
             let mut q = s.preview_quality.clamp(25, 100);

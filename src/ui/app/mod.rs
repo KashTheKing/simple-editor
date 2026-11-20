@@ -945,6 +945,7 @@ impl App {
         layout_ctl::migrate_to_pages(&mut settings);
         media::ffpipe::set_dir(&settings.ffmpeg_dir);
         media::ytdlp::set_dir(&settings.ytdlp_dir);
+        crate::engine::gpu_pick::set_choice(&settings.gpu_adapter); // ws:parity-io: before any decoder opens
         theme::apply(ctx, &settings.theme, &settings.palette, &settings.ui_look);
         crate::perf::startup_mark("app: theme + fonts");
         let backend = Backend::parse(&settings.decoder);

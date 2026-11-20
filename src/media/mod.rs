@@ -6,6 +6,7 @@
 pub mod d3d;
 pub mod bg;
 pub mod ffpipe;
+pub mod io_override; // ws:parity-io: per-file rotation / range overrides
 pub mod mf;
 pub mod proxy;
 pub mod renames;
@@ -238,7 +239,8 @@ fn open_known(
             && mf::zero_copy()
             && !is_image_path(path)
             && !proxy::is_stacked(std::path::Path::new(path))
-            && !ffpipe::is_hdr(path) =>
+            && !ffpipe::is_hdr(path)
+            && io_override::get(path).is_none() =>
         {
             mf::open_video_gpu(path).or_else(|e| {
                 static ONCE: std::sync::Once = std::sync::Once::new();
@@ -257,6 +259,8 @@ pub fn open_video(path: &str, backend: Backend) -> Result<Box<dyn VideoSource>, 
     let v = match backend {
         // ws:project-color-fps: HDR sources decode through ffmpeg, tone-mapped to SDR (`ffpipe::TONEMAP`)
         _ if ffpipe::is_hdr(path) => ffpipe::open_video(path),
+        // ws:parity-io: a rotation / range override is an ffmpeg filter (MF can do neither)
+        _ if io_override::get(path).is_some() => ffpipe::open_video(path),
         Backend::Ffmpeg => ffpipe::open_video(path),
         Backend::Mf => mf::open_video(path),
         Backend::Auto => mf::open_video(path).or_else(|e| ffpipe::open_video(path).map_err(|e2| format!("{e}; {e2}"))),
@@ -726,7 +730,8 @@ impl DecoderPool {
     /// The file a source is decoded from: its proxy in a preview pool, unless `exact` is on.
     fn resolved(&self, path: &str) -> String {
         match self.proxies.get(path) {
-            Some(p) if !self.exact => p.clone(),
+            // ws:parity-io: a proxy was built without the source's rotation / range override
+            Some(p) if !self.exact && io_override::get(path).is_none() => p.clone(),
             _ => path.to_string(),
         }
     }

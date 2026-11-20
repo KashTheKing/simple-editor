@@ -719,6 +719,20 @@ pub struct Settings {
     // ---- ws:player-metadata ----
     /// Saved tag sets (Settings ▸ Metadata), applied in one click in the player, the Library and Export.
     pub metadata_presets: Vec<crate::engine::tags::MetaPreset>,
+    // ---- ws:parity-io ----
+    /// Settings ▸ Performance ▸ GPU: "" = Automatic, "power", "performance", or an adapter's name
+    /// (`engine::gpu_pick`). Applies at the next start.
+    pub gpu_adapter: String,
+    /// Settings ▸ Performance ▸ Full-range export: SDR 4:2:0 exports at 0-255 (tagged full) instead of 16-235.
+    pub export_full_range: bool,
+    /// Read a Contour ShuttlePRO / ShuttleXpress when one is plugged in (`engine::shuttle`).
+    #[serde(default = "default_true")]
+    pub shuttle: bool,
+    /// The Shuttle's buttons, button 1 first: an `Action` id each ("" = nothing).
+    #[serde(default = "crate::engine::shuttle::default_buttons")]
+    pub shuttle_buttons: Vec<String>,
+    /// Open Network Stream's recent addresses, newest first.
+    pub stream_urls: Vec<String>,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1018,6 +1032,12 @@ impl Default for Settings {
             emulator: BTreeMap::new(),
             match_import: true, // ws:project-color-fps
             metadata_presets: Vec::new(), // ws:player-metadata
+            // ---- ws:parity-io ----
+            gpu_adapter: String::new(),
+            export_full_range: false,
+            shuttle: true,
+            shuttle_buttons: crate::engine::shuttle::default_buttons(),
+            stream_urls: Vec::new(),
         }
     }
 }

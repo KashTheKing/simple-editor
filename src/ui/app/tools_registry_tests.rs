@@ -128,6 +128,8 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("add_path_block", "animate.path"),
     ("make_transitionable", "animate.transitionable"),
     ("add_span", "animate.span_add"),
+    // ---- ws:parity-io ----
+    ("set_media_io", "media.set_io"),
     ("remove_span", "animate.span_remove"),
     ("refresh_spans", "animate.span_set"),
     ("trim_clip", "timeline.trim"),
@@ -230,6 +232,7 @@ const OP_FILES: &[&str] = &[
     include_str!("../../model/ops/graph.rs"),
     include_str!("../../model/ops/linked_bins.rs"),
     include_str!("../../model/ops/markers.rs"),
+    include_str!("../../model/ops/media_io.rs"), // ws:parity-io
     // ---- ws:pro-monitor ----
     include_str!("../../model/ops/multicam.rs"),
     include_str!("../../model/ops/paths.rs"),

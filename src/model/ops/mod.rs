@@ -16,6 +16,7 @@ pub mod convert; // ws:animator: whole-timeline audit, keys -> blocks, transitio
 mod stacks; // ws:animator
 pub mod spans; // ws:animator (`MIN_SPAN`)
 mod markers;
+mod media_io; // ws:parity-io
 // ---- ws:pro-monitor ----
 mod multicam;
 mod paths;

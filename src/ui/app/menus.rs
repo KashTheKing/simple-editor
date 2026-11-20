@@ -231,7 +231,16 @@ impl App {
             if recents.is_empty() {
                 ui.add_enabled_ui(false, |ui| menu::row(ui, None, "(none)", ""));
             }
-            for r in &recents {
+            // ws:parity-io: search in recent files (a long list only)
+            let qid = egui::Id::new("recent_menu_search");
+            let mut query: String = ui.data(|d| d.get_temp(qid)).unwrap_or_default();
+            if recents.len() > 6 {
+                let r = ui.add(egui::TextEdit::singleline(&mut query).hint_text("Search").desired_width(f32::INFINITY));
+                if r.on_hover_text("Find a recent project by its name or folder").changed() {
+                    ui.data_mut(|d| d.insert_temp(qid, query.clone()));
+                }
+            }
+            for r in recents.iter().filter(|r| crate::ui::home_page::matches_recent(r, &query)) {
                 let p = Path::new(r);
                 let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| r.clone());
                 let folder = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();

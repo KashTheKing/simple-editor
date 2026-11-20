@@ -18,7 +18,7 @@ use crate::model::{Asset, AudioStreamInfo, ClipKind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use windows::core::{Interface, BOOL, GUID, HSTRING};
-use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
+use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_UNKNOWN};
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDevice, ID3D11Device, ID3D11Multithread, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION,
 };
@@ -90,9 +90,12 @@ fn dxgi() -> Option<&'static SharedDeviceManager> {
     MANAGER
         .get_or_init(|| unsafe {
             let mut device: Option<ID3D11Device> = None;
+            // ws:parity-io: Settings ▸ Performance ▸ GPU (an explicit adapter needs the UNKNOWN driver type)
+            let adapter = crate::engine::gpu_pick::decode_adapter();
+            let driver = if adapter.is_some() { D3D_DRIVER_TYPE_UNKNOWN } else { D3D_DRIVER_TYPE_HARDWARE };
             D3D11CreateDevice(
-                None,
-                D3D_DRIVER_TYPE_HARDWARE,
+                adapter.as_ref(),
+                driver,
                 Default::default(),
                 D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                 None,
