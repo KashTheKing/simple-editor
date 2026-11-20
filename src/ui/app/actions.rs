@@ -59,8 +59,10 @@ impl App {
                         });
                         if let Ok(mut p) = Project::from_json(&entry.json) {
                             p.audio_only_preview = self.project.audio_only_preview; // a view setting, not an edit
+                            let was = timeline_tabs::before_restore(self, &mut p); // ws:timeline-tabs
                             self.project = p;
                             self.after_edit();
+                            timeline_tabs::after_restore(self, was);
                         }
                     }
                 }
@@ -81,8 +83,10 @@ impl App {
                         });
                         if let Ok(mut p) = Project::from_json(&entry.json) {
                             p.audio_only_preview = self.project.audio_only_preview; // a view setting, not an edit
+                            let was = timeline_tabs::before_restore(self, &mut p); // ws:timeline-tabs
                             self.project = p;
                             self.after_edit();
+                            timeline_tabs::after_restore(self, was);
                         }
                     }
                 }
@@ -521,10 +525,8 @@ impl App {
                 }
             }
             OpenParentSequence => {
-                if self.project.editing.is_some() {
-                    self.project.close_sequence();
-                    self.sequence_view_changed(self.playhead); // clamps into the parent timeline
-                }
+                // ws:timeline-tabs: the main timeline's tab (opened again if it was closed)
+                timeline_tabs::switch(self, None);
             }
             SaveToGallery => gallery_mine::open_dialog(self, None),
             SaveTemplate => {
@@ -934,23 +936,12 @@ impl App {
 
     /// Open a nested timeline for editing (keeps the player/preview in sync).
     pub(super) fn enter_sequence(&mut self, id: Id) {
-        if self.project.editing == Some(id) {
-            return;
-        }
-        if self.project.open_sequence(id) {
-            self.sequence_view_changed(0.0);
-        } else {
+        // ws:timeline-tabs: a tab of its own (or its tab, when it is open already)
+        if !timeline_tabs::switch(self, Some(id)) {
             self.toast("That sequence no longer exists");
         }
     }
 
-    /// Navigating in/out of a nested sequence is a view change, not an edit: re-sync the player,
-    /// but no undo step and no dirty flag (that made "just looking" prompt to save on exit).
-    pub(super) fn sequence_view_changed(&mut self, t: f64) {
-        self.selection.clear();
-        self.player.set_project(&self.project);
-        self.seek(t);
-    }
 
     /// "Save from selection": one clip's node graph or effect stack becomes an effect preset, anything
     /// else (adjustment layers, several clips) becomes a clip template - that is the only flavour that

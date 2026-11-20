@@ -417,6 +417,12 @@ actions! {
     // (the 1 / 2 / 3-screen setup). Unbound by design.
     ResetPageLayout => "reset_page_layout", "Reset Page Layout", None;
     ScreenSetup => "screen_setup", "Screens…", None;
+    // ---- ws:timeline-tabs ----
+    // Cycle the timeline tabs (`ui::app::timeline_tabs`); new / close also have the strip's + and ×.
+    NextTimeline => "next_timeline", "Next Timeline Tab", sc(CTRL, Key::Tab);
+    PrevTimeline => "prev_timeline", "Previous Timeline Tab", sc(CTRL_SHIFT, Key::Tab);
+    NewTimeline => "new_timeline", "New Timeline Tab", None;
+    CloseTimeline => "close_timeline", "Close Timeline Tab", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -588,6 +594,11 @@ impl Hotkeys {
                 }
             }
         });
+        // ws:timeline-tabs: egui reads every Tab press (Ctrl ones too) as "move focus", which put the
+        // keyboard into a text field and blocked the next Ctrl+Tab. The panes aren't drawn yet: cancel it.
+        if out.iter().any(|a| matches!(a, Action::NextTimeline | Action::PrevTimeline)) {
+            ctx.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+        }
         out
     }
 }
@@ -769,6 +780,8 @@ pub fn group(a: Action) -> &'static str {
         QuickExportAs => "File",
         // ---- ws:panels-multiscreen ----
         ResetPageLayout | ScreenSetup => "Panels & Pages",
+        // ---- ws:timeline-tabs ----
+        NextTimeline | PrevTimeline | NewTimeline | CloseTimeline => "Timeline",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]
@@ -935,6 +948,27 @@ mod tests {
         // Resolve-style: Delete ripple-deletes, Backspace lifts - both late, so a hovered pane goes first
         assert_eq!(press(Key::Delete, NONE), (vec![], vec![Action::RippleDelete]));
         assert_eq!(press(Key::Backspace, NONE), (vec![], vec![Action::Delete]));
+    }
+
+    /// ws:timeline-tabs: Ctrl+Tab / Ctrl+Shift+Tab cycle the timeline tabs again and again. egui took each
+    /// Tab as "move focus", so the first chord put the keyboard in a text field and the next one was ignored.
+    #[test]
+    fn ctrl_tab_cycles_repeatedly_without_moving_focus() {
+        let h = Hotkeys::defaults();
+        let ctx = egui::Context::default();
+        let ctrl = Modifiers { ctrl: true, command: true, ..NONE };
+        let mut text = String::new();
+        let mut got = Vec::new();
+        for m in [ctrl, Modifiers { shift: true, ..ctrl }, ctrl] {
+            let ev = egui::Event::Key { key: Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: m };
+            let raw = egui::RawInput { modifiers: m, events: vec![ev], ..Default::default() };
+            let _ = ctx.run(raw, |ctx| {
+                got.extend(h.poll(ctx));
+                egui::CentralPanel::default().show(ctx, |ui| ui.text_edit_singleline(&mut text));
+            });
+        }
+        assert_eq!(got, vec![Action::NextTimeline, Action::PrevTimeline, Action::NextTimeline]);
+        assert!(!ctx.wants_keyboard_input(), "no text field took the keyboard");
     }
 
     #[test]

@@ -187,6 +187,7 @@ mod script_ctl; // ws:assistant-luau
 #[path = "windows.rs"]
 mod windows_dlg;
 mod project_match; // ws:project-color-fps
+mod timeline_tabs; // ws:timeline-tabs
 
 enum ExportKind {
     File { path: PathBuf },
@@ -590,6 +591,9 @@ pub struct App {
     // ---- ws:online-library ----
     /// The online library: the catalogue, downloads in flight, Gallery state.
     pub(crate) online: library_ctl::OnlineState,
+    // ---- ws:timeline-tabs ----
+    /// The background timeline tabs' views and the Rename Sequence window.
+    tabs: timeline_tabs::TabsState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -1077,6 +1081,7 @@ impl App {
             emulator: Default::default(), // ws:device-emulator
             emulator_tex: None,
             match_offer: None, // ws:project-color-fps
+            tabs: Default::default(), // ws:timeline-tabs
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -1145,7 +1150,8 @@ impl App {
         // ---- ws:media-library ----: a frame of a numbered still run bakes as one clip instead
         let paths = media_sync::intercept_sequences(self, &paths);
         // (a project with a linked bin is not empty: opening the file as the project would drop the bin)
-        if self.project.is_empty() && self.project.assets.is_empty() && self.project.linked_bins.is_empty() && paths.len() == 1 {
+        // (ws:timeline-tabs: the whole project - an empty sequence tab must not be replaced by the file)
+        if self.project.is_blank() && self.project.linked_bins.is_empty() && paths.len() == 1 {
             self.open_media(&paths[0]);
             return Vec::new();
         }
@@ -1196,6 +1202,7 @@ impl App {
         self.mcp_ctx.group = None;
         self.mcp_ctx.seen = None;
         self.selection.clear();
+        timeline_tabs::project_changed(self); // ws:timeline-tabs
         // the old project's Source clip and library picks point at assets that no longer exist
         self.close_source();
         let lib = &mut self.library;
@@ -1674,6 +1681,10 @@ impl eframe::App for App {
                     cozy: self.settings.ui_look != "sharp",
                     // ---- ws:pages ----
                     editing: self.project.editing.and_then(|id| self.project.sequence(id)).map(|s| s.name.clone()),
+                    // ---- ws:timeline-tabs ----
+                    timelines: (self.project.timeline_tabs().into_iter())
+                        .map(|t| (timeline_tabs::tab_name(&self.project, t), t.is_some(), t == self.project.editing))
+                        .collect(),
                     locked: self.settings.panels_locked,
                     // ---- ws:panels-multiscreen ----
                     monitors: self.screens.monitors.len().clamp(1, 3) as u8,
@@ -1719,6 +1730,7 @@ impl eframe::App for App {
                     push_undo_json(&mut self.undo, &mut self.redo, LAYOUT_STEP.to_owned());
                 }
                 self.pending_actions.extend(shown.actions);
+                timeline_tabs::apply(self, shown.tabs); // ws:timeline-tabs
                 if !shown.set_icon.is_empty() {
                     for (pane, pick) in shown.set_icon {
                         let key = format!("pane.{}", pane.title());
@@ -1922,6 +1934,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     emulator_ctl::TOOLS,
     // ---- ws:preview-audio-only ----
     audio_only::TOOLS,
+    // ---- ws:timeline-tabs ----
+    timeline_tabs::TOOLS,
     // ---- ws:assistant-luau ----
     media_api::TOOLS,
     script_ctl::TOOLS,
@@ -2020,6 +2034,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     music_ctl::act,
     // ---- ws:preview-audio-only ----
     audio_only::act,
+    // ---- ws:timeline-tabs ----
+    timeline_tabs::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -2191,6 +2207,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     music_ctl::windows,
     // ---- ws:project-color-fps ----
     project_match::window,
+    // ---- ws:timeline-tabs ----
+    timeline_tabs::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
