@@ -1163,10 +1163,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             // Blade is on the toolbar now); with the Blade active a hairline shows where a click cuts.
             // The later marker_hits registration still wins hit-testing over it.
             let br = ui.interact(vis, cid, Sense::click_and_drag());
-            if let Some((mark, tip)) = slow_tip.take().filter(|(m, _)| br.hover_pos().is_some_and(|p| m.contains(p))) {
-                br.clone().on_hover_text(tip);
-            } else if !clip.comment.is_empty() {
-                // ws:parity-editing: a commented clip gets a folded corner, and hovering shows the note
+            // ws:parity-editing: a commented clip gets a folded corner, and hovering shows the note
+            if !clip.comment.is_empty() {
                 let (tr, s) = (rect.right_top(), 7.0_f32.min(rect.height() * 0.4));
                 if rect.width() > s * 2.0 {
                     lp.add(egui::Shape::convex_polygon(
@@ -1175,6 +1173,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                         Stroke::NONE,
                     ));
                 }
+            }
+            if let Some((mark, tip)) = slow_tip.take().filter(|(m, _)| br.hover_pos().is_some_and(|p| m.contains(p))) {
+                br.clone().on_hover_text(tip);
+            } else if !clip.comment.is_empty() && br.hovered() {
                 br.clone().on_hover_text(format!("{}\n{}", clip.name, clip.comment));
             }
             if c.tool == Tool::Cut {

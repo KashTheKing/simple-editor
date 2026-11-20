@@ -817,7 +817,7 @@ fn run_export_with(
     cmd.args(&args);
     cmd.args(&colour_tags);
     // nothing is inherited from the inputs; only what the user typed is written
-    cmd.args(["-map_metadata", "-1"]);
+    cmd.args(strip_metadata_args(chapters.is_some()));
     for (k, v) in opts.metadata.iter().filter(|(k, _)| !k.trim().is_empty()) {
         cmd.args(["-metadata", &format!("{}={}", k.trim(), v)]);
     }
@@ -1108,6 +1108,16 @@ pub fn ffmetadata_chapters(chapters: &[(f64, String)], start: f64, dur: f64) -> 
         s.push_str(&format!("[CHAPTER]\nTIMEBASE=1/1000\nSTART={a}\nEND={b}\ntitle={title}\n"));
     }
     Some(s)
+}
+
+/// The "inherit no metadata" options. A bare `-map_metadata -1` also marks CHAPTER metadata as set by
+/// hand, which drops the chapter titles, so with chapters only the global and stream metadata are cut.
+fn strip_metadata_args(chapters: bool) -> Vec<&'static str> {
+    if chapters {
+        vec!["-map_metadata:g", "-1", "-map_metadata:s", "-1"]
+    } else {
+        vec!["-map_metadata", "-1"]
+    }
 }
 
 /// `input_args` plus the chapters file as the last input, inserted before the `-map`s (an option before
@@ -2483,6 +2493,13 @@ pub(crate) mod tests {
             "-f rawvideo -pix_fmt rgba -s 320x240 -r 30 -i pipe:0 \
              -f f32le -ar 48000 -ac 2 -i tcp://127.0.0.1:5000 -f ffmetadata -i c.txt -map 0:v -map 1:a -map_chapters 2"
         );
+    }
+
+    #[test]
+    fn chapter_titles_survive_the_metadata_strip() {
+        assert_eq!(strip_metadata_args(false), ["-map_metadata", "-1"], "no chapters: unchanged");
+        let a = strip_metadata_args(true);
+        assert!(!a.windows(2).any(|w| w == ["-map_metadata", "-1"]), "a bare strip would drop the titles: {a:?}");
     }
 
     #[test]
