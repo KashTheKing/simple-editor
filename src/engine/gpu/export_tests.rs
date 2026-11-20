@@ -199,7 +199,7 @@ fn a_transparent_export_frame_keeps_alpha_on_the_gpu() {
     p.preview_bg = crate::model::BackgroundMode::Black;
     r.bg_override = Some(crate::model::BackgroundMode::Custom([0, 0, 0, 0]));
     let mut gpu = Frame::default();
-    assert!(r.render_export_sync(&p, 0.5, w, h, &set, false, &mut gpu));
+    assert!(r.render_export_sync(&p, 0.5, w, h, &set, crate::engine::gpu::Readout::Rgba, &mut gpu));
     crate::engine::export::tests::assert_overlay(&gpu.rgba, "gpu");
 
     p.preview_bg = crate::model::BackgroundMode::Custom([0, 0, 0, 0]);
