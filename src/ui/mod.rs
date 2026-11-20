@@ -97,6 +97,7 @@ pub mod list_rows; // the shared table rows (thread viewers and the browser laye
 pub mod thread_ui;
 pub mod timecode_links; // ws:zones-markers: timecodes in text as playhead links
 pub mod zones_ui; // ws:zones-markers: the effect-zone Inspector card
+pub mod stock_ui; // ws:gallery-stock
 // ---- ws:browser-layer ----
 mod browser_ui;
 

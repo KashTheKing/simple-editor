@@ -55,6 +55,7 @@ mod blitz_tests;
 #[cfg(test)]
 mod social_text_tests; // ws:social-text
 pub mod library;
+pub mod stock; // ws:gallery-stock
 pub mod shaderlib;
 pub mod skills;
 pub mod webcap;

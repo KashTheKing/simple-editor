@@ -1,0 +1,149 @@
+{
+ "batchcomplete": true,
+ "continue": {
+  "gsroffset": 3,
+  "continue": "gsroffset||"
+ },
+ "query": {
+  "pages": [
+   {
+    "pageid": 81916645,
+    "ns": 6,
+    "title": "File:Ocean in Sommaroy.webm",
+    "index": 1,
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 2928602,
+      "width": 1920,
+      "height": 1080,
+      "duration": 15.472,
+      "thumburl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/5/5d/Ocean_in_Sommaroy.webm/330px--Ocean_in_Sommaroy.webm.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo",
+      "thumbwidth": 320,
+      "thumbheight": 180,
+      "responsiveUrls": {
+       "2": "https://thumb.wikimedia.org/wikipedia/commons/thumb/5/5d/Ocean_in_Sommaroy.webm/960px--Ocean_in_Sommaroy.webm.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo"
+      },
+      "thumbattribs": [],
+      "url": "https://upload.wikimedia.org/wikipedia/commons/5/5d/Ocean_in_Sommaroy.webm?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Ocean_in_Sommaroy.webm",
+      "descriptionshorturl": "https://commons.wikimedia.org/wiki/Special:Redirect/page/81916645",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Ocean in Sommaroy",
+        "source": "mediawiki-metadata"
+       },
+       "Artist": {
+        "value": "<a href=\"//commons.wikimedia.org/wiki/User:Netha_Hussain\" title=\"User:Netha Hussain\">User: Netha Hussain</a>",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "CC0",
+        "source": "commons-desc-page",
+        "hidden": ""
+       },
+       "LicenseUrl": {
+        "value": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "video/webm",
+      "mediatype": "VIDEO"
+     }
+    ]
+   },
+   {
+    "pageid": 87208968,
+    "ns": 6,
+    "title": "File:Draining the Oceans NASA video.webm",
+    "index": 3,
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 11450422,
+      "width": 1280,
+      "height": 640,
+      "duration": 51.458,
+      "thumburl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e3/Draining_the_Oceans_NASA_video.webm/330px--Draining_the_Oceans_NASA_video.webm.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo",
+      "thumbwidth": 320,
+      "thumbheight": 160,
+      "responsiveUrls": {
+       "2": "https://thumb.wikimedia.org/wikipedia/commons/thumb/e/e3/Draining_the_Oceans_NASA_video.webm/960px--Draining_the_Oceans_NASA_video.webm.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo"
+      },
+      "thumbattribs": [],
+      "url": "https://upload.wikimedia.org/wikipedia/commons/e/e3/Draining_the_Oceans_NASA_video.webm?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Draining_the_Oceans_NASA_video.webm",
+      "descriptionshorturl": "https://commons.wikimedia.org/wiki/Special:Redirect/page/87208968",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Draining the Oceans NASA video",
+        "source": "mediawiki-metadata"
+       },
+       "Artist": {
+        "value": "NASA Horace Mitchell/Dr James O'Donoghue",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "CC BY-SA 3.0",
+        "source": "commons-desc-page",
+        "hidden": ""
+       },
+       "LicenseUrl": {
+        "value": "https://creativecommons.org/licenses/by-sa/3.0",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "video/webm",
+      "mediatype": "VIDEO"
+     }
+    ]
+   },
+   {
+    "pageid": 146189041,
+    "ns": 6,
+    "title": "File:Chemical Pollution of the Ocean.webm",
+    "index": 2,
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 24312520,
+      "width": 1920,
+      "height": 1080,
+      "duration": 83,
+      "thumburl": "https://thumb.wikimedia.org/wikipedia/commons/thumb/f/fd/Chemical_Pollution_of_the_Ocean.webm/330px--Chemical_Pollution_of_the_Ocean.webm.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo",
+      "thumbwidth": 320,
+      "thumbheight": 180,
+      "responsiveUrls": {
+       "2": "https://thumb.wikimedia.org/wikipedia/commons/thumb/f/fd/Chemical_Pollution_of_the_Ocean.webm/960px--Chemical_Pollution_of_the_Ocean.webm.jpg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo"
+      },
+      "thumbattribs": [],
+      "url": "https://upload.wikimedia.org/wikipedia/commons/f/fd/Chemical_Pollution_of_the_Ocean.webm?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Chemical_Pollution_of_the_Ocean.webm",
+      "descriptionshorturl": "https://commons.wikimedia.org/wiki/Special:Redirect/page/146189041",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Chemical Pollution of the Ocean",
+        "source": "mediawiki-metadata"
+       },
+       "Artist": {
+        "value": "<a rel=\"nofollow\" class=\"external text\" href=\"https://www.youtube.com/@SurfriderEurope\">Surfrider Foundation Europe</a>",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "CC BY 3.0",
+        "source": "commons-desc-page",
+        "hidden": ""
+       },
+       "LicenseUrl": {
+        "value": "https://creativecommons.org/licenses/by/3.0",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "video/webm",
+      "mediatype": "VIDEO"
+     }
+    ]
+   }
+  ]
+ }
+}

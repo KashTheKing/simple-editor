@@ -1,0 +1,12 @@
+{"page":1,"per_page":2,"total_results":2,"url":"https://www.pexels.com/search/videos/ocean/",
+ "videos":[
+  {"id":1409899,"width":3840,"height":2160,"duration":12,"url":"https://www.pexels.com/video/waves-crashing-on-rocks-1409899/",
+   "image":"https://images.pexels.com/videos/1409899/free-video-1409899.jpg?auto=compress&cs=tinysrgb&fit=crop&h=630&w=1200",
+   "user":{"id":1,"name":"Ruvim Miksanskiy","url":"https://www.pexels.com/@digitech"},
+   "video_files":[
+    {"id":1,"quality":"hd","file_type":"video/mp4","width":1920,"height":1080,"fps":25,"link":"https://videos.pexels.com/video-files/1409899/1409899-hd_1920_1080_25fps.mp4"},
+    {"id":2,"quality":"sd","file_type":"video/mp4","width":640,"height":360,"fps":25,"link":"https://videos.pexels.com/video-files/1409899/1409899-sd_640_360_25fps.mp4"},
+    {"id":3,"quality":"uhd","file_type":"video/mp4","width":3840,"height":2160,"fps":25,"link":"https://videos.pexels.com/video-files/1409899/1409899-uhd_3840_2160_25fps.mp4"}]},
+  {"id":7,"width":1080,"height":1920,"duration":8,"url":"https://www.pexels.com/video/7/","image":"https://images.pexels.com/videos/7/x.jpg",
+   "user":{"id":2,"name":"A","url":"https://www.pexels.com/@a"},
+   "video_files":[{"id":9,"quality":"hd","file_type":"video/mp4","width":1080,"height":1920,"link":"https://videos.pexels.com/video-files/7/7-hd.mp4"}]}]}

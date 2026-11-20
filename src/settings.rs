@@ -764,6 +764,17 @@ pub struct Settings {
     /// faster-whisper's "Precise word timing": pin each word to the audio with the aligner (on by default).
     #[serde(default = "default_true")]
     pub transcribe_align: bool,
+    // ---- ws:gallery-stock ----
+    /// Gallery ▸ Stock: keyless sources the user switched off (`engine::stock::Source::id`).
+    pub stock_off: Vec<String>,
+    /// Keyed sources the user switched on (their key lives in Windows Credential Manager, never here).
+    pub stock_on: Vec<String>,
+    /// Downloads go to `Stock Footage` beside a saved project (else the app's own `Stock Footage` folder).
+    #[serde(default = "default_true")]
+    pub stock_in_project: bool,
+    /// Hovering a stock card previews it (a few frames, or a quiet sound snippet).
+    #[serde(default = "default_true")]
+    pub stock_preview: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1083,6 +1094,11 @@ impl Default for Settings {
             // ---- ws:addon-faster-whisper ----
             transcribe_engine: String::new(),
             transcribe_align: true,
+            // ---- ws:gallery-stock ----
+            stock_off: Vec::new(),
+            stock_on: Vec::new(),
+            stock_in_project: true,
+            stock_preview: true,
         }
     }
 }

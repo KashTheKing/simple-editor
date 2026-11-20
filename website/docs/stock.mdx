@@ -1,0 +1,74 @@
+---
+title: Stock footage
+description: Search free stock video, pictures, music and sound effects from the Gallery and add them to your project with their credit.
+---
+
+**Gallery ▸ Stock** searches free stock media online and adds what you pick to your project. It works on
+both sides of the Gallery's Video | Audio switch: pick **Video**, **Images**, **Music** or **SFX** above the
+results.
+
+1. Type what you want and press <kbd>Enter</kbd> (or **Search**).
+2. Narrow it down: **shape** (landscape, portrait, square), **minimum size** (720p, 1080p, 4K) and
+   **licence**. The licence filter starts at **CC0 / PD**: nothing that needs a credit.
+3. Rest the pointer on a card to preview it: a video plays a few frames, a sound plays a short, quiet
+   snippet (turn previews off in the **⋯** menu or in **Settings ▸ Stock**).
+4. Click a card for its details: title, author, licence, source page and the credit text.
+5. **Add** downloads it as a background job (see the **Jobs** panel) into the project's **Stock Footage**
+   folder and adds it to the Library. **Add at playhead** also puts it on the timeline. You can also drag a
+   card straight onto the timeline: it is placed at once and fills in when the download finishes.
+
+Every stock file keeps its credit: the asset's description in the Library holds the attribution, licence
+and source page, the asset is tagged `stock`, and a `<file>.stock.json` file sits beside the download.
+**⋯ ▸ Export credits…** writes a text file with the credit of every stock file in the project, the ones
+you must credit first. Paste it into your video's description.
+
+Searches are remembered for ten minutes and thumbnails load only for the cards on screen. With no
+internet connection the tab says so.
+
+## Sources
+
+No account and no key are needed for the first four. Each site is searched through its official,
+documented API; nothing is scraped. Simple Editor tells the sites only its own name and version (its
+User-Agent), never anything about you.
+
+| Source | What | Key | Licences you get |
+|---|---|---|---|
+| [Wikimedia Commons](https://commons.wikimedia.org) | video, pictures, sounds | none | CC0, public domain, CC BY, CC BY-SA (per file) |
+| [Internet Archive](https://archive.org/details/prelinger) | films (the Prelinger Archives and other public-domain or CC films), music | none | Prelinger films are public domain; other items by their CC licence |
+| [NASA Image and Video Library](https://images.nasa.gov) | video, pictures, audio | none | NASA media is not copyrighted in the US. Don't use the NASA logo or imply NASA endorses you ([NASA's guidelines](https://www.nasa.gov/nasa-brand-center/images-and-media/)) |
+| [Openverse](https://openverse.org) | pictures, music, sound effects | none (anonymous, rate-limited) | CC0, Public Domain Mark, CC BY, CC BY-SA |
+| [Pexels](https://www.pexels.com/api/) | video, pictures | your own free key | Pexels License: free to use, no credit needed, don't sell unaltered copies |
+| [Pixabay](https://pixabay.com/api/docs/) | video, pictures | your own free key | Pixabay Content License: free to use, no credit needed, don't sell unaltered copies |
+| [Freesound](https://freesound.org/apiv2/apply) | sound effects, music | your own free key | CC0, CC BY (the high-quality MP3 preview is downloaded) |
+
+Licences that forbid commercial use (NC) or changes (ND) are never shown: an edit is a change, and a video
+may be monetised. Items with no clear licence are left out too.
+
+### Your own keys
+
+Pexels, Pixabay and Freesound need a free API key of your own. Get one with **Get a key** in
+**Settings ▸ Stock**, paste it there and click **Save**. The key is stored in Windows Credential Manager on
+this PC (not in the settings file) and is only ever sent to that site's API. Simple Editor ships no key of
+its own.
+
+### More sites
+
+Mixkit, Coverr, Videvo, Videezy, the Free Music Archive, Incompetech, the YouTube Audio Library and BBC
+Sound Effects have no public API (or terms that forbid automated access), so they are only links: **⋯ ▸
+More sites** and **Settings ▸ Stock** open them in your browser. Read each site's licence before you use
+what you download there.
+
+## Settings ▸ Stock
+
+- **Sources**: switch each one on or off; the keyed ones turn on when their key is saved.
+- **Save in the project's folder**: downloads go to `Stock Footage` beside the saved project. Unsaved
+  projects use the app's own `Stock Footage` folder (`%APPDATA%\SimpleEditor\Stock Footage`).
+- **Preview on hover**.
+
+## For agents (MCP)
+
+- `stock.search` `{query, kind: video|image|music|sfx, orientation, min_res, licence: pd|by|by-sa, page}`:
+  runs in the background and replies with the results (ids, titles, licences, attributions).
+- `stock.add` `{id, place_at?}`: downloads a result, imports it and replies with the new asset ids, the file
+  and its attribution.
+- `stock.credits`: the project's credits text.

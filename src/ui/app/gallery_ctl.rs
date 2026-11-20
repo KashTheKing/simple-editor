@@ -147,6 +147,15 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         });
         gallery::show(ui, st, settings, project, selection, palette, tr, lib)
     };
+    // ---- ws:gallery-stock ---- the Stock tab draws under the strip `show` just drew
+    if app.gallery.stock {
+        if picked(&app.settings) != before {
+            app.settings.save();
+        }
+        stock_ctl::draw(app, ui);
+        app.alt_render.request(None);
+        return true;
+    }
     if picked(&app.settings) != before {
         app.settings.save();
     }

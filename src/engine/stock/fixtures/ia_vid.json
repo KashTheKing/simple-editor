@@ -1,0 +1,97 @@
+{
+ "responseHeader": {
+  "status": 0,
+  "QTime": 611,
+  "params": {
+   "query": "(text:ocean OR text:ocean OR text__reviews:ocean) AND mediatype:movies AND (collection:prelinger OR licenseurl:*publicdomain* OR licenseurl:*\\/by\\/* OR licenseurl:*by-sa*)",
+   "qin": "(ocean) AND mediatype:movies AND (collection:prelinger OR licenseurl:*publicdomain* OR licenseurl:*\\/by\\/* OR licenseurl:*by-sa*)",
+   "fields": "identifier,title,creator,licenseurl,collection,mediatype",
+   "wt": "json",
+   "rows": 6,
+   "start": 0
+  }
+ },
+ "response": {
+  "numFound": 3039,
+  "start": 0,
+  "docs": [
+   {
+    "collection": [
+     "flickrvideo",
+     "additional_collections_video",
+     "social-media-video",
+     "deemphasize"
+    ],
+    "creator": "Ashwin Kumar",
+    "identifier": "Flickr-16017688457",
+    "licenseurl": "https://creativecommons.org/licenses/by-sa/2.0/",
+    "mediatype": "movies",
+    "title": "_DSC1958"
+   },
+   {
+    "collection": [
+     "us_congress",
+     "usgovfilms",
+     "newsandpublicaffairs",
+     "fav-dolphincubus321"
+    ],
+    "creator": "Select Committee on Energy Independence and Global Warming",
+    "identifier": "gov.house.sgw.20080429",
+    "licenseurl": "http://creativecommons.org/publicdomain/zero/1.0/",
+    "mediatype": "movies",
+    "title": "Rising Tides, Rising Temperatures: Global Warming Effects on the Oceans"
+   },
+   {
+    "collection": [
+     "mirrortube",
+     "social-media-video",
+     "additional_collections_video",
+     "deemphasize"
+    ],
+    "creator": "PublicResourceOrg",
+    "identifier": "youtube-Kt7SrFhDgms",
+    "licenseurl": "https://creativecommons.org/licenses/by/3.0/",
+    "mediatype": "movies",
+    "title": "Southwest Xeriscapes - California - Linda King"
+   },
+   {
+    "collection": [
+     "mirrortube",
+     "social-media-video",
+     "deemphasize"
+    ],
+    "creator": "THE ALMIGHTY CUBE",
+    "identifier": "youtube-LBEE93gPcpg",
+    "licenseurl": "https://creativecommons.org/licenses/by/3.0/",
+    "mediatype": "movies",
+    "title": "song designed to make deltarune fans angry"
+   },
+   {
+    "collection": [
+     "game_replays",
+     "gamevideos",
+     "fav-joseph_roberts_uk"
+    ],
+    "creator": "MS-DOS",
+    "identifier": "worms-ms-dos-pal-gameplay_202505",
+    "licenseurl": "https://creativecommons.org/licenses/by/4.0/",
+    "mediatype": "movies",
+    "title": "Worms MS-DOS PAL Gameplay"
+   },
+   {
+    "collection": [
+     "mirrortube",
+     "social-media-video",
+     "additional_collections_video",
+     "deemphasize",
+     "fav-joshindian_prince"
+    ],
+    "creator": "PublicResourceOrg",
+    "identifier": "youtube-e9oBaxuDzI4",
+    "licenseurl": "https://creativecommons.org/licenses/by/3.0/",
+    "mediatype": "movies",
+    "title": "Fort Pierce Turtles"
+   }
+  ]
+ }
+}

@@ -29,6 +29,10 @@ pub(crate) mod permissions;
 mod social;
 // ---- ws:player-metadata ----
 pub(crate) mod metadata;
+// ---- ws:gallery-stock ----
+mod stock;
+/// Settings ▸ Stock's tab index (`ui::app::stock_ctl::open_settings`).
+pub const STOCK_TAB: usize = 10;
 
 use crate::hotkeys::{Action, Hotkeys};
 use crate::settings::Settings;
@@ -179,6 +183,7 @@ pub fn show(
             ui.selectable_value(&mut state.tab, 7, "Social"); // ws:social-guides
             ui.selectable_value(&mut state.tab, 8, "Permissions"); // ws:mcp-permissions
             ui.selectable_value(&mut state.tab, 9, "Metadata"); // ws:player-metadata
+            ui.selectable_value(&mut state.tab, STOCK_TAB, "Stock"); // ws:gallery-stock
         });
         ui.separator();
         // the tab row stays put; a tab taller than the window scrolls
@@ -194,6 +199,7 @@ pub fn show(
                 7 => social::social_tab(ui, &mut state.social, settings), // ws:social-guides
                 8 => permissions::permissions_tab(ui, &mut state.perms_search, &mut state.perms_open, settings), // ws:mcp-permissions
                 9 => metadata::metadata_tab(ui, &mut state.meta_sel, settings), // ws:player-metadata
+                STOCK_TAB => stock::stock_tab(ui, settings), // ws:gallery-stock
                 _ => appearance::appearance(ui, settings),
             })
             .inner;

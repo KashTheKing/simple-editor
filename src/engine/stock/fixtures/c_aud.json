@@ -1,0 +1,140 @@
+{
+ "batchcomplete": true,
+ "continue": {
+  "gsroffset": 3,
+  "continue": "gsroffset||"
+ },
+ "query": {
+  "pages": [
+   {
+    "pageid": 93048308,
+    "ns": 6,
+    "title": "File:Birds on Vieux Limoilou, Québec ville.wav",
+    "index": 2,
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 70290012,
+      "width": 0,
+      "height": 0,
+      "duration": 398.46920634920633,
+      "thumburl": "https://commons.wikimedia.org/w/resources/assets/file-type-icons/fileicon-ogg.png",
+      "thumbwidth": 320,
+      "thumbheight": 320,
+      "thumbattribs": [],
+      "url": "https://upload.wikimedia.org/wikipedia/commons/9/97/Birds_on_Vieux_Limoilou%2C_Qu%C3%A9bec_ville.wav?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Birds_on_Vieux_Limoilou,_Qu%C3%A9bec_ville.wav",
+      "descriptionshorturl": "https://commons.wikimedia.org/wiki/Special:Redirect/page/93048308",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Birds on Vieux Limoilou, Québec ville",
+        "source": "mediawiki-metadata"
+       },
+       "Artist": {
+        "value": "<a href=\"//commons.wikimedia.org/wiki/User:Wilfredor\" class=\"mw-redirect\" title=\"User:Wilfredor\">Wilfredor</a>",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "CC0",
+        "source": "commons-desc-page",
+        "hidden": ""
+       },
+       "LicenseUrl": {
+        "value": "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "audio/wav",
+      "mediatype": "AUDIO"
+     }
+    ]
+   },
+   {
+    "pageid": 112901956,
+    "ns": 6,
+    "title": "File:Hissing bird-bananaquit.ogg",
+    "index": 3,
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 241099,
+      "width": 0,
+      "height": 0,
+      "duration": 27.816979166666666,
+      "thumburl": "https://commons.wikimedia.org/w/resources/assets/file-type-icons/fileicon-ogg.png",
+      "thumbwidth": 320,
+      "thumbheight": 320,
+      "thumbattribs": [],
+      "url": "https://upload.wikimedia.org/wikipedia/commons/a/a4/Hissing_bird-bananaquit.ogg?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Hissing_bird-bananaquit.ogg",
+      "descriptionshorturl": "https://commons.wikimedia.org/wiki/Special:Redirect/page/112901956",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Hissing bird-bananaquit",
+        "source": "mediawiki-metadata"
+       },
+       "Artist": {
+        "value": "<a href=\"//commons.wikimedia.org/wiki/User:Filo_g%C3%A8n%27\" title=\"User:Filo gèn'\">Filo gèn'</a>",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "CC BY-SA 4.0",
+        "source": "commons-desc-page",
+        "hidden": ""
+       },
+       "LicenseUrl": {
+        "value": "https://creativecommons.org/licenses/by-sa/4.0",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "application/ogg",
+      "mediatype": "AUDIO"
+     }
+    ]
+   },
+   {
+    "pageid": 182491447,
+    "ns": 6,
+    "title": "File:Birds Perungalathur Reserved Forest.wav",
+    "index": 1,
+    "imagerepository": "local",
+    "imageinfo": [
+     {
+      "size": 23909516,
+      "width": 0,
+      "height": 0,
+      "duration": 124.5285,
+      "thumburl": "https://commons.wikimedia.org/w/resources/assets/file-type-icons/fileicon-ogg.png",
+      "thumbwidth": 320,
+      "thumbheight": 320,
+      "thumbattribs": [],
+      "url": "https://upload.wikimedia.org/wikipedia/commons/f/f1/Birds_Perungalathur_Reserved_Forest.wav?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original",
+      "descriptionurl": "https://commons.wikimedia.org/wiki/File:Birds_Perungalathur_Reserved_Forest.wav",
+      "descriptionshorturl": "https://commons.wikimedia.org/wiki/Special:Redirect/page/182491447",
+      "extmetadata": {
+       "ObjectName": {
+        "value": "Birds Perungalathur Reserved Forest",
+        "source": "mediawiki-metadata"
+       },
+       "Artist": {
+        "value": "<a href=\"//commons.wikimedia.org/wiki/User:Mk170101\" title=\"User:Mk170101\">Mk170101</a>",
+        "source": "commons-desc-page"
+       },
+       "LicenseShortName": {
+        "value": "CC BY 4.0",
+        "source": "commons-desc-page",
+        "hidden": ""
+       },
+       "LicenseUrl": {
+        "value": "https://creativecommons.org/licenses/by/4.0",
+        "source": "commons-desc-page"
+       }
+      },
+      "mime": "audio/wav",
+      "mediatype": "AUDIO"
+     }
+    ]
+   }
+  ]
+ }
+}
