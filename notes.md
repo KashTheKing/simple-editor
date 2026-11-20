@@ -950,3 +950,13 @@ A button that opens a panel/pane/window (e.g. the top-right Performance button) 
   PR's size note.
 - `reveal_bucket` now clamps t to the reveal's key range, so a typewriter stops re-rasterising after its last key.
 - `SE_SOCIAL_SHOTS=<dir> cargo test each_social_preset_renders_its_look` dumps a PPM of every preset (over grey).
+
+## 2026-11-20 crash fingerprint and safe start (claude/forum-crash-recovery)
+- `crashguard`: in-memory in-flight table (probe/decode/open/drag/filter/export/graphics/encoder test), mirrored to
+  `inflight-<pid>.json` by a writer thread after 150 ms, written synchronously by the UI-thread panic hook and the
+  unhandled-exception filter. Never write it from the caller's thread: decoder opens happen on the render thread.
+- A file the last run died on goes into `media::offline` (`offline.json`): every in-process open refuses it until
+  Bring the File Back. The recovery prompt (`RecoverPlan`) names it and offers Recover / Without Media / Without Effects.
+- `graphics.rs`: compatibility mode (CPU preview, no vsync, optional Mesa `opengl32.dll` in `compat-gl` via
+  SetDllDirectoryW). `SE_FORCE_GL_FAIL=1` fakes a failed graphics start.
+- Wine in the cloud container can't run any exe; test pure modules by including the real file in a scratch crate.

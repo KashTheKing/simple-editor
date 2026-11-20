@@ -26,6 +26,8 @@ impl App {
     }
 
     pub(super) fn open_project(&mut self, path: &Path) {
+        // forum-crash: a death while loading names this project on the next start
+        let _inflight = crate::crashguard::begin(crate::crashguard::Kind::Open, &path.to_string_lossy(), "");
         match Project::load(path) {
             Ok(mut project) => {
                 for m in relocate_assets(&mut project, path.parent()) {
@@ -369,6 +371,7 @@ impl App {
         } else {
             export::start_export(project, opts, self.text.clone())
         };
+        note_export(&prog, &path); // forum-crash
         self.export = Some((prog.clone(), ExportKind::File { path }));
         // ---- ws:export-deliver ----
         self.settings.last_export = Some(choice.last); // what Ctrl+M re-runs next time
@@ -518,6 +521,7 @@ impl App {
             }
             export::start_export(project, opts, self.text.clone())
         };
+        note_export(&prog, &original); // forum-crash
         self.export = Some((prog, ExportKind::Overwrite { original, temp }));
     }
 
@@ -829,6 +833,13 @@ fn offline_assets(project: &Project) -> Vec<String> {
 }
 
 // ---- ws:forgiveness ----
+/// forum-crash: an export is in flight (`crashguard::Kind::Export`) until its job finishes, so a crash
+/// during it names the output on the next start.
+fn note_export(prog: &Arc<Progress>, out: &Path) {
+    let p = prog.clone();
+    crate::crashguard::linger_while(crate::crashguard::Kind::Export, &out.to_string_lossy(), "", move || !p.is_done());
+}
+
 #[cfg(test)]
 mod tests {
     /// Structural (source-scan) tests, not App-level ones - this crate has no headless App-construction

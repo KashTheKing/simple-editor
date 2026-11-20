@@ -51,6 +51,11 @@ windows = { version = "0.62", features = [
     # feat/recorder-gpu: a big-buffer pipe for the GPU recorder's NV12 frames
     "Win32_System_Pipes",
     "Win32_System_Threading",
+    # forum-crash: the crash fingerprint is written from the unhandled-exception filter, and compatibility
+    # graphics points the DLL search at a software opengl32.dll
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
+    "Win32_System_LibraryLoader",
     # ws:assistant-pane: the Assistant's API key in Windows Credential Manager
     "Win32_Security",
     "Win32_Security_Credentials",

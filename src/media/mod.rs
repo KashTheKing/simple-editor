@@ -7,6 +7,7 @@ pub mod d3d;
 pub mod bg;
 pub mod ffpipe;
 pub mod mf;
+pub mod offline; // forum-crash
 pub mod proxy;
 pub mod renames;
 pub mod thumbs;
@@ -206,6 +207,12 @@ pub fn is_image_path(path: &str) -> bool {
 /// Probe a media file into an Asset (id = 0). ffprobe gives the richest stream metadata, so it is
 /// preferred when present; Media Foundation otherwise.
 pub fn probe(path: &str, backend: Backend) -> Result<Asset, String> {
+    // forum-crash: a file the app died on stays out until the user brings it back, and a death in
+    // here names this file on the next start
+    if offline::is_offline(path) {
+        return Err(offline::REFUSED.into());
+    }
+    let _inflight = crate::crashguard::begin(crate::crashguard::Kind::Probe, path, "");
     match backend {
         Backend::Ffmpeg => ffpipe::probe(path),
         Backend::Mf => mf::probe(path),
@@ -231,6 +238,10 @@ fn open_known(
     still: Option<StillUse>,
     gpu: bool,
 ) -> Result<Box<dyn VideoSource>, String> {
+    if offline::is_offline(path) {
+        return Err(offline::REFUSED.into()); // forum-crash
+    }
+    let _inflight = crate::crashguard::begin(crate::crashguard::Kind::Decode, path, "");
     match still {
         Some((size, top)) if is_image_path(path) => ffpipe::open_still(path, size, top),
         _ if gpu
@@ -251,6 +262,10 @@ fn open_known(
 }
 
 pub fn open_video(path: &str, backend: Backend) -> Result<Box<dyn VideoSource>, String> {
+    if offline::is_offline(path) {
+        return Err(offline::REFUSED.into()); // forum-crash
+    }
+    let _inflight = crate::crashguard::begin(crate::crashguard::Kind::Decode, path, "");
     if is_image_path(path) {
         return ffpipe::open_video(path);
     }
@@ -266,6 +281,10 @@ pub fn open_video(path: &str, backend: Backend) -> Result<Box<dyn VideoSource>, 
 }
 
 pub fn open_audio(path: &str, stream: usize, backend: Backend) -> Result<Box<dyn AudioSource>, String> {
+    if offline::is_offline(path) {
+        return Err(offline::REFUSED.into()); // forum-crash
+    }
+    let _inflight = crate::crashguard::begin(crate::crashguard::Kind::Decode, path, "");
     match backend {
         Backend::Ffmpeg => ffpipe::open_audio(path, stream),
         Backend::Mf => mf::open_audio(path, stream),

@@ -37,7 +37,8 @@ fn serve_export_request(
 
 impl App {
     pub(super) fn sync_gpu(&mut self) {
-        let want = self.settings.gpu && !self.gpu_failed;
+        // forum-crash: compatibility graphics keeps the preview on the CPU compositor
+        let want = self.settings.gpu && !self.gpu_failed && !crate::graphics::compat();
         if want == self.gpu.is_some() {
             return;
         }

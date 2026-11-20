@@ -151,6 +151,45 @@ fn salvage_track(base: &Value, track: &mut Value, notes: &mut Vec<String>) {
     }
 }
 
+// ---- forum-crash: safe start ----
+
+/// Every clip list in the project: the open timeline, the stashed main timeline, each sequence.
+fn every_track_mut(p: &mut Project) -> impl Iterator<Item = &mut super::Track> {
+    let stash = p.main_stash.iter_mut().flat_map(|s| s.tracks.iter_mut());
+    let seqs = p.sequences.iter_mut().flat_map(|s| s.tracks.iter_mut());
+    p.tracks.iter_mut().chain(stash).chain(seqs)
+}
+
+/// "Recover without effects": switch off every effect (clips and master/source effects) so a project
+/// that crashes in a filter opens. Returns how many were switched off; the caller pushes one undo step
+/// first, so Undo brings them all back. A free function on purpose: a recovery step, not an edit tool.
+pub fn disable_all_effects(p: &mut Project) -> usize {
+    let mut n = 0;
+    let mut off = |fx: &mut Vec<super::Effect>| {
+        for e in fx.iter_mut().filter(|e| e.enabled) {
+            e.enabled = false;
+            n += 1;
+        }
+    };
+    for a in p.assets.iter_mut() {
+        off(&mut a.effects);
+    }
+    for t in every_track_mut(p) {
+        for c in t.clips.iter_mut() {
+            off(&mut c.effects);
+        }
+    }
+    n
+}
+
+/// The media files a project reads ("Recover without media" takes these offline for one run).
+pub fn media_paths(p: &Project) -> Vec<String> {
+    let mut v: Vec<String> = p.assets.iter().map(|a| a.path.clone()).filter(|s| !s.is_empty()).collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -213,6 +252,48 @@ mod tests {
         assert!(repair_text("hello").is_err());
         assert!(repair_text("[1,2]").is_err());
         assert!(repair_text("").is_err());
+    }
+
+    #[test]
+    fn safe_start_switches_off_every_effect_and_lists_the_media() {
+        let mut p = Project::new();
+        let id = p.add_asset(crate::engine::import::placeholder(r"C:\v\a.mp4"));
+        p.add_asset(crate::engine::import::placeholder(r"C:\v\b.wav"));
+        let fx = || super::super::Effect::new(super::super::EffectKind::Blur);
+        p.assets[0].effects.push(fx());
+        p.insert_asset_clips(id, 0.0, Some(0));
+        let clip = p.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).next().expect("a clip");
+        clip.effects.push(fx());
+        clip.effects.push(fx());
+        clip.effects[1].enabled = false; // already off: not counted
+        assert_eq!(disable_all_effects(&mut p), 2);
+        assert_eq!(disable_all_effects(&mut p), 0, "nothing left on");
+        assert_eq!(media_paths(&p), vec![r"C:\v\a.mp4".to_string(), r"C:\v\b.wav".to_string()]);
+    }
+
+    /// Forum report: 100+ markers lost. 250 project markers (points, ranges, notes) survive a save and load.
+    #[test]
+    fn many_markers_survive_save_and_load() {
+        let mut p = Project::new();
+        for i in 0..250u32 {
+            p.markers.push(super::super::Marker {
+                id: 10_000 + i as u64,
+                t: i as f64 * 1.5,
+                duration: if i % 3 == 0 { 2.0 } else { 0.0 },
+                name: format!("Marker {i}"),
+                note: format!("note {i} \u{e9}\u{1f3ac}"),
+                label: (i % 8) as u8,
+                ..Default::default()
+            });
+        }
+        let dir = std::env::temp_dir().join(format!("se-markers-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("markers.sedit");
+        p.save(&f).unwrap();
+        let back = Project::load(&f).unwrap();
+        assert_eq!(back.markers.len(), 250);
+        assert_eq!(back.markers, p.markers);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `SE_REPAIR_FILE=<path> cargo test real_file` - run a real project through the repair.

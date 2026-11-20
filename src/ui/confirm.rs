@@ -45,6 +45,8 @@ enum Kind {
     Discard(Box<dyn FnOnce(&mut App)>),
     /// ws:quick-export: two labelled choices + Cancel, each choice runs its own closure.
     Choice { labels: (&'static str, &'static str), on_yes: Box<dyn FnOnce(&mut App)>, on_no: Box<dyn FnOnce(&mut App)> },
+    /// forum-crash: any number of labelled choices + Cancel (the crash-recovery prompt).
+    Many(Vec<(&'static str, &'static str, Box<dyn FnOnce(&mut App)>)>),
 }
 
 pub struct Pending {
@@ -81,6 +83,15 @@ pub(crate) fn ask_choice(
     stage(Pending { title: title.into(), body: body.into(), kind });
 }
 
+/// forum-crash: one button per `(label, tooltip, action)`, plus Cancel. Centred like `ask_choice`.
+pub(crate) fn ask_many(
+    title: impl Into<String>,
+    body: impl Into<String>,
+    choices: Vec<(&'static str, &'static str, Box<dyn FnOnce(&mut App)>)>,
+) {
+    stage(Pending { title: title.into(), body: body.into(), kind: Kind::Many(choices) });
+}
+
 /// Only `App::confirm_discard_then` builds one of these.
 pub(crate) fn ask_discard(body: impl Into<String>, on_yes: impl FnOnce(&mut App) + 'static) {
     stage(Pending { title: "Unsaved changes".into(), body: body.into(), kind: Kind::Discard(Box::new(on_yes)) });
@@ -99,12 +110,13 @@ pub(crate) fn draw(app: &mut App, ctx: &egui::Context) {
     let mut i = 0;
     while i < pending.len() {
         let (mut yes, mut no, mut cancel) = (false, false, false);
+        let mut picked: Option<usize> = None; // Kind::Many
         let discard = matches!(pending[i].kind, Kind::Discard(_));
         // Save/Discard/Cancel (close/save project) always centers; other confirmations (Clear
         // recent, etc) appear where the button that triggered them was clicked. Since each of these
         // windows has a fresh Id (title/body/index), `default_pos` always applies - there's no prior
         // layout memory to fight.
-        let pos = if discard || matches!(pending[i].kind, Kind::Choice { .. }) { ctx.content_rect().center() } else { crate::ui::popup_open_pos(ctx) };
+        let pos = if discard || matches!(pending[i].kind, Kind::Choice { .. } | Kind::Many(_)) { ctx.content_rect().center() } else { crate::ui::popup_open_pos(ctx) };
         egui::Window::new(pending[i].title.clone())
             .id(egui::Id::new(("se-confirm", i, pending[i].body.clone())))
             .collapsible(false)
@@ -119,6 +131,13 @@ pub(crate) fn draw(app: &mut App, ctx: &egui::Context) {
                         yes |= ui.button("Save").clicked();
                         no |= ui.button("Discard").clicked();
                         cancel |= ui.button("Cancel").clicked();
+                    } else if let Kind::Many(choices) = &pending[i].kind {
+                        for (k, (label, tip, _)) in choices.iter().enumerate() {
+                            if ui.button(*label).on_hover_text(*tip).clicked() {
+                                picked = Some(k);
+                            }
+                        }
+                        cancel |= ui.button("Cancel").clicked();
                     } else if let Kind::Choice { labels, .. } = &pending[i].kind {
                         yes |= ui.button(labels.0).clicked();
                         no |= ui.button(labels.1).clicked();
@@ -129,7 +148,12 @@ pub(crate) fn draw(app: &mut App, ctx: &egui::Context) {
                     }
                 });
             });
-        if yes || no {
+        if let Some(k) = picked {
+            if let Kind::Many(mut choices) = pending.remove(i).kind {
+                let (_, _, run) = choices.swap_remove(k);
+                run(app);
+            }
+        } else if yes || no {
             let p = pending.remove(i);
             match p.kind {
                 Kind::Confirm(action) => {
@@ -144,6 +168,7 @@ pub(crate) fn draw(app: &mut App, ctx: &egui::Context) {
                 }
                 // Discard's "no" button is labelled "Discard" above (not a plain decline) and DOES run
                 // the continuation, matching the old blocking dialog's Yes=save/No=discard/other=cancel.
+                Kind::Many(_) => {} // answered by `picked` above
                 Kind::Choice { on_yes, on_no, .. } => {
                     if yes {
                         on_yes(app);

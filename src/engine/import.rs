@@ -1286,6 +1286,40 @@ pub fn placeholder(path: &str) -> Asset {
     }
 }
 
+/// forum-crash: how long one file's probe may take before the batch moves on without it.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `media::probe` on its own thread, so a panic or a hang (a broken file, a stuck driver) costs only
+/// this file: a panic is caught, and past `timeout` the probe is left to finish (or not) on its own
+/// while the caller gets an error and carries on. A native crash still takes the process, but the
+/// probe is fingerprinted (`crashguard::Kind::Probe`), so the next start takes this file offline.
+pub fn guarded_probe(path: &str, backend: Backend, timeout: std::time::Duration) -> Result<Asset, String> {
+    guarded(timeout, {
+        let path = path.to_string();
+        move || media::probe(&path, backend)
+    })
+}
+
+/// The pure half of `guarded_probe`, over any job (tests pass a panicking or sleeping one).
+fn guarded<T: Send + 'static>(
+    timeout: std::time::Duration,
+    job: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawned = std::thread::Builder::new().name("probe".into()).spawn(move || {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).unwrap_or_else(|_| Err("probe crashed".into()));
+        let _ = tx.send(r);
+    });
+    if spawned.is_err() {
+        return Err("couldn't start a probe thread".into());
+    }
+    match rx.recv_timeout(timeout) {
+        Ok(r) => r,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err("took too long to read; skipped".into()),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err("probe crashed".into()),
+    }
+}
+
 /// Probe `files` (placeholder asset id + path) on a worker. Returns at once; poll the receiver.
 pub fn probe_async(files: Vec<(Id, String)>, backend: Backend) -> Receiver<Probed> {
     let (tx, rx) = std::sync::mpsc::channel();
@@ -1294,9 +1328,8 @@ pub fn probe_async(files: Vec<(Id, String)>, backend: Backend) -> Receiver<Probe
     }
     std::thread::spawn(move || {
         for (id, path) in files {
-            // a panicking probe must not strand the rest of the batch as permanent "Loading…"
-            let asset = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| media::probe(&path, backend)))
-                .unwrap_or_else(|_| Err("probe crashed".into()));
+            // a panicking or hung probe fails alone: the rest of the batch never stays "Loading…"
+            let asset = guarded_probe(&path, backend, PROBE_TIMEOUT);
             if let Ok(mut q) = PROBING.lock() {
                 if let Some(i) = q.iter().position(|p| *p == path) {
                     q.remove(i);
@@ -1689,6 +1722,22 @@ mod tests {
     /// The UI-thread half of an import is only the placeholders: ten files must hand back a receiver
     /// immediately, long before any probe could have run. Backend::Mf keeps the check from spawning
     /// ten ffprobe children and skewing the timing-sensitive tests beside it.
+    /// forum-crash: a bad file fails alone, whether its probe panics or hangs.
+    #[test]
+    fn a_panicking_or_hung_probe_fails_alone() {
+        let ms = std::time::Duration::from_millis;
+        let r: Result<u8, String> = guarded(ms(2000), || panic!("decoder blew up"));
+        assert_eq!(r.unwrap_err(), "probe crashed");
+        let t0 = std::time::Instant::now();
+        let r: Result<u8, String> = guarded(ms(100), || {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            Ok(1)
+        });
+        assert!(r.unwrap_err().contains("too long"));
+        assert!(t0.elapsed() < ms(1500), "the caller moved on at the timeout");
+        assert_eq!(guarded(ms(2000), || Ok::<u8, String>(7)), Ok(7));
+    }
+
     #[test]
     fn probe_async_does_not_block_the_caller() {
         let files: Vec<(Id, String)> = (1..=10).map(|i| (i as Id, format!(r"C:\nope\{i}.mp4"))).collect();

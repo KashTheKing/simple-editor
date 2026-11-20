@@ -411,6 +411,10 @@ pub struct Settings {
     /// Warn (toast, never block) when opening a project whose `.lock` sidecar shows another instance
     /// may already have it open. Not a real mutex - see the PR body's risks note.
     pub lock_warn: bool,
+    // ---- forum-crash ----
+    /// Start in compatibility graphics (`crate::graphics`): CPU preview, no vsync, a software
+    /// OpenGL when one is installed. Ticked by answering Yes after a failed graphics start.
+    pub compat_graphics: bool,
     // ---- ws:player-rate-loop ----
     /// Emit one BLOCK (~21 ms) of audio on every paused playhead change (scrub feedback); gates
     /// `playback_ctl::tick`'s scrub-on-paused-change hook.
@@ -861,6 +865,8 @@ impl Default for Settings {
             palette_recent: Vec::new(),
             // ---- ws:forgiveness ----
             lock_warn: true,
+            // ---- forum-crash ----
+            compat_graphics: false,
             // ---- ws:player-rate-loop ----
             audio_scrub: true,
             preroll_secs: 2.0,

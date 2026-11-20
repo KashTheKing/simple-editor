@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Crash recovery
+- **The recovery prompt says what happened**: after a crash, the next start names what the editor was doing ("closed unexpectedly while playing clip.mp4", "while applying an effect to a.mov (Glow)", "while exporting final.mp4") and offers **Recover**, **Recover Without Media** (every file offline for that session) and **Recover Without Effects** (one Undo turns them back on). It can reopen the project even when there is no newer autosave.
+- **A file that crashes the editor no longer crashes it again**: the file it died on is taken offline, so the project opens and shows it as missing; **Bring the File Back** tries it again. A file whose import hangs or fails is skipped after 30 seconds instead of holding up the rest of the import.
+- **Compatibility graphics**: when the window or its graphics can't start (old GPUs, broken drivers), a plain message offers **Start in compatibility mode** instead of an error or a white window, and so does the next start after one that closed before its window was ready. It draws the preview on the processor and turns vsync off, and uses a software OpenGL (Mesa's `opengl32.dll` in a `compat-gl` folder) when one is there. **Settings ▸ Performance ▸ Compatibility graphics**, or `--compat-graphics`.
+- **Hardware encoders are re-tested after a driver update**, and one that brought the app or the PC down while being tested is never tried again.
+- **Hourly autosaves**: Restore Autosave keeps the last ten minutes plus one autosave per hour for two days, listed by project and age.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

@@ -6,12 +6,15 @@
 //! `simple-editor --dump-hotkeys out.md`   write the shortcut list (F1) as Markdown for the docs site
 //! `SE_BACKGROUND=1`   (env) open at the saved window rect without taking focus - for automation
 //! `--mcp-full-access` / `SE_MCP_FULL_ACCESS=1`   every MCP call runs, nothing asks (default on for debug and worktree builds; =0 turns it off)
+//! `--compat-graphics` / `SE_COMPAT_GRAPHICS=1`   start in compatibility graphics (no multisampling, any OpenGL the driver offers, CPU preview)
 //! `--quiet` / `SE_QUIET=1`   no What's New, welcome wizard or recover-autosave prompt (implied by SE_BACKGROUND)
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod contextmenu;
+mod crashguard;
 mod engine;
+mod graphics;
 mod hotkeys;
 mod keymaps;
 mod mcp;
@@ -39,6 +42,9 @@ fn main() {
     }
     if args.iter().any(|a| a == "--mcp-full-access") {
         std::env::set_var("SE_MCP_FULL_ACCESS", "1"); // read by mcp::perms::full_access
+    }
+    if args.iter().any(|a| a == "--compat-graphics") {
+        std::env::set_var("SE_COMPAT_GRAPHICS", "1"); // read by graphics::compat (the GPU preview too)
     }
     if args.first().map(|s| s.as_str()) == Some("--selftest") {
         std::process::exit(selftest::run(&args[1..]));
@@ -80,10 +86,16 @@ fn main() {
         return;
     }
 
+    settings::Settings::seed_dev_from_release();
+    // forum-crash: what the previous run died on (read before anything risky starts), and the files it
+    // took offline; from here on this run's risky work is fingerprinted the same way
+    crashguard::init(settings::Settings::dir());
+    media::offline::init(settings::Settings::dir());
+
     // read once to seed the viewport; App::new does its own (cheap) re-read of the same file - not
     // worth threading a loaded Settings through eframe's boxed FnOnce for this one field.
-    settings::Settings::seed_dev_from_release();
-    let seed = settings::Settings::load();
+    let mut seed = settings::Settings::load();
+    graphics::decide_compat(&mut seed);
     let window_rect = seed.window_rect;
     let mut viewport = winpos::apply_rect(
         eframe::egui::ViewportBuilder::default()
@@ -107,27 +119,40 @@ fn main() {
     if winpos::background() {
         viewport = viewport.with_active(false); // shown with SW_SHOWNOACTIVATE
     }
-    let options = eframe::NativeOptions {
+    let options = graphics::native_options(eframe::NativeOptions {
         viewport,
         // inert either way now that eframe's "persistence" feature is gone - false for clarity, so
         // this field doesn't read as a live knob it no longer is.
         persist_window: false,
         ..Default::default()
-    };
+    });
     // the UI thread shows every frame the player publishes: above normal, so a busy PC (parallel builds)
     // does not hold the picture back while the render thread keeps up (`bg::raise_thread`)
     media::bg::inherit(i32::MAX);
     perf::startup_mark("run_native");
-    if let Err(e) = eframe::run_native(
+    // forum-crash: in flight until the first painted frame (`App::update` ends it); a death before
+    // that offers compatibility graphics on the next start
+    if graphics::forced_failure() {
+        graphics::start_failed("SE_FORCE_GL_FAIL=1");
+        std::process::exit(1);
+    }
+    crashguard::linger_while(crashguard::Kind::Graphics, "", "", || true);
+    let result = eframe::run_native(
         "Simple Editor",
         options,
         Box::new(move |cc| {
             perf::startup_mark("window + GL ready");
             Ok(Box::new(ui::app::App::new(cc, open, screenshot)))
         }),
-    ) {
-        eprintln!("failed to start: {e}");
-        std::process::exit(1);
+    );
+    match result {
+        Ok(()) => crashguard::clean_exit(),
+        Err(e) => {
+            eprintln!("failed to start: {e}");
+            crashguard::clean_exit(); // handled here, not a crash for the next start to report
+            graphics::start_failed(&e.to_string());
+            std::process::exit(1);
+        }
     }
 }
 

@@ -1261,6 +1261,7 @@ impl App {
         self.project.refresh_spans(); // ws:animator: the transitions under a span follow the edit
         let p = &self.project;
         self.selection.retain(|id| p.clip(*id).is_some());
+        recovery::note_new_effects(&self.project); // forum-crash: a crash in a new effect names it
         self.player.set_project(&self.project);
         audio_only::edited(&self.project); // ws:preview-audio-only: the mix is analysed / baked again
         if self.settings.movie_mode {
@@ -1289,6 +1290,7 @@ impl App {
         home_ctl::release_lock(self.project_path.as_deref(), path.as_deref());
         self.project = project;
         self.project_path = path;
+        crate::crashguard::set_project(self.project_path.as_deref()); // forum-crash: reopened after a crash
         assistant_ctl::project_changed(self, self.project_path.clone().as_deref());
         self.dirty = false;
         self.saved = Some(self.project.to_json());
@@ -1434,6 +1436,7 @@ impl eframe::App for App {
             }
         } else if self.reveal.revealed() {
             boot::bench_first_frame(ctx);
+            crate::crashguard::graphics_ready(); // forum-crash: the first frame is on screen
         }
         // ws:forgiveness: confirm_discard_then's continuation sets this once the (non-blocking) discard
         // prompt resolves - the original close was cancelled below to let that prompt run, so re-send it.
@@ -1536,6 +1539,7 @@ impl eframe::App for App {
             }
             assistant_ctl::deny_held(self, "the app closed");
             tools_context::end_waits(self, "the app closed");
+            crate::crashguard::clean_exit(); // forum-crash: a normal close is never reported as a crash
         }
 
         // live links (paths / expressions) re-bake when their inputs changed; a hash check otherwise
