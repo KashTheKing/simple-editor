@@ -147,8 +147,13 @@ impl App {
         ui.spacing_mut().interact_size.y = titlebar::BUTTON.y;
         egui::MenuBar::new().style(titlebar::bar_style).ui(ui, |ui| {
             if let Some(icon) = titlebar::app_icon(ui.ctx()) {
-                let (r, _) = ui.allocate_exact_size(egui::vec2(24.0, 16.0), egui::Sense::hover());
+                // ---- ws:home-page ---- the app icon goes to the Home page (while it's on)
+                let sense = if self.settings.home_page { egui::Sense::click() } else { egui::Sense::hover() };
+                let (r, resp) = ui.allocate_exact_size(egui::vec2(24.0, 16.0), sense);
                 titlebar::paint_icon(ui, &icon, r.left_center());
+                if self.settings.home_page && resp.on_hover_text("Home").clicked() {
+                    out.push(Action::GoHome);
+                }
             }
             menu::button(ui, "File", |ui| menu::scroll(ui, |ui| self.file_menu(ui)));
             menu::button(ui, "Edit", |ui| menu::scroll(ui, |ui| self.edit_menu(ui)));
@@ -157,17 +162,20 @@ impl App {
             menu::button(ui, "Playback", |ui| menu::scroll(ui, |ui| self.playback_menu(ui, &mut out)));
             menu::button(ui, "Window", |ui| menu::scroll(ui, |ui| self.window_menu(ui)));
             menu::button(ui, "Help", |ui| self.help_menu(ui));
+            // ---- ws:home-page ----
+            home_ctl::button(self, ui);
             if !self.settings.one_window {
                 layout_ctl::page_switcher(self, ui);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(caption_w); // clear of the window buttons
-                // ---- ws:quick-export ---- (right-most; the Jobs indicator sits beside it while jobs run)
+                // right to left: Quick Export (right-most), Performance, then Jobs on its left (always shown)
+                // ---- ws:quick-export ----
                 quick_export::button(self, ui);
-                // ---- ws:jobs-panel ----
-                jobs_pane::indicator(self, ui);
                 // ---- ws:perf-window ----
                 perf_ctl::button(self, ui);
+                // ---- ws:jobs-panel ----
+                jobs_pane::indicator(self, ui);
             });
         });
         out
@@ -176,6 +184,10 @@ impl App {
     fn file_menu(&mut self, ui: &mut egui::Ui) {
         use Action::*;
         let has_clips = !self.timeline_is_empty();
+        // ---- ws:home-page ----
+        if self.settings.home_page {
+            acts(ui, &[Some(GoHome)]);
+        }
         acts(ui, &[Some(NewProject), Some(OpenProject), Some(OpenFile)]);
         self.recent_menu(ui);
         acts(ui, &[Some(Save), Some(SaveProjectAs), None]);
@@ -331,6 +343,10 @@ impl App {
         if menu::check(ui, self.settings.snap, "Snapping", &menu::shortcut(ToggleSnap)).clicked() {
             out.push(ToggleSnap);
         }
+        let linked = menu::shortcut(ToggleLinkedSelection);
+        if menu::check(ui, self.settings.linked_selection, "Linked Selection", &linked).clicked() {
+            out.push(ToggleLinkedSelection);
+        }
         let gaps = menu::shortcut(ToggleAutoCloseGaps);
         if menu::check(ui, self.settings.auto_close_gaps, "Auto Close Gaps", &gaps).clicked() {
             out.push(ToggleAutoCloseGaps);
@@ -384,8 +400,7 @@ impl App {
         menu::sub(ui, None, "Pages", |ui| {
             for (i, page) in self.settings.pages.clone().iter().enumerate() {
                 let key = layout_ctl::PAGE_ACTIONS.get(i).map(|&a| menu::shortcut(a)).unwrap_or_default();
-                let x = crate::ui::experimental::page(page);
-                if menu::check_badged(ui, &self.settings.page == page, &format!("{page} page"), &key, x).clicked() {
+                if menu::check(ui, &self.settings.page == page, &format!("{page} page"), &key).clicked() {
                     layout_ctl::switch_page(self, page);
                 }
             }
@@ -446,8 +461,7 @@ impl App {
     /// A Window-menu row: the pane's name, ticked while it is on screen; a click shows or hides it.
     fn pane_row(&mut self, ui: &mut egui::Ui, p: Pane) {
         let key = toggle_action(p).map(menu::shortcut).unwrap_or_default();
-        let x = crate::ui::experimental::pane(p);
-        if menu::check_badged(ui, self.layout.is_visible(p), p.title(), &key, x).clicked() {
+        if menu::check(ui, self.layout.is_visible(p), p.title(), &key).clicked() {
             self.toggle_pane(p);
         }
     }

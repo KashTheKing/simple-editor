@@ -26,7 +26,7 @@ fn done(v: Value) -> Result<ToolOutcome, String> {
 pub const TOOLS: &[ToolDef] = &[
     ToolDef {
         name: "titles.list",
-        desc: "List placeable title/text templates: builtin_titles() + Settings.templates filtered by is_text_template. Returns [{name, clip_count, exposed: [string]}].",
+        desc: "List placeable title/text templates: builtin_titles() + Settings.templates filtered by is_text_template. Returns [{name, clip_count, exposed: [string], category}] (category: Basic / Social for built-ins, Mine for yours).",
         args: &[],
         kind: ToolKind::Read,
         run: |app, _args| {
@@ -42,7 +42,12 @@ pub const TOOLS: &[ToolDef] = &[
                 .filter_map(|t| {
                     let (clips, _) = crate::engine::presets::decode_template(&t)?;
                     let exposed: Vec<String> = clips.iter().flat_map(|c| c.exposed.iter().cloned()).collect();
-                    Some(json!({"name": t.name, "clip_count": clips.len(), "exposed": exposed}))
+                    let category = if crate::engine::presets::builtin_titles().iter().any(|b| b.name == t.name) {
+                        crate::engine::presets::title_category(&t.name)
+                    } else {
+                        "Mine"
+                    };
+                    Some(json!({"name": t.name, "clip_count": clips.len(), "exposed": exposed, "category": category}))
                 })
                 .collect();
             done(json!(list))
@@ -50,7 +55,7 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "titles.place",
-        desc: "Decode the named title template (builtin or Settings.templates) and place it at `at` (or the playhead). Returns {clip_ids: [Id], exposed: [{clip_id, field}]}.",
+        desc: "Decode the named title template (builtin or Settings.templates) and place it at `at` (or the playhead). The Social built-ins are TikTok Classic / Background (+ Dark, Red, Yellow, Blue) / Semi-Transparent / Typewriter / Neon and Snapchat Bar / Big Text / Highlight; a builtin name also matches loosely (\"tiktok_background\"). Returns {clip_ids: [Id], exposed: [{clip_id, field}]}.",
         args: &["name:string:true:template name from titles.list", "at:number:false:seconds, defaults to playhead"],
         kind: ToolKind::Mutate,
         run: |app, args| {
@@ -60,6 +65,12 @@ pub const TOOLS: &[ToolDef] = &[
                 .into_iter()
                 .chain(app.settings.templates.iter().cloned())
                 .find(|t| t.name == name)
+                .or_else(|| {
+                    // a loose match too: "tiktok_background" finds "TikTok Background"
+                    crate::engine::presets::builtin_titles()
+                        .into_iter()
+                        .find(|t| crate::engine::presets::preset_name_eq(&t.name, name))
+                })
                 .ok_or_else(|| format!("no title template '{name}'"))?;
             let (clips, assets) =
                 crate::engine::presets::decode_template(&tpl).ok_or("title template is corrupted")?;

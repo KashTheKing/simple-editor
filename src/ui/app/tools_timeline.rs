@@ -77,6 +77,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                 }
                 app.project_path = Some(path.clone());
                 app.dirty = false;
+                app.saved = Some(app.project.to_json());
                 Ok(json!({"ok": true, "path": path.to_string_lossy()}))
             }
             "project.set" => {

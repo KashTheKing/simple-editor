@@ -74,6 +74,8 @@ impl Project {
             max_duration: None,
             // ---- ws:project-color-fps ----
             color: ColorSpace::Sdr,
+            // ---- ws:timeline-tabs ----
+            timeline_tabs: Vec::new(),
             // ---- ws:zones-markers ----
             marker_categories: default_marker_categories(),
             zones: Vec::new(),

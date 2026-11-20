@@ -940,7 +940,7 @@ fn run_op(app: &mut App, op: html_ui::Op) {
         Op::Unlink(clip) => link_with_undo(app, clip, None, false, "Unlink HTML file"),
         Op::Reveal(clip) => {
             if let Some((_, h)) = html_of(app, clip).filter(|(_, h)| !h.file.is_empty()) {
-                let _ = std::process::Command::new("explorer").arg("/select,").arg(&h.file).spawn();
+                crate::contextmenu::reveal(std::path::Path::new(&h.file));
             }
         }
         Op::Ask(clip, text) => ask_about(app, clip, &text),

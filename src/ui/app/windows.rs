@@ -175,6 +175,7 @@ impl App {
                 if self.settings.ffmpeg_dir != ffdir_before {
                     media::ffpipe::set_dir(&self.settings.ffmpeg_dir);
                     self.encoders.clear();
+                    export::forget_encoders(); // ws:page-switch-freeze
                 }
                 if self.settings.ytdlp_dir != ytdlp_dir_before {
                     media::ytdlp::set_dir(&self.settings.ytdlp_dir);

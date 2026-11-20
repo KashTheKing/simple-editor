@@ -39,7 +39,7 @@ fn library_act(app: &mut App, act: gallery::LibAct) {
                 p = Source::of(&app.settings).local(&library::file_of(&id).unwrap_or_default());
             }
             if p.is_file() {
-                let _ = std::process::Command::new("explorer").arg("/select,").arg(&p).spawn();
+                crate::contextmenu::reveal(&p);
             } else {
                 app.toast("Not on this PC yet: Install it first");
             }

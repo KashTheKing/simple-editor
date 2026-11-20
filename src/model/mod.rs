@@ -652,6 +652,10 @@ pub(crate) fn one() -> f64 {
 pub(crate) fn a0() -> Animated {
     Animated::new(0.0)
 }
+/// `skip_serializing_if` for a property that defaults to `a0()` (unkeyed, unlinked, zero).
+pub(crate) fn is_a0(a: &Animated) -> bool {
+    a.is_default(0.0) && a.link.is_none()
+}
 pub(crate) fn a1() -> Animated {
     Animated::new(1.0)
 }

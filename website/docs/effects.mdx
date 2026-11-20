@@ -38,8 +38,10 @@ together, in one grid; the chips and the category menu narrow it (a cloud mark m
 click it).
 
 The catalogue has blur, motion blur, pixelate, VHS, glow, vignette, sharpen, chroma key (green screen),
-colour replace, crop, levels, curves, hue and saturation, black & white, flip, 3D plane, camera shake,
-LUTs and a **Custom Shader** you write yourself in GLSL.
+colour replace, levels, curves, hue and saturation, black & white, flip, 3D plane, camera shake,
+LUTs and a **Custom Shader** you write yourself in GLSL. Crop is not an effect any more: every clip has
+its own (the Inspector's Transform section, or the Preview's Crop tool). Projects with the old Crop
+effect still open; it turns into the clip's own crop when that looks the same, and otherwise stays.
 
 ### The effect stack
 
@@ -144,3 +146,31 @@ Preview first:
 - To animate it, use the Inspector's **Animation** presets (Slide, Zoom, Pop, Fade, Spin), the **Reveal**
   and **Wave** sliders, or your own [keyframes](inspector.mdx#keyframes).
 - Save a style you like with the Inspector's **Text style presets** and apply it to other text clips.
+
+### TikTok and Snapchat text
+
+**Gallery ▸ Titles** has a **Social** category (pick it in the category menu, or search "social") with the
+looks of the two apps' own text tools. Each one is an ordinary text clip, so the words, colours and every
+other setting stay editable in the [Inspector](inspector.mdx).
+
+| Title | Look |
+|---|---|
+| **TikTok Classic** | bold white text with a thin dark outline and shadow |
+| **TikTok Background** | a rounded box behind each line that hugs that line's width; the boxes merge into one shape. White box with black text, plus **Dark**, **Red**, **Yellow** and **Blue** |
+| **TikTok Semi-Transparent** | the same boxes in see-through black |
+| **TikTok Typewriter** | the classic look, typed in letter by letter over the first 1.2 seconds |
+| **TikTok Neon** | white text with a pink glow |
+| **Snapchat Bar** | a see-through black band the full width of the frame with centred white text. Drag it up or down on the Preview; it stays full width at any aspect ratio |
+| **Snapchat Big Text** | large bold white text with a soft shadow |
+| **Snapchat Highlight** | text on a yellow pill |
+
+The fonts come with the editor: **TikTok Sans** (TikTok's own font, released under the SIL Open Font
+License) and **Inter** for the Snapchat looks, so they look the same on any PC.
+
+In the Inspector's text settings, **Box** sets the box colour (its alpha is the opacity) and padding,
+**Box shape** picks **Block** (one box round the text), **Lines** (a box per line) or **Bar** (the full width),
+and **Corner radius** rounds the corners (a big radius makes a pill).
+
+The titles sit in the middle of the frame, inside the safe zone of every platform in the
+[Platform Emulator](social-guides.mdx). For captions, **Gallery ▸ Captions** has **TikTok Background** and
+**Snapchat Bar** for [subtitles](captions.mdx), so automatic captions can use the same looks.

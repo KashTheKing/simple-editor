@@ -337,6 +337,27 @@ pub(super) fn section(
         g.note(&ui.color_edit_button_srgba_unmultiplied(&mut style.box_color));
         mixed_note(ui, mixed!(box_color));
     });
+    // ---- ws:social-text: box shape (one block / a box per line / a full-width bar) + corners ----
+    prop_field(ui, "Box shape", |ui| {
+        let m = mixed!(box_mode);
+        for (v, name, tip) in [
+            (crate::model::BOX_BLOCK, "Block", "One box around the text"),
+            (crate::model::BOX_LINES, "Lines", "A box per line that hugs its width; the boxes merge into one shape"),
+            (crate::model::BOX_BAR, "Bar", "A band the full width of the frame; the clip moves up and down only"),
+        ] {
+            let r = ui.selectable_label(!m && style.box_mode == v, name).on_hover_text(tip);
+            if r.clicked() && (m || style.box_mode != v) {
+                style.box_mode = v;
+                g.click();
+            }
+        }
+    });
+    let r = prop_field_val(
+        ui,
+        "Corner radius",
+        mixed_dv(DragValue::new(&mut style.box_radius).range(0.0..=200.0).speed(0.5), mixed!(box_radius)),
+    );
+    g.note(&r);
     // ---- ws:text-titles: reveal (typewriter) + wave (per-glyph bob) ----
     ui.horizontal(|ui| {
         prop_label(ui, "Reveal").on_hover_text("Typewriter progress: 0% hides all glyphs, 100% shows them all");
@@ -484,6 +505,7 @@ pub(super) fn section(
                 shadow_y
             );
             sync!(shadow_blur, line_spacing, letter_spacing, box_color, box_padding, reveal, wave);
+            sync!(box_mode, box_radius);
             if new.align != base.align || align_set {
                 st.align = new.align;
             }
