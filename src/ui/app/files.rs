@@ -763,7 +763,7 @@ impl App {
     }
     pub(super) fn act_import_timeline(&mut self) {
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Timelines (XML, EDL, prproj)", crate::engine::import::IMPORT_EXTS)
+            .add_filter("Timelines (Shotcut, XML, EDL, prproj)", crate::engine::import::IMPORT_EXTS)
             .add_filter("All files", &["*"])
             .pick_file()
         else {

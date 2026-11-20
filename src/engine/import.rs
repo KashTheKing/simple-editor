@@ -1,6 +1,6 @@
 //! Import timelines from other editors, with an honest per-item report.
 //!
-//! Supported: Final Cut Pro 7 XML (`.xml` - what Premiere Pro exports and DaVinci Resolve reads/writes),
+//! Supported: Shotcut `.mlt` projects (`mlt`), Final Cut Pro 7 XML (`.xml` - what Premiere Pro exports and DaVinci Resolve reads/writes),
 //! EDL (CMX 3600) and *uncompressed* Premiere `.prproj` (the same XML reader). A real `.prproj` is
 //! gzip-wrapped and there is no inflate in-tree, so those are accepted by the picker only to answer
 //! with the "export FCP7 XML instead" note below. Anything the reader cannot map (unknown effects,
@@ -97,7 +97,9 @@ pub fn import_file(path: &std::path::Path) -> Result<ImportReport, String> {
         return Ok(b.finish());
     }
     let text = decode(&bytes);
-    if text.contains("<xmeml") {
+    if text.contains("<mlt") && !text.contains("<xmeml") {
+        mlt::read_mlt(&text, &mut b)?; // ws:parity-editing: Shotcut projects
+    } else if text.contains("<xmeml") {
         read_xmeml(&text, &mut b)?;
     } else if text.contains("<fcpxml") {
         b.note(
@@ -114,7 +116,10 @@ pub fn import_file(path: &std::path::Path) -> Result<ImportReport, String> {
     Ok(b.finish())
 }
 
-pub const IMPORT_EXTS: &[&str] = &["xml", "fcpxml", "edl", "prproj"];
+pub const IMPORT_EXTS: &[&str] = &["xml", "fcpxml", "edl", "prproj", "mlt"];
+
+// ---- ws:parity-editing ----
+mod mlt;
 
 /// Bytes → text: strips a UTF-8 BOM, decodes UTF-16 (LE/BE BOM) and never fails.
 fn decode(bytes: &[u8]) -> String {
