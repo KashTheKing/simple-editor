@@ -1711,8 +1711,15 @@ fn lanes_view(
             let trs = clip_transitions(project, id);
             let trans_row = labels.len() + (!loose.is_empty()) as usize;
             let nrows = (trans_row + (!trs.is_empty()) as usize).max(1);
-            let (row, _) = ui
-                .allocate_exact_size(vec2(full.width(), lane_h + (nrows - 1) as f32 * (lane_h - 8.0)), Sense::hover());
+            // an open block's curve sits right under its own lane: the lanes below it move down by the curves
+            // opened above them (`gap`), and the row grows by every open curve
+            let mut opens: Vec<usize> = (0..c.blocks.len()).filter(|i| st.open.contains(&(id, *i))).collect();
+            opens.sort_by_key(|&i| (pack[i], i));
+            let gap = |r: usize| opens.iter().filter(|&&i| pack[i] < r).count() as f32 * STRING_H;
+            let (row, _) = ui.allocate_exact_size(
+                vec2(full.width(), lane_h + (nrows - 1) as f32 * (lane_h - 8.0) + opens.len() as f32 * STRING_H),
+                Sense::hover(),
+            );
             let p = ui.painter_at(row.expand(1.0));
             let on = st.sel.is_some_and(|s| s.0 == id);
             let head = Rect::from_min_max(row.min, pos2(row.left() + head_w, row.bottom()));
@@ -1745,7 +1752,7 @@ fn lanes_view(
                 } else {
                     labels.get(r).copied().unwrap_or("Hand keys")
                 };
-                let ry = row.top() + lane_h / 2.0 + r as f32 * (lane_h - 8.0);
+                let ry = row.top() + lane_h / 2.0 + r as f32 * (lane_h - 8.0) + gap(r);
                 let same = r < labels.len() && labels[r] == labels[r - 1];
                 if !same {
                     p.text(
@@ -1810,7 +1817,7 @@ fn lanes_view(
             });
             // keys made by hand: a dashed "Hand keys" bar per cluster; a click makes it a block with controls
             for &(a, b) in &loose {
-                let ktop = row.top() + 5.0 + keys_row as f32 * (lane_h - 8.0);
+                let ktop = row.top() + 5.0 + keys_row as f32 * (lane_h - 8.0) + gap(keys_row);
                 let kr = Rect::from_min_max(
                     pos2(x(c.start + a) - 4.0, ktop),
                     pos2(x(c.start + b) + 4.0, ktop + lane_h - 10.0),
@@ -1861,7 +1868,7 @@ fn lanes_view(
             // drags its length, right-click changes its kind
             let col = kind_color("Transition");
             for (tr, (wa, wb), sides) in &trs {
-                let top = row.top() + 5.0 + trans_row as f32 * (lane_h - 8.0);
+                let top = row.top() + 5.0 + trans_row as f32 * (lane_h - 8.0) + gap(trans_row);
                 let r = Rect::from_min_max(pos2(x(*wa), top), pos2(x(*wb).max(x(*wa) + 6.0), top + lane_h - 10.0));
                 #[cfg(test)]
                 st.trans_pos.push((tr.id, id, r));
@@ -1958,7 +1965,7 @@ fn lanes_view(
                 });
             }
             for (i, b) in c.blocks.iter().enumerate() {
-                let top = row.top() + 5.0 + pack[i] as f32 * (lane_h - 8.0);
+                let top = row.top() + 5.0 + pack[i] as f32 * (lane_h - 8.0) + gap(pack[i]);
                 let r =
                     Rect::from_min_max(pos2(x(c.start + b.t), top), pos2(x(c.start + b.end()), top + lane_h - 10.0));
                 if !r.intersects(body) {
@@ -2242,8 +2249,13 @@ fn lanes_view(
             }
             // open blocks: the move as a string from its origin (bottom) to its target (top). No keys here (Curves
             // has them): pull the two middle points to shape the ease, an end point sideways to stretch it
-            for (i, b) in c.blocks.iter().enumerate().filter(|(i, _)| st.open.contains(&(id, *i))) {
-                let (sub, _) = ui.allocate_exact_size(vec2(full.width(), STRING_H), Sense::hover());
+            for (k, &i) in opens.iter().enumerate() {
+                let b = &c.blocks[i];
+                // under its lane (after the curves opened before it in the same lane)
+                let lane = pack[i];
+                let before = opens[..k].iter().filter(|&&j| pack[j] == lane).count() as f32;
+                let y = row.top() + 4.0 + (lane + 1) as f32 * (lane_h - 8.0) + gap(lane) + before * STRING_H;
+                let sub = Rect::from_min_size(pos2(full.left(), y), vec2(full.width(), STRING_H));
                 ui.painter_at(sub).rect_filled(sub, 0.0, look::DEEP);
                 let live = b.ctl.as_ref().filter(|c| !c.edited && !c.is_sim() && !wiggles(c));
                 let (xa, xb) = (x(c.start + b.t), x(c.start + b.end()));
