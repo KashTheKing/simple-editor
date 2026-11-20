@@ -313,7 +313,7 @@ fn capture(c: &Clip, props: &[String], a: f64, b: f64, w: f64, h: f64, rel: bool
             (!keys.is_empty()).then(|| BlockTrack { prop: p.clone(), keys })
         })
         .collect();
-    KeyBlock { name: "Custom".into(), dur, tracks, gen: None }
+    KeyBlock { name: "Custom".into(), dur, tracks, gen: None, proc: None }
 }
 
 fn custom_fit(c: &Clip, props: &[String], a: f64, b: f64, w: f64, h: f64) -> Option<(Clip, BlockCtl)> {

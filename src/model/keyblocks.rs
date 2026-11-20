@@ -43,6 +43,10 @@ pub struct KeyBlock {
     /// A simulated block (`animate::Gen`): `tracks` is empty and the keys come from `BlockCtl::resolve`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gen: Option<crate::model::Gen>,
+    /// A procedural block (`procedural`): `tracks` is empty and no keys are written; the motion is computed
+    /// while sampling from `BlockCtl::proc`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc: Option<crate::model::ProcKind>,
 }
 
 /// Where a block was applied on a clip (clip-local seconds) - drawn as a bar on the keyframe row.
@@ -146,7 +150,7 @@ impl KeyBlock {
             if !a.link.is_none() {
                 a.unlink();
             }
-            let base = a.at(t0);
+            let base = a.keyed_at(t0);
             let u = unit(&tr.prop, w, h);
             a.keys.retain(|k| k.t <= t0 + BK_EPS || k.t > t0 + dur + BK_EPS);
             for k in &tr.keys {
@@ -172,15 +176,27 @@ impl Clip {
     }
 
     /// `place_block` with the controls already set (`ctl.src` is the block).
-    pub(crate) fn place_ctl(&mut self, ctl: crate::model::BlockCtl, t0: f64, dur: Option<f64>, w: f64, h: f64) -> Option<(f64, f64)> {
+    pub(crate) fn place_ctl(&mut self, mut ctl: crate::model::BlockCtl, t0: f64, dur: Option<f64>, w: f64, h: f64) -> Option<(f64, f64)> {
         let t0 = t0.clamp(0.0, self.duration);
         let dur = dur.unwrap_or(ctl.src.dur).min(self.duration - t0);
         if dur < 0.01 {
             return None;
         }
+        // a procedural block: no keys, its layers go on the properties (it runs on top of any other block)
+        if let Some(pc) = ctl.proc.as_mut() {
+            pc.pid = self.next_pid();
+            let pc = *pc;
+            let props = self.write_proc(&pc, t0, dur, w, h);
+            if props.is_empty() {
+                return None;
+            }
+            self.blocks.push(AppliedBlock { name: ctl.src.name.clone(), t: t0, dur, props, ctl: Some(ctl) });
+            self.blocks.sort_by(|a, b| a.t.total_cmp(&b.t));
+            return Some((t0, dur));
+        }
         let made = ctl.resolve(dur);
         let mine: Vec<&str> = made.tracks.iter().map(|t| t.prop.as_str()).collect();
-        self.blocks.retain(|b| !(b.t >= t0 - BK_EPS && b.end() <= t0 + dur + BK_EPS && b.props.iter().any(|p| mine.contains(&p.as_str()))));
+        self.blocks.retain(|b| b.is_proc() || !(b.t >= t0 - BK_EPS && b.end() <= t0 + dur + BK_EPS && b.props.iter().any(|p| mine.contains(&p.as_str()))));
         let props = made.write(self, t0, dur, w, h);
         if props.is_empty() {
             return None;
@@ -194,12 +210,16 @@ impl Clip {
     /// edge of another block of the same property (the seam of a chain), so removing block `i` keeps it.
     pub fn block_keys(&self, i: usize) -> Vec<(String, Keyframe, bool)> {
         let Some(b) = self.blocks.get(i) else { return Vec::new() };
+        // a procedural block owns no keys (its motion is its layers)
+        if b.is_proc() {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         for p in &b.props {
             let Some(a) = prop_ref(self, p) else { continue };
             for k in a.keys.iter().filter(|k| k.t >= b.t - BK_EPS && k.t <= b.end() + BK_EPS) {
                 let shared = self.blocks.iter().enumerate().any(|(j, o)| {
-                    j != i && o.props.contains(p) && ((o.t - k.t).abs() < BK_EPS || (o.end() - k.t).abs() < BK_EPS)
+                    j != i && !o.is_proc() && o.props.contains(p) && ((o.t - k.t).abs() < BK_EPS || (o.end() - k.t).abs() < BK_EPS)
                 });
                 out.push((p.clone(), *k, shared));
             }
@@ -225,7 +245,7 @@ impl Clip {
             .iter()
             .filter_map(|&p| {
                 let a = prop_ref(self, p)?;
-                let base = a.at(t0);
+                let base = a.keyed_at(t0);
                 let keys: Vec<BlockKey> = a
                     .keys
                     .iter()
@@ -243,7 +263,7 @@ impl Clip {
                 (!keys.is_empty()).then(|| BlockTrack { prop: p.to_string(), keys })
             })
             .collect();
-        Some(KeyBlock { name: name.to_string(), dur: t1 - t0, tracks, gen: None })
+        Some(KeyBlock { name: name.to_string(), dur: t1 - t0, tracks, gen: None, proc: None })
     }
 }
 
@@ -261,7 +281,7 @@ fn tr(prop: &str, keys: &[(f64, BlockVal, Ease)]) -> BlockTrack {
     BlockTrack { prop: prop.into(), keys: keys.iter().map(|&(f, v, ease)| BlockKey { f, v, ease }).collect() }
 }
 fn blk(name: &str, dur: f64, tracks: Vec<BlockTrack>) -> KeyBlock {
-    KeyBlock { name: name.into(), dur, tracks, gen: None }
+    KeyBlock { name: name.into(), dur, tracks, gen: None, proc: None }
 }
 /// `n` alternating `Add` offsets of ±`amp` settling back to 0 - shake / wiggle.
 fn jitter(prop: &str, n: usize, amp: f64, phase: f64, ease: Ease) -> BlockTrack {
@@ -311,7 +331,6 @@ pub fn builtin_blocks() -> Vec<KeyBlock> {
         slide_out("Slide Out Top", "y", -1.0),
         slide_out("Slide Out Bottom", "y", 1.0),
         blk("Zoom Punch", 0.5, vec![tr("scale", &[(0.0, Mul(1.0), OUT), (0.25, Mul(1.25), IO), (1.0, Mul(1.0), LIN)])]),
-        blk("Shake", 0.5, vec![jitter("x", 10, 0.012, 0.0, IO), jitter("y", 10, 0.01, 1.0, IO)]),
         blk("Spin", 0.8, vec![tr("rotation", &[(0.0, Add(0.0), IO), (1.0, Add(360.0), LIN)])]),
         blk(
             "Bounce",
@@ -327,7 +346,6 @@ pub fn builtin_blocks() -> Vec<KeyBlock> {
                 ],
             )],
         ),
-        blk("Pulse", 0.6, vec![tr("scale", &[(0.0, Mul(1.0), IO), (0.5, Mul(1.08), IO), (1.0, Mul(1.0), LIN)])]),
         blk(
             "Whip",
             0.3,
@@ -374,14 +392,6 @@ pub fn builtin_blocks() -> Vec<KeyBlock> {
             )],
         ),
         blk(
-            "Drift",
-            3.0,
-            vec![
-                tr("x", &[(0.0, Add(0.0), IO), (1.0, Add(0.03), LIN)]),
-                tr("y", &[(0.0, Add(0.0), IO), (1.0, Add(-0.02), LIN)]),
-            ],
-        ),
-        blk(
             "Elastic",
             0.8,
             vec![tr(
@@ -395,7 +405,6 @@ pub fn builtin_blocks() -> Vec<KeyBlock> {
                 ],
             )],
         ),
-        blk("Wiggle", 1.0, vec![jitter("rotation", 8, 4.0, 0.0, IO)]),
         blk("Drop In", 0.6, vec![tr("y", &[(0.0, Add(-1.0), IN), (0.75, Add(0.02), OUT), (1.0, Add(0.0), LIN)])]),
         blk("Swing In", 0.6, vec![tr("rotation", &[(0.0, Add(-90.0), BACK), (1.0, Add(0.0), LIN)])]),
         blk("Sound Swell", 1.0, vec![tr("volume", &[(0.0, Abs(0.0), OUT), (1.0, Abs(1.0), LIN)])]),
@@ -412,7 +421,23 @@ pub fn builtin_blocks() -> Vec<KeyBlock> {
     ]
     .into_iter()
     .chain(crate::model::sim_blocks())
+    .chain(proc_blocks())
     .collect()
+}
+
+/// feat/procedural-blocks: the procedural presets (no keys: `KeyBlock::proc`). "Camera Shake" and "Shake" are the
+/// same kind; Camera Shake also tilts and zooms just enough to keep the frame's edges out of view.
+pub fn proc_blocks() -> Vec<KeyBlock> {
+    use crate::model::ProcKind;
+    let b = |name: &str, k: ProcKind| KeyBlock { name: name.into(), dur: k.default_dur(), proc: Some(k), ..Default::default() };
+    vec![
+        b("Camera Shake", ProcKind::Shake),
+        b("Shake", ProcKind::Shake),
+        b("Wobble", ProcKind::Wobble),
+        b("Wiggle", ProcKind::Wiggle),
+        b("Pulse", ProcKind::Pulse),
+        b("Drift", ProcKind::Drift),
+    ]
 }
 
 /// A block by name (case-insensitive): the user's saved ones first (so a save can shadow a builtin),

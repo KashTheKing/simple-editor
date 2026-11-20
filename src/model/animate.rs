@@ -201,6 +201,12 @@ pub struct BlockCtl {
     /// from `src`'s tracks).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<PathCtl>,
+    /// A procedural block's controls: no keys, its layers on the clip's properties come from these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proc: Option<ProcCtl>,
+    /// Set by Convert to Keyframes on the key block a procedural one became (Make Procedural reads it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unbaked: Option<Box<Unbaked>>,
 }
 
 /// A Path block's controls: a stroke drawn in the Viewer, kept as drawn, and how the clip travels along it.
@@ -363,7 +369,7 @@ fn tile(b: &KeyBlock, n: u32, pingpong: bool, dur: f64) -> KeyBlock {
         }
         BlockTrack { prop: t.prop.clone(), keys }
     };
-    KeyBlock { name: b.name.clone(), dur, tracks: b.tracks.iter().map(track).collect(), gen: None }
+    KeyBlock { name: b.name.clone(), dur, tracks: b.tracks.iter().map(track).collect(), gen: None, proc: None }
 }
 
 /// The x/y side a keyed block moves along: the biggest x / y offset among its keys.
@@ -417,6 +423,7 @@ impl BlockCtl {
         };
         // a drop does not spin unless asked to
         let spin = if src.gen == Some(Gen::GravityFall) { 0.0 } else { Phys::default().spin };
+        let proc = src.proc.map(|k| ProcCtl::preset(k, &src.name));
         Self {
             src,
             strength: 1.0,
@@ -431,6 +438,8 @@ impl BlockCtl {
             loops: 0,
             pingpong: false,
             path: None,
+            proc,
+            unbaked: None,
         }
     }
     pub fn is_sim(&self) -> bool {
@@ -454,10 +463,14 @@ impl BlockCtl {
     }
 
     fn resolve_one(&self, dur: f64) -> KeyBlock {
+        // a procedural block writes no keys
+        if self.proc.is_some() {
+            return KeyBlock { name: self.src.name.clone(), dur, ..Default::default() };
+        }
         // a Path block: its keys are the stroke's (strength, side, origin / target don't apply)
         if let Some(p) = &self.path {
             let tracks = p.tracks(self.ease.unwrap_or(Ease::Linear), dur);
-            return KeyBlock { name: self.src.name.clone(), dur, tracks, gen: None };
+            return KeyBlock { name: self.src.name.clone(), dur, tracks, gen: None, proc: None };
         }
         let mut b = match self.src.gen {
             Some(g) => simulate(g, &self.phys, self.strength, self.dir.unwrap_or(Dir::Left), dur),
@@ -809,14 +822,17 @@ pub fn simulate(g: Gen, p: &Phys, strength: f64, dir: Dir, dur: f64) -> KeyBlock
             }
         }
     }
-    KeyBlock { name: g.name().into(), dur, tracks, gen: None }
+    KeyBlock { name: g.name().into(), dur, tracks, gen: None, proc: None }
 }
 
 /// The simulated blocks as presets (Gallery and Animator).
 pub fn sim_blocks() -> Vec<KeyBlock> {
+    // Shake and Wobble are procedural presets now (`proc_blocks`); their simulations stay for blocks already
+    // applied in older projects
     Gen::ALL
         .iter()
-        .map(|&g| KeyBlock { name: g.name().into(), dur: g.dur(), tracks: Vec::new(), gen: Some(g) })
+        .filter(|g| !matches!(g, Gen::Shake | Gen::Wobble))
+        .map(|&g| KeyBlock { name: g.name().into(), dur: g.dur(), tracks: Vec::new(), gen: Some(g), proc: None })
         .collect()
 }
 
@@ -1243,6 +1259,7 @@ mod tests {
                 ],
             }],
             gen: None,
+            proc: None,
         };
         p.apply_key_block(a, &zoom, Some(5.0), None).unwrap();
         let mut smooth = zoom.clone();

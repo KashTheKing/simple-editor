@@ -26,7 +26,7 @@ fn track(prop: &str, keys: Vec<BlockKey>) -> BlockTrack {
     BlockTrack { prop: prop.into(), keys }
 }
 fn kb(name: &str, dur: f64, tracks: Vec<BlockTrack>) -> KeyBlock {
-    KeyBlock { name: name.into(), dur, tracks, gen: None }
+    KeyBlock { name: name.into(), dur, tracks, gen: None, proc: None }
 }
 
 /// A slow zoom that never stops: scale x1 -> x`by` over the block.

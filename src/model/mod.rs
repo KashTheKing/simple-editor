@@ -337,6 +337,9 @@ pub struct Animated {
     /// Last expression/path error, shown in the inspector. Transient.
     #[serde(skip)]
     pub link_err: Option<String>,
+    /// Procedural blocks on this property (`procedural::ProcLayer`): offsets added on top of the keyed value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub procs: Vec<ProcLayer>,
 }
 
 // ws:browser-layer (size): by hand and out of line. A clip clones dozens of these (every property of it
@@ -351,23 +354,35 @@ impl Clone for Animated {
             baked: self.baked.clone(),
             baked_rev: self.baked_rev,
             link_err: self.link_err.clone(),
+            procs: self.procs.clone(),
         }
     }
 }
 
 impl Animated {
     pub fn new(value: f64) -> Self {
-        Self { value, keys: Vec::new(), link: AnimLink::None, baked: Vec::new(), baked_rev: 0, link_err: None }
+        Self { value, keys: Vec::new(), link: AnimLink::None, baked: Vec::new(), baked_rev: 0, link_err: None, procs: Vec::new() }
     }
     pub fn is_animated(&self) -> bool {
         !self.keys.is_empty()
     }
     pub fn is_default(&self, def: f64) -> bool {
-        !self.is_animated() && (self.value - def).abs() < EPS
+        !self.is_animated() && self.procs.is_empty() && (self.value - def).abs() < EPS
     }
     /// Value at clip-local time t (eased interpolation, clamped at the ends). A baked live link
-    /// (path / expression) overrides the property's own keys.
+    /// (path / expression) overrides the property's own keys. Procedural blocks (`procs`) add on top: this is
+    /// the one place every renderer reads a property, so preview, export, proxies and the GPU path all see them.
+    #[inline]
     pub fn at(&self, t: f64) -> f64 {
+        let v = self.keyed_at(t);
+        if self.procs.is_empty() {
+            v
+        } else {
+            procedural::apply_layers(&self.procs, v, t)
+        }
+    }
+    /// The value without procedural blocks: what a key edit, a block's origin or Convert to Keyframes builds on.
+    pub fn keyed_at(&self, t: f64) -> f64 {
         if !self.baked.is_empty() {
             return Self::eval_keys(&self.baked, t);
         }
@@ -430,7 +445,7 @@ impl Animated {
             Some(i) => self.keys[i].v = v,
             None if recording() => self.insert(t, v),
             None => {
-                let d = v - self.at(t);
+                let d = v - self.keyed_at(t);
                 self.keys.iter_mut().for_each(|k| k.v += d);
             }
         }
@@ -453,19 +468,22 @@ impl Animated {
                 self.value = v;
             }
         } else {
-            let v = self.at(t);
+            let v = self.keyed_at(t);
             self.insert(t, v);
         }
     }
     /// Remove all keyframes, keeping the value at t.
     pub fn clear_keys(&mut self, t: f64) {
-        self.value = self.at(t);
+        self.value = self.keyed_at(t);
         self.keys.clear();
     }
     /// Shift all keyframe times by dt (used when trimming/splitting).
     pub fn shift(&mut self, dt: f64) {
         for k in &mut self.keys {
             k.t += dt;
+        }
+        for l in &mut self.procs {
+            l.t += dt;
         }
     }
     /// Move key `i` to `new_t` (keeps keys sorted); returns its new index.
@@ -724,6 +742,7 @@ mod keyblocks;
 mod marker;
 pub mod ops;
 mod path;
+mod procedural; // feat/procedural-blocks
 mod playlist; // ws:music-burn
 mod project;
 pub mod repair; // forum-crash: the safe-start helpers are used by ui::app::recovery
@@ -753,6 +772,7 @@ pub use animate::*;
 pub use keyblocks::*;
 pub use marker::*;
 pub use path::*;
+pub use procedural::*; // feat/procedural-blocks
 pub use playlist::Playlist; // ws:music-burn
 pub use project::*;
 pub use reference::*; // feat/reference-clips

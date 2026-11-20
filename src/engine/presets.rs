@@ -183,7 +183,7 @@ pub fn curves_block(name: &str, curves: &[(&str, &CurvePreset)]) -> crate::model
                 .collect(),
         })
         .collect();
-    KeyBlock { name: name.into(), dur: span, tracks, gen: None }
+    KeyBlock { name: name.into(), dur: span, tracks, gen: None, proc: None }
 }
 
 /// Apply a motion preset to a clip as one animation block over the whole clip (ws:animator: it shows in the
