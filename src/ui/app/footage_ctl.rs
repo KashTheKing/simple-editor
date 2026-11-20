@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn timeline_clips_group_by_camera() {
         let mut p = Project::new();
-        let mut add = |p: &mut Project, path: &str| {
+        let add = |p: &mut Project, path: &str| {
             let mut a = crate::engine::import::placeholder(path);
             (a.kind, a.width, a.height, a.fps, a.duration) = (ClipKind::Video, 1920, 1080, 25.0, 4.0);
             let aid = p.add_asset(a);

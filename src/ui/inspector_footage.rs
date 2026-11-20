@@ -45,7 +45,8 @@ pub fn every_frame_for(project: &Project, clip: &Clip) -> Option<f64> {
 /// The timeline badge for such a clip: its source rate ("50"), while it plays at normal speed.
 pub fn badge(project: &Project, clip: &Clip) -> Option<String> {
     every_frame_for(project, clip)?;
-    (!clip.is_retimed()).then(|| crate::ui::inspector::fps_label(src_fps(project, clip)?))
+    let src = src_fps(project, clip)?;
+    (!clip.is_retimed()).then(|| crate::ui::inspector::fps_label(src))
 }
 
 /// The Zoom (clip scale) at which one source pixel is one project pixel. Scale 1 is Fit (the whole frame,
@@ -210,7 +211,7 @@ fn zoom_row(ui: &mut egui::Ui, project: &mut Project, c: &Clip, playhead: f64, u
             let rail = r.rect.x_range().shrink(r.rect.height() / 2.5);
             let x = rail.min + ((native * 100.0 - 100.0) / (top - 100.0)) as f32 * rail.span();
             let y = r.rect.center().y;
-            ui.painter().line_segment([egui::pos2(x, y - 7.0), egui::pos2(x, y + 7.0)], egui::Stroke::new(2.0, accent));
+            ui.painter().line_segment([egui::pos2(x, y - 7.0), egui::pos2(x, y + 7.0)], egui::Stroke::new(2.0_f32, accent));
         }
         ui.weak(format!("{pct:.0} %"));
     });
