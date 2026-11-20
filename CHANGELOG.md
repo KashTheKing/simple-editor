@@ -142,6 +142,11 @@
 - **Webcam recording**: the Screen Recording panel has a **Webcam** source with a camera and format pick, Mirror and a live preview. It records with your microphone and audio tracks like a screen recording, is crash-safe the same way, and goes into the Library.
 - **Webcam bubble**: turn on **Webcam ▸ Bubble** to put a round webcam picture in a corner of your screen recordings, in time with the screen and your voice. Pick the corner and the size.
 - **Screen Snapshot**: a **Snapshot** button (and **File ▸ Record ▸ Screen Snapshot**) takes a still of the screen, window, region or app, or a photo from the webcam, into the Library; an optional 3, 5 or 10 second delay. MCP: `capture.screen` gains `snapshot`, `devices`, source `webcam` and `camera` / `format` / `bubble`.
+### Preview tools, video cleanup and two effects
+- **Grid and safe areas on the Preview**: right-click ▸ **Grid** (thirds, 2 x 2, 4 x 4, 8 x 8, 16 x 9, 16 x 16 or your own columns and rows) and **Safe Areas** (action safe 90 %, title safe 80 %, both adjustable). Dragging a clip snaps to their lines while they're shown; they're never exported.
+- **Zoom at 10 % and 25 %** in the Preview's Zoom menu.
+- **Timeline ▸ Clean Up**: **Denoise Video** (Fast: hqdn3d, Best: nlmeans; Light / Medium / Strong) and **Deinterlace** (bwdif) filter the selected clip's source file and swap it in, keeping its effects, position, speed and trims; **Stabilize** and **Denoise Audio** are in the same menu now. MCP: `export.denoise_video`, `export.deinterlace`.
+- **Corner Pin** and **Lens Correction** effects (Gallery ▸ Effects ▸ Transform): pin the four corners of a clip onto a screen or sign in the shot, and straighten barrel or pincushion lens distortion.
 
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.

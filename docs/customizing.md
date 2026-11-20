@@ -315,6 +315,8 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `export.bake` | Job | clip_ids | Render the given clip(s) in place (effects flattened into a new asset) and swap them onto it; the original asset stays in the library. Blocks until the swap lands. |
 | `export.denoise` | Job | clip_ids, engine, strength | Bake the clip(s) through speech denoise (DeepFilterNet when installed, else ffmpeg afftdn; `engine` deepfilter \| ffmpeg), then swap them onto the result. |
 | `export.diagnose` | Read | - | Why an export would fail or did fail: clips that hang or balloon it (lint: clip id, time, sentence), missing files, and the last failure as a plain sentence with its fix. |
+| `export.denoise_video` | Job | clip_ids, strength, method | Filter the clips' source file through hqdn3d (fast) or nlmeans (best) and swap the video clips onto it, keeping their edits. |
+| `export.deinterlace` | Job | clip_ids | Filter the clips' source file through bwdif and swap the video clips onto it, keeping their edits. |
 | `export.edl` | Read | path | Write the main timeline as CMX 3600 EDL (for Avid): one file per video track (the first at path, others as <stem>_V2.edl …), the first also carrying every audio track; dissolves as D events. |
 | `export.find_problem` | Ui | - | Find the clip that makes the export fail: tests the timeline in halves at low quality (a background job in the Jobs list), then selects the clip and moves the playhead to it. Uses the last failed export's settings, else the current ones. |
 | `export.preset_apply` | Ui | name | Apply an export preset card (any kind) to the Export pane, as clicking it does. |

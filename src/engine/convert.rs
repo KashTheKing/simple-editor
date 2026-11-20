@@ -85,6 +85,13 @@ pub enum BakeFilter {
     /// Optical-flow slow motion: `setpts=(1/factor)*PTS,minterpolate=fps=<fps>:mi_mode=mci`.
     /// `factor` 0.5 = half speed; `fps` = the rendered file's frame rate (the project's).
     SlowMo { factor: f64, fps: f64 },
+    // ---- ws:parity-preview-tools ----
+    /// Video denoise: `hqdn3d` (fast, spatial + temporal) or, with `best`, `nlmeans` (non-local means,
+    /// much slower, keeps more detail). `strength` 0 = light, 1 = medium, 2 = strong.
+    DenoiseVideo { strength: u8, best: bool },
+    /// `bwdif` (Bob Weaver) deinterlace, one frame out per frame in (the frame rate is kept), every
+    /// frame treated as interlaced - files often carry no or wrong field flags.
+    Deinterlace,
 }
 
 /// An ffmpeg `atempo` chain playing audio at `factor` x with its pitch kept. One `atempo` takes 0.5..100,
@@ -99,6 +106,23 @@ pub fn atempo_chain(factor: f64) -> String {
     parts.push(format!("atempo={f:.6}"));
     parts.join(",")
 }
+
+// ---- ws:parity-preview-tools ----
+/// The `-vf` of a `DenoiseVideo` bake: three steps per filter, light to strong.
+pub fn denoise_video_vf(strength: u8, best: bool) -> String {
+    let i = strength.min(2) as usize;
+    if best {
+        // nlmeans: s = denoising strength (default 1), p / r = patch / research size (odd)
+        let s = [1.5, 3.0, 6.0][i];
+        format!("nlmeans=s={s}:p=7:r=15")
+    } else {
+        // hqdn3d: luma_spatial:chroma_spatial:luma_tmp:chroma_tmp (its own default is 4:3:6:4.5)
+        ["hqdn3d=2:1.5:3:2.25", "hqdn3d=4:3:6:4.5", "hqdn3d=8:6:12:9"][i].to_string()
+    }
+}
+
+/// The `-vf` of a `Deinterlace` bake.
+pub const DEINTERLACE_VF: &str = "bwdif=mode=send_frame:parity=auto:deint=all";
 
 /// The `ConvertOptions` `start_bake_filter` runs - pure, so the filter strings are testable.
 pub fn bake_filter_opts(
@@ -118,6 +142,8 @@ pub fn bake_filter_opts(
             // the sound slows with the picture, pitch kept (Keep Pitch's promise for bakes too)
             (Some(vf), Some(atempo_chain(factor)))
         }
+        BakeFilter::DenoiseVideo { strength, best } => (Some(denoise_video_vf(*strength, *best)), None),
+        BakeFilter::Deinterlace => (Some(DEINTERLACE_VF.to_string()), None),
     };
     ConvertOptions {
         audio_streams: None,
@@ -454,6 +480,44 @@ mod tests {
         assert_eq!(wait_done(&prog), None);
         let d: f64 = probe(&den, "format=duration").parse().expect("duration");
         assert!((d - 4.0).abs() < 0.3, "{d}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- ws:parity-preview-tools ----
+    #[test]
+    fn video_cleanup_filters_build_expected_args() {
+        let o =
+            |f: &BakeFilter| bake_filter_opts("in.mp4".into(), "out.mp4".into(), f, "auto".into(), 20, "fast".into());
+        let d = o(&BakeFilter::DenoiseVideo { strength: 1, best: false });
+        assert_eq!(d.vf_extra.as_deref(), Some("hqdn3d=4:3:6:4.5"), "medium = hqdn3d's own default");
+        assert_eq!(d.af_extra, None, "the sound is left alone");
+        assert_eq!(denoise_video_vf(0, false), "hqdn3d=2:1.5:3:2.25");
+        assert_eq!(denoise_video_vf(9, false), "hqdn3d=8:6:12:9", "out of range = strong");
+        assert_eq!(denoise_video_vf(0, true), "nlmeans=s=1.5:p=7:r=15");
+        assert_eq!(denoise_video_vf(2, true), "nlmeans=s=6:p=7:r=15");
+        let i = o(&BakeFilter::Deinterlace);
+        assert_eq!(i.vf_extra.as_deref(), Some(DEINTERLACE_VF));
+        assert!(DEINTERLACE_VF.contains("mode=send_frame"), "one frame per frame: the clip's timing holds");
+        assert_eq!(i.af_extra, None);
+
+        let dir = temp_dir("bake-video");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        // every variant runs end to end and keeps the size and length the clip's timing relies on
+        for (name, f) in [
+            ("dn.mp4", BakeFilter::DenoiseVideo { strength: 2, best: false }),
+            ("nl.mp4", BakeFilter::DenoiseVideo { strength: 0, best: true }),
+            ("di.mp4", BakeFilter::Deinterlace),
+        ] {
+            let out = dir.join(name);
+            let prog = start_bake_filter(src.clone(), out.clone(), f, "auto".into(), 30, "ultrafast".into());
+            assert_eq!(wait_done(&prog), None, "{name}");
+            assert_eq!(probe(&out, "stream=width,height").lines().next(), Some("320,240"), "{name}");
+            let d: f64 = probe(&out, "format=duration").parse().expect("duration");
+            assert!((d - 4.0).abs() < 0.3, "{name}: {d}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

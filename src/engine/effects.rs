@@ -197,6 +197,21 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
             qualifier(img, e(0) as f32, e(1) as f32, e(2) as f32, e(3) as f32, e(4) as f32, e(5) as f32, e(6) as f32)
         }
         EffectKind::Lut => lut_effect(img, &effect.lut, e(0) as f32),
+        // ---- ws:parity-preview-tools ----
+        EffectKind::CornerPin => {
+            let q = std::array::from_fn(|i| (e(2 * i), e(2 * i + 1)));
+            if let Some(inv) = corner_pin_inverse(q) {
+                remap(img, scratch, |x, y| homography(&inv, x, y));
+            }
+        }
+        EffectKind::LensCorrection => {
+            let (w, h) = (img.width as f64, img.height as f64);
+            let (k1, k2, zoom) = (e(2), e(3), e(4).max(0.05));
+            if k1 != 0.0 || k2 != 0.0 || zoom != 1.0 {
+                let (cx, cy) = (e(0), e(1));
+                remap(img, scratch, |x, y| Some(lens_source(x, y, w, h, cx, cy, k1, k2, zoom)));
+            }
+        }
         // geometric - handled by the compositor's placement (see `wobble`)
         EffectKind::Wobble | EffectKind::Plane3d => {}
         // GPU-only kinds returned above; listed so a new kind is a compile error, not a silent no-op
@@ -207,6 +222,94 @@ pub fn apply(effect: &Effect, t: f64, scale: f32, img: &mut Frame, scratch: &mut
         | EffectKind::Vhs
         | EffectKind::FrameBlend
         | EffectKind::Shader => {}
+    }
+}
+
+// ---- ws:parity-preview-tools ----
+/// Square-to-quad homography (Heckbert): (u, v) in the unit square -> the quad `q` = top left, top right,
+/// bottom right, bottom left, as a row-major 3x3 `[a, b, c, d, e, f, g, h, 1]` with
+/// `x = (a u + b v + c) / (g u + h v + 1)`, `y = (d u + e v + f) / (g u + h v + 1)`.
+/// The GPU body `CORNER_PIN` builds the same matrix.
+pub fn corner_pin_matrix(q: [(f64, f64); 4]) -> [f64; 9] {
+    let [(x0, y0), (x1, y1), (x2, y2), (x3, y3)] = q;
+    let (dx1, dx2, dx3) = (x1 - x2, x3 - x2, x0 - x1 + x2 - x3);
+    let (dy1, dy2, dy3) = (y1 - y2, y3 - y2, y0 - y1 + y2 - y3);
+    let den = dx1 * dy2 - dx2 * dy1;
+    let (g, h) = if den.abs() < 1e-12 { (0.0, 0.0) } else { ((dx3 * dy2 - dx2 * dy3) / den, (dx1 * dy3 - dx3 * dy1) / den) };
+    [x1 - x0 + g * x1, x3 - x0 + h * x3, x0, y1 - y0 + g * y1, y3 - y0 + h * y3, y0, g, h, 1.0]
+}
+
+/// The inverse of `corner_pin_matrix(q)`: layer fraction (x, y) -> unit-square (u, v). None when the
+/// quad is degenerate (three corners on a line).
+pub fn corner_pin_inverse(q: [(f64, f64); 4]) -> Option<[f64; 9]> {
+    let [a, b, c, d, e, f, g, h, i] = corner_pin_matrix(q);
+    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if det.abs() < 1e-9 || !det.is_finite() {
+        return None;
+    }
+    let adj = [e * i - f * h, c * h - b * i, b * f - c * e, f * g - d * i, a * i - c * g, c * d - a * f, d * h - e * g, b * g - a * h, a * e - b * d];
+    Some(adj.map(|v| v / det))
+}
+
+/// Apply a row-major 3x3 homography to (x, y); None behind the projection (w <= 0).
+fn homography(m: &[f64; 9], x: f64, y: f64) -> Option<(f64, f64)> {
+    // `corner_pin_inverse` is the exact inverse, so inside the quad w = 1 / (g u + h v + 1) > 0
+    let w = m[6] * x + m[7] * y + m[8];
+    (w > 1e-12).then(|| ((m[0] * x + m[1] * y + m[2]) / w, (m[3] * x + m[4] * y + m[5]) / w))
+}
+
+/// Lens correction: the layer fraction (x, y) of an output pixel -> the fraction it samples. `r` is
+/// measured in pixels over the half diagonal so the effect is round on any aspect. The GPU body `LENS`
+/// is the same formula.
+#[allow(clippy::too_many_arguments)]
+pub fn lens_source(x: f64, y: f64, w: f64, h: f64, cx: f64, cy: f64, k1: f64, k2: f64, zoom: f64) -> (f64, f64) {
+    let (dx, dy) = ((x - cx) * w, (y - cy) * h);
+    let half_diag = 0.5 * (w * w + h * h).sqrt().max(1e-9);
+    let r2 = (dx * dx + dy * dy) / (half_diag * half_diag);
+    let k = (1.0 + k1 * r2 + k2 * r2 * r2) / zoom;
+    (cx + dx * k / w, cy + dy * k / h)
+}
+
+/// Resample `img` through `map`: for each output pixel centre as a layer fraction, the fraction to
+/// read (bilinear, straight alpha like the GPU's `texture()`). Outside the layer is transparent, with
+/// a one-pixel soft edge so a pinned or corrected border is not stair-stepped.
+fn remap(img: &mut Frame, scratch: &mut Frame, map: impl Fn(f64, f64) -> Option<(f64, f64)>) {
+    let (w, h) = (img.width as usize, img.height as usize);
+    scratch.width = img.width;
+    scratch.height = img.height;
+    scratch.rgba.clear();
+    scratch.rgba.extend_from_slice(&img.rgba);
+    let src = &scratch.rgba;
+    let (wf, hf) = (w as f64, h as f64);
+    for y in 0..h {
+        for x in 0..w {
+            let o = (y * w + x) * 4;
+            let Some((u, v)) = map((x as f64 + 0.5) / wf, (y as f64 + 0.5) / hf) else {
+                img.rgba[o..o + 4].fill(0);
+                continue;
+            };
+            // coverage: distance (source px) inside the layer's border, +0.5 for a centred 1 px ramp
+            let edge = (u * wf).min((1.0 - u) * wf).min((v * hf).min((1.0 - v) * hf));
+            let cov = (edge + 0.5).clamp(0.0, 1.0);
+            if cov <= 0.0 || !cov.is_finite() {
+                img.rgba[o..o + 4].fill(0);
+                continue;
+            }
+            let (sx, sy) = ((u * wf - 0.5).clamp(0.0, wf - 1.0), (v * hf - 0.5).clamp(0.0, hf - 1.0));
+            let (x0, y0) = (sx.floor() as usize, sy.floor() as usize);
+            let (x1, y1) = ((x0 + 1).min(w - 1), (y0 + 1).min(h - 1));
+            let (fx, fy) = (sx - x0 as f64, sy - y0 as f64);
+            for c in 0..4 {
+                let p = |xx: usize, yy: usize| src[(yy * w + xx) * 4 + c] as f64;
+                let top = p(x0, y0) + (p(x1, y0) - p(x0, y0)) * fx;
+                let bot = p(x0, y1) + (p(x1, y1) - p(x0, y1)) * fx;
+                let mut val = top + (bot - top) * fy;
+                if c == 3 {
+                    val *= cov;
+                }
+                img.rgba[o + c] = (val + 0.5).clamp(0.0, 255.0) as u8;
+            }
+        }
     }
 }
 
@@ -1428,6 +1531,70 @@ mod tests {
         let signs: Vec<bool> = (0..200).map(|i| wobble(&e, i as f64 * 0.005).0 >= 0.0).collect();
         let flips = signs.windows(2).filter(|w| w[0] != w[1]).count();
         assert_eq!(flips, 2, "one sine period has two zero crossings");
+    }
+
+    // ---- ws:parity-preview-tools ----
+    #[test]
+    fn corner_pin_homography_hits_the_corners_and_round_trips() {
+        let q = [(0.1, 0.2), (0.9, 0.05), (0.8, 0.95), (0.2, 0.7)];
+        let m = corner_pin_matrix(q);
+        let fwd = |u: f64, v: f64| {
+            let w = m[6] * u + m[7] * v + m[8];
+            ((m[0] * u + m[1] * v + m[2]) / w, (m[3] * u + m[4] * v + m[5]) / w)
+        };
+        for ((u, v), want) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].into_iter().zip(q) {
+            let got = fwd(u, v);
+            assert!((got.0 - want.0).abs() < 1e-9 && (got.1 - want.1).abs() < 1e-9, "{got:?} vs {want:?}");
+        }
+        let inv = corner_pin_inverse(q).unwrap();
+        for (u, v) in [(0.25, 0.5), (0.5, 0.5), (0.9, 0.1)] {
+            let (x, y) = fwd(u, v);
+            let (bu, bv) = homography(&inv, x, y).unwrap();
+            assert!((bu - u).abs() < 1e-9 && (bv - v).abs() < 1e-9, "({u},{v}) -> ({bu},{bv})");
+        }
+        // three corners on one line: no inverse, and the effect leaves the layer alone
+        assert!(corner_pin_inverse([(0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (0.0, 0.0)]).is_none());
+    }
+
+    #[test]
+    fn corner_pin_default_is_identity_and_a_pin_clears_outside() {
+        let mut img = noisy(16, 12);
+        let before = img.rgba.clone();
+        apply(&Effect::new(K::CornerPin), 0.0, 1.0, &mut img, &mut Frame::default());
+        assert_eq!(img.rgba, before, "default corners = the layer untouched");
+        // the layer squeezed into its right half: the left half goes transparent, the right keeps alpha
+        let e = eff(K::CornerPin, &[0.5, 0.0, 1.0, 0.0, 1.0, 1.0, 0.5, 1.0]);
+        apply(&e, 0.0, 1.0, &mut img, &mut Frame::default());
+        let a = |x: usize, y: usize| img.rgba[(y * 16 + x) * 4 + 3];
+        assert_eq!(a(2, 6), 0, "left of the quad");
+        assert_eq!(a(12, 6), 255, "inside the quad");
+        // column 8 (centre 0.53) reads source u = 0.0625, i.e. halfway between the old columns 0 and 1
+        let px = |f: &[u8], x: usize, y: usize| f[(y * 16 + x) * 4] as i32;
+        let want = (px(&before, 0, 6) + px(&before, 1, 6)) as f64 / 2.0;
+        assert!((px(&img.rgba, 8, 6) as f64 - want).abs() <= 1.0, "edge sample {} vs {want}", px(&img.rgba, 8, 6));
+    }
+
+    #[test]
+    fn lens_correction_keeps_the_centre_and_moves_the_edges() {
+        // centre maps to itself; positive Center pulls the corners in from farther out
+        assert_eq!(lens_source(0.5, 0.5, 1920.0, 1080.0, 0.5, 0.5, 0.5, 0.0, 1.0), (0.5, 0.5));
+        let (u, v) = lens_source(1.0, 1.0, 1920.0, 1080.0, 0.5, 0.5, 0.2, 0.0, 1.0);
+        assert!((u - 1.1).abs() < 1e-9 && (v - 1.1).abs() < 1e-9, "corner r = 1: 1 + 0.2 -> ({u},{v})");
+        let (u, _) = lens_source(1.0, 0.5, 1920.0, 1080.0, 0.5, 0.5, -0.2, 0.0, 1.0);
+        assert!(u < 1.0, "negative pulls the edge outwards (pincushion fix)");
+        // zoom 2 = the middle half of the layer fills it
+        let (u, v) = lens_source(1.0, 0.0, 1920.0, 1080.0, 0.5, 0.5, 0.0, 0.0, 2.0);
+        assert!((u - 0.75).abs() < 1e-9 && (v - 0.25).abs() < 1e-9);
+        // identity params leave the CPU layer alone; a correction changes it and clears past the edge
+        let mut img = noisy(20, 10);
+        let before = img.rgba.clone();
+        apply(&Effect::new(K::LensCorrection), 0.0, 1.0, &mut img, &mut Frame::default());
+        assert_eq!(img.rgba, before);
+        apply(&eff(K::LensCorrection, &[0.5, 0.5, 0.6, 0.0, 1.0]), 0.0, 1.0, &mut img, &mut Frame::default());
+        assert_ne!(img.rgba, before);
+        assert_eq!(img.rgba[3], 0, "the corner now reads past the layer: transparent");
+        assert_eq!(img.rgba[(5 * 20 + 10) * 4 + 3], 255, "the middle stays opaque");
+        assert!(!gpu_only(K::CornerPin) && !gpu_only(K::LensCorrection), "both run on the CPU path too");
     }
 
     #[test]

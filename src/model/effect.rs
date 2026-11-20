@@ -44,6 +44,12 @@ pub enum EffectKind {
     FrameBlend,
     /// A user-written GLSL fragment shader (source in `Effect.shader`, up to 8 generic knobs).
     Shader,
+    // ---- ws:parity-preview-tools ---- (appended: `gpu.rs` keys programs by discriminant)
+    /// Four-corner perspective pin: the layer's corners move to the four points (fractions of the
+    /// layer), the picture follows through a homography, everything outside the quad is transparent.
+    CornerPin,
+    /// Radial lens distortion fix (barrel / pincushion) about a centre, with a zoom to hide the edges.
+    LensCorrection,
 }
 
 /// One effect parameter: label, default and UI range.
@@ -60,7 +66,7 @@ pub(crate) const fn ps(name: &'static str, default: f64, min: f64, max: f64) -> 
 }
 
 impl EffectKind {
-    pub const ALL: [EffectKind; 29] = [
+    pub const ALL: [EffectKind; 31] = [
         EffectKind::Blur,
         EffectKind::MotionBlur,
         EffectKind::Pixelate,
@@ -89,6 +95,8 @@ impl EffectKind {
         EffectKind::Qualifier,
         EffectKind::Lut,
         EffectKind::FrameBlend,
+        EffectKind::CornerPin, // ws:parity-preview-tools
+        EffectKind::LensCorrection,
         EffectKind::Shader,
     ];
     /// Catalogue grouping for the effects panel.
@@ -100,7 +108,7 @@ impl EffectKind {
                 "Stylize"
             }
             ChromaKey | ColorReplace | Crop | BlobTrack => "Keying & Matte",
-            Flip | Plane3d | Wobble => "Transform",
+            Flip | Plane3d | Wobble | CornerPin | LensCorrection => "Transform",
             Primaries | Qualifier | Lut => "Color",
             Shader => "Custom",
         }
@@ -115,7 +123,8 @@ impl EffectKind {
         match self {
             Blur | Pixelate | Tint | Color | Vignette | Sharpen | Invert | Grayscale | Flip | Crop | Wobble
             | ChromaKey | Curves | Levels | HueShift | JpegCompress | MotionBlur | Plane3d | EdgeGlow | Threshold
-            | BlobTrack | Vhs | RecDot | ColorReplace | Primaries | Qualifier | Lut | FrameBlend | Shader => false,
+            | BlobTrack | Vhs | RecDot | ColorReplace | Primaries | Qualifier | Lut | FrameBlend | Shader
+            | CornerPin | LensCorrection => false,
         }
     }
     pub fn name(self) -> &'static str {
@@ -149,6 +158,8 @@ impl EffectKind {
             EffectKind::Lut => "LUT",
             EffectKind::FrameBlend => "Frame Blend",
             EffectKind::Shader => "Custom Shader",
+            EffectKind::CornerPin => "Corner Pin",
+            EffectKind::LensCorrection => "Lens Correction",
         }
     }
     /// Parameters in index order (matches `Effect.params`). Pixel sizes are project pixels.
@@ -183,6 +194,8 @@ impl EffectKind {
             EffectKind::Lut => P_LUT,
             EffectKind::FrameBlend => P_FRAME_BLEND,
             EffectKind::Shader => P_SHADER,
+            EffectKind::CornerPin => P_CORNER_PIN,
+            EffectKind::LensCorrection => P_LENS,
         }
     }
     /// Parameters shown as a checkbox (stored as 0/1) rather than a number.
@@ -377,6 +390,28 @@ const P_QUALIFIER: &[ParamSpec] = &[
 ];
 const P_LUT: &[ParamSpec] = &[ps("Intensity", 1.0, 0.0, 1.0)];
 const P_FRAME_BLEND: &[ParamSpec] = &[ps("Amount", 0.5, 0.0, 1.0)];
+// ---- ws:parity-preview-tools ----
+/// Where each corner of the layer goes, as fractions of the layer (0,0 = its top left, 1,1 = its
+/// bottom right; outside 0..1 reaches past it). Defaults = the layer untouched.
+const P_CORNER_PIN: &[ParamSpec] = &[
+    ps("Top left X", 0.0, -1.0, 2.0),
+    ps("Top left Y", 0.0, -1.0, 2.0),
+    ps("Top right X", 1.0, -1.0, 2.0),
+    ps("Top right Y", 0.0, -1.0, 2.0),
+    ps("Bottom right X", 1.0, -1.0, 2.0),
+    ps("Bottom right Y", 1.0, -1.0, 2.0),
+    ps("Bottom left X", 0.0, -1.0, 2.0),
+    ps("Bottom left Y", 1.0, -1.0, 2.0),
+];
+/// `r' = r (1 + Center r^2 + Edges r^4) / Zoom`, r = distance from the centre over the half diagonal.
+/// Positive straightens barrel distortion (action cameras, wide lenses), negative pincushion.
+const P_LENS: &[ParamSpec] = &[
+    ps("Center X", 0.5, 0.0, 1.0),
+    ps("Center Y", 0.5, 0.0, 1.0),
+    ps("Center", 0.0, -1.0, 1.0),
+    ps("Edges", 0.0, -1.0, 1.0),
+    ps("Zoom", 1.0, 0.5, 2.0),
+];
 const P_SHADER: &[ParamSpec] = &[
     ps("u1", 0.0, -10.0, 10.0),
     ps("u2", 0.0, -10.0, 10.0),

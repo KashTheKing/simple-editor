@@ -815,6 +815,9 @@ pub struct Settings {
     /// Export ▸ Subtitle track: MP4 / MOV / MKV / WebM exports carry the subtitles as a track viewers
     /// switch on (`engine::formats::embed_subtitles`), whether or not they are burnt in.
     pub export_subtitle_track: bool,
+    // ---- ws:parity-preview-tools ----
+    /// The Preview's grid and action-safe / title-safe overlay (viewer-only; also snap targets).
+    pub preview_overlay: crate::ui::guides::Overlay,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1157,6 +1160,7 @@ impl Default for Settings {
             time_format: "smpte".into(),
             export_chapters: true,
             export_subtitle_track: false, // ws:parity-formats
+            preview_overlay: Default::default(), // ws:parity-preview-tools
         }
     }
 }

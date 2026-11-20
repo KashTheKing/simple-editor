@@ -323,6 +323,45 @@ impl App {
         acts_if(ui, self.selection.len() == 2, &[Some(ApplyFlow)]);
     }
 
+    // ---- ws:parity-preview-tools ----
+    /// Timeline ▸ Clean Up: the bakes that write a fixed copy of the selection's media and swap it in
+    /// (Jobs pane shows them; one undo each). Denoise Video and Deinterlace filter the source file and
+    /// keep the clips' edits; Stabilize and Denoise Audio render the clips first.
+    fn cleanup_menu(&mut self, ui: &mut egui::Ui) {
+        use super::tools_export::{BakeKind, bake_from_menu};
+        let mut pick = None;
+        menu::sub(ui, None, "Clean Up", |ui| {
+            menu::sub(ui, None, "Denoise Video", |ui| {
+                for (best, name, tip) in [
+                    (false, "Fast", "hqdn3d: quick spatial and temporal smoothing"),
+                    (true, "Best", "nlmeans: keeps more detail, many times slower"),
+                ] {
+                    menu::sub(ui, None, name, |ui| {
+                        for (strength, s) in [(0u8, "Light"), (1, "Medium"), (2, "Strong")] {
+                            if menu::row(ui, None, s, "").on_hover_text(tip).clicked() {
+                                pick = Some(BakeKind::DenoiseVideo { strength, best });
+                            }
+                        }
+                    });
+                }
+            });
+            let rows = [
+                (BakeKind::Deinterlace, "Deinterlace", "Turn interlaced fields into whole frames (bwdif), frame rate kept"),
+                (BakeKind::Stabilize, "Stabilize", "Smooth out camera shake (deshake); the clip's effects are rendered in"),
+                (BakeKind::Denoise, "Denoise Audio", "Reduce steady background noise (afftdn); the clip's effects are rendered in"),
+            ];
+            for (kind, name, tip) in rows {
+                if menu::row(ui, None, name, "").on_hover_text(tip).clicked() {
+                    pick = Some(kind);
+                }
+            }
+        });
+        if let Some(kind) = pick {
+            ui.close();
+            bake_from_menu(self, kind);
+        }
+    }
+
     fn timeline_menu(&mut self, ui: &mut egui::Ui, out: &mut Vec<Action>) {
         use Action::*;
         let has_clips = !self.timeline_is_empty();
@@ -366,6 +405,8 @@ impl App {
         ui.separator();
         acts(ui, &[Some(RenderSelection)]);
         acts_if(ui, !self.selection.is_empty(), &[Some(BakeSelection)]);
+        // ---- ws:parity-preview-tools ----
+        ui.add_enabled_ui(!self.selection.is_empty(), |ui| self.cleanup_menu(ui));
         menu::sub(ui, None, "Scaling Quality", |ui| {
             for s in Scaler::ALL {
                 if menu::check(ui, self.project.scaler == s, s.name(), "").clicked() && self.project.scaler != s {

@@ -30,6 +30,12 @@ pub(crate) enum BakeKind {
     /// and normal speed (every real frame, nothing sampled), then `setpts`/`minterpolate` makes the project
     /// rate at the clip's speed. Offline, like every bake - never on the playback path.
     Flow(f64),
+    // ---- ws:parity-preview-tools ----
+    /// The SOURCE file through `hqdn3d` / `nlmeans` (`BakeFilter::DenoiseVideo`), then the clips swap
+    /// to it keeping their effects, transform and trims (see `from_source`).
+    DenoiseVideo { strength: u8, best: bool },
+    /// The SOURCE file through `bwdif`, swapped the same way.
+    Deinterlace,
 }
 
 impl BakeKind {
@@ -40,6 +46,8 @@ impl BakeKind {
             BakeKind::Denoise(_) => "Denoise",
             BakeKind::SlowMo(_) => "Slow motion",
             BakeKind::Flow(_) => "Optical flow",
+            BakeKind::DenoiseVideo { .. } => "Denoise video",
+            BakeKind::Deinterlace => "Deinterlace",
         }
     }
     fn suffix(self) -> &'static str {
@@ -49,6 +57,8 @@ impl BakeKind {
             BakeKind::Denoise(_) => "denoised",
             BakeKind::SlowMo(_) => "slowmo",
             BakeKind::Flow(_) => "flow",
+            BakeKind::DenoiseVideo { .. } => "clean",
+            BakeKind::Deinterlace => "progressive",
         }
     }
     fn filter(self, fps: f64) -> Option<BakeFilter> {
@@ -57,7 +67,16 @@ impl BakeKind {
             BakeKind::Stabilize => Some(BakeFilter::Stabilize),
             BakeKind::Denoise(_) => Some(BakeFilter::Denoise),
             BakeKind::SlowMo(f) | BakeKind::Flow(f) => Some(BakeFilter::SlowMo { factor: f, fps }),
+            BakeKind::DenoiseVideo { strength, best } => Some(BakeFilter::DenoiseVideo { strength, best }),
+            BakeKind::Deinterlace => Some(BakeFilter::Deinterlace),
         }
+    }
+    /// ws:parity-preview-tools: filters the clip's source file itself instead of a render of the clip.
+    /// Deinterlacing must see the original fields (a render has already scaled / mixed them) and a
+    /// cleanup belongs before the effects, so the clips keep their effects, transform, speed and trims
+    /// and only their asset changes (`source_swap`). The new file has the source's exact timing.
+    fn from_source(self) -> bool {
+        matches!(self, BakeKind::DenoiseVideo { .. } | BakeKind::Deinterlace)
     }
     /// How much longer the baked file runs than the timeline span it came from.
     fn factor(self) -> f64 {
@@ -92,6 +111,9 @@ pub(crate) struct BakeJob {
     // ---- ws:job-completion-hitches ----
     /// The probed output asset, written by the `BakeStage::Probe` worker and taken by `finish_bake`.
     probed: Arc<std::sync::Mutex<Option<Result<crate::model::Asset, String>>>>,
+    // ---- ws:parity-preview-tools ----
+    /// A source bake (`BakeKind::from_source`): the asset whose file was filtered.
+    source: Option<Id>,
 }
 
 impl BakeJob {
@@ -323,6 +345,9 @@ pub(crate) fn start_bake(app: &mut App, ids: &[Id], kind: BakeKind) -> Result<(A
     if ids.is_empty() {
         return Err("Select a clip first".into());
     }
+    if kind.from_source() {
+        return start_source_bake(app, ids, kind);
+    }
     // the live project, not `export_project()`: a bake inside an open sequence renders that sequence's
     // own tracks, which is where the selected ids live
     let base = app.project.clone();
@@ -368,6 +393,7 @@ pub(crate) fn start_bake(app: &mut App, ids: &[Id], kind: BakeKind) -> Result<(A
         label: kind.label(),
         overall: overall.clone(),
         probed: Arc::default(),
+        source: None,
     });
     Ok((overall, out))
 }
@@ -383,11 +409,114 @@ pub(crate) fn flow_source(iso: &mut Project, id: Id) -> Option<f64> {
     Some(crate::model::snap_fps(fps))
 }
 
+// ---- ws:parity-preview-tools ----
+/// The one video asset a source bake filters: every selected video clip must play the same video file
+/// (a source bake changes the file under the clips, so two files would be two bakes). Pure, for tests.
+pub(crate) fn source_bake_target(project: &Project, ids: &[Id]) -> Result<Id, String> {
+    let mut found: Option<Id> = None;
+    for &id in ids {
+        let Some(c) = project.clip(id) else { return Err(format!("no such clip {id}")) };
+        if c.kind != ClipKind::Video {
+            continue;
+        }
+        match found {
+            Some(a) if a != c.asset => return Err("Select clips of one video file - each file is its own bake".into()),
+            _ => found = Some(c.asset),
+        }
+    }
+    let aid = found.ok_or("Select a video clip")?;
+    let a = project.asset(aid).ok_or("The clip has no media")?;
+    if a.kind != ClipKind::Video || a.html.is_some() || a.path.is_empty() || media::proxy::is_stacked(Path::new(&a.path)) {
+        return Err(format!("'{}' is not a video file this can clean up", a.name()));
+    }
+    Ok(aid)
+}
+
+/// Start a source bake: the asset's file through the filter (no render stage), probed, then swapped
+/// under the selected video clips by `source_swap`.
+fn start_source_bake(app: &mut App, ids: Vec<Id>, kind: BakeKind) -> Result<(Arc<Progress>, PathBuf), String> {
+    let aid = source_bake_target(&app.project, &ids)?;
+    let src = PathBuf::from(&app.project.asset(aid).ok_or("no media")?.path);
+    if !src.exists() {
+        return Err(format!("{} is offline - relink it first", src.display()));
+    }
+    let dir = src.parent().map(Path::to_path_buf).unwrap_or_else(|| default_out_dir(app));
+    let stem = src.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+    let out = unique_path(&dir, &format!("{stem}_{}", kind.suffix()), "mp4");
+    let filter = kind.filter(app.project.fps).ok_or("no filter")?;
+    let s = &app.settings;
+    let p = convert::start_bake_filter(src, out.clone(), filter, s.encoder.clone(), s.crf, s.preset.clone());
+    let overall = Progress::new();
+    overall.set(0.0, kind.label());
+    let t0 = span(&app.project, &ids).map_or(0.0, |(a, _)| a);
+    app.bake_jobs.push(BakeJob {
+        stage: BakeStage::Filter(p),
+        clip_ids: ids,
+        t0,
+        tmp: out.clone(),
+        out: out.clone(),
+        kind,
+        label: kind.label(),
+        overall: overall.clone(),
+        probed: Arc::default(),
+        source: Some(aid),
+    });
+    Ok((overall, out))
+}
+
+/// Point the video clips among `clip_ids` that play `old` at the filtered copy of its file. Unlike
+/// `bake_swap` nothing is flattened: the copy has the same timing, so effects, transform, speed, fades
+/// and trims stay as they are. The new asset inherits the old one's master effects, folder, tags and
+/// subclip range; the old asset stays in the library. Linked audio keeps playing the original. Rolls
+/// back (no orphan asset) when none of the clips is left.
+pub(crate) fn source_swap(
+    project: &mut Project,
+    before: &str,
+    clip_ids: &[Id],
+    mut asset: crate::model::Asset,
+    old: Id,
+) -> Result<usize, String> {
+    if let Some(o) = project.asset(old) {
+        asset.effects = o.effects.clone();
+        asset.folder = o.folder.clone();
+        asset.tags = o.tags.clone();
+        asset.label = o.label;
+        asset.range = o.range;
+    }
+    let aid = project.add_asset(asset);
+    let mut n = 0;
+    for &id in clip_ids {
+        if let Some(c) = project.clip_mut(id).filter(|c| c.asset == old && c.kind == ClipKind::Video) {
+            c.asset = aid;
+            n += 1;
+        }
+    }
+    if n == 0 {
+        if let Some(p) = super::mcp_exec::rollback_project(before) {
+            *project = p;
+        }
+        return Err("the clips are no longer on the timeline".into());
+    }
+    Ok(n)
+}
+
+/// A bake picked from a menu: start it and say where it goes (or why it could not start).
+pub(crate) fn bake_from_menu(app: &mut App, kind: BakeKind) {
+    let ids = app.selection.clone();
+    match start_bake(app, &ids, kind) {
+        Ok((_, out)) => {
+            app.toast(format!("{} → {}", kind.label(), out.file_name().unwrap_or_default().to_string_lossy()))
+        }
+        Err(e) => app.toast(e),
+    }
+}
+
 /// A bake stage finished: fail out, start the filter stage, or swap the clips onto the new asset.
 fn advance_bake(app: &mut App, mut job: BakeJob) {
     let prog = job.progress();
     if let Some(e) = prog.error() {
-        if job.tmp != job.out {
+        // a source bake writes straight to `out` (tmp == out): a failed / cancelled one leaves a partial file
+        if job.tmp != job.out || job.source.is_some() && !matches!(job.stage, BakeStage::Probe(_)) {
             let _ = std::fs::remove_file(&job.tmp);
         }
         let msg =
@@ -632,7 +761,10 @@ pub(crate) fn bake_swap(
 fn finish_bake(app: &mut App, job: &BakeJob) -> Result<usize, String> {
     let asset = take_probed(&job.probed)?;
     let before = app.project.to_json();
-    let n = bake_swap(&mut app.project, &before, &job.clip_ids, asset, job.t0, job.kind.factor())?;
+    let n = match job.source {
+        Some(old) => source_swap(&mut app.project, &before, &job.clip_ids, asset, old)?,
+        None => bake_swap(&mut app.project, &before, &job.clip_ids, asset, job.t0, job.kind.factor())?,
+    };
     app.push_undo_labeled(before, job.label);
     app.after_edit();
     Ok(n)
@@ -829,6 +961,16 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
 fn bake_tool(app: &mut App, args: &Value, kind: BakeKind) -> Result<ToolOutcome, String> {
     let ids = req(arg_ids(args, "clip_ids"), "clip_ids")?;
     start_bake(app, &ids, kind).map(|(p, out)| ToolOutcome::Job(p, out))
+}
+
+/// ws:parity-preview-tools: `export.denoise_video`'s strength name as `BakeFilter::DenoiseVideo`'s step.
+fn denoise_strength(s: Option<&str>) -> Result<u8, String> {
+    match s {
+        Some("light") => Ok(0),
+        None | Some("medium") => Ok(1),
+        Some("strong") => Ok(2),
+        Some(o) => Err(format!("unknown strength '{o}' (light | medium | strong)")),
+    }
 }
 
 /// "#rrggbb" / "rrggbb" → [r, g, b] (a preset card's colour from MCP).
@@ -1062,6 +1204,33 @@ pub const TOOLS: &[ToolDef] = &[
             bake_tool(app, args, BakeKind::Denoise(engine))
         },
     },
+    // ---- ws:parity-preview-tools ----
+    ToolDef {
+        name: "export.denoise_video",
+        desc: "Clean video noise: filter the selected clips' SOURCE file (ffmpeg hqdn3d, or nlmeans with method best - slower, keeps more detail) into a new file beside it and swap the video clips onto it, keeping their effects, transform and trims. The original stays in the library; linked audio is untouched. One video file per call.",
+        args: &[
+            "clip_ids:array:true:",
+            "strength:string:false:light | medium | strong, default medium",
+            "method:string:false:fast (hqdn3d) | best (nlmeans), default fast",
+        ],
+        kind: ToolKind::Job,
+        run: |app, args| {
+            let strength = denoise_strength(arg_str(args, "strength").as_deref())?;
+            let best = match arg_str(args, "method").as_deref() {
+                None | Some("fast") => false,
+                Some("best") => true,
+                Some(m) => return Err(format!("unknown method '{m}' (fast | best)")),
+            };
+            bake_tool(app, args, BakeKind::DenoiseVideo { strength, best })
+        },
+    },
+    ToolDef {
+        name: "export.deinterlace",
+        desc: "Deinterlace: filter the selected clips' SOURCE file through ffmpeg bwdif (frame rate kept) into a new file beside it and swap the video clips onto it, keeping their effects, transform and trims. The original stays in the library. One video file per call.",
+        args: &["clip_ids:array:true:"],
+        kind: ToolKind::Job,
+        run: |app, args| bake_tool(app, args, BakeKind::Deinterlace),
+    },
     ToolDef {
         name: "markers.export",
         desc: "Write every marker in timeline order to a CSV, a YouTube-chapters or an Avid Markers text file.",
@@ -1150,6 +1319,82 @@ mod tests {
         p.tracks[2].clips.push(c);
         p.tracks[1].clips.push(Clip::new(4, ClipKind::Audio, "music", 0.0, 8.0));
         p
+    }
+
+    // ---- ws:parity-preview-tools ----
+    #[test]
+    fn video_cleanup_bakes_filter_the_source_and_keep_timing() {
+        for k in [BakeKind::DenoiseVideo { strength: 1, best: true }, BakeKind::Deinterlace] {
+            assert!(k.from_source(), "{k:?}");
+            assert_eq!(k.factor(), 1.0, "{k:?}: same timing as the source");
+        }
+        for k in [BakeKind::Render, BakeKind::Stabilize, BakeKind::Denoise, BakeKind::SlowMo(0.5)] {
+            assert!(!k.from_source(), "{k:?} still renders the clip first");
+        }
+        assert_eq!(
+            BakeKind::DenoiseVideo { strength: 2, best: false }.filter(30.0),
+            Some(BakeFilter::DenoiseVideo { strength: 2, best: false })
+        );
+        assert_eq!(BakeKind::Deinterlace.filter(30.0), Some(BakeFilter::Deinterlace));
+        assert_eq!(denoise_strength(None), Ok(1));
+        assert_eq!(denoise_strength(Some("strong")), Ok(2));
+        assert!(denoise_strength(Some("max")).is_err());
+    }
+
+    #[test]
+    fn source_bake_target_wants_one_video_file() {
+        let mut p = project();
+        // the video clips 1-3 all play asset 7; the audio clip 4 is skipped, not a refusal
+        assert_eq!(source_bake_target(&p, &[1, 2, 3, 4]), Ok(7));
+        assert!(source_bake_target(&p, &[4]).is_err(), "audio only: nothing to clean");
+        assert!(source_bake_target(&p, &[999]).is_err());
+        // a second file in the selection is refused (each file is its own bake)
+        p.assets.push(asset(8, "C:/y.mp4"));
+        p.clip_mut(3).unwrap().asset = 8;
+        assert!(source_bake_target(&p, &[1, 3]).unwrap_err().contains("one video file"));
+        // a still image is not a video file
+        p.assets.push(Asset { kind: ClipKind::Image, ..asset(9, "C:/still.png") });
+        p.clip_mut(3).unwrap().asset = 9;
+        assert!(source_bake_target(&p, &[3]).is_err());
+    }
+
+    #[test]
+    fn source_swap_keeps_the_clips_edits_and_master_effects() {
+        let mut p = Project::from_json(&project().to_json()).unwrap();
+        p.assets[0].effects.push(Effect::new(EffectKind::Sharpen));
+        p.assets[0].folder = "Interview".into();
+        p.clip_mut(2).unwrap().src_in = 1.25;
+        p.clip_mut(2).unwrap().speed = 2.0;
+        let mut audio = Clip::new(5, ClipKind::Audio, "a", 2.0, 3.0);
+        audio.asset = 7;
+        p.tracks[1].clips.push(audio);
+        let before = p.to_json();
+        let n = source_swap(&mut p, &before, &[2, 5], asset(0, "C:/x_clean.mp4"), 7).unwrap();
+        assert_eq!(n, 1, "only the video clip swaps");
+        let b = p.clip(2).unwrap();
+        assert_ne!(b.asset, 7);
+        assert_eq!((b.src_in, b.speed, b.start, b.duration), (1.25, 2.0, 2.0, 3.0), "timing untouched");
+        assert!(b.has_effects(), "the clip's own Blur stays editable");
+        let a = p.asset(b.asset).unwrap();
+        assert_eq!((a.path.as_str(), a.folder.as_str()), ("C:/x_clean.mp4", "Interview"));
+        assert_eq!(a.effects.len(), 1, "master effects carried over");
+        assert_eq!(p.clip(5).unwrap().asset, 7, "linked audio keeps the original sound");
+        assert_eq!(p.clip(1).unwrap().asset, 7, "unselected clips of the same file are left alone");
+        assert!(p.asset(7).is_some(), "the original stays in the library");
+        // every target gone: rolled back, no orphan asset
+        let mut q = Project::from_json(&project().to_json()).unwrap();
+        let before = q.to_json();
+        let n_assets = q.assets.len();
+        assert!(source_swap(&mut q, &before, &[999], asset(0, "C:/x_clean.mp4"), 7).is_err());
+        assert_eq!(q.assets.len(), n_assets);
+    }
+
+    #[test]
+    fn video_cleanup_tools_are_registered() {
+        for name in ["export.denoise_video", "export.deinterlace"] {
+            let t = TOOLS.iter().find(|t| t.name == name).unwrap_or_else(|| panic!("{name}"));
+            assert!(matches!(t.kind, ToolKind::Job), "{name} runs as a job");
+        }
     }
 
     // ---- ws:job-completion-hitches ----

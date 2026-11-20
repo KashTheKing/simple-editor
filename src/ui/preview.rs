@@ -60,8 +60,9 @@ const HIT: f32 = 8.0;
 const KNOB_OFFSET: f32 = 18.0;
 /// Canvas-snap magnet, in points.
 const SNAP_PX: f32 = 8.0;
-/// Viewer zoom range (1 = fit).
-const ZOOM_RANGE: (f32, f32) = (0.25, 8.0);
+/// Viewer zoom range (1 = fit). ws:parity-preview-tools: the floor is low enough for the 10 % preset of
+/// a 1080p project in a wide pane (~0.12 of fit).
+const ZOOM_RANGE: (f32, f32) = (0.02, 8.0);
 
 /// Which handle on the selection outline owns the active drag. `u8` indexes TL/TR/BR/BL for corners
 /// and top/right/bottom/left for edges and crop handles.
@@ -463,6 +464,9 @@ pub struct PreviewResponse {
     // ---- ws:canvas-handles-monitor ----
     /// The context menu toggled canvas snapping - the app stores it in Settings.canvas_snap.
     pub set_canvas_snap: Option<bool>,
+    // ---- ws:parity-preview-tools ----
+    /// The right-click's Grid / Safe Areas changed the overlay - the app stores it in Settings.preview_overlay.
+    pub set_overlay: Option<crate::ui::guides::Overlay>,
     // ---- ws:pro-monitor ----
     /// The eyedropper (armed via `pick_mode`) sampled this colour from a click on the video.
     pub picked: Option<[u8; 3]>,
@@ -622,7 +626,7 @@ fn bar(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &
 }
 
 /// Viewer zoom presets: `None` = Fit, else a percentage of the project's own pixels.
-const ZOOMS: [Option<u32>; 4] = [None, Some(50), Some(100), Some(200)];
+const ZOOMS: [Option<u32>; 6] = [None, Some(10), Some(25), Some(50), Some(100), Some(200)];
 
 fn is_fit(view: (f32, Vec2)) -> bool {
     (view.0 - 1.0).abs() < 1e-3 && view.1 == Vec2::ZERO
@@ -631,6 +635,11 @@ fn is_fit(view: (f32, Vec2)) -> bool {
 /// A viewer zoom (1 = fit) in % of the project's own pixels, given the fitted picture's width in px.
 fn zoom_pct(zoom: f32, fit_px: f32, project_w: u32) -> f32 {
     zoom * fit_px / project_w.max(1) as f32 * 100.0
+}
+
+/// A Zoom menu preset (% of the project's own pixels) as a viewer zoom (1 = fit), clamped to the range.
+fn preset_zoom(pct: u32, fit_px: f32, project_w: u32) -> f32 {
+    (pct as f32 / 100.0 * project_w as f32 / fit_px.max(1.0)).clamp(ZOOM_RANGE.0, ZOOM_RANGE.1)
 }
 
 /// The zoom button's caption: "Fit", else the zoom in % of the project's pixels.
@@ -664,7 +673,7 @@ pub(crate) fn zoom_pan(ui: &egui::Ui, resp: &egui::Response, view: &mut (f32, Ve
     }
 }
 
-/// The Zoom menu's rows (the transport's Zoom ▾ and the right-click's Zoom ▸): Fit, 50, 100, 200 % of
+/// The Zoom menu's rows (the transport's Zoom ▾ and the right-click's Zoom ▸): Fit, 10, 25, 50, 100, 200 % of
 /// the project's own pixels. `PreviewState.view` only - never project data, never the render size.
 pub(crate) fn zoom_rows(ui: &mut egui::Ui, view: &mut (f32, Vec2), fit_px: f32, project_w: u32) {
     for z in ZOOMS {
@@ -676,8 +685,7 @@ pub(crate) fn zoom_rows(ui: &mut egui::Ui, view: &mut (f32, Vec2), fit_px: f32, 
             }
         };
         if menu::check(ui, on, &label, &keys).clicked() {
-            let zoom = z.map_or(1.0, |p| p as f32 / 100.0 * project_w as f32 / fit_px.max(1.0));
-            *view = (zoom.clamp(ZOOM_RANGE.0, ZOOM_RANGE.1), Vec2::ZERO);
+            *view = (z.map_or(1.0, |p| preset_zoom(p, fit_px, project_w)), Vec2::ZERO);
         }
     }
 }
@@ -1214,12 +1222,62 @@ fn viewer_menu(resp: &egui::Response, state: &mut PreviewState, c: &mut PreviewC
                 r.set_guide = crate::ui::social::menu_rows(ui, c.settings);
             });
             menu::action_item(ui, Action::ToggleScopes);
+            // ---- ws:parity-preview-tools ----
+            let mut ov = c.settings.preview_overlay;
+            menu::sub(ui, Some(Glyph::GridIcon), "Grid", |ui| grid_rows(ui, &mut ov));
+            menu::sub(ui, None, "Safe Areas", |ui| safe_rows(ui, &mut ov));
+            if ov != c.settings.preview_overlay {
+                r.set_overlay = Some(ov);
+            }
             ui.separator();
             menu::sub(ui, None, "Background", |ui| background_rows(ui, c, r));
             if menu::check(ui, c.canvas_snap, "Snap to Canvas", "").clicked() {
                 r.set_canvas_snap = Some(!c.canvas_snap);
             }
         });
+    });
+}
+
+// ---- ws:parity-preview-tools ----
+/// The right-click's Grid ▸ rows: Off, the presets, and the column / row counts to set any grid.
+fn grid_rows(ui: &mut egui::Ui, ov: &mut crate::ui::guides::Overlay) {
+    use crate::ui::guides::{GRID_MAX, GRID_PRESETS};
+    if menu::check(ui, !ov.grid_on(), "Off", "").clicked() {
+        (ov.cols, ov.rows) = (0, 0);
+    }
+    for &(name, cols, rows) in GRID_PRESETS {
+        if menu::check(ui, ov.cols == cols && ov.rows == rows, name, "").clicked() {
+            (ov.cols, ov.rows) = (cols, rows);
+        }
+    }
+    ui.separator();
+    egui::Grid::new("preview-grid-counts").num_columns(2).show(ui, |ui| {
+        for (label, v, tip) in
+            [("Columns", &mut ov.cols, "Vertical divisions of the frame"), ("Rows", &mut ov.rows, "Horizontal divisions of the frame")]
+        {
+            ui.label(label).on_hover_text(tip);
+            ui.add(egui::DragValue::new(v).range(0..=GRID_MAX).speed(0.1));
+            ui.end_row();
+        }
+    });
+}
+
+/// The right-click's Safe Areas ▸ rows: Show, and the action-safe / title-safe sizes in % of the frame.
+fn safe_rows(ui: &mut egui::Ui, ov: &mut crate::ui::guides::Overlay) {
+    let tip = "Action safe (solid) and title safe (dashed) borders; drags snap to them while shown";
+    if menu::check(ui, ov.safe, "Show", "").on_hover_text(tip).clicked() {
+        ov.safe = !ov.safe;
+    }
+    ui.separator();
+    egui::Grid::new("preview-safe-sizes").num_columns(2).show(ui, |ui| {
+        for (label, v, tip) in [
+            ("Action", &mut ov.action, "Keep the important action inside this share of the frame"),
+            ("Title", &mut ov.title, "Keep text inside this share of the frame"),
+        ] {
+            ui.label(label).on_hover_text(tip);
+            ui.add(egui::DragValue::new(v).range(10.0..=100.0).speed(0.2).suffix(" %"));
+            ui.end_row();
+        }
     });
 }
 
@@ -1410,6 +1468,11 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
         }
         state.drag = None;
         return;
+    }
+    // ---- ws:parity-preview-tools ----
+    // the grid / safe areas: over the picture, under the selection outline and the handles
+    if !c.fullscreen && c.trim_frames.is_none() {
+        crate::ui::guides::paint_overlay(&painter, &c.settings.preview_overlay, lb, (c.project.width, c.project.height));
     }
     // ---- ws:pro-monitor ----
     // Trim view: outgoing/incoming frames side by side, painted OVER the live frame just uploaded above
@@ -1766,7 +1829,16 @@ fn video_body(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_
             if let (false, Some(&(sid, x0, y0))) = (group, clips.first()) {
                 if let Some(half) = half_size(c.project, sid, c.playhead) {
                     let cand = (x0 as f32 + dx, y0 as f32 + dy);
-                    let ((sx, sy), g) = canvas_snap(c.canvas_snap, c.project, sid, c.playhead, cand, half, SNAP_PX * k);
+                    let ((sx, sy), g) = canvas_snap(
+                        c.canvas_snap,
+                        c.project,
+                        sid,
+                        c.playhead,
+                        cand,
+                        half,
+                        SNAP_PX * k,
+                        &c.settings.preview_overlay,
+                    );
                     (dx, dy, guides) = (sx - x0 as f32, sy - y0 as f32, g);
                 }
             }
@@ -2900,6 +2972,20 @@ mod tests {
         assert_eq!(zoom_label((3.0, Vec2::ZERO), 640.0, 1920), "100 %");
         assert_eq!(zoom_label((1.5, Vec2::ZERO), 640.0, 1920), "50 %");
         assert!((zoom_pct(6.0, 640.0, 1920) - 200.0).abs() < 1e-3);
+    }
+
+    /// ws:parity-preview-tools: the 10 % and 25 % presets land exactly (not clamped) even for a 1080p
+    /// project in a wide pane, and read back as their own labels.
+    #[test]
+    fn small_zoom_presets_are_reachable() {
+        assert!(ZOOMS.contains(&Some(10)) && ZOOMS.contains(&Some(25)));
+        for (fit_px, w) in [(1600.0, 1920), (640.0, 1920), (900.0, 3840), (1200.0, 1080)] {
+            for p in [10, 25] {
+                let z = preset_zoom(p, fit_px, w);
+                assert!((zoom_pct(z, fit_px, w) - p as f32).abs() < 0.01, "{p} % at fit {fit_px} of {w}");
+                assert_eq!(zoom_label((z, Vec2::ZERO), fit_px, w), format!("{p} %"));
+            }
+        }
     }
 
     /// The Preview's right-click has one Platform Emulator ▸ menu in place of Social Guides ▸ and the Emulator row:
