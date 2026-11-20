@@ -41,8 +41,27 @@ pub fn exe() -> Option<PathBuf> {
     Some(dir().join(EXE)).filter(|p| p.is_file())
 }
 
+/// Whether the add-on is installed. The Inspector and Settings ask every frame, so the answer is kept for
+/// a few seconds (a stat on the UI thread can take tens of ms on a busy disk); install and uninstall
+/// refresh it at once.
 pub fn available() -> bool {
-    exe().is_some()
+    const TTL: std::time::Duration = std::time::Duration::from_secs(5);
+    let mut g = AVAILABLE.lock().unwrap_or_else(|e| e.into_inner());
+    match *g {
+        Some((at, yes)) if at.elapsed() < TTL => yes,
+        _ => {
+            let yes = exe().is_some();
+            *g = Some((std::time::Instant::now(), yes));
+            yes
+        }
+    }
+}
+
+static AVAILABLE: std::sync::Mutex<Option<(std::time::Instant, bool)>> = std::sync::Mutex::new(None);
+
+/// Forget the kept `available()` answer (after an install or uninstall).
+fn recheck() {
+    *AVAILABLE.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// The installed manifest's version ("0.5.6"), when installed through the app.
@@ -53,6 +72,7 @@ pub fn version() -> Option<String> {
 
 /// Installer hook - everything about this add-on's install in one call:
 /// (install folder, installed exe if detected, installed version). The folder is all it owns.
+#[allow(dead_code)] // for the installer / uninstaller (claude/feat-installer); nothing in the app calls it
 pub fn install_state() -> (PathBuf, Option<PathBuf>, Option<String>) {
     (dir(), exe(), version())
 }
@@ -173,6 +193,7 @@ pub fn install(prog: &Progress) -> Result<PathBuf, String> {
         Ok(dest.join(EXE))
     });
     let _ = std::fs::remove_dir_all(&fresh);
+    recheck();
     let exe = r?;
     prog.set(1.0, "Speech denoise installed");
     Ok(exe)
@@ -208,10 +229,9 @@ fn check_runs(exe: &Path) -> Result<(), String> {
 /// Remove the add-on (cleaned audio it made stays in the cache).
 pub fn uninstall() -> Result<(), String> {
     let d = dir();
-    if d.exists() {
-        std::fs::remove_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
-    }
-    Ok(())
+    let r = if d.exists() { std::fs::remove_dir_all(&d).map_err(|e| format!("{}: {e}", d.display())) } else { Ok(()) };
+    recheck();
+    r
 }
 
 static INSTALLING: std::sync::Mutex<Option<std::sync::Arc<Progress>>> = std::sync::Mutex::new(None);
@@ -602,6 +622,12 @@ fn probe_duration(path: &Path) -> Option<f64> {
     String::from_utf8_lossy(&o.stdout).trim().parse().ok()
 }
 
+#[cfg(not(windows))]
+fn set_low(_child: &std::process::Child, _low: bool) -> bool {
+    true
+}
+
+#[cfg(windows)]
 fn set_low(child: &std::process::Child, low: bool) -> bool {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::System::Threading::{SetPriorityClass, BELOW_NORMAL_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS};

@@ -98,7 +98,7 @@ pub(crate) fn plan(project: &Project, clips: &[Id]) -> Result<Vec<(Id, Vec<Id>, 
         }
         let c = project.clip(id).ok_or("no such clip")?;
         let (orig, shift) = original_of(project, c.asset).ok_or("no original")?;
-        let (lo, hi) = crate::engine::enhance::source_range(c, f64::INFINITY, 1000.0, 0.0);
+        let (lo, hi) = denoise_ui::window(project, id).ok_or("no such clip")?;
         let (lo, hi) = (lo + shift, hi + shift);
         match groups.iter_mut().find(|g| g.0 == orig) {
             Some(g) => {
@@ -144,7 +144,7 @@ pub(super) fn start(
         let src = PathBuf::from(app.project.asset(orig).map(|a| a.path.clone()).unwrap_or_default());
         let out = deepfilter::cached_path(&src, range, strength, engine);
         if busy.contains(&out) {
-            return Err("That clip is already being cleaned - see Jobs".into());
+            return Err("That clip is already being cleaned".into());
         }
         let req = deepfilter::Request { src, range, strength, engine, out: out.clone() };
         let (backend, probed) = (app.backend(), Arc::new(Mutex::new(None)));
@@ -174,10 +174,10 @@ pub(super) fn start(
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     if let Some(r) = denoise_ui::take_request() {
         match start(app, &r.ids, None, r.strength) {
-            Ok((_, outs)) => app.toast(format!(
-                "Cleaning audio ({}) - see Jobs",
-                if outs.len() == 1 { "1 file".to_string() } else { format!("{} files", outs.len()) }
-            )),
+            Ok((_, outs)) => {
+                let files = if outs.len() == 1 { "1 file".to_string() } else { format!("{} files", outs.len()) };
+                app.push_toast(Toast::new(format!("Cleaning audio ({files})")).action("Jobs", Action::ToggleJobs));
+            }
             Err(e) => app.toast(e),
         }
     }
@@ -265,7 +265,7 @@ pub(crate) fn swap_all(project: &mut Project, clips: &[Id], orig: Id, new: Id, t
         if o != orig {
             continue;
         }
-        let (lo, hi) = crate::engine::enhance::source_range(c, f64::INFINITY, 1000.0, 0.0);
+        let Some((lo, hi)) = denoise_ui::window(project, id) else { continue };
         if lo + shift + 1e-3 < t0 || (len > 0.0 && hi + shift > t0 + len + 0.05) {
             continue;
         }
@@ -427,6 +427,20 @@ mod tests {
         assert_eq!(g.len(), 2);
         assert_eq!((g[0].0, g[0].1.clone(), g[0].2), (1, vec![10, 11], (4.0, 22.0)));
         assert_eq!((g[1].0, g[1].2), (2, (0.0, 2.0)));
+        let _ = std::fs::remove_file(&f);
+    }
+
+    /// A speed curve plays from src_in to the end of the file: the Clean covers that, and the swap lands.
+    #[test]
+    fn a_speed_curve_clip_is_cleaned_to_the_end_of_its_file_and_swapped() {
+        let f = real_file();
+        let mut p = project(&f.to_string_lossy());
+        p.clip_mut(10).unwrap().speed_curve.keys.push(crate::model::Keyframe { t: 0.0, v: 2.0, ease: Default::default() });
+        let g = plan(&p, &[10]).unwrap();
+        assert_eq!(g[0].2, (4.0, 30.0));
+        p.assets.push(asset(3, "C:/cache/denoise/v.2.wav", 26.0)); // a Clean of 4..30 s
+        assert_eq!(swap_all(&mut p, &[10], 1, 3, 4.0, 26.0), 1);
+        assert_eq!((p.clip(10).unwrap().asset, p.clip(10).unwrap().src_in), (3, 1.0));
         let _ = std::fs::remove_file(&f);
     }
 

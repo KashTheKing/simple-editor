@@ -303,16 +303,16 @@ fn denoise_row(ui: &mut egui::Ui) {
         if ui
             .button("Install")
             .on_hover_text(
-                "DeepFilterNet removes fans, traffic and room noise from speech: Inspector ▸ Audio ▸ Clean Audio,                  and the Denoise bake. Without it they use ffmpeg afftdn. About 27 MB, downloaded once.",
+                "Optional. DeepFilterNet removes fans, traffic and room noise from speech: Inspector ▸ Audio ▸ \
+                 Clean Audio, and the Denoise bake. Without it they use ffmpeg afftdn. About 27 MB, downloaded once.",
             )
             .clicked()
         {
             deepfilter::start_install();
         }
-        match deepfilter::install_error() {
-            Some(e) => ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}")),
-            None => ui.weak("optional, about 27 MB"),
-        };
+        if let Some(e) = deepfilter::install_error() {
+            ui.colored_label(ui.visuals().error_fg_color, "Install failed").on_hover_text(e);
+        }
     }
 }
 

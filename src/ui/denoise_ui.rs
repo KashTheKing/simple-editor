@@ -43,10 +43,12 @@ fn same_path(a: &str, b: &str) -> bool {
     Path::new(a) == Path::new(b) || a.eq_ignore_ascii_case(b)
 }
 
-/// The source seconds a clip plays: `(src_in, src_in + duration·speed)`.
-fn window(project: &Project, id: Id) -> Option<(f64, f64)> {
+/// The source seconds a clip plays: `(src_in, src_in + duration·speed)`, or up to the end of its file
+/// when a speed curve drives it.
+pub(crate) fn window(project: &Project, id: Id) -> Option<(f64, f64)> {
     let c = project.clip(id)?;
-    Some(crate::engine::enhance::source_range(c, f64::INFINITY, 1000.0, 0.0))
+    let len = project.asset(c.asset).map(|a| a.duration).filter(|d| *d > 0.0).unwrap_or(f64::INFINITY);
+    Some(crate::engine::enhance::source_range(c, len, 1000.0, 0.0))
 }
 
 /// Where a clip stands in an A / B.
