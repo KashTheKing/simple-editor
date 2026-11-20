@@ -426,6 +426,9 @@ actions! {
     PrevTimeline => "prev_timeline", "Previous Timeline Tab", sc(CTRL_SHIFT, Key::Tab);
     NewTimeline => "new_timeline", "New Timeline Tab", None;
     CloseTimeline => "close_timeline", "Close Timeline Tab", None;
+    // ---- feat/scripts-editor ----
+    // Unbound by design (Window menu, the top bar's Scripts button, the palette), like ToggleJobs.
+    ToggleScriptEditor => "toggle_script_editor", "Show / Hide Script Editor", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -785,6 +788,8 @@ pub fn group(a: Action) -> &'static str {
         ResetPageLayout | ScreenSetup => "Panels & Pages",
         // ---- ws:timeline-tabs ----
         NextTimeline | PrevTimeline | NewTimeline | CloseTimeline => "Timeline",
+        // ---- feat/scripts-editor ----
+        ToggleScriptEditor => "Panels & Pages",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

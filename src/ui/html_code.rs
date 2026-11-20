@@ -276,7 +276,7 @@ fn field_ranges(text: &str) -> Vec<Range<usize>> {
     v
 }
 
-fn colour(k: Kind, dark: bool, base: Color32) -> Color32 {
+pub(crate) fn colour(k: Kind, dark: bool, base: Color32) -> Color32 {
     let c = |d: [u8; 3], l: [u8; 3]| {
         let [r, g, b] = if dark { d } else { l };
         Color32::from_rgb(r, g, b)

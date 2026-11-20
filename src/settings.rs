@@ -719,6 +719,10 @@ pub struct Settings {
     // ---- ws:player-metadata ----
     /// Saved tag sets (Settings ▸ Metadata), applied in one click in the player, the Library and Export.
     pub metadata_presets: Vec<crate::engine::tags::MetaPreset>,
+    // ---- feat/scripts-editor ----
+    /// Settings ▸ General ▸ "Open scripts externally": Open and Add Script launch the program Windows uses
+    /// for `.luau` (Notepad when none) instead of the Script Editor pane.
+    pub scripts_external: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1018,6 +1022,7 @@ impl Default for Settings {
             emulator: BTreeMap::new(),
             match_import: true, // ws:project-color-fps
             metadata_presets: Vec::new(), // ws:player-metadata
+            scripts_external: false, // feat/scripts-editor
         }
     }
 }

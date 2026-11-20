@@ -45,6 +45,188 @@ local s = editor.tool("project.summary", {})
 editor.log("Project: " .. tostring(s.duration or "?") .. " s, " .. tostring(#(s.tracks or {})) .. " tracks")
 "#;
 
+// ---- feat/scripts-editor ----
+// File management for the Scripts menu, the Script Editor pane and the `scripts.*` tools. Every function
+// takes the folder or file it works on, so the tests run against a scratch folder, never the user's.
+
+/// What Add Script writes into a new file: a header the Scripts menu reads, and a small working body.
+pub const TEMPLATE: &str = r#"-- @desc What this script does, in one line (the Scripts menu shows it as a tooltip).
+-- A Simple Editor script: it runs against the open project as ONE undo step.
+--   editor.tool(name, args)  calls any tool the MCP server lists (editor.tools() lists them)
+--   editor.log(text)         shows a toast
+-- Optional header lines above the code: -- @icon bolt, -- @hotkey Ctrl+Alt+1, -- @on selection_changed
+
+local summary = editor.tool("project.summary", {})
+editor.log("The project is " .. tostring(summary.duration or 0) .. " s long")
+"#;
+
+/// The name Add Script starts from.
+pub const NEW_NAME: &str = "New Script";
+
+/// A file name the user typed, checked for Windows: no `<>:"/\|?*` or control characters, no trailing dot
+/// or space, no reserved device name (CON, NUL, COM1...). A typed `.luau` / `.lua` is dropped (the
+/// extension is kept from the file). Returns the trimmed stem.
+pub fn valid_stem(name: &str) -> Result<String, String> {
+    let mut s = name.trim();
+    for ext in [".luau", ".lua"] {
+        if s.len() > ext.len() && s[s.len() - ext.len()..].eq_ignore_ascii_case(ext) {
+            s = s[..s.len() - ext.len()].trim_end();
+        }
+    }
+    if s.is_empty() {
+        return Err("Type a name".into());
+    }
+    if let Some(c) = s.chars().find(|c| r#"<>:"/\|?*"#.contains(*c) || c.is_control()) {
+        return Err(format!("A name can't contain {c}"));
+    }
+    if s.ends_with('.') {
+        return Err("A name can't end with a dot".into());
+    }
+    let upper = s.split('.').next().unwrap_or(s).to_ascii_uppercase();
+    let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (upper.len() == 4
+            && (upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        return Err(format!("{s} is a name Windows keeps for itself"));
+    }
+    Ok(s.to_string())
+}
+
+/// Make `<dir>/New Script.luau` (or `New Script 2.luau`, `3`, ... when that is taken) from `TEMPLATE`, creating
+/// the folder if needed. Never overwrites a file.
+pub fn create_in(dir: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    for n in 1..10_000 {
+        let name = if n == 1 { format!("{NEW_NAME}.luau") } else { format!("{NEW_NAME} {n}.luau") };
+        let path = dir.join(name);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                use std::io::Write;
+                f.write_all(TEMPLATE.as_bytes())?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("too many new scripts - rename some first"))
+}
+
+/// Rename the script at `path` to `new_name` in the same folder, keeping its extension. Refuses a name
+/// another file already has; a change of letter case only is allowed.
+pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf, String> {
+    let stem = valid_stem(new_name)?;
+    let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_else(|| "luau".into());
+    let parent = path.parent().ok_or("The script has no folder")?;
+    let to = parent.join(format!("{stem}.{ext}"));
+    if to == path {
+        return Ok(to);
+    }
+    let same_file = to.file_name().map(|n| n.to_string_lossy().to_lowercase())
+        == path.file_name().map(|n| n.to_string_lossy().to_lowercase());
+    if to.exists() && !same_file {
+        return Err(format!("A script named {stem} already exists"));
+    }
+    if !path.exists() {
+        return Err(format!("{} is no longer there", path.display()));
+    }
+    std::fs::rename(path, &to).map_err(|e| e.to_string())?;
+    Ok(to)
+}
+
+/// Delete the script at `path`. On Windows it goes to the Recycle Bin (it can be restored from there);
+/// elsewhere (the tests) it is removed.
+pub fn delete(path: &Path) -> Result<(), String> {
+    if !path.is_file() {
+        return Err(format!("{} is no longer there", path.display()));
+    }
+    #[cfg(windows)]
+    {
+        recycle(path)
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::remove_file(path).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(windows)]
+fn recycle(path: &Path) -> Result<(), String> {
+    use windows::Win32::UI::Shell::*;
+    // pFrom is a list of paths, each NUL-terminated, the list ending in a second NUL
+    let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut from: Vec<u16> = abs.to_string_lossy().trim_start_matches(r"\\?\").encode_utf16().collect();
+    from.extend([0, 0]);
+    let mut op = SHFILEOPSTRUCTW {
+        wFunc: FO_DELETE,
+        pFrom: windows::core::PCWSTR(from.as_ptr()),
+        fFlags: (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI).0 as u16,
+        ..Default::default()
+    };
+    let r = unsafe { SHFileOperationW(&mut op) };
+    if r != 0 || op.fAnyOperationsAborted.as_bool() {
+        return Err(format!("Couldn't move it to the Recycle Bin (error {r})"));
+    }
+    Ok(())
+}
+
+/// Compile `src` without running it: `Err` holds Luau's message (line number included).
+pub fn check(src: &str, chunk_name: &str) -> Result<(), String> {
+    let lua = mlua::Lua::new();
+    lua.load(src).set_name(format!("={chunk_name}")).into_function().map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Open `path` in the app Windows uses for its extension, or Notepad when none is registered (a fresh PC
+/// has nothing for `.luau`). Returns the app's name for the toast.
+pub fn open_external(path: &Path) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        if let Some(app) = path.extension().and_then(|e| associated_app(&format!(".{}", e.to_string_lossy()))) {
+            use windows::Win32::UI::Shell::ShellExecuteW;
+            use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+            let file: Vec<u16> = path.as_os_str().to_string_lossy().encode_utf16().chain([0]).collect();
+            let r = unsafe {
+                ShellExecuteW(None, windows::core::w!("open"), windows::core::PCWSTR(file.as_ptr()), None, None, SW_SHOWNORMAL)
+            };
+            if r.0 as isize > 32 {
+                return Ok(app);
+            }
+        }
+    }
+    std::process::Command::new("notepad.exe").arg(path).spawn().map_err(|e| format!("Couldn't start Notepad: {e}"))?;
+    Ok("Notepad".into())
+}
+
+/// The program registered to open files with extension `ext` (".luau"), or `None`.
+#[cfg(windows)]
+fn associated_app(ext: &str) -> Option<String> {
+    use windows::Win32::UI::Shell::*;
+    let ext_w: Vec<u16> = ext.encode_utf16().chain([0]).collect();
+    let mut buf = [0u16; 520];
+    let mut len = buf.len() as u32;
+    let hr = unsafe {
+        AssocQueryStringW(
+            ASSOCF_INIT_IGNOREUNKNOWN | ASSOCF_NOTRUNCATE,
+            ASSOCSTR_EXECUTABLE,
+            windows::core::PCWSTR(ext_w.as_ptr()),
+            windows::core::w!("open"),
+            Some(windows::core::PWSTR(buf.as_mut_ptr())),
+            &mut len,
+        )
+    };
+    if hr.is_err() {
+        return None;
+    }
+    let exe = String::from_utf16_lossy(&buf[..(len as usize).saturating_sub(1).min(buf.len())]);
+    let exe = exe.trim_end_matches('\0');
+    // the "Open with" picker answers for an unknown type on some Windows versions: treat it as none
+    if exe.is_empty() || exe.to_ascii_lowercase().ends_with("openwith.exe") {
+        return None;
+    }
+    Some(Path::new(exe).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| exe.to_string()))
+}
+
 // ---- ws:command-palette ----
 /// Shared VM bootstrap for `run` and `run_hook`: a sandboxed Lua with a wall-clock interrupt at
 /// `budget` (`run` always passes the fixed 5 s `BUDGET`; a fired `@on` hook passes its own, defaulting
@@ -911,5 +1093,89 @@ mod tests {
         );
         assert_eq!(r, Ok(()));
         assert_eq!(logs, vec!["ok 2".to_string()]);
+    }
+}
+
+// ---- feat/scripts-editor ----
+#[cfg(test)]
+mod file_tests {
+    use super::*;
+
+    /// A fresh scratch scripts folder per test (never the user's own).
+    fn scratch(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("se-scripts-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn create_makes_numbered_new_scripts_from_the_template() {
+        let d = scratch("create");
+        let a = create_in(&d).unwrap();
+        let b = create_in(&d).unwrap();
+        assert_eq!(a.file_name().unwrap(), "New Script.luau");
+        assert_eq!(b.file_name().unwrap(), "New Script 2.luau");
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), TEMPLATE);
+        // a missing folder is created
+        let c = create_in(&d.join("sub")).unwrap();
+        assert!(c.is_file());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn rename_keeps_the_extension_and_refuses_collisions() {
+        let d = scratch("rename");
+        let a = create_in(&d).unwrap();
+        let b = create_in(&d).unwrap();
+        let r = rename(&a, "Tidy Up.luau").unwrap(); // a typed extension is not doubled
+        assert_eq!(r, d.join("Tidy Up.luau"));
+        assert!(r.is_file() && !a.exists());
+        assert!(rename(&b, "Tidy Up").unwrap_err().contains("already exists"));
+        assert!(b.is_file(), "a refused rename leaves the file alone");
+        assert!(rename(&b, "a/b").is_err() && rename(&b, "  ").is_err() && rename(&b, "CON").is_err());
+        // .lua stays .lua
+        let lua = d.join("old.lua");
+        std::fs::write(&lua, "--").unwrap();
+        assert_eq!(rename(&lua, "new").unwrap(), d.join("new.lua"));
+        // a case-only change is allowed
+        assert_eq!(rename(&r, "TIDY UP").unwrap(), d.join("TIDY UP.luau"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn delete_removes_the_file_and_refuses_a_missing_one() {
+        let d = scratch("delete");
+        let a = create_in(&d).unwrap();
+        delete(&a).unwrap();
+        assert!(!a.exists());
+        assert!(delete(&a).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_template_parses_and_runs() {
+        check(TEMPLATE, "New Script").unwrap();
+        let mut logs = Vec::new();
+        let mut call = |_: &str, _: &Value| -> Result<Value, String> { Ok(serde_json::json!({"duration": 12})) };
+        run(TEMPLATE, "New Script", &mut call, &mut logs).unwrap();
+        assert_eq!(logs, vec!["The project is 12 s long"]);
+        let m = meta(&{
+            let d = scratch("meta");
+            create_in(&d).unwrap()
+        });
+        assert_eq!(m.name, NEW_NAME, "the template keeps the file name as the menu name");
+        assert!(m.desc.starts_with("What this script does"));
+        assert!(check("local x = ", "bad").unwrap_err().contains("bad"), "a syntax error names the chunk");
+    }
+
+    #[test]
+    fn valid_stem_rules() {
+        assert_eq!(valid_stem(" My Script.LUAU ").unwrap(), "My Script");
+        assert_eq!(valid_stem("v1.2").unwrap(), "v1.2");
+        for bad in ["", "a:b", "x?", "end.", "nul", "COM1", "lpt9.luau"] {
+            assert!(valid_stem(bad).is_err(), "{bad}");
+        }
+        assert!(valid_stem("COM10").is_ok() && valid_stem("console").is_ok());
     }
 }
