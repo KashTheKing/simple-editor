@@ -1321,7 +1321,8 @@ impl App {
             .as_ref()
             .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
             .unwrap_or_else(|| self.project.name.clone());
-        format!("{}{} - Simple Editor", if self.dirty { "*" } else { "" }, name)
+        let app = if cfg!(debug_assertions) { "Simple Editor (Dev)" } else { "Simple Editor" };
+        format!("{}{} - {app}", if self.dirty { "*" } else { "" }, name)
     }
 
     fn seek(&mut self, t: f64) {

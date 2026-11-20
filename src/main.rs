@@ -82,12 +82,13 @@ fn main() {
 
     // read once to seed the viewport; App::new does its own (cheap) re-read of the same file - not
     // worth threading a loaded Settings through eframe's boxed FnOnce for this one field.
+    settings::Settings::seed_dev_from_release();
     let seed = settings::Settings::load();
     let window_rect = seed.window_rect;
     let mut viewport = winpos::apply_rect(
         eframe::egui::ViewportBuilder::default()
             .with_title("Simple Editor")
-            .with_app_id("SimpleEditor")
+            .with_app_id(settings::APP_ID)
             .with_inner_size([1400.0, 860.0])
             // hidden until the first frame is painted (App::update shows it) - otherwise the OS
             // flashes a blank white window at the restored position before we move/paint it
@@ -138,7 +139,7 @@ fn run_player(path: PathBuf, size: Option<[f32; 2]>) {
     let title = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_title(title)
-        .with_app_id("SimpleEditor")
+        .with_app_id(settings::APP_ID)
         .with_inner_size([1280.0, 720.0])
         .with_min_inner_size([320.0, 180.0])
         // the player draws its own title strip (`player::chrome`), over the picture

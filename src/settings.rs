@@ -192,6 +192,12 @@ static SAVE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 static SAVE_DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// The data folder name under %APPDATA% / %LOCALAPPDATA%. The dev (debug) build keeps its own, so the
+/// installed release used for real projects and the dev build being worked on never share state.
+pub const APP_DIR: &str = if cfg!(debug_assertions) { "SimpleEditor-Dev" } else { "SimpleEditor" };
+/// The window / taskbar identity, separate per build for the same reason.
+pub const APP_ID: &str = if cfg!(debug_assertions) { "SimpleEditorDev" } else { "SimpleEditor" };
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -1092,7 +1098,21 @@ impl Settings {
             return d;
         }
         let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-        base.join("SimpleEditor")
+        base.join(APP_DIR)
+    }
+    /// A dev build's first launch: copy the release's settings.json over once, so it starts set up like
+    /// the user's real install (caches, add-ons, autosaves and projects stay separate). Release: no-op.
+    pub fn seed_dev_from_release() {
+        if !cfg!(debug_assertions) || cfg!(test) {
+            return;
+        }
+        let dev = Self::path();
+        let Some(base) = std::env::var_os("APPDATA").map(PathBuf::from) else { return };
+        let release = base.join("SimpleEditor").join("settings.json");
+        if !dev.exists() && release.is_file() {
+            let _ = std::fs::create_dir_all(Self::dir());
+            let _ = std::fs::copy(&release, &dev);
+        }
     }
     /// The cache folder (html renders, pre-render, proxies, peaks, models, library cache): the one
     /// picked in Settings ▸ General ▸ Cache folder, else `default_cache_dir()`. Every cache path is
@@ -1103,7 +1123,7 @@ impl Settings {
     /// %LOCALAPPDATA%\SimpleEditor\cache
     pub fn default_cache_dir() -> PathBuf {
         let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(Self::dir);
-        base.join("SimpleEditor").join("cache")
+        base.join(APP_DIR).join("cache")
     }
     /// Point `cache_dir()` at `folder` ("" = the default) from now on, for this whole process.
     pub fn set_cache_folder(folder: &str) {
@@ -1115,7 +1135,7 @@ impl Settings {
     /// Deliberately under %LOCALAPPDATA%, not the roaming %APPDATA% `dir()` - these can be multi-MB.
     pub fn autosave_dir() -> PathBuf {
         let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(Self::dir);
-        base.join("SimpleEditor").join("autosave")
+        base.join(APP_DIR).join("autosave")
     }
     pub fn path() -> PathBuf {
         Self::dir().join("settings.json")
