@@ -719,6 +719,65 @@ pub struct Settings {
     // ---- ws:player-metadata ----
     /// Saved tag sets (Settings ▸ Metadata), applied in one click in the player, the Library and Export.
     pub metadata_presets: Vec<crate::engine::tags::MetaPreset>,
+    // ---- ws:parity-color-pipeline ----
+    /// Bit depth and light model of the GPU compositor (Settings ▸ Performance ▸ Processing mode).
+    pub processing_mode: ProcessingMode,
+}
+
+// ---- ws:parity-color-pipeline ----
+/// How the GPU compositor stores and mixes pictures (`plans/color-pipeline.md`). The CPU compositor is
+/// 8-bit whatever this says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProcessingMode {
+    /// RGBA8 targets, blending on gamma-encoded values: the fast default, today's pipeline unchanged.
+    #[default]
+    Fast8,
+    /// RGBA16F targets (no rounding between passes), still blending gamma-encoded values; 10-bit exports
+    /// get 16-bit frames.
+    Float16,
+    /// `Float16` with linear-light compositing: blends, opacity, scaling and crossfades on linear values.
+    Linear16,
+}
+
+impl ProcessingMode {
+    pub const ALL: [ProcessingMode; 3] = [ProcessingMode::Fast8, ProcessingMode::Float16, ProcessingMode::Linear16];
+    /// The Settings label.
+    pub fn name(self) -> &'static str {
+        match self {
+            ProcessingMode::Fast8 => "8-bit",
+            ProcessingMode::Float16 => "16-bit float",
+            ProcessingMode::Linear16 => "16-bit float, linear",
+        }
+    }
+    /// The tooltip under the label.
+    pub fn help(self) -> &'static str {
+        match self {
+            ProcessingMode::Fast8 => "The fastest. Every effect pass and blend is rounded to 8 bits.",
+            ProcessingMode::Float16 => {
+                "Effects and blends keep 16-bit float precision, and HEVC, AV1 and HDR exports are written \
+                 with 10 bits. Uses twice the GPU memory."
+            }
+            ProcessingMode::Linear16 => {
+                "16-bit float, and layers, opacity, scaling and crossfades mix in linear light, as light does. \
+                 Fades and soft edges look more natural. The most GPU work."
+            }
+        }
+    }
+    /// The HUD's short form.
+    pub fn short(self) -> &'static str {
+        match self {
+            ProcessingMode::Fast8 => "8-bit",
+            ProcessingMode::Float16 => "16f",
+            ProcessingMode::Linear16 => "16f lin",
+        }
+    }
+    /// Targets are RGBA16F and 10-bit exports read back 16 bits.
+    pub fn is_float(self) -> bool {
+        self != ProcessingMode::Fast8
+    }
+    pub fn is_linear(self) -> bool {
+        self == ProcessingMode::Linear16
+    }
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1018,6 +1077,7 @@ impl Default for Settings {
             emulator: BTreeMap::new(),
             match_import: true, // ws:project-color-fps
             metadata_presets: Vec::new(), // ws:player-metadata
+            processing_mode: ProcessingMode::Fast8, // ws:parity-color-pipeline
         }
     }
 }
@@ -1343,6 +1403,25 @@ mod tests {
         // an old settings file without the field still loads, back to the default
         let old: Settings = serde_json::from_str("{}").unwrap();
         assert!(old.effect_thumb_image.is_empty());
+    }
+
+    // ---- ws:parity-color-pipeline ----
+    #[test]
+    fn processing_mode_defaults_to_8_bit_and_round_trips() {
+        let old: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(old.processing_mode, ProcessingMode::Fast8, "old settings files stay on the fast path");
+        assert!(!old.processing_mode.is_float() && !old.processing_mode.is_linear());
+        for m in ProcessingMode::ALL {
+            let mut s = Settings::default();
+            s.processing_mode = m;
+            let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+            assert_eq!(back.processing_mode, m);
+            assert!(!m.name().is_empty() && !m.help().is_empty() && !m.short().is_empty());
+        }
+        assert!(ProcessingMode::Float16.is_float() && !ProcessingMode::Float16.is_linear());
+        assert!(ProcessingMode::Linear16.is_float() && ProcessingMode::Linear16.is_linear());
+        let v = serde_json::to_value(ProcessingMode::Linear16).unwrap();
+        assert_eq!(v, serde_json::json!("Linear16"), "stored by name, so settings.set takes the name");
     }
 
     // ---- ws:forgiveness ----

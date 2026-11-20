@@ -19,6 +19,20 @@ pub(super) fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str, c
         });
         ui.end_row();
 
+        // ---- ws:parity-color-pipeline ----
+        ui.label("Processing mode").on_hover_text(
+            "Bit depth and light model of the GPU compositor, for the preview and GPU exports. \
+             The CPU compositor (GPU preview off) is always 8-bit.",
+        );
+        ui.horizontal(|ui| {
+            let before = s.processing_mode;
+            for m in crate::settings::ProcessingMode::ALL {
+                ui.selectable_value(&mut s.processing_mode, m, m.name()).on_hover_text(m.help());
+            }
+            changed |= s.processing_mode != before;
+        });
+        ui.end_row();
+
         ui.label("Preview quality");
         ui.horizontal(|ui| {
             let mut q = s.preview_quality.clamp(25, 100);

@@ -38,6 +38,11 @@ fn serve_export_request(
 impl App {
     pub(super) fn sync_gpu(&mut self) {
         let want = self.settings.gpu && !self.gpu_failed;
+        // ws:parity-color-pipeline: a no-op unless the setting changed (between frames, so nothing on loan
+        // is redrawn in the other format)
+        if let Some(g) = self.gpu.as_mut() {
+            g.set_mode(self.settings.processing_mode);
+        }
         if want == self.gpu.is_some() {
             return;
         }
@@ -54,6 +59,7 @@ impl App {
         match guarded(|| GpuRenderer::new(gl)) {
             Some(Ok(mut g)) => {
                 g.text = Some(self.text.clone()); // Text nodes rasterise with the same fonts as everything else
+                g.set_mode(self.settings.processing_mode); // ws:parity-color-pipeline
                 self.gpu = Some(g);
                 self.set_players_gpu(true);
                 self.toast(format!("GPU preview: {}", self.gpu_name));

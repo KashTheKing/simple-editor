@@ -297,9 +297,25 @@ uniform vec4 u_crop;
 uniform int u_scaler;
 uniform int u_mode;
 uniform float u_opacity;
+// ws:parity-color-pipeline: 1 = mix in linear light (ProcessingMode::Linear16). Targets hold encoded
+// values in every mode, so taps and the destination are decoded here and the result encoded back.
+uniform int u_linear;
+
+// The sRGB transfer curve (what a display shows Rec.709 SDR as). Mirrors `engine::gpu::to_linear` /
+// `to_encoded`, which the tests check.
+vec3 to_lin(vec3 c) {
+    c = max(c, vec3(0.0));
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
+}
+vec3 to_enc(vec3 c) {
+    c = max(c, vec3(0.0));
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
+}
 
 vec4 tap(vec2 ip) {
-    return texelFetch(tex, ivec2(clamp(ip, vec2(0.0), u_layer - 1.0)), 0);
+    vec4 c = texelFetch(tex, ivec2(clamp(ip, vec2(0.0), u_layer - 1.0)), 0);
+    if (u_linear != 0) { c.rgb = to_lin(c.rgb); }
+    return c;
 }
 
 vec4 catmull_w(float t) {
@@ -354,9 +370,10 @@ void main() {
     if (a <= 0.0) { out_color = d; return; }
     float ao = a + d.a * (1.0 - a);
     if (ao <= 0.0) { out_color = vec4(0.0); return; }
-    vec3 b = blend(u_mode, s.rgb, d.rgb);
-    vec3 co = ((1.0 - d.a) * a * s.rgb + (1.0 - a) * d.a * d.rgb + a * d.a * b) / ao;
-    out_color = vec4(co, ao);
+    vec3 dc = (u_linear != 0) ? to_lin(d.rgb) : d.rgb;
+    vec3 b = blend(u_mode, s.rgb, dc);
+    vec3 co = ((1.0 - d.a) * a * s.rgb + (1.0 - a) * d.a * dc + a * d.a * b) / ao;
+    out_color = vec4((u_linear != 0) ? to_enc(co) : co, ao);
 }
 "#;
 
