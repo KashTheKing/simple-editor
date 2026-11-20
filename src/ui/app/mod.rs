@@ -600,6 +600,9 @@ pub struct App {
     // ---- ws:timeline-tabs ----
     /// The background timeline tabs' views and the Rename Sequence window.
     tabs: timeline_tabs::TabsState,
+    // ---- ws:gap-group-sync ----
+    /// A Sync by Audio correlating on its worker thread.
+    group_sync: group_sync::SyncState,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -1177,6 +1180,7 @@ impl App {
             emulator_tex: None,
             match_offer: None, // ws:project-color-fps
             tabs: Default::default(), // ws:timeline-tabs
+            group_sync: Default::default(), // ws:gap-group-sync
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -2194,6 +2198,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:keys-actions ----
     // ---- ws:color-page ----
     color_page::tick,
+    // ---- ws:gap-group-sync ----
+    group_sync::tick,
     // ---- ws:perf-baseline ----
     // ---- ws:pro-schema ----
     // ---- ws:play-decode-path ----

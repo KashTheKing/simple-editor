@@ -45,18 +45,37 @@ fn units(p: &Project, ids: &[Id]) -> Vec<(Id, Vec<Id>)> {
     out
 }
 
-/// Where each clip after the first goes. `peaks_of` reads a clip's source audio.
-pub(crate) fn plan(
+/// What the correlation needs, copied out of the project so it can run off the UI thread: each unit's
+/// audio clip (as it was), the unit and the clip's source peaks. The first entry is the one that stays.
+pub(crate) struct SyncInput {
+    clips: Vec<(Clip, Vec<Id>, Arc<Peaks>)>,
+}
+
+impl SyncInput {
+    /// True while every clip still sits where it did when the input was gathered (same place, same
+    /// source window), so the planned moves still mean what they meant.
+    fn still_valid(&self, p: &Project) -> bool {
+        self.clips.iter().all(|(c, unit, _)| {
+            p.clip(c.id).is_some_and(|now| now.start == c.start && now.src_in == c.src_in)
+                && unit.iter().all(|&id| p.clip(id).is_some())
+        })
+    }
+}
+
+/// Read the clips and their peaks (cheap: the peaks are cached `Arc`s). `peaks_of` reads a clip's
+/// source audio.
+pub(crate) fn gather(
     p: &Project,
     ids: &[Id],
     peaks_of: &mut dyn FnMut(&Clip) -> Result<Arc<Peaks>, String>,
-) -> Result<Vec<SyncHit>, String> {
+) -> Result<SyncInput, String> {
     let units = units(p, ids);
     if units.len() < 2 {
         return Err("Select two or more clips with audio".into());
     }
-    let mut read = |id: Id| -> Result<(Clip, Arc<Peaks>), String> {
-        let c = p.clip(id).ok_or("no such clip")?.clone();
+    let mut clips = Vec::with_capacity(units.len());
+    for (rep, unit) in units {
+        let c = p.clip(rep).ok_or("no such clip")?.clone();
         // ponytail: source time = timeline time only at normal speed; retimed clips are refused
         if (c.speed - 1.0).abs() > 1e-9 || c.reverse {
             return Err(format!("{} is retimed - Sync by Audio needs clips at normal speed", c.name));
@@ -65,38 +84,70 @@ pub(crate) fn plan(
             return Err(format!("{} has no audio", c.name));
         }
         let peaks = peaks_of(&c)?;
-        Ok((c, peaks))
-    };
-    let (a, pa) = read(units[0].0)?;
-    let mut out = Vec::new();
-    for (rep, unit) in &units[1..] {
-        let (b, pb) = read(*rep)?;
-        let (offset, confidence) = analysis::xcorr_match(&pa, &pb, 120.0).unwrap_or((0.0, 0.0));
-        // b's source at t + offset sounds like a's at t: put both under the same timeline instant
-        let start = a.start - a.src_in + b.src_in - offset;
-        out.push(SyncHit { clip: b.id, offset, confidence, dt: start - b.start, unit: unit.clone() });
+        clips.push((c, unit, peaks));
     }
-    Ok(out)
+    Ok(SyncInput { clips })
 }
 
-/// Plan and, when every match is good, move the clips. `Ok((hits, moved))`; on `Err` the project may be
-/// half moved - callers restore their snapshot.
-fn sync(app: &mut App, ids: &[Id]) -> Result<(Vec<SyncHit>, bool), String> {
+/// Where each clip after the first goes. The heavy part (up to +-120 s of lags over whole files): the
+/// Clip menu / hotkey path runs it on a worker thread.
+pub(crate) fn correlate(input: &SyncInput) -> Vec<SyncHit> {
+    let (a, _, pa) = &input.clips[0];
+    input.clips[1..]
+        .iter()
+        .map(|(b, unit, pb)| {
+            let (offset, confidence) = analysis::xcorr_match(pa, pb, 120.0).unwrap_or((0.0, 0.0));
+            // b's source at t + offset sounds like a's at t: put both under the same timeline instant
+            let start = a.start - a.src_in + b.src_in - offset;
+            SyncHit { clip: b.id, offset, confidence, dt: start - b.start, unit: unit.clone() }
+        })
+        .collect()
+}
+
+/// `gather` + `correlate` in one go (MCP, tests).
+pub(crate) fn plan(
+    p: &Project,
+    ids: &[Id],
+    peaks_of: &mut dyn FnMut(&Clip) -> Result<Arc<Peaks>, String>,
+) -> Result<Vec<SyncHit>, String> {
+    gather(p, ids, peaks_of).map(|i| correlate(&i))
+}
+
+fn gather_app(app: &mut App, ids: &[Id]) -> Result<SyncInput, String> {
     let App { project, waveforms, .. } = app;
-    let hits = plan(project, ids, &mut |c| {
+    gather(project, ids, &mut |c| {
         let path = project.asset(c.asset).map(|a| a.path.clone()).unwrap_or_default();
         waveforms.get(&path, c.audio_stream).ok_or_else(|| "Waveforms still loading - try again in a moment".into())
-    })?;
+    })
+}
+
+/// Move the clips when every match is good. `Ok(moved)`; on `Err` the project may be half moved -
+/// callers restore their snapshot.
+fn apply(project: &mut Project, hits: &[SyncHit]) -> Result<bool, String> {
     if hits.iter().any(|h| h.confidence < WEAK) {
-        return Ok((hits, false));
+        return Ok(false);
     }
-    for h in &hits {
-        if h.dt.abs() > 1e-9 && !app.project.move_clips(&h.unit, h.dt, 0, None) {
-            let name = app.project.clip(h.clip).map_or(String::new(), |c| c.name.clone());
+    for h in hits {
+        if h.dt.abs() > 1e-9 && !project.move_clips(&h.unit, h.dt, 0, None) {
+            let name = project.clip(h.clip).map_or(String::new(), |c| c.name.clone());
             return Err(format!("{name} can't move {:+.2} s there (another clip or 0:00 is in the way)", h.dt));
         }
     }
-    Ok((hits, true))
+    Ok(true)
+}
+
+/// Synchronous plan + apply (MCP, like `audio.xcorr` and multicam sync).
+fn sync(app: &mut App, ids: &[Id]) -> Result<(Vec<SyncHit>, bool), String> {
+    let input = gather_app(app, ids)?;
+    let hits = correlate(&input);
+    let moved = apply(&mut app.project, &hits)?;
+    Ok((hits, moved))
+}
+
+/// A Sync by Audio running on its worker thread (`App::group_sync`), picked up by `tick`.
+#[derive(Default)]
+pub(crate) struct SyncState {
+    pending: Option<(Arc<SyncInput>, std::sync::mpsc::Receiver<Vec<SyncHit>>)>,
 }
 
 fn summary(app: &App, hits: &[SyncHit]) -> String {
@@ -105,17 +156,61 @@ fn summary(app: &App, hits: &[SyncHit]) -> String {
 }
 
 fn sync_selection(app: &mut App) {
+    if app.group_sync.pending.is_some() {
+        app.toast("Already syncing - one moment");
+        return;
+    }
     let ids = app.selection.clone();
+    let input = match gather_app(app, &ids) {
+        Ok(i) => Arc::new(i),
+        Err(e) => {
+            app.push_toast(Toast::new(e).kind(ToastKind::Warn));
+            return;
+        }
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    let job = input.clone();
+    // `tick` polls (and keeps frames coming) until the result lands
+    std::thread::spawn(move || {
+        let _ = tx.send(correlate(&job));
+    });
+    app.group_sync.pending = Some((input, rx));
+}
+
+/// FRAME_HOOKS: land a finished Sync by Audio - one undo step - unless the clips moved meanwhile.
+pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
+    let Some((_, rx)) = &app.group_sync.pending else { return };
+    let hits = match rx.try_recv() {
+        Ok(h) => h,
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            app.group_sync.pending = None;
+            app.push_toast(Toast::new("Sync by Audio failed").kind(ToastKind::Warn));
+            return;
+        }
+    };
+    let Some((input, _)) = app.group_sync.pending.take() else { return };
+    if !input.still_valid(&app.project) {
+        app.push_toast(Toast::new("The clips changed while syncing, nothing moved - try again").kind(ToastKind::Warn));
+        return;
+    }
+    land(app, &hits);
+}
+
+fn land(app: &mut App, hits: &[SyncHit]) {
     let before = app.project.clone();
-    match sync(app, &ids) {
-        Ok((hits, true)) => {
+    match apply(&mut app.project, hits) {
+        Ok(true) => {
             app.push_undo_labeled(before, "Sync by audio");
             app.after_edit();
-            let msg = format!("Synced by audio: {}", summary(app, &hits));
+            let msg = format!("Synced by audio: {}", summary(app, hits));
             app.push_toast(Toast::new(msg).kind(ToastKind::Success).undo(Action::Undo));
         }
-        Ok((hits, false)) => {
-            let msg = format!("The audio doesn't match well enough to sync, nothing moved: {}", summary(app, &hits));
+        Ok(false) => {
+            let msg = format!("The audio doesn't match well enough to sync, nothing moved: {}", summary(app, hits));
             app.push_toast(Toast::new(msg).kind(ToastKind::Warn));
         }
         Err(e) => {
@@ -297,6 +392,42 @@ mod tests {
         let app = App::build(&egui::Context::default(), None, None);
         *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = None;
         app
+    }
+
+    /// The Clip menu path: the correlation runs on a worker, `tick` lands it as one undo step - and drops
+    /// it if the clips moved while it ran.
+    #[test]
+    fn worker_sync_lands_once_and_respects_edits() {
+        let ctx = egui::Context::default();
+        let pa = Arc::new(bursts(3.0, 40.0));
+        let pb = Arc::new(bursts(5.36, 40.0));
+        for edit_meanwhile in [false, true] {
+            let mut app = app();
+            let (p, a, b) = audio_project();
+            app.project = p;
+            app.project.clip_mut(a).unwrap().start = 10.0;
+            let input = Arc::new(
+                gather(&app.project, &[a, b], &mut |c| Ok(if c.id == a { pa.clone() } else { pb.clone() })).unwrap(),
+            );
+            let (tx, rx) = std::sync::mpsc::channel();
+            let job = input.clone();
+            std::thread::spawn(move || tx.send(correlate(&job)).unwrap()).join().unwrap();
+            app.group_sync.pending = Some((input, rx));
+            if edit_meanwhile {
+                app.project.clip_mut(b).unwrap().start = 1.0;
+            }
+            let b_before = app.project.clip(b).unwrap().start;
+            tick(&mut app, &ctx);
+            assert!(app.group_sync.pending.is_none(), "the result was picked up");
+            let sb = app.project.clip(b).unwrap().start;
+            if edit_meanwhile {
+                assert_eq!(sb, b_before, "a stale plan moves nothing");
+            } else {
+                assert!(((10.0 - 3.0) - (sb - 5.36)).abs() < 1.0 / 30.0, "b lands on a's clap: {sb}");
+                app.act(Action::Undo);
+                assert_eq!(app.project.clip(b).unwrap().start, b_before, "one undo step puts it back");
+            }
+        }
     }
 
     #[test]
