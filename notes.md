@@ -7,6 +7,30 @@ Newest at the top. No required format — a bullet or a short paragraph is fine.
 
 ---
 
+- **bg-removal (2026-11-19): background removal add-on, and its matte cache format.** `engine::bgremove` +
+  `tools/se-matte` (ONNX Runtime 1.22 DirectML build via `ort =2.0.0-rc.10` `load-dynamic`; MODNet = Fast,
+  BiRefNet lite = Best; RobustVideoMatting is GPL-3, not used). **Cache format (for unifying with SAM 2 later):**
+  `<cache>\mattes\<16 hex>-<fast|best>\` per (source file, quality); hash = FNV-1a 64 of the lower-cased
+  backslash path, then the file's size and mtime (u64 LE each). `matte.json` = `{"format":1,"source","quality",
+  "fps","width","height"}`; frames are 8-bit greyscale PNGs named `<n>.png`, `n = floor(src_t·fps + 0.001)` at
+  the source's fps (a still is `0.png`), white = keep. Written as `<n>.png.tmp` then renamed. A missing file =
+  not computed = the clip draws unkeyed. Stored at long side 512 (Fast) / 1024 (Best), never above the source.
+  **Playback**: `layer_for` reads the PNG (`matte_frame`, Edge applied there: erode + remap to shrink, two box
+  blurs to feather) into `LayerSet::mattes` (counted in the read-ahead's bytes); `gpu::draw_clip` multiplies the
+  layer's alpha with the existing `K_MATTE` pass BEFORE the effect chain (so Chroma Key / masks still apply after),
+  Show Matte draws the matte instead; `compose.rs` does the same on the CPU (`apply_cpu`). `covers` is false for a
+  keyed clip. New frames reach a paused preview through `Player::mattes_landed` (`Cmd::Mattes`, evicts
+  `spans_using_source`); while playing nothing is evicted (no re-decode under the playhead). **Job**: only the
+  frames the clip shows + 0.5 s handles, missing runs only; ffmpeg (`fps=,scale=` to the matte size, rgb24) piped
+  straight into the helper's stdin, mattes back on stdout, a 3-frame median + small jitter pull (`smooth`), one
+  job on the GPU at a time, children below normal while anything plays. **Gotchas**: (1) DirectML runs out of GPU
+  memory for BiRefNet at 1024² when other GPU work holds the 8 GB card, and it only shows on the FIRST run, not
+  at session creation - the helper warms up on grey and `--ep auto` falls back to the CPU then; (2) MODNet is a
+  portrait model: on a plain shape it finds little (see the real-run test's printed IoU) - Best is the one for
+  objects; (3) Windows 11 ships DirectML 1.15.x in System32, so the 200 MB DirectML NuGet is not downloaded;
+  (4) `mandelbrot` is a bad "busy background" for a salient-object model (it IS the subject) - the test uses
+  moving noise.
+
 - **social-guides (2026-11-13): the guides are data, measured on the real pages.** `assets/guides.json`
   (embedded, 20 KB; a copy in `library/guides/`) replaces the hard-coded zones; `ui::social` turns it into
   draw lists (`Op`) that egui (`paint`) and a small bitmap renderer (`raster`, same shapes, text through

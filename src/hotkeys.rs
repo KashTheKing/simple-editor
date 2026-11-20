@@ -418,6 +418,11 @@ actions! {
     // ui::app::object_mask_ctl::act. Unbound.
     ObjectMask => "object_mask", "Object Mask", None;
     ObjectMaskTrack => "object_mask_track", "Object Mask: Track", None;
+    // ---- ws:addon-bg-removal ----
+    // clip menu ▸ Remove Background (the optional MODNet / BiRefNet add-on); ui::app::bgremove_ctl::act. Unbound.
+    RemoveBackgroundFast => "remove_background_fast", "Remove Background (Fast)", None;
+    RemoveBackgroundBest => "remove_background_best", "Remove Background (Best)", None;
+    RemoveBackgroundOff => "remove_background_off", "Turn Off Background Removal", None;
     SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
     PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
     // ---- ws:music-burn ----

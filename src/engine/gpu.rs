@@ -130,6 +130,8 @@ const K_CHECKER: u64 = 5;
 const K_NV12: u64 = 15; // ws:export-pipeline
 const EFFECT_BASE: u64 = 16;
 const USER_BIT: u64 = 1 << 63;
+/// ws:addon-bg-removal: a clip's matte texture is keyed by its id with this bit flipped.
+const MATTE_KEY: u64 = 1 << 61;
 
 /// `vec4 effect(..)` bodies that are not per-effect: a pass-through and the two-input matte.
 const COPY_BODY: &str = "vec4 effect(vec4 src, vec2 uv) { return src; }";
@@ -1863,6 +1865,20 @@ impl GpuRenderer {
             (None, None) => return canvas,
         };
         self.perf_upload_us += perf_t0.elapsed().as_micros() as u64; // ws:perf-baseline
+        // ---- ws:addon-bg-removal ---- the matte multiplies the layer's alpha before its effects (a
+        // chroma key after it keys what is left); Show Matte draws the matte itself
+        let keyed = match (layers.mattes.iter().find(|m| m.0 == clip.id), &clip.bg_removal, &sub) {
+            (Some((_, m)), Some(bg), None) => {
+                let mtex = self.upload(clip.id ^ MATTE_KEY, m);
+                if bg.show_matte {
+                    self.copy_to(mtex, lsize)
+                } else {
+                    self.matte(tex, mtex, lsize, false, false)
+                }
+            }
+            _ => None,
+        };
+        let tex = keyed.as_ref().map_or(tex, |k| k.tex);
 
         // effect scale: layer px per project px (matches compose::apply_effects' img_scale - footage
         // is decoded at roughly the placed size, text/shape bitmaps arrive at canvas scale already)
@@ -1907,6 +1923,9 @@ impl GpuRenderer {
         }
         if let Some(c) = sub {
             self.pool.put(c);
+        }
+        if let Some(k) = keyed {
+            self.pool.put(k);
         }
         out
     }
@@ -2335,6 +2354,10 @@ pub struct LayerSet {
     /// layer and the drawer looked for the incoming one's - a black frame. None = a hand-made set,
     /// drawn at the caller's time.
     pub t: Option<f64>,
+    // ---- ws:addon-bg-removal ----
+    /// Cached background-removal mattes (`engine::bgremove::matte_frame`, grey: white = keep), by clip
+    /// id. A clip with none draws unkeyed.
+    pub mattes: Vec<(crate::model::Id, Arc<Frame>)>,
 }
 
 /// ws:nested-gpu: one nested sequence clip's layers (`playback::layer_for`), drawn by the same

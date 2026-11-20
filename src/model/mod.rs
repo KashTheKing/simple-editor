@@ -664,6 +664,7 @@ pub(crate) fn dh() -> f32 {
 }
 
 mod asset;
+mod bgremove; // ws:addon-bg-removal
 // ---- ws:beat-aligner ----
 pub mod beats;
 mod audio;
@@ -692,6 +693,7 @@ mod zone; // ws:zones-markers
 mod tests;
 
 pub use asset::*;
+pub use bgremove::{BgQuality, BgRemoval}; // ws:addon-bg-removal
 pub use beats::{BeatMap, BeatMark, BeatSheet, MarkKind}; // ws:beat-aligner
 pub use audio::*;
 pub use browser::*;

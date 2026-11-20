@@ -48,6 +48,7 @@ pub mod deepfilter; // speech denoise add-on (DeepFilterNet CLI, downloaded on d
 pub mod fast_whisper; // ws:addon-faster-whisper: the faster-whisper transcription add-on
 pub mod demucs; // ws:addon-demucs: stem separation add-on (Demucs htdemucs via demucs.cpp, downloaded on demand)
 pub mod sam2; // object masks: the SAM 2 add-on (downloaded on demand) and its mask cache
+pub mod bgremove; // ws:addon-bg-removal: background removal add-on (MODNet / BiRefNet, downloaded on demand)
 pub mod html_lint;
 #[cfg(test)]
 mod blitz_tests;

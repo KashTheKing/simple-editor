@@ -402,6 +402,10 @@ enum Cmd {
     /// Buffer before playing: fill this many seconds ahead of the paused playhead (frames into the
     /// cache, audio into the ring) without moving the clock. Ended by `Play` or `Pause`.
     Preroll(f64),
+    // ---- ws:addon-bg-removal ----
+    /// Render-thread only: new background-removal mattes landed for this source file - re-decode the
+    /// frames that use it (they were drawn unkeyed).
+    Mattes(String),
     Quit,
 }
 
@@ -724,6 +728,11 @@ impl Player {
     /// re-resolves every decode through it; audio always reads the originals.
     pub fn set_proxies(&mut self, map: HashMap<String, String>) {
         let _ = self.send_render(Cmd::Proxies(map));
+    }
+    /// ---- ws:addon-bg-removal ---- background-removal mattes for `path` landed in the cache: frames
+    /// that use it are evicted and redrawn keyed.
+    pub fn mattes_landed(&self, path: &str) {
+        let _ = self.send_render(Cmd::Mattes(path.to_string()));
     }
     /// Synchronously drop every decoder on both threads (before overwriting a source file).
     pub fn release_files(&mut self) {
@@ -1066,6 +1075,14 @@ fn render_thread(
                         let fps = project.fps.max(1.0);
                         let spans: Vec<(f64, f64)> =
                             changed.iter().flat_map(|src| spans_using_source(&project, src)).collect();
+                        evict_spans!(spans, fps);
+                        dirty = true;
+                    }
+                }
+                Cmd::Mattes(path) => {
+                    let fps = project.fps.max(1.0);
+                    let spans = spans_using_source(&project, &path);
+                    if !spans.is_empty() {
                         evict_spans!(spans, fps);
                         dirty = true;
                     }
@@ -1830,6 +1847,7 @@ fn gpu_cached(
             set.layers.iter().map(|(id, f)| own(*id, f)).sum::<usize>()
                 + set.motion.iter().map(|(id, _, f)| own(*id, f)).sum::<usize>()
                 + set.nested.iter().map(|n| bytes(&n.set, own)).sum::<usize>()
+                + set.mattes.iter().map(|(_, f)| f.bytes()).sum::<usize>() // ws:addon-bg-removal
         }
         let bytes = bytes(&set, &own);
         for old in cache.insert(idx, bytes, set.clone()) {
@@ -2314,6 +2332,14 @@ fn layer_for<'p>(
                     Some(dt) => set.motion.push((clip.id, dt, f)),
                 }
             }
+            // ---- ws:addon-bg-removal ---- the cached matte only (never computed here): none yet = unkeyed
+            if let Some(bg) = &clip.bg_removal {
+                let st = clip_src(clip.src_time(t), asset.duration);
+                let fps = if asset.fps > 0.0 { asset.fps } else { project.fps };
+                if let Some(m) = crate::engine::bgremove::matte_frame(&asset.path, bg.quality, fps, st, still, bg.edge) {
+                    set.mattes.push((clip.id, m));
+                }
+            }
         }
         ClipKind::Text => {
             let Some(style) = &clip.text else { return };
@@ -2573,7 +2599,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 }
                 Cmd::Canvas => {}
                 Cmd::Backend(b) => pool.set_backend(b),
-                Cmd::Gpu(_) | Cmd::Proxies(_) | Cmd::CacheBudget(_) => {} // render-thread only
+                Cmd::Gpu(_) | Cmd::Proxies(_) | Cmd::CacheBudget(_) | Cmd::Mattes(_) => {} // render-thread only
                 Cmd::ClearDecoders(ack) => {
                     pool.clear();
                     let _ = ack.send(());

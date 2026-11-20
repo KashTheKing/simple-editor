@@ -214,6 +214,7 @@ pub fn covers(project: &Project, clip: &Clip, t: f64, w: u32, h: u32) -> bool {
         || clip.blend != BlendMode::Normal
         || clip.mask.as_ref().is_some_and(|m| m.enabled)
         || clip.uses_graph()
+        || clip.bg_removal.is_some() // ws:addon-bg-removal: keyed, so see-through
         || effects::effects_for(project, clip).iter().any(|e| e.enabled)
         || clip.opacity.at(lt) * clip.fade_mult(lt) < 1.0
         || clip.crop_at(lt) != NO_CROP
@@ -647,6 +648,14 @@ impl Compositor {
                 };
                 if !pool.frame_at(&asset.path, st, dw, dh, &mut self.src) {
                     return;
+                }
+                // ---- ws:addon-bg-removal ---- the cached matte, as on the GPU path
+                if let Some(bg) = &clip.bg_removal {
+                    let fps = if asset.fps > 0.0 { asset.fps } else { project.fps };
+                    let still = clip.kind == ClipKind::Image;
+                    if let Some(m) = crate::engine::bgremove::matte_frame(&asset.path, bg.quality, fps, st, still, bg.edge) {
+                        crate::engine::bgremove::apply_cpu(&mut self.src, &m, bg.show_matte);
+                    }
                 }
                 let img_scale = s * (dw as f32 / p.w.max(1e-3));
                 apply_effects(

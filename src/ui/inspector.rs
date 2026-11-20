@@ -1221,6 +1221,18 @@ fn clip_section(
         });
     }
 
+    // ---- ws:addon-bg-removal ---- a video / picture file's background removal
+    let mut bg_changed = false;
+    if !audio && !multi && crate::ui::app::bgremove_ctl::refusal(project, id).is_none() {
+        let st = crate::ui::bgremove_ui::State {
+            coverage: crate::ui::app::bgremove_ctl::clip_coverage_cached(project, id),
+            job: crate::ui::app::bgremove_ctl::job_for(project, id),
+        };
+        fold(ui, &mut folds, "bg_removal", "Remove Background", None, |ui| {
+            bg_changed = crate::ui::bgremove_ui::section(ui, project, id, &st, undo);
+        });
+    }
+
     // Effects: the applied stack (reorder, enable, parameters; each row's right-click has the rest).
     // Parameter edits bulk-apply to the other selected clips, as they did in the Effects pane.
     let mut effects_changed = false;
@@ -1567,6 +1579,7 @@ fn clip_section(
         || audio_changed
         || text_changed
         || effects_changed
+        || bg_changed // ws:addon-bg-removal
         || html_changed // ws:html-layer
         || visualizer_changed // ws:audio-visualizer
         || remap_changed // ws:time-remap

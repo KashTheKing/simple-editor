@@ -286,6 +286,14 @@ pub(super) fn clip_menu(
                 }
             });
         }
+        // ---- ws:addon-bg-removal ---- (video / picture files, like AI Upscale)
+        if upscalable {
+            menu::sub(ui, None, "Remove Background", |ui| {
+                menu::action_item_as(ui, RemoveBackgroundFast, "Fast");
+                menu::action_item_as(ui, RemoveBackgroundBest, "Best");
+                menu::action_item_as(ui, RemoveBackgroundOff, "Off");
+            });
+        }
         if !m.shared_effects.is_empty() {
             menu::sub(ui, None, "Effects", |ui| {
                 for k in m.shared_effects.iter().copied() {
