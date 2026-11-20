@@ -2497,9 +2497,9 @@ fn clip_menu_rows_dispatch_actions_and_acts() {
     assert_eq!(run(&base, &["Join Through Edit"]).2, vec![Action::JoinThroughEdit]);
     assert_eq!(run(&base, &["Split at Playhead"]).2, vec![Action::Split]);
     assert_eq!(run(&base, &["Delete and Leave Gap"]).2, vec![Action::Delete]);
-    assert_eq!(run(&base, &["Replace with Library Selection"]), (false, None, vec![]), "greyed: no Library pick");
+    assert_eq!(run(&base, &["Source", "Replace with Library Selection"]), (false, None, vec![]), "greyed: no Library pick");
     let lib = ClipMenu { library_selected: Some(7), ..test_clip_menu(&p.labels, &p.buses, &[]) };
-    assert_eq!(run(&lib, &["Replace with Library Selection"]), (true, Some(1), vec![]), "the clicked clip's Act");
+    assert_eq!(run(&lib, &["Source", "Replace with Library Selection"]), (true, Some(1), vec![]), "the clicked clip's Act");
     let seq = ClipMenu { sequence: true, ..test_clip_menu(&p.labels, &p.buses, &[]) };
     assert_eq!(run(&seq, &["Nest", "Un-nest Sequence Clip"]), (true, Some(1), vec![]));
     assert_eq!(run(&base, &["Nest", "Un-nest Sequence Clip"]), (false, None, vec![]), "only a Sequence clip");
