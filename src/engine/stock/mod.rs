@@ -515,7 +515,7 @@ fn curl_exe() -> Result<PathBuf, NetError> {
     crate::media::ffpipe::find_exe("curl.exe", "").ok_or(NetError::Failed("curl.exe not found".into()))
 }
 
-/// curl's exit codes for "no network": 6 (resolve host), 7 (connect), 28 with nothing received, 35 TLS.
+/// curl's exit codes for "no network": 5 (resolve proxy), 6 (resolve host), 7 (connect).
 fn is_offline(code: Option<i32>) -> bool {
     matches!(code, Some(5) | Some(6) | Some(7))
 }

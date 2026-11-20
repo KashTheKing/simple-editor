@@ -300,7 +300,8 @@ fn commons(v: &Value, kind: Kind) -> Vec<Hit> {
             let got = match mt {
                 "VIDEO" => Kind::Video,
                 "BITMAP" | "DRAWING" => Kind::Image,
-                "AUDIO" => kind,
+                // a sound is Music or SFX, whichever was searched; a video or picture search skips it
+                "AUDIO" if kind.is_audio() => kind,
                 _ => return None,
             };
             // a video search also finds audio-only .ogg / .webm files: they belong to Music / SFX
