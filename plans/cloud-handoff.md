@@ -194,3 +194,30 @@ assets, names or logos; call it "Classic 2000s" or "Retro Slideshow", not "Movie
     with thumbnails.
 - Everything goes in the Gallery under one "Classic 2000s" category, with previews.
 - Tests: preset parse, slideshow timing (fit to music), font fallback when Comic Sans is missing.
+
+### scripts-editor: `claude/feat-scripts-editor` (new from develop)
+The user's request, verbatim: "make it so i can rename, delete, open, open folder on each of the scripts and also an "Add script"
+button that opens up in the app's script editor with a button in the script editor panel to open externally and settings in
+simple editor to open scripts externally by default."
+
+Today: Window ▸ Scripts lists each script (`script_metas`, `run_script_path`, `src/scripting.rs` `scripts_dir`) plus
+"Open Scripts Folder", and there's no script editor.
+
+- **Scripts menu:** each script becomes a submenu with these items:
+  - Run (the existing behaviour)
+  - Open: the in-app editor, or the external editor if that setting is on
+  - Open Folder: use `crate::contextmenu::reveal(path)`, which selects the file
+  - Rename…: an inline name field, with the extension kept and collisions refused
+  - Delete…: a confirm, moving the file to the Recycle Bin rather than a hard delete
+  Below the list: **Add Script** (creates `New Script.luau` from a small commented template and opens it) and Open Scripts Folder.
+  Show the Scripts submenu even when there are no scripts, so Add Script is reachable.
+- **Script Editor pane** (a new `Pane::ScriptEditor` with its own toggle button):
+  - A code editor reusing the app's existing code-editor widget (see `src/ui/html_code.rs` / `shader_ui.rs`), with
+    Luau highlighting if the widget supports it.
+  - File name, Save (Ctrl+S while focused), Run, and an error/output line from the script run.
+  - **Open Externally**, which uses the OS default app for `.luau`/`.lua`, or `notepad` if none is registered.
+  - Unsaved-change dot; reloads when the file changes on disk.
+  - The palette and the Window menu list it.
+- **Settings ▸ General:** "Open scripts externally" (off by default). When on, Open and Add Script launch the external editor instead.
+- MCP: `scripts.create`, `scripts.rename`, `scripts.delete` and `scripts.open` next to the existing `scripts.list`/`scripts.run`.
+- Tests: create, rename and delete on a scratch scripts dir; the template parses; the menu shows Add Script with zero scripts.
