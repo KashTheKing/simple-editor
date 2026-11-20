@@ -2,6 +2,90 @@
   "version": 1,
   "items": [
     {
+      "id": "effects/360-little-planet",
+      "kind": "effect",
+      "name": "360 Little Planet",
+      "desc": "Wraps a 360° equirectangular video into a tiny planet (stereographic). Pitch 90 turns it inside out into a tunnel.",
+      "tags": [
+        "360",
+        "vr",
+        "equirectangular",
+        "stereographic",
+        "little planet",
+        "tiny planet",
+        "tunnel",
+        "rabbit hole"
+      ],
+      "file": "effects/360-little-planet.glsl",
+      "size": 1568,
+      "credit": "",
+      "thumb": "thumbs/effects-360-little-planet.jpg"
+    },
+    {
+      "id": "effects/360-mask",
+      "kind": "effect",
+      "name": "360 Mask",
+      "desc": "Hides part of a 360° equirectangular video by direction (the tripod at the bottom, the sky, a slice behind you) with a soft edge; hidden parts turn transparent.",
+      "tags": [
+        "360",
+        "vr",
+        "equirectangular",
+        "mask",
+        "nadir",
+        "tripod",
+        "zenith",
+        "hide",
+        "crop"
+      ],
+      "file": "effects/360-mask.glsl",
+      "size": 1235,
+      "credit": "",
+      "thumb": "thumbs/effects-360-mask.jpg"
+    },
+    {
+      "id": "effects/360-to-flat",
+      "kind": "effect",
+      "name": "360 to Flat",
+      "desc": "Looks into a 360° equirectangular video through a normal camera: pick the direction and the field of view (keyframe them to pan).",
+      "tags": [
+        "360",
+        "vr",
+        "equirectangular",
+        "rectilinear",
+        "reframe",
+        "flat",
+        "camera",
+        "pan",
+        "fov"
+      ],
+      "file": "effects/360-to-flat.glsl",
+      "size": 1305,
+      "credit": "",
+      "thumb": "thumbs/effects-360-to-flat.jpg"
+    },
+    {
+      "id": "effects/360-transform",
+      "kind": "effect",
+      "name": "360 Transform",
+      "desc": "Turns a 360° equirectangular video on the sphere: yaw, pitch and roll, keyframeable. 360 Stabilize writes its keys here.",
+      "tags": [
+        "360",
+        "vr",
+        "equirectangular",
+        "spherical",
+        "rotate",
+        "yaw",
+        "pitch",
+        "roll",
+        "horizon",
+        "reorient"
+      ],
+      "file": "effects/360-transform.glsl",
+      "size": 1672,
+      "credit": "",
+      "thumb": "thumbs/effects-360-transform.jpg"
+    },
+    {
       "id": "effects/alpha-adjust",
       "kind": "effect",
       "name": "Alpha Adjust",
@@ -603,6 +687,47 @@
       "size": 774,
       "credit": "",
       "thumb": "thumbs/effects-fisheye.jpg"
+    },
+    {
+      "id": "effects/fisheye-to-360",
+      "kind": "effect",
+      "name": "Fisheye to 360",
+      "desc": "Unwraps circular fisheye footage (one lens, or a dual-lens 360 camera's two circles side by side) into a 360° equirectangular picture.",
+      "tags": [
+        "360",
+        "vr",
+        "fisheye",
+        "hemispherical",
+        "dual fisheye",
+        "equirectangular",
+        "unwrap",
+        "stitch",
+        "insta360"
+      ],
+      "file": "effects/fisheye-to-360.glsl",
+      "size": 3034,
+      "credit": "",
+      "thumb": "thumbs/effects-fisheye-to-360.jpg"
+    },
+    {
+      "id": "effects/flat-to-360",
+      "kind": "effect",
+      "name": "Flat to 360",
+      "desc": "Places a normal (flat) picture onto the 360° sphere as an equirectangular frame, at a direction and size you choose; the rest is transparent.",
+      "tags": [
+        "360",
+        "vr",
+        "rectilinear",
+        "equirectangular",
+        "flat",
+        "place",
+        "overlay",
+        "sphere"
+      ],
+      "file": "effects/flat-to-360.glsl",
+      "size": 1478,
+      "credit": "",
+      "thumb": "thumbs/effects-flat-to-360.jpg"
     },
     {
       "id": "effects/fog",

@@ -169,6 +169,9 @@ pub struct EffectsResponse {
     pub open_nodes: bool,
     /// Index of the `EffectKind::Shader` effect whose GLSL the user wants to edit (app opens the window).
     pub edit_shader: Option<usize>,
+    // ---- ws:parity-360 ----
+    /// A 360 Transform row's "360 Stabilize" pick: (stack index, options) - the app runs the analysis.
+    pub stabilize_360: Option<(usize, crate::engine::vr360::StabilizeOptions)>,
     // ---- ws:registries-schema-hooks ----
     /// Index of the stack row the pointer is hovering, for a future async GPU hover preview
     /// (ws:inspector-gallery, wave 2, via `App::alt_render`). Unread this wave.
@@ -201,6 +204,28 @@ pub(crate) fn apply_preset(dst: &mut Effect, preset: &Effect) {
     dst.lut = preset.lut.clone();
     dst.audio_mix = preset.audio_mix.clone();
     dst.camera = preset.camera.clone();
+}
+
+// ---- ws:parity-360 ----
+/// The 360 Transform row's "360 Stabilize" choices: what each keeps steady.
+fn stabilize_360_menu(ui: &mut egui::Ui, i: usize, out: &mut Option<(usize, crate::engine::vr360::StabilizeOptions)>) {
+    use crate::engine::vr360::StabilizeOptions as O;
+    menu::sub(ui, None, "360 Stabilize", |ui| {
+        let rows = [
+            ("Smooth", "Removes the shake and keeps slow turns", O { smooth: 1.0, axes: [true; 3] }),
+            ("Lock View", "Holds the first frame's direction for the whole clip", O { smooth: 0.0, axes: [true; 3] }),
+            (
+                "Level Horizon",
+                "Holds pitch and roll, keeps every turn left and right",
+                O { smooth: 0.0, axes: [false, true, true] },
+            ),
+        ];
+        for (label, tip, o) in rows {
+            if menu::row(ui, None, label, "").on_hover_text(tip).clicked() {
+                *out = Some((i, o));
+            }
+        }
+    });
 }
 
 /// A stack row's right-click pick, applied once the rows are drawn.
@@ -422,6 +447,9 @@ pub fn stack(
         }
         let masked = fx.mask.is_some();
         let kind = fx.kind;
+        // ws:parity-360: the 360 Transform effect is where 360 Stabilize writes its keys
+        let is_360 = kind == EffectKind::Shader
+            && crate::engine::shaderlib::parse_meta(&fx.shader).name == crate::engine::vr360::TRANSFORM_NAME;
         menu::context(&name_r, |ui| {
             use crate::ui::tools::{Dir, Glyph};
             let mut pick = |ui: &mut egui::Ui, on: bool, glyph: Option<Glyph>, label: &str, c: RowCmd| {
@@ -435,6 +463,9 @@ pub fn stack(
             }
             if kind == EffectKind::Shader && menu::row(ui, Some(Glyph::Pencil), "Edit shader…", "").clicked() {
                 out.edit_shader = Some(i);
+            }
+            if is_360 {
+                stabilize_360_menu(ui, i, &mut out.stabilize_360);
             }
             if menu::row(ui, None, "Save to Gallery…", "").clicked() {
                 out.save_effect = Some(i);

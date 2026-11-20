@@ -212,6 +212,7 @@ mod reference_ctl; // feat/reference-clips: Find a Reference
 mod scripts_ctl; // feat/scripts-editor: the Scripts menu, the Script Editor pane, scripts.create/rename/delete/open
 mod tools_audio_parity; // ws:parity-audio
 mod formats_ctl; // ws:parity-formats
+mod vr360_ctl; // ws:parity-360
 
 #[derive(Clone)]
 enum ExportKind {
@@ -654,6 +655,9 @@ pub struct App {
     // ---- feat/plugins ----
     /// Installed plugins, their open panels and the Install from URL / confirm windows.
     plugins: plugins_ctl::PluginsUi,
+    // ---- ws:parity-360 ----
+    /// 360 Stabilize analyses in flight (`vr360_ctl`).
+    vr360: vr360_ctl::State,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -1252,6 +1256,7 @@ impl App {
             health: Default::default(), // ws:forum-preview
             group_sync: Default::default(), // ws:gap-group-sync
             plugins: Default::default(), // feat/plugins
+            vr360: Default::default(), // ws:parity-360
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -2184,6 +2189,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_audio_parity::TOOLS,
     // ---- ws:parity-formats ----
     formats_ctl::TOOLS,
+    // ---- ws:parity-360 ----
+    vr360_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2420,6 +2427,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     plugins_ctl::tick,
     // ---- ws:parity-formats ----
     formats_ctl::tick,
+    // ---- ws:parity-360 ----
+    vr360_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[

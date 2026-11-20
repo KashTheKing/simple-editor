@@ -245,7 +245,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `caches.clear` | Ui | - | Releases decoder file handles, clears in-memory waveform/thumb caches, deletes the on-disk cache dir; returns bytes freed. |
 | `caches.size` | Read | - | Returns the on-disk cache directory size in bytes. |
 
-**`clip.*`** (24 tools)
+**`clip.*`** (25 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -273,6 +273,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `clip.set` | Mutate | clip_id, fields | Set clip fields: name, enabled, label, speed, reverse, keep_pitch (bool: time-stretch the sound so a speed change keeps its pitch; muted above 4x; also sets the linked audio), freeze (source time or null), blend, fade_in, fade_out, and constant values of properties (x, y, scale, rotation, crop_left, crop_right, crop_top, crop_bottom (0..0.5), opacity, volume, pan); text clips: text style fields (text, font, size, color [r,g,b,a], outline_width, …). |
 | `clip.set_mask` | Mutate | clip_id, effect, fields | Edit a mask: fields {shape, cx, cy, rx, ry, rotation, feather, expand, opacity, invert, enabled, points:[[x,y],…]} in project pixels relative to the layer centre. |
 | `clip.time_remap` | Mutate | action, clip_id, index, keys, len, smooth, speed, t | Time remapping: a clip's source time as a function of its own time. action: get (default), enable, disable, set (keys=[{t, s, smooth}]), hold (freeze at timeline t for len s), reverse (the stretch around t plays back, then forward), add_key, remove_key (index), speed (segment index, speed), length (segment index, len), smooth (segment index). Length changes ripple the track; a linked picture/sound pair changes together. |
+| `clip.stabilize_360` | Job | clip_id, pitch, roll, smooth, yaw | 360 Stabilize (job): measure how a 360° equirectangular clip's camera turns frame to frame and write yaw/pitch/roll keys on its 360 Transform effect (added first in the stack if missing) that hold the view steady. smooth = seconds of motion to keep (default 1; 0 locks the view to the first frame). One undo step. |
 
 **`color.*`** (5 tools)
 
@@ -308,7 +309,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `editor.context` | Read | - | What the user is looking at: playhead, in/out, selected clips (name, kind, track, times), transitions, subtitle cues, markers (with notes), edit point, selected transcript words (text, start, end), sequence and page. Call it first in every request. |
 
-**`export.*`** (18 tools)
+**`export.*`** (20 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -437,7 +438,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `markers.remove` | Mutate | id | Remove a marker by id. |
 | `markers.set` | Mutate | author, category, done, duration, icon, id, label, name, note, t | Edit a marker: only the fields given change (done=true ticks a comment off). t: timeline seconds (timeline markers only). |
 
-**`media.*`** (21 tools)
+**`media.*`** (23 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|

@@ -45,7 +45,7 @@ Cross-cutting findings
 - Vibrance, posterize, sepia filters: MISSING (S)
 - Drop shadow on any clip: PARTIAL (S)
 - Timer and GPS overlays: MISSING (S/M)
-- 360° filters: MISSING (M)
+- 360° filters: on `claude/parity-360` (six library shaders + 360 Stabilize)
 - OpenFX plugins: MISSING (L)
 
 ### Editing

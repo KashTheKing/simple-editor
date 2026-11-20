@@ -87,6 +87,7 @@ pub mod tts;
 pub mod tts_addon; // ws:addon-voice: Kokoro / Chatterbox voices, downloaded on demand
 pub mod visualizer; // ws:audio-visualizer
 pub mod wipe_image; // parity-effects: the custom gradient wipe's picture
+pub mod vr360; // ws:parity-360
 // ---- ws:music-burn ----
 pub mod disc;
 pub mod mixvideo;
