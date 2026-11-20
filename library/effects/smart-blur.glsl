@@ -1,8 +1,8 @@
 // @name Smart Blur
 // @desc Real-time noise reduction: smooths grain and flat areas while keeping edges sharp.
 // @tags denoise, noise reduction, smart blur, bilateral, smooth, clean, grain
-// @param radius 3 1 8
-// @param threshold 0.08 0.01 0.3
+// @param radius 16 1 32
+// @param threshold 0.2 0.01 0.4
 // @param amount 1 0 1
 vec4 effect(vec4 src, vec2 uv) {
     vec2 px = radius * u_scale / u_res;

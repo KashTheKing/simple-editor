@@ -1,8 +1,8 @@
 // @name Alpha Adjust
 // @desc Grows, shrinks, softens or hardens a clip's transparency edge, or inverts it.
 // @tags alpha, matte, choke, spread, feather, edge, transparency, key
-// @param grow 0 -10 10
-// @param soften 1.5 0 10
+// @param grow -16 -40 40
+// @param soften 10 0 20
 // @param threshold 0 0 1
 // @param invert 0 0 1
 vec4 effect(vec4 src, vec2 uv) {

@@ -1,9 +1,9 @@
 // @name Deband
 // @desc Smooths the stepped bands in skies and gradients from heavy compression, leaving real detail alone.
 // @tags deband, banding, gradient, compression, smooth, cleanup
-// @param threshold 0.02 0.002 0.1
+// @param threshold 0.03 0.002 0.1
 // @param range 12 2 40
-// @param grain 0.4 0 1
+// @param grain 1 0 1
 vec4 effect(vec4 src, vec2 uv) {
     vec2 px = 1.0 / u_res;
     float r = range * u_scale;
@@ -21,6 +21,7 @@ vec4 effect(vec4 src, vec2 uv) {
         }
     }
     vec3 c = sum / n;
-    c += (hash12(uv * u_res + fract(u_time)) - 0.5) * grain / 255.0 * 2.0;
+    // a little dither so the smoothed ramp does not band again on an 8-bit export
+    c += (hash12(uv * u_res + fract(u_time)) - 0.5) * grain * 4.0 / 255.0;
     return vec4(c, src.a);
 }

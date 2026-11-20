@@ -17,7 +17,7 @@
         "key"
       ],
       "file": "effects/alpha-adjust.glsl",
-      "size": 1196,
+      "size": 1197,
       "credit": "",
       "thumb": "thumbs/effects-alpha-adjust.jpg"
     },
@@ -289,7 +289,7 @@
         "cleanup"
       ],
       "file": "effects/deband.glsl",
-      "size": 1070,
+      "size": 1151,
       "credit": "",
       "thumb": "thumbs/effects-deband.jpg"
     },
@@ -962,7 +962,7 @@
         "grain"
       ],
       "file": "effects/smart-blur.glsl",
-      "size": 855,
+      "size": 856,
       "credit": "",
       "thumb": "thumbs/effects-smart-blur.jpg"
     },
@@ -1053,7 +1053,7 @@
         "heal"
       ],
       "file": "effects/spot-remover.glsl",
-      "size": 1465,
+      "size": 1463,
       "credit": "",
       "thumb": "thumbs/effects-spot-remover.jpg"
     },
@@ -1114,7 +1114,7 @@
       "id": "effects/unpremultiply",
       "kind": "effect",
       "name": "Unpremultiply Alpha",
-      "desc": "Fixes dark fringes on clips whose colours were stored premultiplied by their transparency.",
+      "desc": "Fixes dark fringes on clips whose colours were stored premultiplied by their transparency; fully transparent pixels lose their hidden colour.",
       "tags": [
         "alpha",
         "unpremultiply",
@@ -1124,7 +1124,7 @@
         "fix"
       ],
       "file": "effects/unpremultiply.glsl",
-      "size": 382,
+      "size": 507,
       "credit": "",
       "thumb": "thumbs/effects-unpremultiply.jpg"
     },

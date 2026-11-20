@@ -3,8 +3,8 @@
 // @tags spot, remove, blemish, logo, dust, patch, cleanup, heal
 // @param pos_x 0.5 0 1
 // @param pos_y 0.5 0 1
-// @param width 0.08 0.005 0.5
-// @param height 0.08 0.005 0.5
+// @param width 0.2 0.005 0.5
+// @param height 0.2 0.005 0.5
 // @param feather 0.3 0 1
 vec4 effect(vec4 src, vec2 uv) {
     vec2 lo = vec2(pos_x - width * 0.5, pos_y - height * 0.5);
