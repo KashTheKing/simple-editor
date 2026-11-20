@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Classic 2000s pack
+- **A Classic 2000s look in the Gallery**: our own remakes of the early-2000s home-movie editor style, in one **Classic 2000s** category of the Transitions, Effects and Titles tabs. It works offline: the pack installs itself into your library folder.
+- **26 classic transitions**: Pixel Dissolve, Fade Through Black / White (also fades in and out on a clip's edge), Bars, Blinds, Checkerboard, Diagonal Wipe, Clock Wipe, Circle, Diamond, Heart, Star, Keyhole and Eye irises, Page Turn, Pixelate, Rectangle Zoom, Flip, Roll, Shatter In, Sweep, Whirlwind, Ripple, Spiral, Zig-Zag and Bow Tie.
+- **10 classic effects**: Sepia Tone, Black and White, Old Film, Film Age, Soft Blur, Posterize, Watercolour, 3D Ripple, Mirror and Edge Detect; and Speed Up (2x, 4x) / Slow Down (1/2, 1/4) in Gallery ▸ Speed.
+- **Blue title cards**: the signature royal-blue card with white rounded lettering and a drop shadow, plus Basic, Fade, Fly-In, Typewriter, News Banner, Zoom, Spin, Moving, Credits Roll ("Directed by / Starring / ...") and The End, as native text clips you can edit. They use Comic Sans MS when your PC has it and the built-in Comic Neue when it doesn't.
+- **Make Slideshow**: select photos and clips (in the Library or on the timeline) and click **Make Slideshow** in Gallery ▸ Titles ▸ Classic 2000s: each photo gets a slow pan and zoom, a classic transition sits between each (a random one each time, or the one you pick), with a blue title card first and a credits card at the end. Add music and fit the photos to its length. One undo step, and everything stays editable. MCP: `slideshow.make`, `slideshow.transitions`.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

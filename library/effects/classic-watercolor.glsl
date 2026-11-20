@@ -13,14 +13,18 @@ vec4 effect(vec4 src, vec2 uv) {
         sum += texture(tex, uv + vec2(cos(a), sin(a)) * px * r).rgb;
     }
     vec3 wash = (sum / 12.0 + src.rgb) / 2.0;
-    wash = floor(wash * 7.0 + 0.5) / 7.0 * 0.6 + wash * 0.4;
+    wash = floor(wash * 7.0 + 0.5) / 7.0 * 0.3 + wash * 0.7;
     vec2 e = 1.5 * u_scale / u_res;
     float gx = luma(texture(tex, uv + vec2(e.x, 0.0)).rgb) - luma(texture(tex, uv - vec2(e.x, 0.0)).rgb);
     float gy = luma(texture(tex, uv + vec2(0.0, e.y)).rgb) - luma(texture(tex, uv - vec2(0.0, e.y)).rgb);
     float edge = clamp(length(vec2(gx, gy)) * 3.0, 0.0, 1.0);
     wash *= 1.0 - edge * edges * 0.5;
     vec2 g = uv * u_res / (3.0 * u_scale);
-    float grain = hash12(floor(g)) * 0.6 + hash12(floor(g * 0.25)) * 0.4;
+    vec2 gi = floor(g * 0.25);
+    vec2 gf = fract(g * 0.25);
+    gf = gf * gf * (3.0 - 2.0 * gf);
+    float blot = mix(mix(hash12(gi), hash12(gi + vec2(1.0, 0.0)), gf.x), mix(hash12(gi + vec2(0.0, 1.0)), hash12(gi + vec2(1.0, 1.0)), gf.x), gf.y);
+    float grain = hash12(floor(g)) * 0.4 + blot * 0.6;
     wash = mix(wash, wash * (0.88 + 0.2 * grain), paper);
     wash = mix(wash, vec3(1.0), 0.08 * paper);
     return vec4(clamp(wash, 0.0, 1.0), src.a);
