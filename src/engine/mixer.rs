@@ -14,7 +14,7 @@
 //! Main, which is the master everything sums through. Projects with no buses (the default) skip all of
 //! that and mix straight into `out`.
 
-use crate::engine::mixer_fx::BusGraph;
+use crate::engine::mixer_fx::{BusGraph, FilterState};
 use crate::engine::stretch::{self, Grains};
 use crate::media::{AudioSource, DecoderPool, SAMPLE_RATE};
 use crate::model::{Clip, ClipKind, Id, Project, Track, TrackKind, Transition};
@@ -23,9 +23,22 @@ const MAX_DEPTH: usize = 8;
 /// Scratch pool index of a stretched clip's output at depth 0 (after every depth's two buffers).
 const STRETCH_BUF: usize = 2 * (MAX_DEPTH + 2);
 
-/// Transition windows touching a clip: (cut time, clamped half-window, transition, clip is the right
-/// side). At most one per clip edge.
-type Ext<'a> = [Option<(f64, f64, &'a Transition, bool)>; 2];
+/// What shapes a clip's two edges. `tr`: transition windows touching it - (cut time, clamped
+/// half-window, transition, clip is the right side), at most one per edge.
+/// ws:parity-audio: `fade` = its track's auto-fade (seconds, 0 = off) on an edge with no transition or
+/// seam; `seam[e]` = edge e butts against another clip on a Smooth Seams track (no transition): the clip
+/// plays `SEAM_MS / 2` past it and the two cross-fade.
+#[derive(Clone, Copy, Default)]
+struct Ext<'a> {
+    tr: [Option<(f64, f64, &'a Transition, bool)>; 2],
+    fade: f64,
+    seam: [bool; 2],
+}
+
+/// Half a track seam's cross-fade, in seconds.
+const SEAM_HALF: f64 = crate::model::SEAM_MS / 2000.0;
+/// Two clips closer than this (seconds) are touching, for a seam.
+const SEAM_TOUCH: f64 = 1e-3;
 
 /// Where a clip's samples go: a plain buffer (no buses / a nested sequence sub-mix) or the bus graph.
 enum Dest<'a> {
@@ -59,7 +72,17 @@ impl Dest<'_> {
 /// freed. Also each stretched clip's grain positions, so the next block carries on from them.
 // ponytail: grains of deleted clips stay (a few bytes each) until the mixer goes
 #[derive(Default)]
-struct Scratch(Vec<Vec<f32>>, Voices, std::collections::HashMap<Id, Grains>);
+struct Scratch(Vec<Vec<f32>>, Voices, std::collections::HashMap<Id, Grains>, ClipFx);
+// ---- ws:parity-audio ----
+/// Per-clip filter state (`Clip.audio_filters`), by (clip id, recursion depth), with the `mix` call that
+/// last used it: a clip that stops sounding drops its state at the end of that block, so a clip that
+/// plays again starts clean (no reverb tail from the last time). `.0` counts `mix` calls.
+#[derive(Default)]
+struct ClipFx(u64, Vec<(Id, usize, u64, Vec<FilterState>)>);
+
+/// First pool slot of the per-depth buffers a filtered clip renders into before its gains.
+// after the stretch buffers (STRETCH_BUF + depth)
+const FX_SLOT: usize = STRETCH_BUF + MAX_DEPTH + 2;
 
 /// The (asset, audio stream) of every audio clip mixed so far in this block. A clip's voice is how
 /// many earlier ones read the same stream: clips that sound together each get a decoder of their own
@@ -116,6 +139,7 @@ impl Mixer {
         }
         let Mixer { scratch, graph, order } = self;
         scratch.1.clear();
+        scratch.3 .0 += 1;
         if project.buses.is_empty() {
             mix_tracks(scratch, project, &project.tracks, t, pool, &mut Dest::Buf(out), 0);
         } else {
@@ -131,6 +155,9 @@ impl Mixer {
                 }
             }
         }
+        // ws:parity-audio: forget the filter state of clips that did not sound in this block
+        let gen = scratch.3 .0;
+        scratch.3 .1.retain(|e| e.2 == gen);
         for s in out.iter_mut() {
             *s = s.clamp(-1.0, 1.0);
         }
@@ -168,7 +195,7 @@ fn mix_tracks(
             if !clip.enabled || clip.freeze.is_some() {
                 continue;
             }
-            let ext = clip_transitions(track, clip);
+            let ext = clip_edges(track, clip, (t, t_end));
             let (estart, eend) = play_range(clip, &ext);
             if eend <= t || estart >= t_end {
                 continue;
@@ -243,13 +270,14 @@ fn mix_audio_clip(
     };
     if let Some(src) = pool.audio(path, clip.audio_stream, voice) {
         read_block(src, s0, &mut buf);
-        add_block(clip, ext, t0, s0, &buf, out, track_gain);
+        add_block(scratch, clip, ext, t0, s0, &buf, out, depth, track_gain);
     }
     scratch.put(depth * 2, buf);
 }
 
 /// A Keep Pitch clip: its sound time-stretched to the clip's speed (`engine::stretch`, ramps and reverse
-/// included), then gains as for any clip. `read(scratch, f0, buf)` adds source frames from `f0` into `buf`.
+/// included), then its filters and gains as for any clip. `read(scratch, f0, buf)` adds source frames from
+/// `f0` into `buf`.
 #[allow(clippy::too_many_arguments)]
 fn stretch_add(
     scratch: &mut Scratch,
@@ -268,9 +296,107 @@ fn stretch_add(
     let dir = if clip.reverse { -1 } else { 1 };
     let nominal = |k: i64| (clip.src_time(clip.start + (k * stretch::HOP) as f64 / sr) * sr).round() as i64;
     g.render(stretch::sig(clip), j0, &mut y, dir, nominal, |f0, buf| read(scratch, f0, buf));
-    resample_add(clip, ext, t0, &y, out, track_gain, 1.0, false);
     scratch.2.insert(clip.id, g);
+    // already timed: a step of 1 through the clip's filters (ws:parity-audio) and gains
+    add_clip_audio(scratch, clip, ext, t0, &y, out, depth, track_gain, 1.0, false);
     scratch.put(STRETCH_BUF + depth, y);
+}
+
+// ---- ws:parity-audio ----
+/// Add one clip's source block (`buf`, read at its source rate, `step` source frames per output frame,
+/// walked backwards when `rev`) into `out`: straight through `resample_add` when the clip has no enabled
+/// filter of its own (the common case, unchanged), else resampled at unity into a pool buffer, run through
+/// `Clip.audio_filters` (clip-local time), and then given its gains - so fades and the volume shape the
+/// filtered sound, reverb included.
+#[allow(clippy::too_many_arguments)]
+fn add_clip_audio(
+    scratch: &mut Scratch,
+    clip: &Clip,
+    ext: &Ext,
+    t0: f64,
+    buf: &[f32],
+    out: &mut [f32],
+    depth: usize,
+    track_gain: f32,
+    step: f64,
+    rev: bool,
+) {
+    if !clip.audio_filters.iter().any(|f| f.enabled) {
+        resample_add(clip, ext, t0, buf, out, track_gain, step, rev);
+        return;
+    }
+    let mut wet = scratch.take(FX_SLOT + depth, out.len());
+    resample_into(buf, &mut wet, step, rev);
+    let gen = scratch.3 .0;
+    let entries = &mut scratch.3 .1;
+    let i = match entries.iter().position(|e| e.0 == clip.id && e.1 == depth) {
+        Some(i) => i,
+        None => {
+            entries.push((clip.id, depth, gen, Vec::new()));
+            entries.len() - 1
+        }
+    };
+    let entry = &mut entries[i];
+    entry.2 = gen;
+    let states = &mut entry.3;
+    states.truncate(clip.audio_filters.len());
+    let lt = clip.local(t0);
+    for (j, f) in clip.audio_filters.iter().enumerate() {
+        match states.get(j) {
+            Some(s) if s.kind() == f.kind => {}
+            Some(_) => states[j] = FilterState::new(f, SAMPLE_RATE),
+            None => states.push(FilterState::new(f, SAMPLE_RATE)),
+        }
+        if f.enabled {
+            states[j].process(f, lt, &mut wet);
+        }
+    }
+    gain_add(clip, ext, t0, &wet, out, track_gain);
+    scratch.put(FX_SLOT + depth, wet);
+}
+
+/// `resample_add` at unity gain into a zeroed `out` (the frames a clip's filters then run over).
+fn resample_into(buf: &[f32], out: &mut [f32], step: f64, rev: bool) {
+    let m = buf.len() / 2;
+    if m == 0 {
+        return;
+    }
+    let last = m - 1;
+    for (k, o) in out.chunks_exact_mut(2).enumerate() {
+        let pos = if rev { last as f64 - k as f64 * step } else { k as f64 * step };
+        let pos = pos.max(0.0);
+        let j = (pos as usize).min(last);
+        let j1 = (j + 1).min(last);
+        let fr = (pos - j as f64) as f32;
+        o[0] = buf[j * 2] + (buf[j1 * 2] - buf[j * 2]) * fr;
+        o[1] = buf[j * 2 + 1] + (buf[j1 * 2 + 1] - buf[j * 2 + 1]) * fr;
+    }
+}
+
+/// Add `wet` (already at the output rate) into `out` with the clip's gains lerped across the block,
+/// exactly as `resample_add` applies them.
+fn gain_add(clip: &Clip, ext: &Ext, t0: f64, wet: &[f32], out: &mut [f32], track_gain: f32) {
+    let n = out.len() / 2;
+    if n == 0 {
+        return;
+    }
+    let (l0, r0) = gains(clip, ext, t0);
+    let (l1, r1) = gains(clip, ext, t0 + n as f64 / SAMPLE_RATE as f64);
+    let (l0, r0, l1, r1) = (l0 * track_gain, r0 * track_gain, l1 * track_gain, r1 * track_gain);
+    let (dl, dr) = ((l1 - l0) / n as f32, (r1 - r0) / n as f32);
+    let edged = ext.edged();
+    for (k, (o, w)) in out.chunks_exact_mut(2).zip(wet.chunks_exact(2)).enumerate() {
+        let e = if edged { edge_gain(clip, ext, t0 + k as f64 / SAMPLE_RATE as f64) as f32 } else { 1.0 };
+        o[0] += w[0] * (l0 + dl * k as f32) * e;
+        o[1] += w[1] * (r0 + dr * k as f32) * e;
+    }
+}
+
+impl Ext<'_> {
+    /// True when this clip's edges carry a per-frame gain (auto-fade or a seam).
+    fn edged(&self) -> bool {
+        self.fade > 0.0 || self.seam[0] || self.seam[1]
+    }
 }
 
 /// One Sequence clip on an audio track: recursively mix its sequence's tracks at source rate into a
@@ -311,7 +437,7 @@ fn mix_seq_clip(
         clip.src_time(t0)
     };
     mix_tracks(scratch, project, tracks, s0, pool, &mut Dest::Buf(&mut buf), depth + 1);
-    add_block(clip, ext, t0, s0, &buf, out, track_gain);
+    add_block(scratch, clip, ext, t0, s0, &buf, out, depth, track_gain);
     scratch.put(depth * 2 + 1, buf);
 }
 
@@ -329,7 +455,7 @@ fn active_in(tracks: &[Track], i: usize) -> bool {
 
 /// The (still valid) transitions whose window this clip plays in (windows clamped to the cut's clips,
 /// so an over-long transition cannot drag a clip past its neighbours - same rule as the compositor).
-fn clip_transitions<'a>(track: &'a Track, clip: &Clip) -> Ext<'a> {
+fn clip_transitions<'a>(track: &'a Track, clip: &Clip) -> [Option<(f64, f64, &'a Transition, bool)>; 2] {
     let mut ext = [None, None];
     for tr in &track.transitions {
         let Some((l, r)) = track.transition_clips(tr) else { continue };
@@ -344,17 +470,74 @@ fn clip_transitions<'a>(track: &'a Track, clip: &Clip) -> Ext<'a> {
     ext
 }
 
-/// The clip's audible timeline range: its own extent, virtually extended into transition windows.
+// ---- ws:parity-audio ----
+/// `clip_transitions` plus the track's auto-fade and seams (see `Ext`). The neighbour scan for seams
+/// only runs for a clip that can sound in `block` (timeline seconds), so a long Smooth Seams track
+/// costs a scan per audible clip, not one per clip.
+fn clip_edges<'a>(track: &'a Track, clip: &Clip, block: (f64, f64)) -> Ext<'a> {
+    let tr = clip_transitions(track, clip);
+    let mut seam = [false; 2];
+    let near = || {
+        let (s, e) = play_range(clip, &Ext { tr, fade: 0.0, seam: [true; 2] });
+        e > block.0 && s < block.1
+    };
+    if track.seam && near() {
+        let touching = |t: f64| {
+            track.clips.iter().any(|o| {
+                o.id != clip.id
+                    && o.enabled
+                    && o.freeze.is_none()
+                    && ((t == clip.start && (o.end() - t).abs() < SEAM_TOUCH)
+                        || (t == clip.end() && (o.start - t).abs() < SEAM_TOUCH))
+            })
+        };
+        seam = [tr[0].is_none() && touching(clip.start), tr[1].is_none() && touching(clip.end())];
+    }
+    Ext { tr, fade: (track.auto_fade_ms.max(0.0) as f64) / 1000.0, seam }
+}
+
+/// The clip's audible timeline range: its own extent, virtually extended into transition windows
+/// (and half a seam past a seamed edge).
 fn play_range(clip: &Clip, ext: &Ext) -> (f64, f64) {
     let mut s = clip.start;
     let mut e = clip.end();
-    if let Some((cut, h, ..)) = ext[0] {
+    if let Some((cut, h, ..)) = ext.tr[0] {
         s = s.min(cut - h);
     }
-    if let Some((cut, h, ..)) = ext[1] {
+    if let Some((cut, h, ..)) = ext.tr[1] {
         e = e.max(cut + h);
     }
+    if ext.seam[0] {
+        s = s.min(clip.start - SEAM_HALF);
+    }
+    if ext.seam[1] {
+        e = e.max(clip.end() + SEAM_HALF);
+    }
     (s, e)
+}
+
+/// The auto-fade and seam gain at absolute time `tt` (1 away from the edges). A seam ramps linearly
+/// across [cut - half, cut + half] on both clips, so the two always sum to the clip's own level.
+/// Unlike the other gains this is evaluated for every frame (`edged`), since a 10 ms ramp is shorter
+/// than a block: lerped from the block ends, a seam's two halves would no longer sum to one.
+fn edge_gain(clip: &Clip, ext: &Ext, tt: f64) -> f64 {
+    let mut g = 1.0;
+    if ext.fade > 0.0 {
+        let lt = clip.local(tt).clamp(0.0, clip.duration);
+        if ext.tr[0].is_none() && !ext.seam[0] {
+            g *= (lt / ext.fade).clamp(0.0, 1.0);
+        }
+        if ext.tr[1].is_none() && !ext.seam[1] {
+            g *= ((clip.duration - lt) / ext.fade).clamp(0.0, 1.0);
+        }
+    }
+    if ext.seam[0] {
+        g *= ((tt - (clip.start - SEAM_HALF)) / (2.0 * SEAM_HALF)).clamp(0.0, 1.0);
+    }
+    if ext.seam[1] {
+        g *= ((clip.end() + SEAM_HALF - tt) / (2.0 * SEAM_HALF)).clamp(0.0, 1.0);
+    }
+    g
 }
 
 /// (left, right) gains at absolute time tt: volume × fade in/out × transition crossfade, panned.
@@ -362,7 +545,7 @@ fn play_range(clip: &Clip, ext: &Ext) -> (f64, f64) {
 fn gains(clip: &Clip, ext: &Ext, tt: f64) -> (f32, f32) {
     let lt = clip.local(tt).clamp(0.0, clip.duration);
     let mut g = clip.volume.at(lt) as f32 * clip.fade_mult(lt) as f32;
-    for e in ext.iter().flatten() {
+    for e in ext.tr.iter().flatten() {
         let (cut, h, tr, is_right) = *e;
         if tt >= cut - h && tt < cut + h {
             let p = crate::engine::compose::trans_progress_at(tr, cut, h, tt);
@@ -407,10 +590,21 @@ fn mapped_span(map: &crate::model::TimeMap, l0: f64, n: usize) -> (f64, usize) {
 }
 
 /// `resample_add` for a plain clip, the remap's own walk for a remapped one.
-fn add_block(clip: &Clip, ext: &Ext, t0: f64, s0: f64, buf: &[f32], out: &mut [f32], track_gain: f32) {
+#[allow(clippy::too_many_arguments)]
+fn add_block(
+    scratch: &mut Scratch,
+    clip: &Clip,
+    ext: &Ext,
+    t0: f64,
+    s0: f64,
+    buf: &[f32],
+    out: &mut [f32],
+    depth: usize,
+    track_gain: f32,
+) {
     match &clip.time_map {
         Some(map) => resample_mapped(clip, map, ext, t0, s0, buf, out, track_gain),
-        None => resample_add(clip, ext, t0, buf, out, track_gain, clip.speed, clip.reverse),
+        None => add_clip_audio(scratch, clip, ext, t0, buf, out, depth, track_gain, clip.speed, clip.reverse),
     }
 }
 
@@ -487,7 +681,9 @@ fn resample_add(clip: &Clip, ext: &Ext, t0: f64, buf: &[f32], out: &mut [f32], t
     let dl = (l1 - l0) / n as f32;
     let dr = (r1 - r0) / n as f32;
     let last = m - 1;
+    let edged = ext.edged(); // ws:parity-audio
     for (k, o) in out.chunks_exact_mut(2).enumerate() {
+        let e = if edged { edge_gain(clip, ext, t0 + k as f64 / SAMPLE_RATE as f64) as f32 } else { 1.0 };
         let pos = if rev { last as f64 - k as f64 * step } else { k as f64 * step };
         let pos = pos.max(0.0);
         let j = (pos as usize).min(last);
@@ -495,8 +691,8 @@ fn resample_add(clip: &Clip, ext: &Ext, t0: f64, buf: &[f32], out: &mut [f32], t
         let fr = (pos - j as f64) as f32;
         let a = &buf[j * 2..j * 2 + 2];
         let b = &buf[j1 * 2..j1 * 2 + 2];
-        o[0] += (a[0] + (b[0] - a[0]) * fr) * (l0 + dl * k as f32);
-        o[1] += (a[1] + (b[1] - a[1]) * fr) * (r0 + dr * k as f32);
+        o[0] += (a[0] + (b[0] - a[0]) * fr) * (l0 + dl * k as f32) * e;
+        o[1] += (a[1] + (b[1] - a[1]) * fr) * (r0 + dr * k as f32) * e;
     }
 }
 
@@ -725,8 +921,8 @@ mod tests {
         for t in [0.0, 0.25, 1.0, 9.99] {
             // the reference is what the pre-change mixer produced: clip gain × fade, no track factor
             mx.mix(&p, t, &mut pool, &mut out);
-            let (l0, _) = gains(&p.tracks[ai].clips[0], &[None, None], t);
-            let (l1, _) = gains(&p.tracks[ai].clips[0], &[None, None], t + 1024.0 / SAMPLE_RATE as f64);
+            let (l0, _) = gains(&p.tracks[ai].clips[0], &Ext::default(), t);
+            let (l1, _) = gains(&p.tracks[ai].clips[0], &Ext::default(), t + 1024.0 / SAMPLE_RATE as f64);
             for (k, fr) in reference.chunks_exact_mut(2).enumerate() {
                 let tt = t + k as f64 / SAMPLE_RATE as f64;
                 let g = if (0.0..10.0).contains(&tt) { 0.5 * (l0 + (l1 - l0) * k as f32 / 1024.0) } else { 0.0 };
@@ -1300,5 +1496,96 @@ mod tests {
         p.tracks[ai].muted = true;
         mx.mix(&p, 1.5, &mut pool, &mut out);
         assert!(out.iter().all(|s| *s == 0.0), "muted A1: {}", out[0]);
+    }
+
+    // ---- ws:parity-audio ----
+    #[test]
+    fn clip_filters_run_before_the_clip_gain() {
+        use crate::model::{AudioFilter, FilterKind};
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        let mut g = AudioFilter::new(FilterKind::Gain);
+        g.params[0].value = -6.0206; // ×0.5
+        p.tracks[ai].clips[0].audio_filters.push(g);
+        p.tracks[ai].clips[0].volume.value = 0.5;
+        let (mut pool, mut mx) = (pool(), Mixer::new());
+        let mut out = vec![0.0f32; 2048];
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.125).abs() < 1e-4), "0.5 source × 0.5 filter × 0.5 volume: {:?}", &out[..4]);
+        // a disabled filter is skipped (and takes the plain path)
+        p.tracks[ai].clips[0].audio_filters[0].enabled = false;
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.25).abs() < 1e-5));
+        // a stereo tool on the clip: invert the right channel
+        let mut ch = AudioFilter::new(FilterKind::Channels);
+        ch.params[0].value = 4.0;
+        p.tracks[ai].clips[0].audio_filters = vec![ch];
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!((out[0] - 0.25).abs() < 1e-5 && (out[1] + 0.25).abs() < 1e-5, "{:?}", &out[..2]);
+    }
+
+    #[test]
+    fn clip_filter_state_is_dropped_once_the_clip_stops_sounding() {
+        use crate::model::{AudioFilter, FilterKind};
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        p.tracks[ai].clips[0].audio_filters.push(AudioFilter::new(FilterKind::Echo));
+        let (mut pool, mut mx) = (pool(), Mixer::new());
+        let mut out = vec![0.0f32; 2048];
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert_eq!(mx.scratch.3 .1.len(), 1, "one clip, one state");
+        mx.mix(&p, 30.0, &mut pool, &mut out);
+        assert!(mx.scratch.3 .1.is_empty(), "past the clip its echo memory goes");
+        assert!(out.iter().all(|s| *s == 0.0));
+    }
+
+    /// A clip of `Const(0.5)` split at 5 s: two clips that touch, the source continuous across the cut.
+    fn split_project() -> (Project, usize) {
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        let id = p.tracks[ai].clips[0].id;
+        p.split_at(5.0, Some(&[id]));
+        assert_eq!(p.tracks[ai].clips.len(), 2, "split into two touching clips");
+        (p, ai)
+    }
+
+    /// One 1024-frame block from 4.99 s: frame 480 is the cut at 5.0 s.
+    fn around_cut(p: &Project) -> Vec<f32> {
+        let (mut pool, mut mx) = (pool(), Mixer::new());
+        let mut out = vec![0.0f32; 2048];
+        mx.mix(p, 4.99, &mut pool, &mut out);
+        out
+    }
+
+    #[test]
+    fn track_auto_fade_dips_at_every_cut() {
+        let (mut p, ai) = split_project();
+        let plain = around_cut(&p);
+        assert!(plain.iter().all(|s| (s - 0.5).abs() < 1e-5), "a plain cut in continuous audio is untouched");
+        assert!(p.set_track_audio_edges(ai, Some(10.0), None));
+        let out = around_cut(&p);
+        assert!(out[480 * 2].abs() < 1e-3, "silent at the cut: {}", out[480 * 2]);
+        assert!((out[0] - 0.5).abs() < 1e-5, "10 ms before the cut the fade has not begun");
+        assert!((out[(480 - 240) * 2] - 0.25).abs() < 0.01, "half way down 5 ms before: {}", out[(480 - 240) * 2]);
+        assert!((out[(480 + 240) * 2] - 0.25).abs() < 0.01, "half way up 5 ms after");
+        // the timeline's very first frame is faded in too
+        let (mut pool, mut mx) = (pool(), Mixer::new());
+        let mut head = vec![0.0f32; 64];
+        mx.mix(&p, 0.0, &mut pool, &mut head);
+        assert!(head[0].abs() < 1e-6);
+    }
+
+    #[test]
+    fn track_seam_cross_fades_touching_clips_at_unity() {
+        let (mut p, ai) = split_project();
+        assert!(p.set_track_audio_edges(ai, Some(10.0), Some(true)));
+        let out = around_cut(&p);
+        // the auto-fade gives way to the seam, and the two halves always sum to the source level
+        assert!(out.iter().all(|s| (s - 0.5).abs() < 1e-4), "worst {:?}", out.iter().map(|s| (s - 0.5).abs()).fold(0.0f32, f32::max));
+        // a gap breaks the seam: the edges fade on their own again
+        let id = p.tracks[ai].clips[1].id;
+        p.clip_mut(id).unwrap().start += 0.5;
+        let out = around_cut(&p);
+        assert!(out[480 * 2].abs() < 1e-3, "no neighbour, no seam: {}", out[480 * 2]);
     }
 }

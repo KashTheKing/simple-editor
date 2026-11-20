@@ -200,7 +200,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `assistant.stop` | Ui | - | Stop the Assistant pane's running request (its edits so far stay, as one undo step). |
 | `assistant.wait` | Job | timeout_s | Block until the user sends a request from the Assistant pane or adds a comment (a marker with a note); returns {request, context}, or {timeout: true}. Loop on it for live mode. timeout_s: default 300, max 1500. |
 
-**`audio.*`** (13 tools)
+**`audio.*`** (18 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -218,6 +218,9 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `audio.clean` | Job | clip_ids, engine, strength, ab | Clean Audio: speech denoise over just the source range the clips play (+1 s handles), cached per source/range/strength, then the clips are re-pointed at the cleaned WAV (one undo; original untouched). `engine` deepfilter \| ffmpeg (default deepfilter when installed); `ab` a \| b flips original / cleaned instead. |
 | `denoise.status` | Read | | The speech-denoise add-on (DeepFilterNet): installed, version, path, default engine, running install and jobs. |
 | `denoise.install` | Job | uninstall | Download and verify the DeepFilterNet CLI (~27 MB, `library/bin/deepfilter.json`); `uninstall=true` removes it. |
+| `audio.normalize_loudness` | Mutate | clip_ids, target_lufs | Two-pass loudness normalize: give each clip a Normalize filter (or retarget its own) and measure it in the background; the measurement lands as its own undo step. |
+| `audio.scopes` | Read | - | The Audio Scopes pane's numbers for what is playing: spectrum (dB per band), L/R correlation, peaks. |
+| `audio.tone` | Job | at, hz, level_db, seconds, wave | Tone generator: a sine/square/sawtooth/triangle tone or white/pink noise as a WAV, added and placed at `at`. |
 | `audio.role` | Mutate | clip_ids, role | Tag clips with an Essential-Sound role; drives the inspector's audio defaults and future ducking target selection. |
 | `audio.route` | Mutate | bus, clip_id, from_bus, track | Send a clip, a track or a bus into a bus (bus 0 = Main / inherit). |
 | `audio.sync_offset` | Read | clip_a, clip_b, max_lag_s | Best lag (seconds) that aligns clip_b to clip_a via cross-correlation of their waveform envelopes. For multicam sync; the angle-grid UI is a later (pro-monitor) workstream. |
@@ -242,11 +245,15 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `caches.clear` | Ui | - | Releases decoder file handles, clears in-memory waveform/thumb caches, deletes the on-disk cache dir; returns bytes freed. |
 | `caches.size` | Read | - | Returns the on-disk cache directory size in bytes. |
 
-**`clip.*`** (17 tools)
+**`clip.*`** (24 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `clip.add_effect` | Mutate | clip_id, kind, params | Append an effect with optional params {name: value}. Kinds: Blur, Motion Blur, Pixelate, JPEG Compression, VHS, Chroma Key, Color Replace, Threshold, Edge Glow, Color Tint, Color Correction, Color Curves, Levels, Hue / Saturation, Black & White, Invert, Vignette, Sharpen, Flip, Crop, 3D Plane, Camera Shake, Blob Tracking, Security Camera REC, Primaries, Qualifier, LUT, Frame Blend, Custom Shader. |
+| `clip.audio_filter_add` | Mutate | clip_ids, kind, params | Add an audio filter to each clip's own chain (runs before the clip's volume, pan and fades). Every Mixer filter kind. |
+| `clip.audio_filter_remove` | Mutate | clip_id, index | Remove one of a clip's own audio filters, or all with index omitted. |
+| `clip.audio_filter_set` | Mutate | clip_id, enabled, index, params, t | Change one of a clip's own audio filters: parameters by name and/or enabled. |
+| `clip.audio_filters` | Read | clip_id | A clip's own audio filter chain: kind, enabled, parameters, which are keyed. |
 | `clip.add_lut` | Mutate | clip_id, intensity, path | Add an EffectKind::Lut effect (a .cube 3D LUT) to a clip; parses the file to validate before pushing. |
 | `clip.add_mask` | Mutate | clip_id, effect, shape | Add a mask to a clip (or to one of its effects with `effect`). |
 | `clip.add_node` | Mutate | clip_id, kind, x, y | Add a node to the clip's node graph (created from its effect stack on first use). |
@@ -301,7 +308,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `editor.context` | Read | - | What the user is looking at: playhead, in/out, selected clips (name, kind, track, times), transitions, subtitle cues, markers (with notes), edit point, selected transcript words (text, start, end), sequence and page. Call it first in every request. |
 
-**`export.*`** (14 tools)
+**`export.*`** (18 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -331,7 +338,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `frame.export` | Read | height, path, quality, resize, t, width, with_effects | Save the frame at time t as PNG/JPG/WebP (by the path's extension). |
 | `frame.stats` | Read | t | Histogram/percentile/mean of the frame at t (256x144 downsample), sourced from the live preview render path; {} when the GPU or the requested frame is unavailable. |
 
-**`gallery.*`** (8 tools)
+**`gallery.*`** (9 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -428,7 +435,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `markers.remove` | Mutate | id | Remove a marker by id. |
 | `markers.set` | Mutate | author, category, done, duration, icon, id, label, name, note, t | Edit a marker: only the fields given change (done=true ticks a comment off). t: timeline seconds (timeline markers only). |
 
-**`media.*`** (19 tools)
+**`media.*`** (21 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -508,7 +515,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `plan.remove` | Mutate | id | Remove a planner item. |
 | `plan.set` | Mutate | done, id, notes, title | Update a planner item. |
 
-**`playback.*`** (10 tools)
+**`playback.*`** (11 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -540,7 +547,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `plugins.list` | Read | - | Installed plugins: id, name, version, author, enabled, contents, granted permissions, panels (open or not) and scripts. |
 | `plugins.uninstall` | Ui | id | Ask the user to uninstall a plugin (removes its folder and what it added to the library; projects untouched). |
 
-**`preview.*`** (4 tools)
+**`preview.*`** (5 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -550,7 +557,7 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `preview.hover` | Ui | kind, name | Manually drive the monitor's alt-render preview. Same App.alt_render pipeline inspector-gallery's gallery.hover targets via AltRequest::Gallery. |
 | `preview.view` | Ui | fit, pan_x, pan_y, zoom | Read or set the canvas zoom/pan. |
 
-**`project.*`** (8 tools)
+**`project.*`** (9 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -679,7 +686,7 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 | `tasks.run` | Ui | id | Run one task, or (no id) every Ready task in queue order; each run is one undo step and a failing task stops the queue. |
 | `tasks.set` | Ui | code, id, title | Change a task's title and/or code (new code makes it Ready again). |
 
-**`templates.*`** (4 tools)
+**`templates.*`** (9 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -699,7 +706,7 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 |---|---|---|---|
 | `text.animate` | Mutate | clip_id, merge, preset | Apply a motion preset's keyframes to a clip's Position/Scale/Rotation/Opacity — apply_motion (replace, stretched to the clip's length) or merge_motion (merge, layered on from the playhead) when merge is true. |
 
-**`timeline.*`** (49 tools)
+**`timeline.*`** (53 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
@@ -766,10 +773,11 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 | `slideshow.make` | Mutate | asset_ids, photo_secs, transition, transition_secs, title, title_secs, credits, credits_secs, music, fit_to_music, ken_burns, at, seed | Classic 2000s Make Slideshow: photos and clips in order with a pan-and-zoom on each photo, a classic transition on every cut, a blue title card and a credits card, optional music (fit_to_music stretches the photos to the song). One undo step. Returns {clip_ids, transitions, duration, photo_secs, fits}. |
 | `slideshow.transitions` | Read | - | The Classic 2000s transitions slideshow.make can use: [{id, name, desc}]. |
 
-**`track.*`** (4 tools)
+**`track.*`** (6 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
+| `track.audio_edges` | Mutate | fade_ms, seam, track_index | An audio track's automatic clip-edge fades (fade_ms, 0 = off) and/or smooth seams (touching clips cross-fade over 10 ms). |
 | `track.list` | Read | - | Every track: index, kind, name, locked, ripple, magnetic, color, clip count. |
 | `track.move` | Mutate | index, up | Reorder a track one slot up/down within its own kind (video tracks / audio tracks stay contiguous). |
 | `track.duplicate` | Mutate | track | Duplicate a track (its clips, transitions and settings) right next to it. Returns the new track's index. |

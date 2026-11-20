@@ -210,6 +210,7 @@ mod export_fix; // ws:forum-export
 mod health_ctl; // ws:forum-preview
 mod reference_ctl; // feat/reference-clips: Find a Reference
 mod scripts_ctl; // feat/scripts-editor: the Scripts menu, the Script Editor pane, scripts.create/rename/delete/open
+mod tools_audio_parity; // ws:parity-audio
 
 #[derive(Clone)]
 enum ExportKind {
@@ -2169,6 +2170,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     plugins_ctl::TOOLS,
     // ---- feat-retro-2000s-pack ----
     retro_ctl::TOOLS,
+    // ---- ws:parity-audio ----
+    tools_audio_parity::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2282,6 +2285,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     tools_zones::act,
     // ---- feat/scripts-editor ----
     scripts_ctl::act,
+    // ---- ws:parity-audio ----
+    tools_audio_parity::act,
 ];
 
 pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
@@ -2488,6 +2493,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     scripts_ctl::windows,
     // ---- feat/plugins ----
     plugins_ctl::windows,
+    // ---- ws:parity-audio ----
+    tools_audio_parity::tick,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
@@ -2571,6 +2578,8 @@ pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
     scripts_ctl::draw,
     // ---- feat/plugins ----
     plugins_ctl::draw,
+    // ---- ws:parity-audio ----
+    tools_audio_parity::draw,
 ];
 
 /// The dominant kind of the current selection, for a contextual inspector/palette to key off without

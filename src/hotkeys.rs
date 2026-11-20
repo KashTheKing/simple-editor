@@ -469,6 +469,9 @@ actions! {
     NudgeLeft10 => "nudge_left_10", "Nudge Left 10 Frames", sc(SHIFT, Key::Comma);
     NudgeRight10 => "nudge_right_10", "Nudge Right 10 Frames", sc(SHIFT, Key::Period);
     SaveClipAsFile => "save_clip_as_file", "Save Clip as File…", None;
+    // ---- ws:parity-audio ----
+    // Clip ▸ Add ▸ Tone Generator… / the palette: makes a test tone or noise as a WAV and places it. Unbound.
+    ToneGenerator => "tone_generator", "Tone Generator…", None;
     // ---- tool selection (ui::tools) - polled and dispatched there, not through App::act ----
     ToolSelect => "tool_select", "Select Tool", sc(NONE, Key::V);
     ToolText => "tool_text", "Text Tool", sc(NONE, Key::T);
@@ -845,6 +848,8 @@ pub fn group(a: Action) -> &'static str {
         ToggleScriptEditor => "Panels & Pages",
         // ---- ws:parity-editing ----
         NudgeLeft10 | NudgeRight10 | SaveClipAsFile => "Clip",
+        // ---- ws:parity-audio ----
+        ToneGenerator => "Audio",
         // unreachable today (every variant has an arm above); a new variant compiles into "Other" and
         // `group_covers_every_action` names it.
         #[allow(unreachable_patterns)]

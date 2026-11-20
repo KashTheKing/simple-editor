@@ -2698,6 +2698,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                                                                // ---- ws:audio-dsp-automation ----
                                                                // hand the post-fader bus blocks to the UI thread's meters/LUFS (App::sync_buses)
                     mixer.graph().publish(&METER_FEED);
+                    crate::engine::audio_tools::SCOPE_FEED.push(&block); // ws:parity-audio: Audio Scopes
                 }
                 mixed_until += BLOCK as f64 / SAMPLE_RATE as f64;
             } else if rate > 0.0 && rate <= crate::engine::stretch::MAX_RATE {
@@ -2716,6 +2717,7 @@ fn audio_thread(shared: Arc<Shared>, rx: Receiver<Cmd>, backend: Backend) {
                 if ok {
                     lock(&ring).extend(block.iter().copied());
                     mixer.graph().publish(&METER_FEED); // ws:audio-dsp-automation
+                    crate::engine::audio_tools::SCOPE_FEED.push(&block); // ws:parity-audio
                 }
                 let j = j + BLOCK as i64;
                 sh = Some((anchor, rate, j));

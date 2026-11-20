@@ -38,6 +38,7 @@ pub mod lut;
 pub mod mixer;
 pub mod mixer_fx;
 pub mod stretch; // pitch-keeping time stretch (Keep Pitch clips, the shuttle)
+pub mod audio_tools; // ws:parity-audio
 pub mod prerender;
 pub mod presets;
 pub mod references; // feat/reference-clips: Find a Reference

@@ -135,6 +135,7 @@ pub(super) fn draw_header(
     let (locked, ripple, magnetic) = (track.locked, track.ripple.unwrap_or(false), track.magnetic);
     let (empty, muted, solo) = (track.clips.is_empty(), track.muted, track.solo);
     let wave = track.wave_detailed;
+    let (auto_fade, seam) = (track.auto_fade_ms > 0.0, track.seam); // ws:parity-audio
     menu::context(&hresp, |ui| {
         super::menus::acts(ui, &[Some(Action::AddVideoTrack), Some(Action::AddAudioTrack)]);
         super::menus::track_kind_checks(ui, show_kinds);
@@ -186,6 +187,20 @@ pub(super) fn draw_header(
                     }
                 }
             });
+            // ---- ws:parity-audio ----
+            let fade = if auto_fade { 0.0 } else { crate::model::AUTO_FADE_MS };
+            if menu::check(ui, auto_fade, "Auto Fade", "")
+                .on_hover_text("A short fade at every clip edge without one, so cuts never click")
+                .clicked()
+            {
+                act = Some(Act::SetTrackAudioEdges(ti, Some(fade), None));
+            }
+            if menu::check(ui, seam, "Smooth Seams", "")
+                .on_hover_text("Clips that touch cross-fade over a few milliseconds, so a cut in continuous sound is seamless")
+                .clicked()
+            {
+                act = Some(Act::SetTrackAudioEdges(ti, None, Some(!seam)));
+            }
         }
         menu::sub(ui, Some(Glyph::Swatch), "Colour", |ui| {
             if menu::row(ui, None, "None", "").clicked() {

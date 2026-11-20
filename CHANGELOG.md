@@ -132,6 +132,12 @@
 - **Export Each As** (Library right-click on a selection): writes every selected file to a folder you pick, in one format, one file after another, with the export settings. A subclip writes only its part.
 - **Make Montage** (Library right-click on a selection): the photos and clips end to end at the end of the timeline, with a slow pan-and-zoom on each photo and a dissolve between neighbours. A song in the selection plays underneath, and the photos stretch so the montage lasts as long as the song. One undo step. MCP: `timeline.montage`.
 - **Import Shotcut projects**: File ▸ Import Timeline reads `.mlt` files: tracks, clips and gaps, each video clip's sound, speed, hidden tracks, transitions (as dissolves), gain, clip names and timeline markers. Anything else is listed in the import report.
+### Audio (Shotcut parity)
+- **Audio filters on a single clip**: the Inspector's Audio section has **Filters**, the same list and controls as a Mixer bus, run on that clip before its volume, pan and fades. No bus needed any more. MCP: `clip.audio_filter_add`, `clip.audio_filter_set`, `clip.audio_filter_remove`, `clip.audio_filters`.
+- **Ten more audio filters**, on clips and buses: band-pass, notch, expander, de-click, mid-side, stereo width, channels (copy, swap, invert), downmix, a 15-band graphic EQ and a two-pass loudness **Normalize** (Analyze measures the clip in the background, then the filter applies target minus measured). MCP: `audio.normalize_loudness`.
+- **Audio Scopes**: a spectrum analyser, a vectorscope and a correlation meter of what is playing, in a tab beside the Mixer on the Audio page. MCP: `audio.scopes`.
+- **Auto Fade and Smooth Seams** on an audio track's right-click: short fades at every clip edge, and a seamless cross-fade where clips touch. MCP: `track.audio_edges`.
+- **Tone generator** (Clip ▸ Add ▸ Tone Generator…): sine, square, sawtooth, triangle, white or pink noise as a WAV, placed at the playhead. MCP: `audio.tone`.
 
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.

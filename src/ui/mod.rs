@@ -54,6 +54,7 @@ pub mod markers_ui;
 pub mod media_bar; // the media player's bottom bar for the Preview / Source monitors
 pub mod menu;
 pub mod mixer_ui;
+pub mod audio_scopes_ui; // ws:parity-audio
 pub mod moodboard_ui;
 // ---- ws:pro-monitor ----
 pub mod multicam_ui;

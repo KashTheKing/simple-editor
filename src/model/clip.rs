@@ -162,6 +162,11 @@ pub struct Clip {
     /// timeline tooltip, with a small mark on the clip. Empty = none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub comment: String,
+    // ---- ws:parity-audio ----
+    /// This clip's own audio filters, run on its sound before volume, pan, fades and its bus
+    /// (`engine::mixer`). Parameters are keyed in clip-local time, like the clip's other properties.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audio_filters: Vec<AudioFilter>,
 }
 
 /// Essential-Sound role tag for an audio (or audio-bearing) clip. Sole definition - other
@@ -236,6 +241,7 @@ impl Clip {
             browser: (kind == ClipKind::Browser).then(BrowserStyle::default),
             bg_removal: None,
             comment: String::new(),
+            audio_filters: Vec::new(),
         }
     }
     /// Built-in crop (left, right, top, bottom) at clip-local `lt`, each clamped to 0..0.5 - what both

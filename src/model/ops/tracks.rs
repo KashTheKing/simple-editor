@@ -61,6 +61,24 @@ impl Project {
         t.wave_detailed = detailed;
         true
     }
+    // ---- ws:parity-audio ----
+    /// Audio track `ti`'s automatic clip-edge fades (ms, 0 = off; clamped to 0..=1000) and seam
+    /// cross-fades; `None` keeps that setting. False for a video track, a bad index or no change.
+    /// Track menu / `track.audio_edges`.
+    pub fn set_track_audio_edges(&mut self, ti: usize, fade_ms: Option<f32>, seam: Option<bool>) -> bool {
+        let Some(t) = self.tracks.get_mut(ti) else { return false };
+        if t.kind != TrackKind::Audio {
+            return false;
+        }
+        let (f0, s0) = (t.auto_fade_ms, t.seam);
+        if let Some(f) = fade_ms {
+            t.auto_fade_ms = if f.is_finite() { f.clamp(0.0, 1000.0) } else { 0.0 };
+        }
+        if let Some(s) = seam {
+            t.seam = s;
+        }
+        (t.auto_fade_ms, t.seam) != (f0, s0)
+    }
     /// Reorder track `ti` one slot up/down within its own kind (video tracks and audio tracks each
     /// stay contiguous - `add_track`'s invariant). False, unchanged, at a kind boundary.
     // Safe against the playback cache: video_dirty_spans (playback.rs) treats any Track.id mismatch at

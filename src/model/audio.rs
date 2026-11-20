@@ -27,10 +27,31 @@ pub enum FilterKind {
     // ---- ws:gallery-audio ----
     /// Pitch shift in semitones, length kept (two crossfaded delay-line taps).
     Pitch,
+    // ---- ws:parity-audio ----
+    /// RBJ band-pass (constant 0 dB peak gain) around a centre frequency.
+    BandPass,
+    /// RBJ notch: removes one narrow band.
+    Notch,
+    /// Downward expander: quiet parts below the threshold get quieter by the ratio, down to a range.
+    Expander,
+    /// Removes short clicks: an outlier jump in the waveform is bridged by a straight line.
+    Declick,
+    /// Separate gains for the middle (L+R) and the sides (L-R).
+    MidSide,
+    /// Narrows (0) or widens (up to 2) the stereo image.
+    StereoWidth,
+    /// Channel copy / swap / polarity invert (`CHANNEL_MODES`).
+    Channels,
+    /// Folds stereo to mono by an amount.
+    Downmix,
+    /// 15-band graphic EQ on the ISO 2/3-octave centres (`EQ15_HZ`).
+    Eq15,
+    /// Two-pass loudness normalise: an analysis pass measures the clip, the filter applies target - measured.
+    Normalize,
 }
 
 impl FilterKind {
-    pub const ALL: [FilterKind; 14] = [
+    pub const ALL: [FilterKind; 24] = [
         FilterKind::Eq,
         FilterKind::HighPass,
         FilterKind::LowPass,
@@ -46,6 +67,17 @@ impl FilterKind {
         FilterKind::Limiter,
         FilterKind::DeEsser,
         FilterKind::Pitch,
+        // ---- ws:parity-audio ----
+        FilterKind::BandPass,
+        FilterKind::Notch,
+        FilterKind::Expander,
+        FilterKind::Declick,
+        FilterKind::MidSide,
+        FilterKind::StereoWidth,
+        FilterKind::Channels,
+        FilterKind::Downmix,
+        FilterKind::Eq15,
+        FilterKind::Normalize,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -64,6 +96,17 @@ impl FilterKind {
             FilterKind::Limiter => "Limiter",
             FilterKind::DeEsser => "De-esser",
             FilterKind::Pitch => "Pitch",
+            // ---- ws:parity-audio ----
+            FilterKind::BandPass => "Band-pass",
+            FilterKind::Notch => "Notch",
+            FilterKind::Expander => "Expander",
+            FilterKind::Declick => "De-click",
+            FilterKind::MidSide => "Mid-side",
+            FilterKind::StereoWidth => "Stereo width",
+            FilterKind::Channels => "Channels",
+            FilterKind::Downmix => "Downmix",
+            FilterKind::Eq15 => "EQ (15-band)",
+            FilterKind::Normalize => "Normalize (two-pass)",
         }
     }
     pub fn params(self) -> &'static [ParamSpec] {
@@ -82,7 +125,61 @@ impl FilterKind {
             FilterKind::Limiter => F_LIMITER,
             FilterKind::DeEsser => F_DEESSER,
             FilterKind::Pitch => F_PITCH,
+            // ---- ws:parity-audio ----
+            FilterKind::BandPass => F_BANDPASS,
+            FilterKind::Notch => F_NOTCH,
+            FilterKind::Expander => F_EXPANDER,
+            FilterKind::Declick => F_DECLICK,
+            FilterKind::MidSide => F_MIDSIDE,
+            FilterKind::StereoWidth => F_WIDTH,
+            FilterKind::Channels => F_CHANNELS,
+            FilterKind::Downmix => F_DOWNMIX,
+            FilterKind::Eq15 => F_EQ15,
+            FilterKind::Normalize => F_NORMALIZE,
         }
+    }
+    // ---- ws:parity-audio ----
+    /// A kind by its `name()` or variant name, ignoring case ("Band-pass", "bandpass", "Eq15"...).
+    pub fn parse(s: &str) -> Option<FilterKind> {
+        let squash = |x: &str| x.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+        let want = squash(s);
+        Self::ALL.into_iter().find(|k| squash(k.name()) == want || squash(&format!("{k:?}")) == want)
+    }
+    /// The labels of a parameter that picks one of a few options (a dropdown, not a number), by param name.
+    pub fn choices(self, param: &str) -> Option<&'static [&'static str]> {
+        match (self, param) {
+            (FilterKind::Noise, "Type") => Some(&["White", "Pink", "Tone"]),
+            (FilterKind::Channels, "Mode") => Some(&CHANNEL_MODES),
+            _ => None,
+        }
+    }
+}
+
+// ---- ws:parity-audio ----
+/// The Channels filter's modes, in `Mode` parameter order.
+pub const CHANNEL_MODES: [&str; 6] =
+    ["Copy left to right", "Copy right to left", "Swap", "Invert left", "Invert right", "Invert both"];
+/// The 15-band EQ's centre frequencies (ISO 2/3-octave), one gain parameter each.
+pub const EQ15_HZ: [f32; 15] = [
+    25.0, 40.0, 63.0, 100.0, 160.0, 250.0, 400.0, 630.0, 1000.0, 1600.0, 2500.0, 4000.0, 6300.0, 10000.0, 16000.0,
+];
+/// "Measured LUFS" at this value means "not analysed yet": the Normalize filter passes the audio unchanged.
+pub const NORMALIZE_UNMEASURED: f64 = 0.0;
+
+impl AudioFilter {
+    /// A filter of `kind` with `{param name: value}` overrides (names ignore case). Unknown names and
+    /// non-numbers are errors, so a typo never silently does nothing.
+    pub fn with_params(kind: FilterKind, params: Option<&serde_json::Map<String, serde_json::Value>>) -> Result<Self, String> {
+        let mut f = AudioFilter::new(kind);
+        for (name, v) in params.into_iter().flatten() {
+            let i = kind
+                .params()
+                .iter()
+                .position(|s| s.name.eq_ignore_ascii_case(name))
+                .ok_or_else(|| format!("unknown param '{name}' for {}", kind.name()))?;
+            f.params[i].value = v.as_f64().ok_or("param values must be numbers")?;
+        }
+        Ok(f)
     }
 }
 
@@ -161,6 +258,43 @@ const F_DEESSER: &[ParamSpec] =
     &[ps("Freq Hz", 5000.0, 2000.0, 12000.0), ps("Threshold dB", -24.0, -60.0, 0.0), ps("Ratio", 4.0, 1.0, 20.0)];
 
 const F_PITCH: &[ParamSpec] = &[ps("Semitones", 0.0, -12.0, 12.0), ps("Mix", 1.0, 0.0, 1.0)];
+// ---- ws:parity-audio ----
+const F_BANDPASS: &[ParamSpec] = &[ps("Frequency", 1000.0, 20.0, 20000.0), ps("Q", 1.0, 0.1, 20.0)];
+const F_NOTCH: &[ParamSpec] = &[ps("Frequency", 1000.0, 20.0, 20000.0), ps("Q", 4.0, 0.1, 20.0)];
+const F_EXPANDER: &[ParamSpec] = &[
+    ps("Threshold dB", -40.0, -80.0, 0.0),
+    ps("Ratio", 2.0, 1.0, 10.0),
+    ps("Attack ms", 2.0, 0.1, 100.0),
+    ps("Release ms", 150.0, 5.0, 2000.0),
+    ps("Range dB", 40.0, 0.0, 80.0),
+];
+const F_DECLICK: &[ParamSpec] = &[ps("Sensitivity", 0.5, 0.0, 1.0), ps("Length ms", 1.0, 0.1, 5.0)];
+const F_MIDSIDE: &[ParamSpec] = &[ps("Mid gain dB", 0.0, -24.0, 24.0), ps("Side gain dB", 0.0, -24.0, 24.0)];
+const F_WIDTH: &[ParamSpec] = &[ps("Width", 1.0, 0.0, 2.0)];
+const F_CHANNELS: &[ParamSpec] = &[ps("Mode", 2.0, 0.0, 5.0)];
+const F_DOWNMIX: &[ParamSpec] = &[ps("Amount", 1.0, 0.0, 1.0)];
+const F_EQ15: &[ParamSpec] = &[
+    ps("25 Hz", 0.0, -12.0, 12.0),
+    ps("40 Hz", 0.0, -12.0, 12.0),
+    ps("63 Hz", 0.0, -12.0, 12.0),
+    ps("100 Hz", 0.0, -12.0, 12.0),
+    ps("160 Hz", 0.0, -12.0, 12.0),
+    ps("250 Hz", 0.0, -12.0, 12.0),
+    ps("400 Hz", 0.0, -12.0, 12.0),
+    ps("630 Hz", 0.0, -12.0, 12.0),
+    ps("1 kHz", 0.0, -12.0, 12.0),
+    ps("1.6 kHz", 0.0, -12.0, 12.0),
+    ps("2.5 kHz", 0.0, -12.0, 12.0),
+    ps("4 kHz", 0.0, -12.0, 12.0),
+    ps("6.3 kHz", 0.0, -12.0, 12.0),
+    ps("10 kHz", 0.0, -12.0, 12.0),
+    ps("16 kHz", 0.0, -12.0, 12.0),
+];
+const F_NORMALIZE: &[ParamSpec] = &[
+    ps("Target LUFS", -16.0, -40.0, -5.0),
+    ps("Measured LUFS", NORMALIZE_UNMEASURED, -70.0, 0.0),
+    ps("Max gain dB", 20.0, 0.0, 40.0),
+];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct AudioFilter {
@@ -248,7 +382,7 @@ mod tests {
 
     #[test]
     fn filterkind_all_covers_new_variants() {
-        assert_eq!(FilterKind::ALL.len(), 14);
+        assert_eq!(FilterKind::ALL.len(), 24); // 14 + ws:parity-audio's 10
         for k in FilterKind::ALL {
             assert!(!k.name().is_empty(), "{k:?}");
             assert!(!k.params().is_empty(), "{k:?}");
@@ -291,5 +425,24 @@ mod tests {
             assert_eq!(AudioRole::parse(&format!("{r:?}").to_lowercase()), Some(r));
         }
         assert_eq!(AudioRole::parse("nope"), None);
+    }
+
+    // ---- ws:parity-audio ----
+    #[test]
+    fn filter_kind_parse_and_with_params() {
+        for k in FilterKind::ALL {
+            assert_eq!(FilterKind::parse(k.name()), Some(k), "{k:?}");
+            assert_eq!(FilterKind::parse(&format!("{k:?}").to_lowercase()), Some(k));
+        }
+        assert_eq!(FilterKind::parse("band pass"), Some(FilterKind::BandPass));
+        assert_eq!(FilterKind::parse("nope"), None);
+        assert_eq!(F_EQ15.len(), EQ15_HZ.len());
+        let m = serde_json::json!({"frequency": 440.0, "Q": 8.0});
+        let f = AudioFilter::with_params(FilterKind::Notch, m.as_object()).unwrap();
+        assert_eq!((f.params[0].value, f.params[1].value), (440.0, 8.0));
+        assert!(AudioFilter::with_params(FilterKind::Notch, serde_json::json!({"Nope": 1}).as_object()).is_err());
+        assert!(AudioFilter::with_params(FilterKind::Notch, serde_json::json!({"Q": "x"}).as_object()).is_err());
+        assert_eq!(FilterKind::Channels.choices("Mode").map(|c| c.len()), Some(6));
+        assert_eq!(FilterKind::Channels.params()[0].max as usize + 1, CHANNEL_MODES.len());
     }
 }
