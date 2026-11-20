@@ -113,6 +113,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
                 },
             )
         };
+        // ---- ws:addon-sam2 ---- Object Mask's click mode: the live mask, its points and controls on top
+        super::object_mask_ctl::overlay(app, ui);
         // ---- ws:audio-visualizer ---- a stretch with only sound: the "now playing" card over the frame
         // (ws:preview-audio-only: Audio Only paints the mix's visualizer over the whole canvas instead)
         if app.project.audio_only_preview {

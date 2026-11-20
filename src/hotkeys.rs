@@ -398,6 +398,11 @@ actions! {
     AiUpscale2Real => "ai_upscale_2_real", "AI Upscale ×2 (Real-World)", None;
     AiUpscale4Game => "ai_upscale_4_game", "AI Upscale ×4 (Game / Animation)", None;
     AiUpscale4Real => "ai_upscale_4_real", "AI Upscale ×4 (Real-World)", None;
+    // ---- ws:addon-sam2 ----
+    // Object Mask (the optional SAM 2 add-on): click the object in the Preview, Track follows it;
+    // ui::app::object_mask_ctl::act. Unbound.
+    ObjectMask => "object_mask", "Object Mask", None;
+    ObjectMaskTrack => "object_mask_track", "Object Mask: Track", None;
     SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
     PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
     // ---- ws:music-burn ----
@@ -762,6 +767,8 @@ pub fn group(a: Action) -> &'static str {
         MakeVisualizerVideo | NewPlaylist => "Add",
         // ---- ws:ai-enhancer ----
         AiUpscale2Game | AiUpscale2Real | AiUpscale4Game | AiUpscale4Real => "Clip",
+        // ---- ws:addon-sam2 ----
+        ObjectMask | ObjectMaskTrack => "Clip",
         // ---- ws:perf-window ----
         PerfWindow => "Playback",
         // ---- ws:quick-export ----

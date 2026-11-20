@@ -18,7 +18,7 @@
 //! Returns true if the project changed.
 
 use crate::hotkeys::Action;
-use crate::model::{ClipKind, Id, Label, Mask, Project, ShapeKind, ShapeStyle};
+use crate::model::{ClipKind, Id, Label, Mask, MaskShape, Project, ShapeKind, ShapeStyle};
 use crate::settings::{Settings, TextPreset};
 use crate::theme::Palette;
 use crate::ui::inspector_text::{set_span, span_draft_at};
@@ -1324,19 +1324,37 @@ fn clip_section(
                 };
                 let mut body_add = false;
                 let mut body_edit = false;
+                // sam2: Object Mask (the optional SAM 2 add-on) clicks the object in the Preview instead
+                let object_tip = "Click the object in the Preview: left-click adds a point, right-click removes                                   one, Shift+click marks what is not the object. Then Track follows its                                   outline through the clip. Uses the optional object-mask add-on.";
+                let mut body_object = false;
                 fold(ui, &mut folds, "mask", "Mask", Some(&mut mask_menu), |ui| match &mut clip.mask {
                     None => {
-                        let r = ui.button("Add mask");
-                        mark(ui, "add_mask", &r);
-                        body_add = r.clicked();
+                        ui.horizontal(|ui| {
+                            let r = ui.button("Add mask");
+                            mark(ui, "add_mask", &r);
+                            body_add = r.clicked();
+                            let r = ui.button("Object Mask").on_hover_text(object_tip);
+                            mark(ui, "object_mask", &r);
+                            body_object = r.clicked();
+                        });
                     }
                     Some(m) => {
-                        let r = ui.button("Edit in viewport").on_hover_text("Drag the mask over the preview");
-                        mark(ui, "edit_mask", &r);
-                        body_edit = r.clicked();
+                        ui.horizontal(|ui| {
+                            if m.shape != MaskShape::Object {
+                                let r = ui.button("Edit in viewport").on_hover_text("Drag the mask over the preview");
+                                mark(ui, "edit_mask", &r);
+                                body_edit = r.clicked();
+                            }
+                            let r = ui.button("Object Mask").on_hover_text(object_tip);
+                            mark(ui, "object_mask", &r);
+                            body_object = r.clicked();
+                        });
                         mask_grid(ui, m, lt, palette, &mut g, egui::Id::new("inspector_mask"));
                     }
                 });
+                if body_object {
+                    PENDING_ACTION.with(|p| *p.borrow_mut() = Some(Action::ObjectMask));
+                }
                 if add_mask || body_add {
                     clip.mask = Some(Mask::default());
                     g.click();

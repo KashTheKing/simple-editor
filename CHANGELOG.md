@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Object masks
+- **Object Mask** (an optional SAM 2 add-on, Settings ▸ General ▸ Object masks): click an object in the Preview (left-click adds a point, Shift+click marks what is not the object, right-click removes one) and its mask shows on the frame; **Track** follows its outline through the clip as a job you can cancel, and the clip's mask becomes an Object mask (Invert keeps the background instead). Masks play from a cache with nothing heavy on the playback path. SAM 2.1 tiny on the graphics card through DirectML, or the processor; tools `mask.object`, `mask.track`, `mask.install`.
+
 ## 1.4.0
 
 ### Media player

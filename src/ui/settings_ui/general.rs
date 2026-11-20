@@ -63,6 +63,11 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         ui.horizontal(enhancer_row);
         ui.end_row();
 
+        // ---- ws:addon-sam2 ----
+        ui.label("Object masks");
+        ui.horizontal(object_masks_row);
+        ui.end_row();
+
         ui.label("Downloads folder");
         ui.horizontal(|ui| {
             changed |= ui
@@ -267,6 +272,43 @@ fn enhancer_row(ui: &mut egui::Ui) {
         match enhance::install_error() {
             Some(e) => ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}")),
             None => ui.weak("optional, about 45 MB"),
+        };
+    }
+}
+
+// ---- ws:addon-sam2 ----
+/// Install / uninstall the optional object-mask add-on (SAM 2, used by Object Mask).
+fn object_masks_row(ui: &mut egui::Ui) {
+    use crate::engine::sam2;
+    if let Some(p) = sam2::installing() {
+        ui.add(egui::Spinner::new());
+        ui.weak(format!("{:.0}% · {}", p.fraction() * 100.0, p.status()));
+    } else if sam2::available() {
+        ui.weak(match sam2::version() {
+            Some(v) => format!("installed ({v})"),
+            None => "installed".into(),
+        });
+        let id = egui::Id::new("sam2_uninstall_error");
+        if ui.button("Uninstall").on_hover_text("Removes the add-on; masks it already tracked stay in the cache").clicked() {
+            let r = sam2::uninstall().err();
+            ui.data_mut(|d| d.insert_temp(id, r));
+        }
+        if let Some(e) = ui.data(|d| d.get_temp::<Option<String>>(id)).flatten() {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+    } else {
+        if ui
+            .button("Install")
+            .on_hover_text(
+                "SAM 2 object masks: click an object in the Preview and its outline is followed through the clip (Inspector ▸ Mask ▸ Object Mask). Runs on the graphics card through DirectML, or on the processor. About 400 MB, downloaded once.",
+            )
+            .clicked()
+        {
+            sam2::start_install();
+        }
+        match sam2::install_error() {
+            Some(e) => ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}")),
+            None => ui.weak("optional, about 400 MB"),
         };
     }
 }

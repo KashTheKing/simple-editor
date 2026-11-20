@@ -287,6 +287,10 @@ pub(super) fn clip_menu(
             // a mask means nothing on audio
             if !m.audio {
                 acts(ui, &[Some(AddMask)]);
+                // ws:addon-sam2: the SAM 2 object mask (video / pictures)
+                if upscalable {
+                    acts(ui, &[Some(ObjectMask)]);
+                }
             }
         });
         if m.audio || m.native_size {

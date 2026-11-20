@@ -1,0 +1,75 @@
+{
+  "name": "Object masks (SAM 2.1 tiny)",
+  "version": "2.1-tiny.1",
+  "licenses": {
+    "se-sam2.exe": "MIT (Simple Editor, tools/sam2-helper)",
+    "SAM 2.1 hiera-tiny weights and the ONNX export": "Apache-2.0 (Meta Platforms: https://github.com/facebookresearch/sam2; ONNX export: https://huggingface.co/square-zero-labs/sam2.1-tiny-video-onnx)",
+    "onnxruntime.dll": "MIT (Microsoft ONNX Runtime 1.24.4, NuGet Microsoft.ML.OnnxRuntime.DirectML)",
+    "DirectML.dll": "Microsoft DirectML redistributable licence terms (NuGet Microsoft.AI.DirectML 1.15.4): free to redistribute with applications on Windows; not open source"
+  },
+  "files": [
+    {
+      "url": "https://github.com/KashTheKing/simple-editor/releases/download/se-sam2-v0.1.0/se-sam2.exe",
+      "path": "se-sam2.exe",
+      "size": 1174528,
+      "sha256": "e2a0f96d12e3ea056f9757b04e97d12c735ac962afe540dcf0acfcf577d7adef"
+    },
+    {
+      "url": "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.24.4/microsoft.ml.onnxruntime.directml.1.24.4.nupkg",
+      "size": 12458649,
+      "sha256": "57e9f11b73437bef7a309496135d4c1f96b1a8e9ddba60013fa27bfc1d788681",
+      "take": {
+        "runtimes/win-x64/native/onnxruntime.dll": "onnxruntime.dll",
+        "runtimes/win-x64/native/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll",
+        "LICENSE": "licenses/onnxruntime-LICENSE.txt",
+        "ThirdPartyNotices.txt": "licenses/onnxruntime-ThirdPartyNotices.txt"
+      }
+    },
+    {
+      "url": "https://api.nuget.org/v3-flatcontainer/microsoft.ai.directml/1.15.4/microsoft.ai.directml.1.15.4.nupkg",
+      "size": 202292617,
+      "sha256": "4e7cb7ddce8cf837a7a75dc029209b520ca0101470fcdf275c1f49736a3615b9",
+      "take": {
+        "bin/x64-win/DirectML.dll": "DirectML.dll",
+        "LICENSE.txt": "licenses/DirectML-LICENSE.txt",
+        "ThirdPartyNotices.txt": "licenses/DirectML-ThirdPartyNotices.txt"
+      }
+    },
+    {
+      "url": "https://huggingface.co/square-zero-labs/sam2.1-tiny-video-onnx/resolve/3b2984dd865f6e9d2cc6aed0be6a5a5c2eb352ce/onnx/vision_encoder.onnx",
+      "path": "models/vision_encoder.onnx",
+      "size": 134335567,
+      "sha256": "aa7a8542942f042e235a993a1ab0ccf5f049918500577802a7f10ec1b39bb873"
+    },
+    {
+      "url": "https://huggingface.co/square-zero-labs/sam2.1-tiny-video-onnx/resolve/3b2984dd865f6e9d2cc6aed0be6a5a5c2eb352ce/onnx/mask_decoder.onnx",
+      "path": "models/mask_decoder.onnx",
+      "size": 17794355,
+      "sha256": "0461896de3db00936fe1643506f129d71cb6d5d2ae15754811756b7ea1b070c6"
+    },
+    {
+      "url": "https://huggingface.co/square-zero-labs/sam2.1-tiny-video-onnx/resolve/3b2984dd865f6e9d2cc6aed0be6a5a5c2eb352ce/onnx/memory_encoder.onnx",
+      "path": "models/memory_encoder.onnx",
+      "size": 5616496,
+      "sha256": "580d246c109de88838f600ba7c1c0d03d1fe267f7641b06f8c88c5f0dc5834cd"
+    },
+    {
+      "url": "https://huggingface.co/square-zero-labs/sam2.1-tiny-video-onnx/resolve/3b2984dd865f6e9d2cc6aed0be6a5a5c2eb352ce/onnx/memory_attention.onnx",
+      "path": "models/memory_attention.onnx",
+      "size": 32259165,
+      "sha256": "791e648ce8f5ef91ad00ba06e83066ff261ae5a645f0b042b4f46a89fd054baf"
+    },
+    {
+      "url": "https://huggingface.co/square-zero-labs/sam2.1-tiny-video-onnx/resolve/3b2984dd865f6e9d2cc6aed0be6a5a5c2eb352ce/onnx/pointer_tpos.onnx",
+      "path": "models/pointer_tpos.onnx",
+      "size": 67289,
+      "sha256": "7e71df1d75dba09bc18dd4ae745c2a2cceebdd14d84eadea2fe65d0205f101fc"
+    },
+    {
+      "url": "https://huggingface.co/square-zero-labs/sam2.1-tiny-video-onnx/resolve/3b2984dd865f6e9d2cc6aed0be6a5a5c2eb352ce/constants.json",
+      "path": "models/constants.json",
+      "size": 9922,
+      "sha256": "172edc70e892aab0aef6caedf97b8e4091fbf6c5d26dac5fd9ea69d093d927d3"
+    }
+  ]
+}

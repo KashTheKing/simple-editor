@@ -39,6 +39,7 @@ pub mod templates; // ws:animator-templates
 pub mod html;
 pub mod blitz; // ws:html-layer: the fast renderer (se-html helper)
 pub mod enhance; // the AI enhancer add-on (Real-ESRGAN, downloaded on demand)
+pub mod sam2; // object masks: the SAM 2 add-on (downloaded on demand) and its mask cache
 pub mod html_lint;
 #[cfg(test)]
 mod blitz_tests;

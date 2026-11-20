@@ -1,0 +1,100 @@
+---
+title: Masks & object masks
+description: Limit a clip or an effect to a shape, or click an object and have its outline followed through the clip.
+---
+
+A **mask** limits where a clip is visible, or where one of its effects applies. Masks live in the
+[Inspector](inspector.mdx)'s **Mask** section (the clip's own mask) and on each effect row in the Effects
+section (right-click the effect's name ▸ **Add mask**).
+
+## Shape masks
+
+**Add mask** gives the clip a rectangle; the **Shape** menu switches it to an ellipse, a polygon or a free
+path. **Edit in viewport** lets you drag it over the Preview. Every value can be keyframed:
+
+| Field | What it does |
+|---|---|
+| **Enabled** | Turn the mask off without losing it |
+| **Invert** | Keep what is outside the shape instead |
+| **X**, **Y**, **Radius X**, **Radius Y**, **Rotation** | Where the shape is and how big |
+| **Feather** | A soft edge, in project pixels |
+| **Expand** | Grow (or, below 0, shrink) the shape |
+| **Opacity** | How strongly the mask applies |
+
+## Object masks
+
+An **object mask** follows an object's outline through the clip: a person, a car, a ball. You click the
+object once and SAM 2 (Meta's Segment Anything 2) works out its outline on every frame.
+
+1. Select a video or picture clip and click **Object Mask** in the Inspector's Mask section (or right-click
+   the clip ▸ **Add ▸ Object Mask**).
+2. The Preview turns into click mode. **Left-click** the object to add a point; the mask appears tinted
+   over the frame a moment later. **Shift+click** marks something that is *not* the object, and
+   **right-click** removes the nearest point. Two or three points are usually enough.
+3. Click **Track**. The clip's mask becomes an Object mask and SAM 2 follows the object forwards and
+   backwards from that frame over the part of the source the clip shows. It runs as a job: watch it and
+   cancel it in **Jobs**. Frames show up as they are tracked.
+4. **Done** (or **Esc**) leaves click mode.
+
+What you can do with it:
+
+- **Isolate the subject**: the clip shows only the object; put a background on the track below.
+- **Remove the subject**: tick **Invert** to keep everything but the object.
+- **Grade or blur only the object**: duplicate the clip onto the track above, give the top copy the object
+  mask and the effect or grade; the object shows graded over the untouched original. Invert the top copy's
+  mask to grade only the background instead. (An effect can also take the object mask as its own mask:
+  `mask.track` with `effect`, see below.)
+
+An object mask keeps **Enabled**, **Invert** and **Opacity**; its outline comes from the tracked frames, so
+the shape fields are not shown. Moving, scaling or rotating the clip moves the mask with it.
+
+### Playback
+
+Object masks play from a cache of mask frames on disk (in the cache folder, Settings ▸ General ▸ Cache
+folder). Nothing heavy runs while the timeline plays: the frames are read ahead on a background thread, and
+if one is not ready yet the last good frame stands in for it. Exports always use the exact frame.
+
+### The add-on
+
+Object masks are an optional add-on, not part of the app: **Settings ▸ General ▸ Object masks ▸ Install**
+(or the first click on Object Mask offers it). It is about 400 MB, downloaded once, and every file is
+checked against its SHA-256 before it is used. It runs on the graphics card through DirectML (any DirectX 12
+card), or on the processor when there is none. **Uninstall** removes it; masks already tracked stay.
+
+Speed on an RTX 2060 Super with an i7-9700F (SAM 2.1 tiny, 1024×1024 model input, measured while the PC
+was busy with other work, so an idle PC is faster):
+
+| | Graphics card (DirectML) | Processor |
+|---|---|---|
+| First start (model load) | 30-80 s the first time, then seconds | about 6 s |
+| A click on a frame | about 1.4 s | about 1.4 s |
+| Tracking, per frame | about 1.9 s | see below |
+
+What it is made of, and the licences:
+
+| Part | Licence |
+|---|---|
+| SAM 2.1 hiera-tiny weights ([facebookresearch/sam2](https://github.com/facebookresearch/sam2)) and the ONNX export ([square-zero-labs/sam2.1-tiny-video-onnx](https://huggingface.co/square-zero-labs/sam2.1-tiny-video-onnx)) | Apache-2.0 |
+| ONNX Runtime 1.24 (`onnxruntime.dll`) | MIT |
+| DirectML (`DirectML.dll`) | Microsoft's DirectML redistributable terms: free to ship with Windows apps, not open source |
+| `se-sam2.exe`, the helper that runs it | MIT, part of Simple Editor |
+
+### From the assistant or a script (MCP)
+
+| Tool | What it does |
+|---|---|
+| `mask.object` | `{clip, points: [[x, y, label], …], at?}`: masks one frame (x, y are 0..1 of the source frame, label 1 = the object, 0 = not it). A job; the mask PNG lands at the path it returns. The Preview shows the same points. |
+| `mask.track` | `{clip, points?, at?, effect?}`: sets the clip's mask (or, with `effect`, that effect's mask) to an Object mask and tracks it through the clip (a job). Without `points` it uses the points clicked in the Preview. `{action: "status"}` reports the add-on, the device and the running tracks. |
+| `mask.install` | Installs the add-on (a job); `{uninstall: true}` removes it. |
+
+`clip.set_mask {invert: true}` and `{opacity: …}` work on an object mask like on any other.
+
+### The mask cache format
+
+Each track is a folder `masks/<key>/` in the cache folder (the clip's mask points at it):
+
+- `mask.json`: `{"format": "se-matte", "version": 1, "width", "height", "fps", "start", "count", "done",
+  "model", "source", "points", "seed"}`. Frame *i* shows source second `start + i / fps`.
+- `000000.png`, `000001.png`, …: one 8-bit greyscale PNG per frame (0 = outside, 255 = inside, soft edge in
+  between) at the source's aspect, longest side at most 1024 pixels. A frame not tracked yet is simply
+  missing.

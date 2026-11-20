@@ -1134,6 +1134,7 @@ impl GpuRenderer {
             K_MATTE => format!("{}\n{}\n{}", shaders::PRELUDE, MATTE_BODY, shaders::MAIN),
             K_CHECKER => format!("{}\n{}\n{}", shaders::PRELUDE, CHECKER_BODY, shaders::MAIN),
             K_NV12 => format!("{}\n{}", shaders::PRELUDE, NV12_MAIN), // ws:export-pipeline
+            object::K_OBJECT => format!("{}\n{}\n{}", shaders::PRELUDE, object::OBJECT_BODY, shaders::MAIN), // sam2
             _ => return Err("no source for this program".into()),
         };
         self.link(key, &src)
@@ -1446,6 +1447,8 @@ impl GpuRenderer {
             // ponytail: Path is rasterised as a polygon through its points - the editor densifies
             // curves, so a real bezier SDF only matters for very sparse paths.
             MaskShape::Polygon | MaskShape::Path => 2,
+            // sam2: drawn by `object::layer_mask`; reaching here means no frame - the shape lets all through
+            MaskShape::Object => return None,
         };
         // (a polygon's points already say where it is: its centre is the layer's, as on the CPU)
         let (cx, cy) = if shape == 2 {
@@ -1847,15 +1850,29 @@ impl GpuRenderer {
             Some(target) => (target.tex, (target.w, target.h), true),
             None => (tex, lsize, false),
         };
+        // sam2: an object mask is applied to the layer itself (it covers the source frame)
+        let object = match (extra.mask, &clip.mask) {
+            (None, Some(m)) if object::is_object(m) => self.object_layer(src, size, m, clip, t),
+            _ => None,
+        };
+        let (src, size) = match &object {
+            Some(o) => (o.tex, (o.w, o.h)),
+            None => (src, size),
+        };
         let mask = match (extra.mask, &clip.mask) {
             (Some(m), _) => Some(MaskTex::Borrowed(m)),
-            (None, Some(m)) if m.enabled => self.render_mask(m, (cw, ch), lt, s, (p.cx, p.cy)).map(MaskTex::Owned),
+            (None, Some(m)) if m.enabled && m.shape != MaskShape::Object => {
+                self.render_mask(m, (cw, ch), lt, s, (p.cx, p.cy)).map(MaskTex::Owned)
+            }
             _ => None,
         };
         let mask_tex = mask.as_ref().map(|m| m.tex());
         let out = self.composite(canvas, src, size, inv, clip.blend, opacity, project.scaler, mask_tex);
         if let Some(MaskTex::Owned(t)) = mask {
             self.pool.put(t);
+        }
+        if let Some(o) = object {
+            self.pool.put(o);
         }
         if own {
             if let Some(t) = processed {
@@ -1964,7 +1981,7 @@ impl GpuRenderer {
                 .mask
                 .as_ref()
                 .filter(|m| m.enabled)
-                .and_then(|m| self.render_mask(m, size, lt, scale, (size.0 as f32 / 2.0, size.1 as f32 / 2.0)));
+                .and_then(|m| self.layer_mask(m, clip, t, size, scale));
             let motion = e.needs_motion().then(|| self.motion_texs(clip.id, layers, e.kind == EffectKind::Shader));
             let blob = self.track_blob(e, clip.id, lt, layers);
             let next = self.run_effect(input, size, e, lt, scale, mask.as_ref().map(|m| m.tex), motion, blob);
@@ -2060,9 +2077,7 @@ impl GpuRenderer {
                         let owned = driven(e, graph, id, &vals);
                         let e = &*owned;
                         let src = a.unwrap_or(self.blank);
-                        let mask = e.mask.as_ref().filter(|m| m.enabled).and_then(|m| {
-                            self.render_mask(m, size, lt, scale, (size.0 as f32 / 2.0, size.1 as f32 / 2.0))
-                        });
+                        let mask = e.mask.as_ref().filter(|m| m.enabled).and_then(|m| self.layer_mask(m, clip, t, size, scale));
                         let motion = e.needs_motion().then(|| self.motion_texs(clip.id, layers, e.kind == EffectKind::Shader));
                         let blob = self.track_blob(e, clip.id, lt, layers);
                         let r = self.run_effect(src, size, e, lt, scale, mask.as_ref().map(|m| m.tex), motion, blob);
@@ -2103,9 +2118,7 @@ impl GpuRenderer {
                         (Some(a), None) => self.copy_to(a, size),
                         _ => self.transparent(size),
                     },
-                    NodeKind::Mask(m) => {
-                        self.render_mask(m, size, lt, scale, (size.0 as f32 / 2.0, size.1 as f32 / 2.0))
-                    }
+                    NodeKind::Mask(m) => self.layer_mask(m, clip, t, size, scale),
                     NodeKind::Output => match a {
                         Some(tex) => self.copy_to(tex, size),
                         None => self.transparent(size),
@@ -2886,6 +2899,7 @@ mod tests {
 /// Real-driver checks: a legacy WGL context on a hidden window (compatibility profiles accept
 /// `#version 330 core`). Skips, loudly, on a machine with no OpenGL driver.
 pub(crate) mod interop; // #158: zero-copy decode, D3D11 textures shared into GL
+mod object; // sam2: object masks (cached mask frames applied in layer space)
 #[cfg(test)]
 mod browser_tests; // ws:browser-layer: the browser clip and polygon masks on the real driver
 #[cfg(test)]

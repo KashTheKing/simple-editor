@@ -422,6 +422,9 @@ pub enum MaskShape {
     Polygon,
     /// Free-hand / bezier path through `points` (smoothed).
     Path,
+    /// An object's outline per frame, from the object-mask add-on (SAM 2): the cached mask sequence in
+    /// `Mask.matte` (`engine::sam2`). Not in `ALL`: it is made by Object Mask, not picked.
+    Object,
 }
 
 impl MaskShape {
@@ -432,6 +435,7 @@ impl MaskShape {
             MaskShape::Ellipse => "Ellipse",
             MaskShape::Polygon => "Polygon",
             MaskShape::Path => "Path",
+            MaskShape::Object => "Object",
         }
     }
 }
@@ -456,6 +460,9 @@ pub struct Mask {
     pub opacity: Animated,
     pub invert: bool,
     pub enabled: bool,
+    /// `MaskShape::Object`: the mask sequence folder (`engine::sam2`'s cache format). Empty otherwise.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub matte: String,
 }
 
 impl Default for Mask {
@@ -473,6 +480,7 @@ impl Default for Mask {
             opacity: Animated::new(1.0),
             invert: false,
             enabled: true,
+            matte: String::new(),
         }
     }
 }

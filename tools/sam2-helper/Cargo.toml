@@ -1,0 +1,25 @@
+[package]
+name = "se-sam2"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Simple Editor's SAM 2 object-mask helper: ONNX Runtime (DirectML / CPU), run as a child process"
+publish = false
+
+# a standalone crate, never a member of the editor's build: it is shipped inside the optional add-on zip
+[workspace]
+
+[dependencies]
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic", "directml", "std", "ndarray"] }
+png = "0.18"
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+
+# dev builds are what sessions run and measure (no --release outside the release step): optimise them
+[profile.dev]
+opt-level = 3
+debug = false
