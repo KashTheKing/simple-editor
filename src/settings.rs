@@ -726,6 +726,9 @@ pub struct Settings {
     /// Ask "Match project to this video?" when an import differs from the project.
     #[serde(default = "default_true")]
     pub match_import: bool,
+    // ---- ws:mixed-footage ----
+    /// "Make proxies?" when heavy footage lands: 0 = ask, 1 = yes without asking, 2 = never ask.
+    pub footage_proxies: u8,
     // ---- ws:player-metadata ----
     /// Saved tag sets (Settings ▸ Metadata), applied in one click in the player, the Library and Export.
     pub metadata_presets: Vec<crate::engine::tags::MetaPreset>,
@@ -1042,6 +1045,7 @@ impl Default for Settings {
             // ---- ws:device-emulator ----
             emulator: BTreeMap::new(),
             match_import: true, // ws:project-color-fps
+            footage_proxies: 0, // ws:mixed-footage
             metadata_presets: Vec::new(), // ws:player-metadata
             // ---- ws:forum-export ----
             export_mpx_rate: 0.0,

@@ -1067,6 +1067,10 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
             } else if c.view.clip_text {
                 name_pc.text(name_pos, Align2::LEFT_TOP, &clip.name, font.clone(), pal.text);
             }
+            // ws:mixed-footage: a 50p clip in a 25p project says "50" (right-click > Speed for every-frame slow motion)
+            if let Some(b) = crate::ui::inspector_footage::badge(c.project, clip) {
+                name_pc.text(pos2(rect.right() - 3.0, rect.top() + 2.0), Align2::RIGHT_TOP, b, small.clone(), pal.accent);
+            }
             if clip.is_retimed() {
                 if clip.freeze.is_some() {
                     // a snowflake, painted: the frozen clip has no rate to print
@@ -1285,6 +1289,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 zoom: clip.scale.keys.iter().map(|k| k.v).fold(clip.scale.value, f64::max)
                     * clip.scale_x.value.max(clip.scale_y.value),
                 animator_shown: c.animator_shown,
+                every_frame: crate::ui::inspector_footage::every_frame_for(c.project, clip), // ws:mixed-footage
             };
             let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();

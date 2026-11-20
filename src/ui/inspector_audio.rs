@@ -381,6 +381,10 @@ pub(super) fn section(
                 // the one Speed row, writing through `Project::set_speed` (its own undo)
                 changed |= speed_rows(ui, project, ids, playhead, palette, undo);
             }
+            if clip.draws() {
+                // ws:mixed-footage: speed Preset, Frame rate, Zoom with its 1:1 mark
+                changed |= crate::ui::inspector_footage::rows(ui, project, ids, playhead, undo);
+            }
             let mut on = clip.pos_linked;
             let tip = if on { "Position X and Y are keyed together" } else { "Position X and Y are keyed separately" };
             link_icon(ui, px, py, &mut on, "pos_xy", tip, palette);

@@ -174,6 +174,7 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         }
         a.codec = str_of(s, "codec_name").to_string();
         remember_transfer(path, str_of(s, "color_transfer")); // ws:project-color-fps
+        super::footage::remember(path, super::footage::from_probe(s, &format, path)); // ws:mixed-footage
         a.fps = parse_rate(str_of(s, "avg_frame_rate"));
         if a.fps <= 0.0 {
             a.fps = parse_rate(str_of(s, "r_frame_rate"));

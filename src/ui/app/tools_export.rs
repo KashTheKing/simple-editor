@@ -25,6 +25,11 @@ pub(crate) enum BakeKind {
     Denoise,
     /// + `setpts`/`minterpolate` at this speed factor (0.5 = half speed).
     SlowMo(f64),
+    // ---- ws:mixed-footage ----
+    /// Optical-flow frame-rate conversion of one clip at its speed: the clip is rendered at its SOURCE rate
+    /// and normal speed (every real frame, nothing sampled), then `setpts`/`minterpolate` makes the project
+    /// rate at the clip's speed. Offline, like every bake - never on the playback path.
+    Flow(f64),
 }
 
 impl BakeKind {
@@ -34,6 +39,7 @@ impl BakeKind {
             BakeKind::Stabilize => "Stabilize",
             BakeKind::Denoise => "Denoise",
             BakeKind::SlowMo(_) => "Slow motion",
+            BakeKind::Flow(_) => "Optical flow",
         }
     }
     fn suffix(self) -> &'static str {
@@ -42,6 +48,7 @@ impl BakeKind {
             BakeKind::Stabilize => "stabilized",
             BakeKind::Denoise => "denoised",
             BakeKind::SlowMo(_) => "slowmo",
+            BakeKind::Flow(_) => "flow",
         }
     }
     fn filter(self, fps: f64) -> Option<BakeFilter> {
@@ -49,13 +56,13 @@ impl BakeKind {
             BakeKind::Render => None,
             BakeKind::Stabilize => Some(BakeFilter::Stabilize),
             BakeKind::Denoise => Some(BakeFilter::Denoise),
-            BakeKind::SlowMo(f) => Some(BakeFilter::SlowMo { factor: f, fps }),
+            BakeKind::SlowMo(f) | BakeKind::Flow(f) => Some(BakeFilter::SlowMo { factor: f, fps }),
         }
     }
     /// How much longer the baked file runs than the timeline span it came from.
     fn factor(self) -> f64 {
         match self {
-            BakeKind::SlowMo(f) => f.clamp(0.05, 1.0),
+            BakeKind::SlowMo(f) | BakeKind::Flow(f) => f.clamp(0.05, 1.0),
             _ => 1.0,
         }
     }
@@ -322,7 +329,12 @@ pub(crate) fn start_bake(app: &mut App, ids: &[Id], kind: BakeKind) -> Result<(A
     if let Some(why) = bake_refusal(&base, &ids) {
         return Err(why);
     }
-    let iso = isolated_project(&base, &ids).ok_or("Nothing to bake")?;
+    let mut iso = isolated_project(&base, &ids).ok_or("Nothing to bake")?;
+    // ws:mixed-footage: optical flow renders the source's own frames (its rate, normal speed) for minterpolate
+    let flow_fps = match kind {
+        BakeKind::Flow(_) => flow_source(&mut iso, ids[0]),
+        _ => None,
+    };
     let (t0, _) = span(&base, &ids).ok_or("Nothing to bake")?;
     let first = base.clip(ids[0]).ok_or("no such clip")?;
     let (dir, stem) = base
@@ -340,6 +352,9 @@ pub(crate) fn start_bake(app: &mut App, ids: &[Id], kind: BakeKind) -> Result<(A
     let mut opts = app.export_opts(tmp.clone());
     opts.loudnorm = false; // a bake is a picture/sound replacement, not a delivery master
     opts.audio = export::AudioLayout::Mix; // ws:export-audio-tracks: and never carries stems
+    if flow_fps.is_some() {
+        opts.fps = flow_fps; // ws:mixed-footage
+    }
     let prog = export::start_export(iso, opts, app.text.clone());
     let overall = Progress::new();
     overall.set(0.0, kind.label());
@@ -355,6 +370,17 @@ pub(crate) fn start_bake(app: &mut App, ids: &[Id], kind: BakeKind) -> Result<(A
         probed: Arc::default(),
     });
     Ok((overall, out))
+}
+
+// ---- ws:mixed-footage ----
+/// Make `iso`'s clip `id` play its source window at normal speed and return the source's frame rate - what
+/// an optical-flow bake renders before `minterpolate` (None: no rate known, it renders at the project's).
+pub(crate) fn flow_source(iso: &mut Project, id: Id) -> Option<f64> {
+    let fps = iso.clip(id).and_then(|c| iso.asset(c.asset)).map(|a| a.fps).filter(|f| *f > 1.0)?;
+    let c = iso.clip_mut(id)?;
+    c.speed_curve = crate::model::a1();
+    c.set_speed(1.0);
+    Some(crate::model::snap_fps(fps))
 }
 
 /// A bake stage finished: fail out, start the filter stage, or swap the clips onto the new asset.

@@ -81,6 +81,22 @@ pub(super) fn performance(ui: &mut egui::Ui, s: &mut Settings, gpu_name: &str, c
                 s.proxy_height = h;
                 ui.weak("proxy height - built in the background, exports always use the originals");
             });
+            // ws:mixed-footage: the "make proxies?" card's remembered answer
+            ui.horizontal(|ui| {
+                let name = |v: u8| match v {
+                    1 => "Make proxies",
+                    2 => "Play originals",
+                    _ => "Ask",
+                };
+                ui.label("Heavy footage").on_hover_text(
+                    "4K long-GOP or 10-bit HEVC that would not get a proxy on its own: ask when it is imported, make proxies, or play the original files",
+                );
+                egui::ComboBox::from_id_salt("footage_proxies").selected_text(name(s.footage_proxies)).show_ui(ui, |ui| {
+                    for v in 0..3u8 {
+                        changed |= ui.selectable_value(&mut s.footage_proxies, v, name(v)).changed();
+                    }
+                });
+            });
         });
         ui.end_row();
 

@@ -1496,6 +1496,7 @@ fn test_clip_menu<'a>(labels: &'a [Label], buses: &'a [crate::model::Bus], share
         shape: false,
         zoom: 1.0,
         animator_shown: false,
+        every_frame: None,
     }
 }
 

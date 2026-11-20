@@ -231,6 +231,9 @@ pub(super) struct ClipMenu<'a> {
     pub zoom: f64,
     /// The Animator is on screen: "Show Animations" reads "Hide Animations" and hides it.
     pub animator_shown: bool,
+    // ---- ws:mixed-footage ----
+    /// A clip whose rate is a whole multiple of the project's: the speed that shows each of its frames once.
+    pub every_frame: Option<f64>,
 }
 
 /// The clip body / edge right-click menu. Actions run on the selection (a right-click on an unselected
@@ -259,7 +262,16 @@ pub(super) fn clip_menu(
             &[Some(Split), Some(JoinThroughEdit), Some(DuplicateClips), Some(ToggleEnabled), Some(LinkToggle)],
         );
         acts(ui, &[Some(GroupClips), Some(UngroupClips), Some(SyncByAudio), None]); // ws:gap-group-sync
-        menu::sub(ui, Some(Glyph::Speed), "Speed", |ui| acts(ui, &[Some(Retime), Some(FreezeFrame)]));
+        menu::sub(ui, Some(Glyph::Speed), "Speed", |ui| {
+            acts(ui, &[Some(Retime), Some(FreezeFrame)]);
+            // ws:mixed-footage: 50p in a 25p project plays each frame once at exactly 50 %
+            if let Some(s) = m.every_frame {
+                let tip = format!("Each of the clip's frames once, one per project frame: {:.0} % speed, no blending", s * 100.0);
+                if menu::row(ui, None, "Slow motion (every frame)", "").on_hover_text(tip).clicked() {
+                    crate::ui::inspector_footage::request(crate::ui::inspector_footage::FootageReq::Speed(m.id, s));
+                }
+            }
+        });
         // video/image/sequence only - Project::fit_clip_to_screen skips the rest of a mixed selection
         if m.native_size {
             menu::sub(ui, None, "Transform", |ui| {

@@ -6,6 +6,7 @@
 pub mod d3d;
 pub mod bg;
 pub mod ffpipe;
+pub mod footage; // ws:mixed-footage
 pub mod mf;
 pub mod offline; // forum-crash
 pub mod playcheck; // ws:forum-preview

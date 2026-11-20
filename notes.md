@@ -978,3 +978,12 @@ A button that opens a panel/pane/window (e.g. the top-right Performance button) 
   `atempo` for export would have split export from playback. The standalone media player (`player/engine.rs`,
   `MAX_AUDIBLE_RATE` = 2, resamples in the device callback) is NOT changed: its ring is source-timed, so it needs
   its own rework to stretch.
+
+## 2026-11-20 mixed footage (claude/feat-mixed-footage-83d1e8)
+- `media::footage` holds camera make/model + gamma hint (S-Log3 / S-Log2 / HLG) + 10-bit + `hdr_tagged`, cached by the
+  import probe (`ffpipe::probe` -> `footage::remember`); UI code only reads `footage::of` (never probes).
+- Conversion LUTs are generated (`footage::lut_for`) and installed into the library on first use; tagged HLG is
+  tone-mapped on decode, so only untagged HLG gets a LUT (`wants_lut`).
+- One entry point for "make proxies?": `App::offer_proxies` (footage_ctl). Other slow-footage checks call it.
+- Wine 9 in the cloud container crashes on any exe (`free(): invalid pointer`), so windows-gnu test binaries can't run
+  there; pure modules can be tested by pasting them into a scratch crate.

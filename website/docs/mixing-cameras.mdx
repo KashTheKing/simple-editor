@@ -1,0 +1,77 @@
+---
+title: Mixing cameras and frame rates
+description: 4K 50p and 1080p 25p in one edit, slow motion from high frame rates, punching in on 4K, proxies and matching two cameras' colour.
+---
+
+A common question: *"I shot the chorus on a Sony A7 IV in 4K 50p and the verses on an a6400 in 1080p 25p.
+Will mixing them cause trouble, and what's the workflow?"*
+
+In Simple Editor it just works. Import everything and follow the cards.
+
+## 1. Import the whole shoot
+
+Drop all the clips in at once. Simple Editor looks at every video, not just the first, and shows one line:
+
+> Mixed footage: 1080p at 25 fps — your 50 fps clips can play as smooth half-speed slow motion
+
+Hover it to see what it counted and why. Click **Match** (one undo step), or **4K** first to deliver 4K.
+
+- **Frame rate**: it picks the rate the others divide into evenly. 25 for 25 + 50, 30 for 30 + 60, 24 for
+  24 + 48. Every clip then plays whole frames: at normal speed a 50p clip shows every 2nd frame, never a
+  blend, so motion stays crisp.
+- **Mixes that don't divide evenly** (24 with 30, 25 with 29.97) get the most common rate and the warning
+  *some clips will drop or repeat frames*. See [Odd frame rates](#odd-frame-rates).
+- **Size**: 1080p, unless every clip is 4K. You choose 1080p or 4K on the card.
+
+## 2. Slow motion from 50p
+
+A clip whose rate is a whole multiple of the project's shows a small rate badge on the timeline (**50**).
+Right-click it ▸ **Speed** ▸ **Slow motion (every frame)**, or pick **Every frame** in the Inspector's
+**Preset** row (**Normal**, **Every frame**, **Custom**). Each of the clip's frames becomes one project frame:
+50p in a 25p project is exactly 50 % speed, perfectly smooth, nothing blended. The clip grows to play its
+whole shot when there is room after it; otherwise it keeps its length and you drag its end for the rest.
+
+## 3. Punch in on 4K
+
+A 4K clip in a 1080p project fits the whole frame by default. To reframe, use **Zoom** in the Inspector's
+Transform section: 100 % is the full frame, and the mark on the slider is **1:1** (one camera pixel per
+project pixel). **Max sharp** says where that is: 200 % for 4K in 1080p. Up to there a punch-in loses
+nothing; past it the picture is upscaled.
+
+A clip smaller than the project (720p in 1080p) is enlarged even at 100 %, and the Inspector says
+**Upscaled**. If the AI enhancer is installed, the **AI Upscale** button next to it makes a sharper copy.
+
+## Odd frame rates
+
+For a 24p clip in a 30p project (or any mix that doesn't divide evenly), the Inspector shows **Frame rate**:
+
+| Choice | What it does |
+|---|---|
+| **Frame sampling** | The nearest real frame. Sharp; some frames repeat or drop. The default. |
+| **Frame blending** | Mixes neighbouring frames. Smoother, with a little ghosting. |
+| **Optical flow** | Renders new in-between frames from the motion with ffmpeg in the background, then swaps the clip onto the result. Best motion, takes a while. |
+
+Optical flow is never worked out while you play: playback always stays smooth.
+
+## Heavy footage
+
+4K long-GOP files (H.264 / HEVC straight from the camera) and 10-bit HEVC can be too much to decode in real
+time. 4K gets proxies automatically while **Settings ▸ Performance ▸ Play low-res all-intra proxies in the preview** is on. Otherwise a card asks
+*This 4K footage may stutter — make proxies?*; your answer is remembered, and **Settings ▸ Performance ▸
+Heavy footage** changes it (Ask, Make proxies, Play originals). Proxies are only for editing: exports always use
+the original files.
+
+## Two cameras, one look
+
+Simple Editor reads the camera make and model from each file. When the timeline holds clips from two or
+more cameras, a card offers **Match colours between cameras**: pick the reference camera and the other
+cameras' clips are colour matched to it ([Colour Match](color.mdx)), as one undo step. It is never done
+for you.
+
+Footage shot in **S-Log3** or **S-Log2** (found in the file's metadata or its name) gets a card too: **Add LUT**
+puts the matching conversion LUT from the library (S-Log3 to Rec.709, S-Log2 to Rec.709) on those clips' sources,
+so every clip cut from them is converted before your grade.
+
+HLG footage that the file says is HLG needs nothing: it is converted when it is decoded. HLG that is only named
+in the metadata or the file name (the stream itself is not marked HLG) gets the same card with an HLG to Rec.709
+LUT.
