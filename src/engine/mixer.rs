@@ -13,7 +13,7 @@
 //! Main, which is the master everything sums through. Projects with no buses (the default) skip all of
 //! that and mix straight into `out`.
 
-use crate::engine::mixer_fx::BusGraph;
+use crate::engine::mixer_fx::{BusGraph, FilterState};
 use crate::media::{AudioSource, DecoderPool, SAMPLE_RATE};
 use crate::model::{Clip, ClipKind, Id, Project, Track, TrackKind, Transition};
 
@@ -53,7 +53,17 @@ impl Dest<'_> {
 /// Buffer pool, two per recursion depth: [2d] = source-read/resample buffer, [2d+1] = sequence
 /// sub-mix buffer. Grown once per size increase, never freed.
 #[derive(Default)]
-struct Scratch(Vec<Vec<f32>>, Voices);
+struct Scratch(Vec<Vec<f32>>, Voices, ClipFx);
+
+// ---- ws:parity-audio ----
+/// Per-clip filter state (`Clip.audio_filters`), by (clip id, recursion depth), with the `mix` call that
+/// last used it: a clip that stops sounding drops its state at the end of that block, so a clip that
+/// plays again starts clean (no reverb tail from the last time). `.0` counts `mix` calls.
+#[derive(Default)]
+struct ClipFx(u64, Vec<(Id, usize, u64, Vec<FilterState>)>);
+
+/// First pool slot of the per-depth buffers a filtered clip renders into before its gains.
+const FX_SLOT: usize = 2 * MAX_DEPTH + 2;
 
 /// The (asset, audio stream) of every audio clip mixed so far in this block. A clip's voice is how
 /// many earlier ones read the same stream: clips that sound together each get a decoder of their own
@@ -110,6 +120,7 @@ impl Mixer {
         }
         let Mixer { scratch, graph, order } = self;
         scratch.1.clear();
+        scratch.2 .0 += 1;
         if project.buses.is_empty() {
             mix_tracks(scratch, project, &project.tracks, t, pool, &mut Dest::Buf(out), 0);
         } else {
@@ -125,6 +136,9 @@ impl Mixer {
                 }
             }
         }
+        // ws:parity-audio: forget the filter state of clips that did not sound in this block
+        let gen = scratch.2 .0;
+        scratch.2 .1.retain(|e| e.2 == gen);
         for s in out.iter_mut() {
             *s = s.clamp(-1.0, 1.0);
         }
@@ -221,9 +235,94 @@ fn mix_audio_clip(
     scratch.1.push(key);
     if let Some(src) = pool.audio(path, clip.audio_stream, voice) {
         read_block(src, s0, &mut buf);
-        resample_add(clip, ext, t0, &buf, out, track_gain);
+        add_clip_audio(scratch, clip, ext, t0, &buf, out, depth, track_gain);
     }
     scratch.put(depth * 2, buf);
+}
+
+// ---- ws:parity-audio ----
+/// Add one clip's source block (`buf`, read at its source rate) into `out`: straight through
+/// `resample_add` when the clip has no enabled filter of its own (the common case, unchanged), else
+/// resampled at unity into a pool buffer, run through `Clip.audio_filters` (clip-local time), and then
+/// given its gains - so fades and the volume shape the filtered sound, reverb included.
+#[allow(clippy::too_many_arguments)]
+fn add_clip_audio(
+    scratch: &mut Scratch,
+    clip: &Clip,
+    ext: &Ext,
+    t0: f64,
+    buf: &[f32],
+    out: &mut [f32],
+    depth: usize,
+    track_gain: f32,
+) {
+    if !clip.audio_filters.iter().any(|f| f.enabled) {
+        resample_add(clip, ext, t0, buf, out, track_gain);
+        return;
+    }
+    let mut wet = scratch.take(FX_SLOT + depth, out.len());
+    resample_into(clip, buf, &mut wet);
+    let gen = scratch.2 .0;
+    let entries = &mut scratch.2 .1;
+    let i = match entries.iter().position(|e| e.0 == clip.id && e.1 == depth) {
+        Some(i) => i,
+        None => {
+            entries.push((clip.id, depth, gen, Vec::new()));
+            entries.len() - 1
+        }
+    };
+    let entry = &mut entries[i];
+    entry.2 = gen;
+    let states = &mut entry.3;
+    states.truncate(clip.audio_filters.len());
+    let lt = clip.local(t0);
+    for (j, f) in clip.audio_filters.iter().enumerate() {
+        match states.get(j) {
+            Some(s) if s.kind() == f.kind => {}
+            Some(_) => states[j] = FilterState::new(f, SAMPLE_RATE),
+            None => states.push(FilterState::new(f, SAMPLE_RATE)),
+        }
+        if f.enabled {
+            states[j].process(f, lt, &mut wet);
+        }
+    }
+    gain_add(clip, ext, t0, &wet, out, track_gain);
+    scratch.put(FX_SLOT + depth, wet);
+}
+
+/// `resample_add` at unity gain into a zeroed `out` (the frames a clip's filters then run over).
+fn resample_into(clip: &Clip, buf: &[f32], out: &mut [f32]) {
+    let m = buf.len() / 2;
+    if m == 0 {
+        return;
+    }
+    let last = m - 1;
+    for (k, o) in out.chunks_exact_mut(2).enumerate() {
+        let pos = if clip.reverse { last as f64 - k as f64 * clip.speed } else { k as f64 * clip.speed };
+        let pos = pos.max(0.0);
+        let j = (pos as usize).min(last);
+        let j1 = (j + 1).min(last);
+        let fr = (pos - j as f64) as f32;
+        o[0] = buf[j * 2] + (buf[j1 * 2] - buf[j * 2]) * fr;
+        o[1] = buf[j * 2 + 1] + (buf[j1 * 2 + 1] - buf[j * 2 + 1]) * fr;
+    }
+}
+
+/// Add `wet` (already at the output rate) into `out` with the clip's gains lerped across the block,
+/// exactly as `resample_add` applies them.
+fn gain_add(clip: &Clip, ext: &Ext, t0: f64, wet: &[f32], out: &mut [f32], track_gain: f32) {
+    let n = out.len() / 2;
+    if n == 0 {
+        return;
+    }
+    let (l0, r0) = gains(clip, ext, t0);
+    let (l1, r1) = gains(clip, ext, t0 + n as f64 / SAMPLE_RATE as f64);
+    let (l0, r0, l1, r1) = (l0 * track_gain, r0 * track_gain, l1 * track_gain, r1 * track_gain);
+    let (dl, dr) = ((l1 - l0) / n as f32, (r1 - r0) / n as f32);
+    for (k, (o, w)) in out.chunks_exact_mut(2).zip(wet.chunks_exact(2)).enumerate() {
+        o[0] += w[0] * (l0 + dl * k as f32);
+        o[1] += w[1] * (r0 + dr * k as f32);
+    }
 }
 
 /// One Sequence clip on an audio track: recursively mix its sequence's tracks at source rate into a
@@ -249,7 +348,7 @@ fn mix_seq_clip(
     let s0 = if clip.reverse { clip.src_time(t0) - (m - 1) as f64 / sr } else { clip.src_time(t0) };
     if let Some(tracks) = project.sequence_tracks(clip.sequence) {
         mix_tracks(scratch, project, tracks, s0, pool, &mut Dest::Buf(&mut buf), depth + 1);
-        resample_add(clip, ext, t0, &buf, out, track_gain);
+        add_clip_audio(scratch, clip, ext, t0, &buf, out, depth, track_gain);
     }
     scratch.put(depth * 2 + 1, buf);
 }
@@ -1042,5 +1141,46 @@ mod tests {
         p.tracks[ai].muted = true;
         mx.mix(&p, 1.5, &mut pool, &mut out);
         assert!(out.iter().all(|s| *s == 0.0), "muted A1: {}", out[0]);
+    }
+
+    // ---- ws:parity-audio ----
+    #[test]
+    fn clip_filters_run_before_the_clip_gain() {
+        use crate::model::{AudioFilter, FilterKind};
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        let mut g = AudioFilter::new(FilterKind::Gain);
+        g.params[0].value = -6.0206; // ×0.5
+        p.tracks[ai].clips[0].audio_filters.push(g);
+        p.tracks[ai].clips[0].volume.value = 0.5;
+        let (mut pool, mut mx) = (pool(), Mixer::new());
+        let mut out = vec![0.0f32; 2048];
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.125).abs() < 1e-4), "0.5 source × 0.5 filter × 0.5 volume: {:?}", &out[..4]);
+        // a disabled filter is skipped (and takes the plain path)
+        p.tracks[ai].clips[0].audio_filters[0].enabled = false;
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!(out.iter().all(|s| (s - 0.25).abs() < 1e-5));
+        // a stereo tool on the clip: invert the right channel
+        let mut ch = AudioFilter::new(FilterKind::Channels);
+        ch.params[0].value = 4.0;
+        p.tracks[ai].clips[0].audio_filters = vec![ch];
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert!((out[0] - 0.25).abs() < 1e-5 && (out[1] + 0.25).abs() < 1e-5, "{:?}", &out[..2]);
+    }
+
+    #[test]
+    fn clip_filter_state_is_dropped_once_the_clip_stops_sounding() {
+        use crate::model::{AudioFilter, FilterKind};
+        let mut p = project();
+        let ai = p.audio_tracks()[0];
+        p.tracks[ai].clips[0].audio_filters.push(AudioFilter::new(FilterKind::Echo));
+        let (mut pool, mut mx) = (pool(), Mixer::new());
+        let mut out = vec![0.0f32; 2048];
+        mx.mix(&p, 1.0, &mut pool, &mut out);
+        assert_eq!(mx.scratch.2 .1.len(), 1, "one clip, one state");
+        mx.mix(&p, 30.0, &mut pool, &mut out);
+        assert!(mx.scratch.2 .1.is_empty(), "past the clip its echo memory goes");
+        assert!(out.iter().all(|s| *s == 0.0));
     }
 }

@@ -21,7 +21,7 @@
 //! `undo` can snapshot the project before the first change of a gesture (the effects/inspector pattern).
 
 use crate::engine::mixer_fx::{db_to_lin, filter_bands, filter_response_db, lin_to_db, BusGraph, EQ_BANDS};
-use crate::model::{Animated, AudioFilter, Bus, FilterKind, Id, Project, TrackKind};
+use crate::model::{Animated, AudioFilter, Bus, FilterKind, Id, Project, TrackKind, NORMALIZE_UNMEASURED};
 use crate::theme::Palette;
 use crate::ui::tools::{glyph_label, icon_button, Dir, Glyph};
 use crate::ui::{menu, Gesture};
@@ -298,20 +298,7 @@ fn strip_menu(
             }
         });
     }
-    menu::sub(ui, None, "Add filter", |ui| {
-        for kind in FilterKind::ALL {
-            if menu::row(ui, None, kind.name(), "").clicked() {
-                bus.filters.push(AudioFilter::new(kind));
-                // a new filter opens, so its controls are right there
-                let i = bus.filters.len() - 1;
-                let mut cs =
-                    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), fx_id(bus.id, i), true);
-                cs.set_open(true);
-                cs.store(ui.ctx());
-                g.click();
-            }
-        }
-    });
+    add_filter_menu(ui, bus.id, &mut bus.filters, g);
     ui.separator();
     if menu::check(ui, state.show_routing, "Show routing", "").clicked() {
         state.show_routing = !state.show_routing;
@@ -465,7 +452,7 @@ fn strip(
         }
     });
 
-    filters(ui, bus, s.time, palette, state, g, n);
+    filter_list(ui, bus.id, &mut bus.filters, true, s.time, palette, state, g, n);
 }
 
 /// Stereo peak meter, -60 dB … +6 dB left to right.
@@ -542,13 +529,14 @@ fn filter_body(
                     v = if on { 1.0 } else { 0.0 };
                     r
                 }
-                "Type" => {
-                    let opts = ["White", "Pink", "Tone"];
-                    let cur = opts.get(v.round().clamp(0.0, 2.0) as usize).copied().unwrap_or("White");
+                name if f.kind.choices(name).is_some() => {
+                    let opts = f.kind.choices(name).unwrap_or(&[]);
+                    let k = (v.round().max(0.0) as usize).min(opts.len().saturating_sub(1));
+                    let cur = opts.get(k).copied().unwrap_or("");
                     let mut picked = None;
-                    let mut r = ComboBox::from_id_salt(("ty", bus_id, i))
+                    let mut r = ComboBox::from_id_salt(("ty", bus_id, i, j))
                         .selected_text(cur)
-                        .width(84.0)
+                        .width(110.0)
                         .show_ui(ui, |ui| {
                             for (k, o) in opts.iter().enumerate() {
                                 if ui.selectable_label(cur == *o, *o).clicked() {
@@ -560,6 +548,15 @@ fn filter_body(
                     if let Some(k) = picked {
                         v = k;
                         r.mark_changed();
+                    }
+                    r
+                }
+                // ---- ws:parity-audio ----
+                "Measured LUFS" => {
+                    let r = ui.label(if v >= NORMALIZE_UNMEASURED - 1e-6 { "not analysed".to_string() } else { format!("{v:.1}") });
+                    let r = r.on_hover_text("Written by Analyze: the clip's loudness before this filter");
+                    if ui.small_button("Analyze").on_hover_text("Measure the clip's loudness (runs in the background)").clicked() {
+                        request_analyze(bus_id, i);
                     }
                     r
                 }
@@ -583,11 +580,16 @@ fn filter_body(
 }
 
 /// The compact filter list: one collapsible row per filter (enable box + name; click the name to show
-/// its curve and parameters). The row's right-click opens it in its own window, moves it up / down or
-/// removes it; "Add filter ▸" is on the strip's right-click.
-fn filters(
+/// its curve and parameters). The row's right-click opens it in its own window (`poppable`: a bus's
+/// filters), moves it up / down or removes it; "Add filter ▸" is on the strip's right-click.
+/// ws:parity-audio: shared with the Inspector, which lists a clip's own filters (`owner` = the clip id;
+/// clip and bus ids come from one counter, so the two never share an egui id).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn filter_list(
     ui: &mut egui::Ui,
-    bus: &mut Bus,
+    owner: Id,
+    filters: &mut Vec<AudioFilter>,
+    poppable: bool,
     time: f64,
     palette: &Palette,
     state: &mut MixerState,
@@ -595,15 +597,15 @@ fn filters(
     n: usize,
 ) {
     let _ = n;
-    let bus_id = bus.id;
-    let count = bus.filters.len();
+    let bus_id = owner;
+    let count = filters.len();
     let mut remove: Option<usize> = None;
     let mut swap: Option<(usize, usize)> = None;
     let mut pop: Option<usize> = None;
     if count > 0 {
         ui.separator();
     }
-    for (i, f) in bus.filters.iter_mut().enumerate() {
+    for (i, f) in filters.iter_mut().enumerate() {
         // a project saved before the kind grew a parameter is short: top it up from the spec table
         f.fill_params();
         let mut toggle = false;
@@ -615,7 +617,7 @@ fn filters(
             test_rects::push(format!("fxrow{n}_{i}"), r.rect);
             toggle = r.clicked();
             menu::context(&r, |ui| {
-                if menu::row(ui, Some(Glyph::PopOut), "Open in its own window", "").clicked() {
+                if poppable && menu::row(ui, Some(Glyph::PopOut), "Open in its own window", "").clicked() {
                     pop = Some(i);
                 }
                 if ui
@@ -645,7 +647,7 @@ fn filters(
         }
     }
     if let Some((a, b)) = swap {
-        bus.filters.swap(a, b);
+        filters.swap(a, b);
         g.click();
     }
     if let Some(i) = pop {
@@ -654,9 +656,44 @@ fn filters(
         }
     }
     if let Some(i) = remove {
-        bus.filters.remove(i);
+        filters.remove(i);
         g.click();
     }
+}
+
+// ---- ws:parity-audio ----
+/// "Add filter ▸": every `FilterKind`, appended to `filters` (opened, so its controls are right there).
+pub(crate) fn add_filter_menu(ui: &mut egui::Ui, owner: Id, filters: &mut Vec<AudioFilter>, g: &mut Gesture) {
+    menu::sub(ui, None, "Add filter", |ui| {
+        for kind in FilterKind::ALL {
+            if menu::row(ui, None, kind.name(), "").clicked() {
+                filters.push(AudioFilter::new(kind));
+                open_filter(ui.ctx(), owner, filters.len() - 1);
+                g.click();
+            }
+        }
+    });
+}
+
+/// Show filter `i` of `owner`'s list open (a filter just added, so its controls are right there).
+pub(crate) fn open_filter(ctx: &egui::Context, owner: Id, i: usize) {
+    let mut cs = egui::collapsing_header::CollapsingState::load_with_default_open(ctx, fx_id(owner, i), true);
+    cs.set_open(true);
+    cs.store(ctx);
+}
+
+thread_local! {
+    /// A Normalize filter's Analyze button: (owner id, filter index), taken by whoever owns that list.
+    static ANALYZE: RefCell<Option<(Id, usize)>> = const { RefCell::new(None) };
+}
+
+fn request_analyze(owner: Id, i: usize) {
+    ANALYZE.with(|a| *a.borrow_mut() = Some((owner, i)));
+}
+
+/// The (owner, filter index) whose Analyze was clicked since the last call.
+pub(crate) fn take_analyze() -> Option<(Id, usize)> {
+    ANALYZE.with(|a| a.borrow_mut().take())
 }
 
 /// EQ / pass-filter response plot: a labelled log-frequency + dB grid, the summed curve on top, and one
@@ -675,9 +712,12 @@ fn curve(
 ) -> bool {
     let _ = n;
     // (gain param, freq param) per band, in the order `filter_bands` reports them
-    let map: Vec<(Option<usize>, usize)> = match f.kind {
-        FilterKind::Eq => EQ_BANDS.iter().map(|&(_, gi, fi, _)| (Some(gi), fi)).collect(),
-        FilterKind::HighPass | FilterKind::LowPass => vec![(None, 0)],
+    let map: Vec<(Option<usize>, Option<usize>)> = match f.kind {
+        FilterKind::Eq => EQ_BANDS.iter().map(|&(_, gi, fi, _)| (Some(gi), Some(fi))).collect(),
+        FilterKind::HighPass | FilterKind::LowPass => vec![(None, Some(0))],
+        // ---- ws:parity-audio ----
+        FilterKind::BandPass | FilterKind::Notch => vec![(None, Some(0))],
+        FilterKind::Eq15 => (0..crate::model::EQ15_HZ.len()).map(|i| (Some(i), None)).collect(),
         _ => return false,
     };
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), CURVE_H), Sense::click_and_drag());
@@ -747,7 +787,7 @@ fn curve(
         {
             if let Some(&(gi, fi)) = map.get(bi) {
                 let specs = f.kind.params();
-                if let (Some(spec), Some(a)) = (specs.get(fi), f.params.get_mut(fi)) {
+                if let Some((spec, a)) = fi.and_then(|fi| Some((specs.get(fi)?, f.params.get_mut(fi)?))) {
                     a.set_at(time, (hz_of(pos.x) as f64).clamp(spec.min, spec.max));
                     changed = true;
                 }

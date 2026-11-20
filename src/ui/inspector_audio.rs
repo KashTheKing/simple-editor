@@ -321,6 +321,8 @@ pub(super) fn section(
             fades(ui, &mut clip, &mut g);
             // Role + Bus write straight to the project, with their own undo
             changed |= role_and_bus(ui, project, ids, &orig, undo);
+            // ---- ws:parity-audio ----
+            changed |= clip_filters(ui, project, ids, &orig, playhead, palette, undo);
         });
         match cmd {
             Some(AudioCmd::Repair(preset)) => {
@@ -549,6 +551,65 @@ fn role_and_bus(
         }
     }
     rg.changed || gb.changed
+}
+
+// ---- ws:parity-audio ----
+thread_local! {
+    /// The Inspector's own response-curve drag latch (the Mixer pane keeps its own in `App.mixer`).
+    static FX_STATE: std::cell::RefCell<crate::ui::mixer_ui::MixerState> = std::cell::RefCell::new(Default::default());
+}
+
+/// The clip's own audio filters (`Clip.audio_filters`): an Add menu, then the Mixer's filter list
+/// (enable, name, curve and parameters; right-click moves or removes). Edits the first selected clip;
+/// Add puts the filter on every selected clip. One undo per gesture. True when it changed.
+fn clip_filters(
+    ui: &mut egui::Ui,
+    project: &mut Project,
+    ids: &[Id],
+    orig: &Clip,
+    playhead: f64,
+    palette: &Palette,
+    undo: &mut dyn FnMut(&Project),
+) -> bool {
+    let mut list = orig.audio_filters.clone();
+    let lt = orig.local(playhead).clamp(0.0, orig.duration);
+    let mut g = Gesture::default();
+    let mut added: Option<crate::model::FilterKind> = None;
+    crate::ui::prop_field(ui, "Filters", |ui| {
+        let r = menu::button(ui, "Add", |ui| {
+            for kind in crate::model::FilterKind::ALL {
+                if menu::row(ui, None, kind.name(), "").clicked() {
+                    added = Some(kind);
+                }
+            }
+        });
+        r.response.on_hover_text("Add an audio filter to the selected clips (runs before volume, pan and fades)");
+    });
+    if !list.is_empty() {
+        FX_STATE.with(|st| {
+            let st = &mut st.borrow_mut();
+            crate::ui::mixer_ui::filter_list(ui, orig.id, &mut list, false, lt, palette, st, &mut g, 0);
+        });
+    }
+    if let Some(kind) = added {
+        undo(project);
+        for &id in ids {
+            if let Some(c) = project.clip_mut(id) {
+                c.audio_filters.push(crate::model::AudioFilter::new(kind));
+            }
+        }
+        crate::ui::mixer_ui::open_filter(ui.ctx(), orig.id, orig.audio_filters.len());
+        return true;
+    }
+    if g.start {
+        undo(project);
+    }
+    if g.changed {
+        if let Some(c) = project.clip_mut(orig.id) {
+            c.audio_filters = list;
+        }
+    }
+    g.changed
 }
 
 #[cfg(test)]
