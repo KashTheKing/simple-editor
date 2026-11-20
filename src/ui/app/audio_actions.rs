@@ -69,6 +69,11 @@ pub fn act(app: &mut App, a: Action) -> bool {
             }
             let (depth_db, ramp_s) = (app.autocut.duck.depth_db as f64, app.autocut.duck.ramp_ms as f64 / 1000.0);
             let dialogue: Vec<Id> = dialogue.into_iter().collect();
+            // ---- ws:addon-demucs ---- a song split into placed stems ducks only its vocals stem
+            let (music, label) = match super::stems_ctl::duck_target(&app.project, music) {
+                Some(v) => (v, "Duck Vocals under Dialogue"),
+                None => (music, "Duck Music under Dialogue"),
+            };
             let before = app.project.to_json();
             let n = {
                 let App { project, waveforms, .. } = app;
@@ -78,7 +83,7 @@ pub fn act(app: &mut App, a: Action) -> bool {
                 app.toast("No speech found to duck under");
                 return true;
             }
-            app.push_undo_labeled(before, "Duck Music under Dialogue");
+            app.push_undo_labeled(before, label);
             app.after_edit();
             true
         }

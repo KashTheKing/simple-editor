@@ -168,6 +168,7 @@ mod tools_social;
 // ---- ws:ai-enhancer ----
 mod enhance_ctl;
 mod denoise_ctl; // ws:addon-deepfilternet
+mod stems_ctl; // ws:addon-demucs
 mod whatsnew;
 mod perf_ctl; // ws:perf-window
 mod quick_export; // ws:quick-export
@@ -2057,6 +2058,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     enhance_ctl::TOOLS,
     // ---- ws:addon-deepfilternet ----
     denoise_ctl::TOOLS,
+    // ---- ws:addon-demucs ----
+    stems_ctl::TOOLS,
     // ---- ws:perf-window ----
     perf_ctl::TOOLS,
     // ---- ws:quick-export ----
@@ -2176,6 +2179,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     browser_ctl::act,
     // ---- ws:ai-enhancer ----
     enhance_ctl::act,
+    // ---- ws:addon-demucs ----
+    stems_ctl::act,
     // ---- ws:perf-window ----
     perf_ctl::act,
     // ---- ws:quick-export ----
@@ -2285,6 +2290,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     enhance_ctl::tick,
     // ---- ws:addon-deepfilternet ----
     denoise_ctl::tick,
+    // ---- ws:addon-demucs ----
+    stems_ctl::tick,
     // ---- ws:perf-window ----
     perf_ctl::tick,
     // ---- ws:animator ----

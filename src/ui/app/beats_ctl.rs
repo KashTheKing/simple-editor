@@ -103,6 +103,7 @@ fn detect(app: &mut App, ctx: &egui::Context) -> Result<bool, String> {
         app.dirty = true;
         return Ok(true);
     }
+    let path = super::stems_ctl::beat_source(&path); // ws:addon-demucs: the drums stem when separated
     let c = ctx.clone();
     let Some(a) = crate::engine::visualizer::analysis_async(&path, 0, app.backend(), move || c.request_repaint())
     else {
@@ -359,12 +360,23 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "beats.detect",
-        desc: "Detect the tempo, beat grid and downbeat of the song (voice: phrase and pause marks). Runs the song analysis on this thread when it is not cached yet.",
-        args: &[],
+        desc: "Detect the tempo, beat grid and downbeat of the song (voice: phrase and pause marks). Runs the song analysis on this thread when it is not cached yet. Music beats come from the song's drums stem once it has been separated (audio.stems): a cleaner grid on a busy mix, as the Beat Aligner's Detect does.",
+        args: &["source:string:false:auto (default: the drums stem when separated, else the song) | song | drums"],
         kind: ToolKind::Mutate,
-        run: |app, _| {
+        run: |app, args| {
             need_song(app)?;
             let (path, dur) = song(app).ok_or("the song's asset is gone")?;
+            // ---- ws:addon-demucs ----
+            let path = match arg_str(args, "source").unwrap_or("auto") {
+                "auto" if app.project.beats.voice => path,
+                "auto" => super::stems_ctl::beat_source(&path),
+                "song" => path,
+                "drums" => super::stems_ctl::cached_stem(&path, crate::engine::demucs::Stem::Drums)
+                    .ok_or("the song has no stems yet: audio.stems action=separate first")?
+                    .to_string_lossy()
+                    .into_owned(),
+                _ => return Err("source: auto, song or drums".into()),
+            };
             if app.project.beats.voice {
                 let peaks = app.waveforms.get(&path, 0).ok_or("waveform still computing - retry in a few seconds")?;
                 let s = &mut app.project.beats;

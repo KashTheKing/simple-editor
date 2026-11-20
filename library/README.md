@@ -317,6 +317,13 @@ Optional programs the app installs on a click, never bundled in the exe. Each ma
   Publish or update it the same way as the enhancer (the download is the exe itself, not a zip; try it with
   Settings ▸ General ▸ Speech denoise ▸ Install or `denoise.install`).
 
+- `bin/demucs.json`: Stem Separation, two downloads in one manifest: `program` (a zip with
+  `demucs_mt.cpp.main.exe`, `demucs_mt.cpp.main.v2.exe`, `README.txt` and `licenses/`: demucs.cpp built for
+  Windows by `tools/demucs-helper/build.sh`) and `model` (the htdemucs 4-source f16 weights, straight from the
+  Retrobear/demucs.cpp Hugging Face dataset). `engine::demucs::install` unpacks the zip into
+  `%APPDATA%\SimpleEditor\bin\demucs` and puts the weights beside the exe. Building and publishing the zip:
+  `tools/demucs-helper/README.md`.
+
 ## index.json (generated)
 
 ```json

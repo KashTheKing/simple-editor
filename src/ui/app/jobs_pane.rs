@@ -71,6 +71,7 @@ pub(super) fn progress_jobs(app: &App) -> Vec<ProgJob> {
     v.extend(app.html.jobs()); // ws:html-layer: HTML layer renders
     v.extend(enhance_ctl::progress_jobs()); // ws:ai-enhancer
     v.extend(denoise_ctl::progress_jobs()); // ws:addon-deepfilternet: Clean Audio
+    v.extend(stems_ctl::progress_jobs()); // ws:addon-demucs
     v.extend(caches::move_jobs()); // ws:neutral-web: Settings ▸ General ▸ Cache folder
     v.extend(music_ctl::progress_jobs()); // ws:music-burn: burns, erases, visualizer video prep
     v.extend(export_fix::progress_jobs(app)); // ws:forum-export: Find the problem

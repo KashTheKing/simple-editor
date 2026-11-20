@@ -107,6 +107,35 @@ you pick your own target.
 Every export is also loudness-normalised to −14 LUFS by default, the level YouTube and most platforms
 use (turn it off on the [Export page](export.mdx)).
 
+## Stem separation
+
+Split a song (or a video's sound) into four stems: **drums**, **bass**, **other** and **vocals**. It uses
+[Demucs](https://github.com/facebookresearch/demucs) (the htdemucs model), an optional add-on you install
+once: **Settings ▸ General ▸ Stem Separation ▸ Install** (about 85 MB; the first Separate offers it too).
+It runs on the processor, below normal priority and on half the cores, so playback stays smooth while it
+works. It takes a while (minutes for a song, longer on older processors), but each song is separated only once.
+
+Right-click an audio or video clip ▸ **Audio ▸ Stems** (or right-click the Inspector's **Audio** section):
+
+- **Separate Stems** puts the four stems in the Library, in a **Stems · *song name*** bin.
+- **Separate Stems to Tracks** also lays them on four new audio tracks (**Drums**, **Bass**, **Other**,
+  **Vocals**) right below the clip's track, lined up with the clip and given the
+  same trims, speed, volume and fades, and switches the original's sound off (**Enable** brings it back).
+- **Remove Vocals** does the same with the vocals stem off: an instrumental.
+- **Keep Only Vocals** does the same with only the vocals on.
+
+The job shows in the **Jobs** panel, where you can cancel it. Stems are kept in the app's cache (never
+next to your files), so separating the same song again is instant; changing the file separates it afresh.
+
+- **Duck just the vocals**: once a song's stems are on tracks, **Duck Music under Dialogue** lowers only its vocals stem
+  (whichever of the song's clips you picked as the music). The singing dips under your voiceover and the
+  beat keeps going.
+- **Beats from the drums**: once a song is separated, the Beat Aligner's **Detect** reads its drums stem,
+  which gives a cleaner tempo and grid on a busy mix.
+
+Licences: demucs.cpp (the C++ port the add-on runs) is MIT, Demucs and its htdemucs weights are MIT (Meta
+publishes no separate licence for the weights), Eigen is MPL-2.0 and libnyquist BSD-2-Clause.
+
 ## Record a voiceover
 
 The **Voiceover** panel is on the Audio page behind the Mixer, and anywhere else from **File ▸ Record ▸

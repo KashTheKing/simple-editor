@@ -407,6 +407,12 @@ actions! {
     AiUpscale2Real => "ai_upscale_2_real", "AI Upscale ×2 (Real-World)", None;
     AiUpscale4Game => "ai_upscale_4_game", "AI Upscale ×4 (Game / Animation)", None;
     AiUpscale4Real => "ai_upscale_4_real", "AI Upscale ×4 (Real-World)", None;
+    // ---- ws:addon-demucs ----
+    // clip menu ▸ Stems, Inspector ▸ Audio (the optional Demucs add-on); ui::app::stems_ctl::act. Unbound.
+    SeparateStems => "separate_stems", "Separate Stems", None;
+    SeparateStemsToTracks => "separate_stems_to_tracks", "Separate Stems to Tracks", None;
+    RemoveVocals => "remove_vocals", "Remove Vocals", None;
+    KeepOnlyVocals => "keep_only_vocals", "Keep Only Vocals", None;
     SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
     PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
     // ---- ws:music-burn ----
@@ -798,6 +804,8 @@ pub fn group(a: Action) -> &'static str {
         MakeVisualizerVideo | NewPlaylist => "Add",
         // ---- ws:ai-enhancer ----
         AiUpscale2Game | AiUpscale2Real | AiUpscale4Game | AiUpscale4Real => "Clip",
+        // ---- ws:addon-demucs ----
+        SeparateStems | SeparateStemsToTracks | RemoveVocals | KeepOnlyVocals => "Clip",
         // ---- ws:perf-window ----
         PerfWindow => "Playback",
         // ---- ws:quick-export ----
