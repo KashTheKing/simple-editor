@@ -432,7 +432,7 @@ pub(super) fn switch_page(app: &mut App, name: &str) -> bool {
             }
         }
         app.layout_json = app.settings.layout.clone();
-        app.settings.save();
+        app.settings.save_async(); // ws:page-switch-freeze: the new page's first frame never waits on the disk
     }
     true
 }

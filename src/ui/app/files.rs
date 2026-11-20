@@ -305,10 +305,13 @@ impl App {
     }
 
     pub(super) fn detect_encoders_once(&mut self) {
-        if self.encoders.is_empty() && media::ffpipe::ffmpeg_exe().is_some() {
-            self.encoders = export::detect_encoders();
-            // ws:export-encoders: background hardware probe (cached per ffmpeg path + mtime)
-            crate::engine::encoders::start();
+        // ws:page-switch-freeze: never `ffmpeg -encoders` on this thread (the Export pane calls this every
+        // frame); the list fills in when the background probe lands, which also starts ws:export-encoders'
+        // hardware probe. Empty until then (and without ffmpeg): the menus offer the built-in names.
+        if self.encoders.is_empty() {
+            if let Some(v) = export::encoders_nonblocking(wake_ui) {
+                self.encoders = v;
+            }
         }
     }
 

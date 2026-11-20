@@ -186,6 +186,12 @@ fn default_boring_thr() -> (f32, f32) {
     (1.5, 20.0)
 }
 
+/// ws:page-switch-freeze: every `save` / `save_async` takes the next number; a write whose number is no
+/// longer the newest is skipped, so an async save that lands late never overwrites a newer one.
+static SAVE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SAVE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static SAVE_DONE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -1166,6 +1172,33 @@ impl Settings {
     }
     /// Writes a temp file then renames, so a failed write can't destroy the previous settings.
     pub fn save(&self) {
+        let gen = SAVE_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        self.write_out(gen);
+    }
+
+    /// ws:page-switch-freeze: `save` off the calling thread, for the UI paths that must not wait on the
+    /// disk (switching pages: a busy or sleeping drive held the first frame of the new page 40-300 ms).
+    /// The newest save wins: one queued here is dropped if any later `save` / `save_async` came first.
+    pub fn save_async(&self) {
+        let gen = SAVE_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let snapshot = self.clone();
+        if std::thread::Builder::new().name("settings-save".into()).spawn(move || snapshot.write_out(gen)).is_err() {
+            self.write_out(gen);
+        }
+    }
+
+    /// A `save_async` has not reached the disk yet (the app is closing: `save` now instead).
+    pub fn save_pending() -> bool {
+        SAVE_DONE.load(std::sync::atomic::Ordering::SeqCst) != SAVE_GEN.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn write_out(&self, gen: u64) {
+        // one writer at a time (they share the temp file), and only the newest save's contents land
+        let _one = SAVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if SAVE_GEN.load(std::sync::atomic::Ordering::SeqCst) != gen {
+            return;
+        }
+        SAVE_DONE.store(gen, std::sync::atomic::Ordering::SeqCst);
         #[cfg(not(test))]
         crate::engine::gallery_sync::mirror(self, &crate::engine::gallery::root());
         let _ = std::fs::create_dir_all(Self::dir());

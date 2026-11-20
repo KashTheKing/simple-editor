@@ -7,6 +7,9 @@
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.
 - **Assistant in your theme**: the chat list, messages and input box now use the theme's colours (they could show light panels with unreadable text in a dark theme). The open chat is lit with the accent, steps sit in a framed row, Undo / Copy / Retry look like buttons, the chat-list button lights while the list is open, the model and permission pickers show ▾, and Send fills with the accent once there is something to send.
 - **Readable text on the accent**: active pane tabs, the page switcher and accent buttons pick white or black text for at least 4.5:1 contrast (dark text on the blue tab was hard to read).
+### Fixed
+- **Opening the Audio or Export page no longer freezes the editor**: the microphone list (Voiceover) and the encoder list (Export) are looked up in the background after launch instead of the first time the page draws (that could take 5-16 seconds).
+- **Switching pages is smoother**: the page switch saves your layout in the background, and the Inspector and the Library no longer read a video's file size from disk on every frame (on a busy or sleeping drive either could hold a page's first frame for a tenth of a second or more).
 
 ## 1.4.0
 
