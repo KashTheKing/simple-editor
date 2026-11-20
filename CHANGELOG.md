@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Find it faster
+- **Say what you want to do in Ctrl+P**: type *cut out a part*, *freeze*, *split screen*, *blur a face*, *beep*, *ticker*, *rotate*, *duck music*, *remove silences* or *captions* and the action that does it comes first, under **Do**, with its shortcut. Enter runs it.
+- **Split screens in one pick**: right-click selected clips ▸ **Layout** ▸ Side by Side, Three Across, 2 × 2 Grid, 3 × 2 Grid or Picture in Picture; each clip is scaled to fill its cell and cropped to it. MCP `clip.layout`.
+- **Censor**: right-click ▸ **Censor ▸ Blur** puts a movable blur box over In to Out (or the selected clips); **Censor ▸ Mute** silences the sound there. MCP `clip.censor`.
+- **News Ticker and Scrolling Credits** in Gallery ▸ Titles: a bar with text crawling across it, and credits that rise through the frame.
+- **Duplicate Track** in a track header's right-click menu (MCP `track.duplicate`); **drag the right edge of the track names** to widen the column, and it stays that wide.
+- **Keyframes: Smooth** in a keyframe's right-click menu eases every key in and out; the Animator's lanes follow the playhead when it leaves the view.
+- **Replace Media…** in the Library's right-click menu points an item at another file and keeps every cut that uses it (MCP `media.replace`). While files are missing, the Library says how many, with **Relink…** beside it.
+- **Rotate 90°** from Ctrl+P (MCP `clip.rotate`).
+- **Settings ▸ Appearance**: **Clear borders** (stronger lines between panels) and **Playhead width**.
+- The Ripple, Rolling, Slip and Slide tools' tooltips say what a drag does.
+
+### What moved
+- **Ripple Delete is now called Delete and Close Gap** (still <kbd>Delete</kbd>; <kbd>Shift+Delete</kbd> does it too), and **Delete (Leave Gap)** is **Delete and Leave Gap** (still <kbd>Backspace</kbd>). Your shortcuts are kept.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.
