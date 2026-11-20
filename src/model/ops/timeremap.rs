@@ -189,7 +189,7 @@ mod tests {
 
     #[test]
     fn enable_keeps_what_plays_and_disable_restores_speed() {
-        let (mut p, v, _, _) = proj();
+        let (mut p, v, s, _) = proj();
         p.set_speed(&[v], 2.0, false);
         let before: Vec<f64> = (0..20).map(|i| p.clip(v).unwrap().src_time(i as f64 * 0.1)).collect();
         assert!(p.time_remap_enable(v));
@@ -201,7 +201,7 @@ mod tests {
             assert!((got - b).abs() <= 0.5 / 30.0 + 1e-9, "{got} vs {b}");
             assert_eq!((got * 30.0).floor(), (b * 30.0 + 1e-6).floor());
         }
-        assert!(p.clip(11).unwrap().time_map.is_some(), "the linked sound follows");
+        assert!(p.clip(s).unwrap().time_map.is_some(), "the linked sound follows");
         assert!(p.time_remap_disable(v));
         let c = p.clip(v).unwrap();
         assert!(c.time_map.is_none() && (c.speed - 2.0).abs() < 1e-9 && (c.src_in - 10.0).abs() < 1e-9);

@@ -373,7 +373,7 @@ mod tests {
         assert!(p.move_clips(&h.unit, h.dt, 0, None));
         let (sa, sb) = (p.clip(a).unwrap().start, p.clip(b).unwrap().start);
         let frame = 1.0 / 30.0;
-        assert!(((sa - 3.0) - (sb - 5.36)).abs() < frame, "a clap at {}, b clap at {}", sa - 3.0, sb - 5.36);
+        assert!(((sa + 3.0) - (sb + 5.36)).abs() < frame, "a clap at {}, b clap at {}", sa + 3.0, sb + 5.36);
         assert_eq!(sa, 10.0, "the first clip stays put");
     }
 
@@ -423,7 +423,7 @@ mod tests {
             if edit_meanwhile {
                 assert_eq!(sb, b_before, "a stale plan moves nothing");
             } else {
-                assert!(((10.0 - 3.0) - (sb - 5.36)).abs() < 1.0 / 30.0, "b lands on a's clap: {sb}");
+                assert!(((10.0 + 3.0) - (sb + 5.36)).abs() < 1.0 / 30.0, "b lands on a's clap: {sb}");
                 app.act(Action::Undo);
                 assert_eq!(app.project.clip(b).unwrap().start, b_before, "one undo step puts it back");
             }

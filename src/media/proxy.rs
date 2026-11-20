@@ -672,6 +672,11 @@ mod tests {
         // ws:html-layer: an alpha source below the proxy height still gets one, at its own height
         let mut small = crate::media::probe(&src, crate::media::Backend::Auto).unwrap();
         small.kind = crate::model::ClipKind::Video;
+        // ws:forum-preview: eligibility also waits for the frame-rate probe
+        while crate::media::playcheck::traits(&src).is_none() {
+            assert!(t0.elapsed().as_secs() < 40, "frame-rate probe never finished");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(eligible(&small, 720), "alpha at 480 high, proxy height 720");
         assert_eq!(height_for(&small, 720), 480);
         assert!(!matches!(status(&small, true, 720), ProxyStatus::NotNeeded));
@@ -798,6 +803,8 @@ mod tests {
     fn alpha_proxies_at_any_height_others_only_above_it() {
         use crate::model::{Asset, ClipKind};
         let a = Asset { kind: ClipKind::Video, duration: 4.0, width: 640, height: 361, ..crate::engine::import::placeholder("C:\\x\\small.mp4") };
+        // ws:forum-preview: eligibility waits for the frame-rate probe; answer it (constant rate)
+        crate::media::playcheck::remember(&a.path, Default::default());
         assert!(!eligible(&a, 720), "plain footage below the proxy height gains nothing");
         let big = Asset { width: 3840, height: 2160, ..a.clone() };
         assert!(eligible(&big, 720));

@@ -3539,7 +3539,7 @@ mod tests {
         settings.templates.push(crate::engine::presets::capture_template("My Title", &p, &[text_id]));
         let names = card_names(GalleryTab::Titles, &settings);
         let social = crate::engine::presets::social_title_names().len(); // ws:social-text
-        assert_eq!(names.len(), 4 + social + 1, "4 builtins (ws:browser-layer added Browser Window), the Social ones, + the one saved text template");
+        assert_eq!(names.len(), 6 + social + 1, "6 builtins (ws:browser-layer added Browser Window, ws:forum-ui News Ticker + Scrolling Credits), the Social ones, + the one saved text template");
         assert!(names.contains(&"My Title".to_string()));
         assert!(names.contains(&"Lower Third".to_string()));
     }

@@ -82,6 +82,7 @@ pub fn composite_row(dst: &mut [u8], src: &[u8], mode: BlendMode, opacity: f32) 
             }
             if d[3] < 255 {
                 over_clear(d, s, a as f32 / 255.0, mode);
+                continue; // over_clear set the coverage; the opaque `d[3] = 255` below must not run
             } else if a == 255 {
                 d[..3].copy_from_slice(&s[..3]);
             } else {

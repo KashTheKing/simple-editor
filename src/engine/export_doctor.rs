@@ -629,6 +629,7 @@ mod tests {
             overlay: None,
             fps: Some(60.0),
             target_bytes: Some(1 << 30),
+            alpha: false,
         };
         let t = test_options(&o, PathBuf::from("t.mp4"), (1.0, 2.0), &p);
         assert_eq!(t.encoder, "libx264");

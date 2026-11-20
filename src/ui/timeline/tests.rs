@@ -1339,12 +1339,13 @@ fn group_click_selects_members_and_drag_moves_them() {
     let mut want = vec![vid, aud, t];
     want.sort();
     assert_eq!(sel, want, "a click takes the whole group");
+    h.settle();
     h.press_m(p, Modifiers::ALT);
     h.release_m(p, Modifiers::ALT);
     h.frame(vec![]);
     assert_eq!(h.selection, vec![vid], "Alt+click picks one clip");
     h.selection.clear();
-    h.frame(vec![]);
+    h.settle(); // out of the double-click window of the clicks above
     assert!(h.drag(p, p + vec2(40.0, 0.0)), "the drag moved something");
     let d = h.project.clip(vid).unwrap().start;
     assert!(d > 0.0, "moved right: {d}");
@@ -1598,6 +1599,18 @@ fn transform_menu_bulk_stretches_selection_with_one_undo() {
     h.frame(vec![]);
     h.frame(vec![secondary(p1, false)]);
     h.frame(vec![]);
+    // the clip menu is taller than this 400 px harness screen (groups, layouts, censor...): scroll down to it
+    for _ in 0..8 {
+        if h.painted_text("Transform").is_some() {
+            break;
+        }
+        h.frame(vec![
+            Event::PointerMoved(p1 + vec2(30.0, 30.0)),
+            Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: vec2(0.0, -80.0), modifiers: Modifiers::NONE },
+        ]);
+    }
+    h.settle(); // let the scroll animation finish before reading positions
+    h.settle();
     let xf = h.painted_text("Transform").expect("Transform submenu button painted") + vec2(4.0, 4.0);
     h.press(xf);
     h.release(xf);
@@ -3274,6 +3287,8 @@ fn header_column_resizes_by_dragging_its_edge() {
     h.frame(vec![Event::PointerMoved(pos2(edge.x - 400.0, y))]);
     h.release(pos2(edge.x - 400.0, y));
     assert_eq!(h.state.header_w, HEADER_W);
+}
+
 // ---- ws:zones-markers: the live-check items, headless ----
 
 /// Centre-y of zone lane row 0 (the lane sits between the ruler and the tracks while there is a zone).
