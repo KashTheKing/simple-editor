@@ -174,6 +174,8 @@ pub struct LibraryResponse {
     pub settings_changed: bool,
     /// (asset id, target extension) - start a Convert To… with the default options.
     pub convert: Vec<(Id, String)>,
+    /// ws:parity-editing: Export Each As ▸ format - the assets, written to a folder the app asks for.
+    pub batch_export: Option<(Vec<Id>, String)>,
     /// Source paths whose proxy should be rebuilt (the app releases decoders, deletes, rescans).
     pub regen_proxy: Vec<String>,
     /// Per-source proxy choice from the Proxies menu: (asset id, None = auto / Some(on)).
@@ -3159,6 +3161,16 @@ impl Tree<'_, '_> {
                 for t in crate::engine::convert::TARGETS {
                     if menu::row(ui, None, t, "").clicked() {
                         self.resp.convert.extend(ids.iter().map(|id| (*id, (*t).to_string())));
+                    }
+                }
+            });
+            // ---- ws:parity-editing ----
+            menu::sub(ui, None, "Export Each As", |ui| {
+                for t in crate::engine::convert::TARGETS {
+                    let r = menu::row(ui, None, t, "")
+                        .on_hover_text("Write each selected file to a folder you pick, one after another, with the export settings");
+                    if r.clicked() {
+                        self.resp.batch_export = Some((ids.clone(), (*t).to_string()));
                     }
                 }
             });

@@ -915,6 +915,7 @@ impl App {
             }
         }
 
+        batch_export::poll(self); // ws:parity-editing
         // library conversions
         let mut done: Vec<(PathBuf, Option<String>)> = Vec::new();
         self.convert_jobs.retain(|(prog, out)| {

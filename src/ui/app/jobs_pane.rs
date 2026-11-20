@@ -70,6 +70,7 @@ pub(super) fn progress_jobs(app: &App) -> Vec<ProgJob> {
     v.extend(app.transcript.jobs());
     v.extend(app.html.jobs()); // ws:html-layer: HTML layer renders
     v.extend(enhance_ctl::progress_jobs()); // ws:ai-enhancer
+    v.extend(batch_export::progress_jobs()); // ws:parity-editing
     v.extend(caches::move_jobs()); // ws:neutral-web: Settings ▸ General ▸ Cache folder
     v.extend(music_ctl::progress_jobs()); // ws:music-burn: burns, erases, visualizer video prep
     if let Some((c, out)) = &app.screen_rec {

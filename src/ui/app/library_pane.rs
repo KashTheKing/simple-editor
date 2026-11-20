@@ -104,6 +104,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, browser: bool) {
     for (id, ext) in resp.convert {
         app.start_asset_convert(id, &ext);
     }
+    if let Some((ids, ext)) = resp.batch_export {
+        batch_export::start(app, &ids, &ext); // ws:parity-editing
+    }
     for (id, mode) in resp.proxy_mode {
         if let Some(a) = app.project.asset_mut(id) {
             a.proxy = mode;

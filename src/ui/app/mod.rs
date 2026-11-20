@@ -167,6 +167,7 @@ mod tools_social;
 // ---- ws:ai-enhancer ----
 mod enhance_ctl;
 mod whatsnew;
+mod batch_export; // ws:parity-editing: Library ▸ Export Each As
 mod perf_ctl; // ws:perf-window
 mod quick_export; // ws:quick-export
 mod animator_ctl; // ws:animator
