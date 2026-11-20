@@ -1601,7 +1601,7 @@ fn transform_menu_bulk_stretches_selection_with_one_undo() {
     h.frame(vec![]);
     // the clip menu is taller than this 400 px harness screen (groups, layouts, censor...): scroll down to it
     for _ in 0..8 {
-        if h.painted_text("Transform").is_some() {
+        if h.painted_text("Video").is_some() {
             break;
         }
         h.frame(vec![
@@ -1611,7 +1611,7 @@ fn transform_menu_bulk_stretches_selection_with_one_undo() {
     }
     h.settle(); // let the scroll animation finish before reading positions
     h.settle();
-    let xf = h.painted_text("Transform").expect("Transform submenu button painted") + vec2(4.0, 4.0);
+    let xf = h.painted_text("Video").expect("Video submenu button painted") + vec2(4.0, 4.0);
     h.press(xf);
     h.release(xf);
     let stretch = h.painted_text("Stretch to Screen").expect("Stretch to Screen listed") + vec2(4.0, 4.0);
@@ -3181,7 +3181,7 @@ fn ai_upscale_is_offered_at_the_top_on_zoomed_clips() {
         assert_eq!(probe.has("AI Upscale — zoomed 1.6×"), top, "{:?}", probe.texts());
         assert!(!probe.has("AI Upscale"), "plain entry is not at the top level");
         if !top {
-            probe.click("Transform", &mut draw);
+            probe.click("Video", &mut draw);
             assert!(probe.has("AI Upscale"), "{:?}", probe.texts());
         }
     }

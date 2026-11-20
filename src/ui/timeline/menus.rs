@@ -257,11 +257,12 @@ pub(super) fn clip_menu(
         acts(ui, &[Some(CutClips), Some(CopyClips), Some(PasteClips)]);
         menu::sub(ui, None, "Attributes", |ui| acts(ui, &[Some(CopyAttributes), Some(PasteAttributes)]));
         acts(ui, &[Some(Delete), Some(RippleDelete), None]);
-        acts(
-            ui,
-            &[Some(Split), Some(JoinThroughEdit), Some(DuplicateClips), Some(ToggleEnabled), Some(LinkToggle)],
-        );
-        acts(ui, &[Some(GroupClips), Some(UngroupClips), Some(SyncByAudio), None]); // ws:gap-group-sync
+        acts(ui, &[Some(Split), Some(JoinThroughEdit), Some(DuplicateClips), Some(ToggleEnabled)]);
+        // ws:gap-group-sync: linking, grouping and audio sync are one family
+        menu::sub(ui, None, "Group", |ui| {
+            acts(ui, &[Some(LinkToggle), None, Some(GroupClips), Some(UngroupClips), None, Some(SyncByAudio)])
+        });
+        ui.separator();
         menu::sub(ui, Some(Glyph::Speed), "Speed", |ui| {
             acts(ui, &[Some(Retime), Some(FreezeFrame)]);
             // ws:mixed-footage: 50p in a 25p project plays each frame once at exactly 50 %
@@ -272,9 +273,10 @@ pub(super) fn clip_menu(
                 }
             }
         });
-        // video/image/sequence only - Project::fit_clip_to_screen skips the rest of a mixed selection
+        // video/image/sequence only - Project::fit_clip_to_screen skips the rest of a mixed selection.
+        // One Video submenu for the picture: fit, upscale, background removal, split-screen layouts, blur.
         if m.native_size {
-            menu::sub(ui, None, "Transform", |ui| {
+            menu::sub(ui, None, "Video", |ui| {
                 if menu::row(ui, None, "Stretch to Screen", "").clicked() {
                     *act = Some(Act::StretchToScreen);
                 }
@@ -284,14 +286,26 @@ pub(super) fn clip_menu(
                 if upscalable && !zoomed {
                     menu::sub(ui, None, "AI Upscale", upscale_rows);
                 }
-            });
-        }
-        // ---- ws:addon-bg-removal ---- (video / picture files, like AI Upscale)
-        if upscalable {
-            menu::sub(ui, None, "Remove Background", |ui| {
-                menu::action_item_as(ui, RemoveBackgroundFast, "Fast");
-                menu::action_item_as(ui, RemoveBackgroundBest, "Best");
-                menu::action_item_as(ui, RemoveBackgroundOff, "Off");
+                // ---- ws:addon-bg-removal ---- (video / picture files, like AI Upscale)
+                if upscalable {
+                    menu::sub(ui, None, "Remove Background", |ui| {
+                        menu::action_item_as(ui, RemoveBackgroundFast, "Fast");
+                        menu::action_item_as(ui, RemoveBackgroundBest, "Best");
+                        menu::action_item_as(ui, RemoveBackgroundOff, "Off");
+                    });
+                }
+                // ---- ws:forum-ui ----: split screens, one pick each
+                menu::sub(ui, None, "Layout", |ui| {
+                    for l in crate::model::ops::findability::Layout::ALL {
+                        if menu::row(ui, None, l.name(), "").on_hover_text(l.hint()).clicked() {
+                            *act = Some(Act::Layout(l));
+                        }
+                    }
+                });
+                let tip = "Over In to Out when marked, else over the selected clips";
+                if menu::row(ui, None, "Blur (censor)", "").on_hover_text(tip).clicked() {
+                    *act = Some(Act::Censor(crate::model::ops::findability::Censor::Blur));
+                }
             });
         }
         if !m.shared_effects.is_empty() {
@@ -303,26 +317,6 @@ pub(super) fn clip_menu(
                 }
             });
         }
-        // ---- ws:forum-ui ----: split screens and censoring, one pick each
-        if m.native_size {
-            menu::sub(ui, None, "Layout", |ui| {
-                for l in crate::model::ops::findability::Layout::ALL {
-                    if menu::row(ui, None, l.name(), "").on_hover_text(l.hint()).clicked() {
-                        *act = Some(Act::Layout(l));
-                    }
-                }
-            });
-        }
-        menu::sub(ui, None, "Censor", |ui| {
-            use crate::model::ops::findability::Censor;
-            let tip = "Over In to Out when marked, else over the selected clips";
-            if !m.audio && menu::row(ui, None, "Blur", "").on_hover_text(tip).clicked() {
-                *act = Some(Act::Censor(Censor::Blur));
-            }
-            if (m.audio || m.native_size) && menu::row(ui, None, "Mute", "").on_hover_text(tip).clicked() {
-                *act = Some(Act::Censor(Censor::Mute));
-            }
-        });
         menu::sub(ui, None, "Add", |ui| {
             acts(ui, &[Some(AddMarker), Some(AddTransition), Some(AddTransitionEnd)]);
             // a mask means nothing on audio
@@ -349,6 +343,11 @@ pub(super) fn clip_menu(
                     });
                 }
                 acts(ui, &[Some(Normalize), Some(MatchLoudness), Some(AutoDuck), None]);
+                // ws:forum-ui: censoring the sound
+                let tip = "Over In to Out when marked, else over the selected clips";
+                if menu::row(ui, None, "Mute (censor)", "").on_hover_text(tip).clicked() {
+                    *act = Some(Act::Censor(crate::model::ops::findability::Censor::Mute));
+                }
                 acts(ui, &[Some(DetectBeats), Some(SplitAtBeats), None, Some(AutoCut)]);
                 // ---- ws:addon-demucs ---- the optional Demucs add-on (an action offers to install it first)
                 menu::sub(ui, None, "Stems", |ui| {
@@ -404,12 +403,14 @@ pub(super) fn clip_menu(
             }
         }
         acts(ui, &[None, Some(MatchFrame), Some(RevealInLibrary)]);
-        if !m.sequence && !m.html && !m.shape {
-            acts(ui, &[Some(SaveClipAsFile)]); // ws:parity-editing
-        }
-        if menu::item(ui, ReplaceWithLibrarySelection, m.library_selected.is_some()) {
-            *act = Some(Act::ReplaceClip(m.id));
-        }
+        menu::sub(ui, None, "Source", |ui| {
+            if !m.sequence && !m.html && !m.shape {
+                acts(ui, &[Some(SaveClipAsFile)]); // ws:parity-editing
+            }
+            if menu::item(ui, ReplaceWithLibrarySelection, m.library_selected.is_some()) {
+                *act = Some(Act::ReplaceClip(m.id));
+            }
+        });
         acts(ui, &[None, Some(SaveToGallery), Some(SaveTemplate)]);
         // ---- ws:html-layer ----
         if m.html {

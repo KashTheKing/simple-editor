@@ -396,7 +396,9 @@ mod tests {
                 seed ^= seed << 13;
                 seed ^= seed >> 7;
                 seed ^= seed << 17;
-                (seed % 9_800) as f64 / 1000.0 + 0.05
+                // mid-frame on the 30 fps grid: a time a few ms from a frame boundary is a tie both
+                // decoders may break either way (one frame apart), which isn't what this checks
+                (((seed % 9_800) as f64 / 1000.0 + 0.05) * 30.0).floor() / 30.0 + 0.5 / 30.0
             })
             .collect();
         cuts.sort_by(|x, y| x.total_cmp(y));
