@@ -14,7 +14,10 @@
 //! Pipeline per frame: decode (CPU, player threads) → upload layer textures (`upload`) → for each visual
 //! clip: build its chain (node graph when present, else the linear effect stack) → ping-pong FBOs →
 //! transform+blend into the canvas FBO → adjustment layers re-process the canvas → subtitles/markers.
-//! All textures are RGBA8 with straight alpha, matching `media::Frame`.
+//! All textures are RGBA8 with straight alpha, matching `media::Frame` - except that, in the float
+//! processing modes (`settings::ProcessingMode`, `set_mode`), every off-screen target is RGBA16F and, in
+//! the linear one, `COMPOSITE` mixes in linear light. Values stay gamma-encoded in every target in every
+//! mode, so effects, readback and the preview see what they always did (plans/color-pipeline.md).
 //!
 //! What the caller owes us (`LayerSet`): one decoded frame per visual clip that is on screen at `t`,
 //! keyed by clip id - including both clips of a transition (they are rendered virtually extended past
@@ -42,6 +45,8 @@ pub struct Target {
     pub fbo: glow::Framebuffer,
     pub w: u32,
     pub h: u32,
+    /// ws:parity-color-pipeline: RGBA16F (a float processing mode) rather than RGBA8.
+    pub float: bool,
 }
 
 /// Compiled shader programs, cached by effect kind (and by source hash for `EffectKind::Shader`).
@@ -95,6 +100,7 @@ const UNIFORMS: &[&str] = &[
     "u_scaler",
     "u_mode",
     "u_opacity",
+    "u_linear", // ws:parity-color-pipeline
     "u_b",
     "u_matte_alpha",
     "u_matte_invert",
@@ -189,6 +195,38 @@ void main() {
 }
 "#;
 
+// ---- ws:parity-color-pipeline ----
+/// What an export frame is read back as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Readout {
+    /// 8-bit RGBA, 4 bytes a pixel (ffmpeg `rgba`).
+    Rgba,
+    /// The `NV12_MAIN` pack, 1.5 bytes a pixel (ffmpeg `nv12`, BT.709 limited).
+    Nv12,
+    /// 16-bit RGBA, 8 bytes a pixel little-endian (ffmpeg `rgba64le`): a float processing mode's frame
+    /// for a 10-bit encode, with nothing rounded to 8 bits on the way.
+    Rgba16,
+}
+
+impl Readout {
+    /// From a `GpuFrameRequest`'s flags (`deep` wins: the 16-bit read is never packed).
+    pub fn of(nv12: bool, deep: bool) -> Self {
+        match (deep, nv12) {
+            (true, _) => Readout::Rgba16,
+            (false, true) => Readout::Nv12,
+            _ => Readout::Rgba,
+        }
+    }
+    /// `glReadPixels`'s (format, type) and the bytes it writes per pixel of the target read.
+    fn gl(self) -> (u32, u32, usize) {
+        match self {
+            Readout::Rgba => (glow::RGBA, glow::UNSIGNED_BYTE, 4),
+            Readout::Nv12 => (glow::RED, glow::UNSIGNED_BYTE, 1),
+            Readout::Rgba16 => (glow::RGBA, glow::UNSIGNED_SHORT, 8),
+        }
+    }
+}
+
 /// Pixel-pack buffers in the export readback ring: frame k is read back while k+1 and k+2 render.
 pub const READBACK_RING: usize = 3;
 
@@ -235,6 +273,8 @@ struct LayerTex {
     rev: (usize, u64),
     /// `GpuRenderer::renders` when it was last drawn.
     used: u64,
+    /// ws:parity-color-pipeline: RGBA16 (a `Frame::deep` layer) rather than RGBA8.
+    deep: bool,
 }
 
 /// RGBA8 bytes of layer textures kept before the least recently drawn are freed. There is one per
@@ -250,7 +290,7 @@ const LAYER_TEX_KEEP: u64 = 4;
 /// The keys to free so that the rest fits `budget`: least recently drawn first, none drawn at
 /// render `keep` or later.
 fn stale_textures(textures: &HashMap<u64, LayerTex>, budget: usize, keep: u64) -> Vec<u64> {
-    let bytes = |t: &LayerTex| t.w as usize * t.h as usize * 4;
+    let bytes = |t: &LayerTex| t.w as usize * t.h as usize * if t.deep { 8 } else { 4 };
     let mut total: usize = textures.values().map(bytes).sum();
     let mut old: Vec<(&u64, &LayerTex)> = textures.iter().filter(|(_, t)| t.used < keep).collect();
     old.sort_by_key(|(_, t)| t.used);
@@ -276,6 +316,9 @@ struct Pool {
     free: Vec<Target>,
     /// Targets handed out and not yet returned.
     live: usize,
+    /// ws:parity-color-pipeline: the format targets are made in now. A target of the other format coming
+    /// back (handed out before a mode change) is freed instead of kept.
+    float: bool,
 }
 
 impl Pool {
@@ -283,9 +326,14 @@ impl Pool {
     /// preview resize walks through one target per pixel width and never frees any of them.
     const MAX_FREE_PX: usize = 64 << 20;
 
+    /// The free list's budget in pixels: the same bytes in either format (a float pixel is twice as big).
+    fn max_free_px(&self) -> usize {
+        Self::MAX_FREE_PX >> (self.float as u32)
+    }
+
     /// A free target of exactly this size, if there is one (callers create one otherwise).
     fn take(&mut self, w: u32, h: u32) -> Option<Target> {
-        let i = self.free.iter().position(|t| t.w == w && t.h == h)?;
+        let i = self.free.iter().position(|t| t.w == w && t.h == h && t.float == self.float)?;
         self.live += 1;
         Some(self.free.swap_remove(i))
     }
@@ -295,20 +343,39 @@ impl Pool {
     }
     fn put(&mut self, t: Target) {
         self.live = self.live.saturating_sub(1);
+        if t.float != self.float {
+            self.free_gl(t); // made before a processing-mode change: never reused
+            return;
+        }
         self.free.push(t);
         // ponytail: FIFO eviction, not true LRU - the oldest entry is the stale size, and resize
         // churn is the only thing that grows this. Sort by last use if a real workload thrashes.
         let px = |t: &Target| t.w as usize * t.h as usize;
         let mut total: usize = self.free.iter().map(px).sum();
-        while total > Self::MAX_FREE_PX && self.free.len() > 1 {
+        while total > self.max_free_px() && self.free.len() > 1 {
             let old = self.free.remove(0);
             total -= px(&old);
-            if let Some(gl) = &self.gl {
-                unsafe {
-                    gl.delete_framebuffer(old.fbo);
-                    gl.delete_texture(old.tex);
-                }
+            self.free_gl(old);
+        }
+    }
+
+    fn free_gl(&self, t: Target) {
+        if let Some(gl) = &self.gl {
+            unsafe {
+                gl.delete_framebuffer(t.fbo);
+                gl.delete_texture(t.tex);
             }
+        }
+    }
+
+    /// ws:parity-color-pipeline: make targets in the other format from now on; the free list is freed.
+    fn set_float(&mut self, float: bool) {
+        if float == self.float {
+            return;
+        }
+        self.float = float;
+        for t in std::mem::take(&mut self.free) {
+            self.free_gl(t);
         }
     }
 }
@@ -365,6 +432,9 @@ pub struct GpuRenderer {
     pub bg_override: Option<BackgroundMode>,
     /// #158: D3D11 textures shared into GL for zero-copy decoded layers (`interop`); None = no sharing.
     interop: Option<interop::Interop>,
+    // ---- ws:parity-color-pipeline ----
+    /// Target format and light model (`set_mode`).
+    mode: crate::settings::ProcessingMode,
 }
 
 /// High bit of the layer-texture key space reserved for the Source monitor's canvas.
@@ -415,6 +485,7 @@ impl GpuRenderer {
                 readback: Readback::default(), // ws:export-pipeline
                 bg_override: None,
                 interop: None,
+                mode: crate::settings::ProcessingMode::Fast8, // ws:parity-color-pipeline
             };
             r.interop = interop::Interop::open(&r.gl);
             if r.interop.is_some() {
@@ -446,9 +517,12 @@ impl GpuRenderer {
         // the texture's alpha swizzle reads 1 for the undefined X byte, so no shader sees the
         // difference and no CPU loop swizzles it.
         let (format, alpha) = if frame.bgrx { (glow::BGRA, glow::ONE) } else { (glow::RGBA, glow::ALPHA) };
+        // ws:parity-color-pipeline: a deep frame is 16 bits a channel, kept at 16 bits on the GPU
+        let deep = frame.deep && !frame.bgrx;
+        let (internal, ty) = if deep { (glow::RGBA16, glow::UNSIGNED_SHORT) } else { (glow::RGBA8, glow::UNSIGNED_BYTE) };
         unsafe {
             match self.textures.get_mut(&key) {
-                Some(lt) if lt.w == w && lt.h == h => {
+                Some(lt) if lt.w == w && lt.h == h && lt.deep == deep => {
                     lt.used = used;
                     if lt.rev == rev {
                         return lt.tex;
@@ -464,7 +538,7 @@ impl GpuRenderer {
                         w as i32,
                         h as i32,
                         format,
-                        glow::UNSIGNED_BYTE,
+                        ty,
                         glow::PixelUnpackData::Slice(Some(&frame.rgba)),
                     );
                     return lt.tex;
@@ -481,15 +555,15 @@ impl GpuRenderer {
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                glow::RGBA8 as i32,
+                internal as i32,
                 w as i32,
                 h as i32,
                 0,
                 format,
-                glow::UNSIGNED_BYTE,
+                ty,
                 glow::PixelUnpackData::Slice(Some(&frame.rgba)),
             );
-            self.textures.insert(key, LayerTex { tex, w, h, rev, used });
+            self.textures.insert(key, LayerTex { tex, w, h, rev, used, deep });
             tex
         }
     }
@@ -552,25 +626,25 @@ impl GpuRenderer {
     }
 
     // ---- ws:export-pipeline ----
-    /// Bytes an export frame reads back: RGBA, or NV12 (`w*h*3/2`; `w`, `h` even).
-    pub fn export_bytes(w: u32, h: u32, nv12: bool) -> usize {
+    /// Bytes an export frame reads back: RGBA, NV12 (`w*h*3/2`; `w`, `h` even) or 16-bit RGBA.
+    pub fn export_bytes(w: u32, h: u32, read: Readout) -> usize {
         let px = w as usize * h as usize;
-        if nv12 {
-            px * 3 / 2
-        } else {
-            px * 4
+        match read {
+            Readout::Nv12 => px * 3 / 2,
+            Readout::Rgba => px * 4,
+            Readout::Rgba16 => px * 8,
         }
     }
 
     /// Render the canvas for an export frame and, for `nv12`, pack it (see `NV12_MAIN`). The returned
     /// target is what `glReadPixels` reads (`GL_RED` for NV12, `GL_RGBA` otherwise); the caller puts it
     /// back in the pool. Caller does `reclaim`/`host_fbo`/`restore`.
-    fn export_target(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet, nv12: bool) -> Option<Target> {
+    fn export_target(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet, read: Readout) -> Option<Target> {
         self.wait_for_wipes = true;
         let canvas = self.render_canvas(project, t, w, h, layers);
         self.wait_for_wipes = false;
         let canvas = canvas?;
-        if !nv12 {
+        if read != Readout::Nv12 {
             return Some(canvas);
         }
         let packed = match self.ensure(K_NV12) {
@@ -601,22 +675,23 @@ impl GpuRenderer {
         w: u32,
         h: u32,
         layers: &LayerSet,
-        nv12: bool,
+        read: Readout,
         out: &mut Frame,
     ) -> bool {
         self.reclaim();
         let host = self.host_fbo();
         out.resize(w, h);
         out.pts = t;
-        out.rgba.resize(Self::export_bytes(w, h, nv12), 0);
+        out.rgba.resize(Self::export_bytes(w, h, read), 0);
         if w == 0 || h == 0 {
             self.restore(host);
             return false;
         }
-        let target = self.export_target(project, t, w, h, layers, nv12);
+        let target = self.export_target(project, t, w, h, layers, read);
         let ok = target.is_some();
         if let Some(target) = target {
             let gl = self.gl.clone();
+            let (format, ty, _) = read.gl();
             unsafe {
                 gl.bind_framebuffer(glow::FRAMEBUFFER, Some(target.fbo));
                 gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
@@ -625,8 +700,8 @@ impl GpuRenderer {
                     0,
                     target.w as i32,
                     target.h as i32,
-                    if nv12 { glow::RED } else { glow::RGBA },
-                    glow::UNSIGNED_BYTE,
+                    format,
+                    ty,
                     glow::PixelPackData::Slice(Some(&mut out.rgba)),
                 );
             }
@@ -640,15 +715,15 @@ impl GpuRenderer {
     /// ring. False = nothing was queued (ring full, a buffer call failed - then for good - or the render
     /// failed): the caller uses `render_export_sync` instead. Completed in FIFO order by
     /// `render_export_finish`.
-    pub fn render_export_begin(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet, nv12: bool) -> bool {
+    pub fn render_export_begin(&mut self, project: &Project, t: f64, w: u32, h: u32, layers: &LayerSet, read: Readout) -> bool {
         if self.readback.broken || self.readback.pending.len() >= READBACK_RING || w == 0 || h == 0 {
             return false;
         }
         self.reclaim();
         let host = self.host_fbo();
-        let ok = match self.export_target(project, t, w, h, layers, nv12) {
+        let ok = match self.export_target(project, t, w, h, layers, read) {
             Some(target) => {
-                let ok = self.pbo_read(&target, nv12, (w, h), t);
+                let ok = self.pbo_read(&target, read, (w, h), t);
                 self.pool.put(target);
                 ok
             }
@@ -681,9 +756,10 @@ impl GpuRenderer {
 
     /// Queue `glReadPixels` of `target` into the next free ring buffer. False (and the ring marked
     /// broken) when GL reports an error, so the caller degrades to the synchronous read.
-    fn pbo_read(&mut self, target: &Target, nv12: bool, size: (u32, u32), t: f64) -> bool {
+    fn pbo_read(&mut self, target: &Target, read: Readout, size: (u32, u32), t: f64) -> bool {
         let gl = self.gl.clone();
-        let bytes = target.w as usize * target.h as usize * if nv12 { 1 } else { 4 };
+        let (format, ty, bpp) = read.gl();
+        let bytes = target.w as usize * target.h as usize * bpp;
         let rb = &mut self.readback;
         let slot = unsafe {
             // drop stale error flags so the check below only sees ours (bounded: a lost context repeats)
@@ -718,8 +794,8 @@ impl GpuRenderer {
                 0,
                 target.w as i32,
                 target.h as i32,
-                if nv12 { glow::RED } else { glow::RGBA },
-                glow::UNSIGNED_BYTE,
+                format,
+                ty,
                 glow::PixelPackData::BufferOffset(0),
             );
             gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
@@ -1064,6 +1140,25 @@ impl GpuRenderer {
         }
     }
 
+    // ---- ws:parity-color-pipeline ----
+    /// Switch the processing mode. Targets of the old format are freed as they come back (the ones on
+    /// loan this frame stay valid until the next `reclaim`), so the next render allocates afresh - one
+    /// frame of work, like a preview resize. Call between frames (`App::sync_gpu`).
+    pub fn set_mode(&mut self, mode: crate::settings::ProcessingMode) {
+        if mode == self.mode {
+            return;
+        }
+        self.mode = mode;
+        // the Source canvas stays: the pane keeps painting it until its next render replaces it, and
+        // `Pool::put` frees it then (wrong format)
+        self.pool.set_float(mode.is_float());
+        self.last_stats = None;
+    }
+
+    pub fn mode(&self) -> crate::settings::ProcessingMode {
+        self.mode
+    }
+
     /// Take back everything handed out during the previous frame.
     fn reclaim(&mut self) {
         // ponytail: one frame of lag is enough because the UI paints within the frame it asked;
@@ -1086,6 +1181,8 @@ impl GpuRenderer {
             return Some(t);
         }
         let gl = self.gl.clone();
+        let float = self.pool.float;
+        let (internal, ty) = target_format(float);
         unsafe {
             let tex = gl.create_texture().ok()?;
             gl.bind_texture(glow::TEXTURE_2D, Some(tex));
@@ -1093,12 +1190,12 @@ impl GpuRenderer {
             gl.tex_image_2d(
                 glow::TEXTURE_2D,
                 0,
-                glow::RGBA8 as i32,
+                internal as i32,
                 w as i32,
                 h as i32,
                 0,
                 glow::RGBA,
-                glow::UNSIGNED_BYTE,
+                ty,
                 glow::PixelUnpackData::Slice(None),
             );
             let fbo = gl.create_framebuffer().ok()?;
@@ -1112,7 +1209,7 @@ impl GpuRenderer {
             }
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
             self.pool.created();
-            Some(Target { tex, fbo, w, h })
+            Some(Target { tex, fbo, w, h, float })
         }
     }
 
@@ -1579,7 +1676,9 @@ impl GpuRenderer {
         let (cw, ch) = (canvas.w as f32, canvas.h as f32);
         let mode_i = blend_index(mode);
         let scaler_i = scaler_index(scaler);
+        let linear = self.mode.is_linear() as i32; // ws:parity-color-pipeline
         self.draw(K_COMPOSITE, &dst, layer, mask, |p| unsafe {
+            gl.uniform_1_i32(p.uni.get("u_linear"), linear);
             gl.uniform_2_f32(p.uni.get("u_res"), cw, ch);
             gl.uniform_2_f32(p.uni.get("u_layer"), layer_size.0 as f32, layer_size.1 as f32);
             gl.uniform_matrix_3_f32_slice(p.uni.get("u_inv"), false, &m);
@@ -2352,6 +2451,39 @@ impl Drop for GpuRenderer {
     }
 }
 
+// ---- ws:parity-color-pipeline ----
+/// `(internal format, pixel type)` of an off-screen target: RGBA8, or RGBA16F in a float mode.
+fn target_format(float: bool) -> (u32, u32) {
+    if float {
+        (glow::RGBA16F, glow::HALF_FLOAT)
+    } else {
+        (glow::RGBA8, glow::UNSIGNED_BYTE)
+    }
+}
+
+/// The sRGB decode `COMPOSITE`'s `to_lin` runs per channel in the linear mode (the CPU reference the
+/// tests hold the shader to).
+#[allow(dead_code)] // the CPU reference the shader is tested against
+pub fn to_linear(c: f32) -> f32 {
+    let c = c.max(0.0);
+    if c < 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// The inverse of `to_linear` (`COMPOSITE`'s `to_enc`).
+#[allow(dead_code)] // the CPU reference the shader is tested against
+pub fn to_encoded(c: f32) -> f32 {
+    let c = c.max(0.0);
+    if c < 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
 /// Either a mask we rendered (and must recycle) or one the caller owns.
 enum MaskTex {
     Owned(Target),
@@ -2746,6 +2878,7 @@ mod tests {
             fbo: glow::NativeFramebuffer(NonZeroU32::new(id).unwrap()),
             w,
             h,
+            float: false,
         }
     }
 
@@ -2787,6 +2920,54 @@ mod tests {
             p.put(fake_target(1920, 1080, i + 1));
         }
         assert_eq!(p.free.len(), 8, "8 × 1080p is well inside the budget");
+    }
+
+    // ---- ws:parity-color-pipeline ----
+    #[test]
+    fn a_mode_change_never_hands_out_a_target_of_the_old_format() {
+        let mut p = Pool::default();
+        p.put(fake_target(16, 16, 1));
+        p.set_float(true);
+        assert!(p.free.is_empty(), "the 8-bit free list is let go");
+        assert!(p.take(16, 16).is_none());
+        // an 8-bit target on loan during the switch is freed when it comes back, not reused
+        p.put(fake_target(16, 16, 2));
+        assert!(p.free.is_empty());
+        p.put(Target { float: true, ..fake_target(16, 16, 3) });
+        assert!(p.take(16, 16).is_some_and(|t| t.float));
+    }
+
+    #[test]
+    fn the_float_pool_keeps_the_same_bytes() {
+        let mut p = Pool::default();
+        let px = Pool::MAX_FREE_PX;
+        p.set_float(true);
+        assert_eq!(p.max_free_px(), px / 2, "RGBA16F pixels are twice the bytes");
+        assert_eq!(target_format(true), (glow::RGBA16F, glow::HALF_FLOAT));
+        assert_eq!(target_format(false), (glow::RGBA8, glow::UNSIGNED_BYTE));
+    }
+
+    #[test]
+    fn transfer_curves_round_trip_and_mid_grey_is_where_srgb_puts_it() {
+        for i in 0..=1023 {
+            let v = i as f32 / 1023.0;
+            assert!((to_encoded(to_linear(v)) - v).abs() < 1e-5, "{v}");
+        }
+        // 50% linear (a 50/50 crossfade of black and white) is 0.735 encoded, not 0.5
+        assert!((to_encoded(0.5) - 0.7354).abs() < 1e-3);
+        assert!((to_linear(0.5) - 0.2140).abs() < 1e-3);
+        assert_eq!(to_linear(0.0), 0.0);
+        assert!((to_linear(1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_composite_shader_carries_the_linear_switch() {
+        let src = format!("{}{}{}", shaders::PRELUDE, shaders::BLEND, shaders::COMPOSITE);
+        assert!(src.contains("uniform int u_linear;"));
+        assert!(src.contains("to_lin(") && src.contains("to_enc("));
+        assert!(UNIFORMS.contains(&"u_linear"), "located at link time");
+        // the constants match the CPU reference
+        assert!(src.contains("0.04045") && src.contains("0.0031308") && src.contains("12.92"));
     }
 
     #[test]
@@ -3026,6 +3207,8 @@ mod nested_tests; // ws:nested-gpu: nested sequences as layer trees vs the CPU c
 mod export_tests; // a see-through HTML render never blacks out an export
 #[cfg(test)]
 mod seam_tests; // an off-grid cut between two clips never draws black
+#[cfg(test)]
+mod color_pipeline_tests; // ws:parity-color-pipeline: the processing modes on the real driver
 
 #[cfg(test)]
 mod driver_tests {
@@ -3491,7 +3674,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord) {
         let mut m = HashMap::new();
         for (key, used) in [(1u64, 1u64), (2, 5), (3, 3), (4, 9)] {
             let tex = glow::NativeTexture(NonZeroU32::new(key as u32).unwrap());
-            m.insert(key, LayerTex { tex, w: 10, h: 10, rev: (0, 0), used }); // 400 bytes each
+            m.insert(key, LayerTex { tex, w: 10, h: 10, rev: (0, 0), used, deep: false }); // 400 bytes each
         }
         assert!(stale_textures(&m, 1600, 10).is_empty(), "within the budget everything stays");
         assert_eq!(stale_textures(&m, 800, 10), [1, 3], "oldest first, down to the budget");

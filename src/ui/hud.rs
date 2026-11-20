@@ -53,6 +53,8 @@ pub struct Hud {
     pub hit_rate: f32,
     /// (decodes, total decode µs, cache hits) at the last sample.
     last: (u64, u64, u64),
+    /// ws:parity-color-pipeline: the renderer's processing mode (None = no GPU renderer).
+    pub mode: Option<crate::settings::ProcessingMode>,
     sampled: Option<Instant>,
 }
 
@@ -60,6 +62,7 @@ impl Hud {
     /// End of `App::update`: `started` is when it began. Takes (and zeroes) the GPU accumulators.
     pub fn end_frame(&mut self, started: Instant, gpu: Option<&mut GpuRenderer>, cache_hits: u64) {
         self.frame.push(started.elapsed().as_secs_f32() * 1e3);
+        self.mode = gpu.as_ref().map(|g| g.mode());
         if let Some(g) = gpu {
             let (c, u) = (std::mem::take(&mut g.perf_composite_us), std::mem::take(&mut g.perf_upload_us));
             if c > 0 {
@@ -81,11 +84,12 @@ impl Hud {
 
     pub fn lines(&self, dropped: u64) -> String {
         format!(
-            "UI {:.1} ms avg / {:.1} p95\nGL composite {:.1} ms · upload {:.1} ms\ndecode {:.1} ms avg / {:.1} worst\ncache {:.0} % · dropped {dropped}",
+            "UI {:.1} ms avg / {:.1} p95\nGL composite {:.1} ms · upload {:.1} ms{}\ndecode {:.1} ms avg / {:.1} worst\ncache {:.0} % · dropped {dropped}",
             self.frame.avg(),
             self.frame.p95(),
             self.composite.avg(),
             self.upload.avg(),
+            self.mode.map_or(String::new(), |m| format!(" · {}", m.short())),
             self.decode_avg_ms,
             self.decode_worst_ms,
             self.hit_rate * 100.0,

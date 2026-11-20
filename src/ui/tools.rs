@@ -1865,7 +1865,7 @@ mod tests {
             .iter()
             .flat_map(|p| [p[0], p[1], p[2], 1.0].map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8))
             .collect();
-        let frame = crate::media::Frame { width: w as u32, height: h as u32, pts: 0.0, rgba, bgrx: false, gpu: None };
+        let frame = crate::media::Frame { width: w as u32, height: h as u32, pts: 0.0, rgba, bgrx: false, gpu: None, deep: false };
         let out = std::env::var("SE_GLYPH_SHEET").unwrap_or_else(|_| "glyph-sheet.png".into());
         std::fs::write(&out, crate::mcp::png_encode(&frame)).unwrap();
         eprintln!("glyph sheet: {out}");

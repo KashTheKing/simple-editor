@@ -199,7 +199,7 @@ impl GpuRenderer {
         let used = self.renders;
         let gl = self.gl.clone();
         let tex = match self.textures.get_mut(&key) {
-            Some(lt) if (lt.w, lt.h) == (w, h) => {
+            Some(lt) if (lt.w, lt.h) == (w, h) && !lt.deep => {
                 lt.used = used;
                 if lt.rev == rev {
                     return lt.tex;
@@ -225,7 +225,7 @@ impl GpuRenderer {
                     glow::UNSIGNED_BYTE,
                     glow::PixelUnpackData::Slice(None),
                 );
-                self.textures.insert(key, LayerTex { tex, w, h, rev: (0, 0), used });
+                self.textures.insert(key, LayerTex { tex, w, h, rev: (0, 0), used, deep: false });
                 tex
             },
         };
