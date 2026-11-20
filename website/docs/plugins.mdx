@@ -1,0 +1,186 @@
+---
+title: Plugins
+description: Install plugins from a GitHub link, and make your own with Luau panels, scripts, effects, LUTs and more.
+---
+
+A **plugin** adds things to Simple Editor in one package: panels you can dock like any other, scripts, effects
+and transitions, LUTs, HTML templates, icons, Assistant skills and fonts. Plugins are made by the community and
+installed from a GitHub link in a couple of clicks.
+
+## Installing a plugin
+
+1. Open **Window ▸ Plugins ▸ Install from URL…** (or the **Plugins** pane's **Install from URL…** button).
+2. Paste the plugin's GitHub link, for example `https://github.com/someone/cool-plugin`. A link to a release,
+   a tag or a folder in a repository works too.
+3. Simple Editor downloads it and shows what it is: name, author, version, where it came from, what it contains
+   and what it asks to do. Untick any permission you don't want to give.
+4. Press **Install**.
+
+Nothing in a plugin runs when you install it. Its panels appear under **Window ▸ Plugins**, and its effects, LUTs
+and templates appear in the Gallery like your own.
+
+:::caution Only install plugins from people you trust
+A plugin's panels and scripts run inside Simple Editor and can edit your project. Read what a plugin asks for
+before you install it, especially **Run programs on this PC**, which is off unless you tick it.
+:::
+
+### What a plugin can ask for
+
+| Permission | What it means |
+|---|---|
+| *(none)* | It can read and edit the open project, like your own scripts. Most plugins need nothing more. |
+| **Download from** a site | It can fetch data from the sites listed, and only those. |
+| **Files in the project's folder** | It can read and write files next to your saved project. |
+| **Files in folders you pick** | It can use folders you add for it in the Plugins pane (**Add Folder…**). |
+| **Use the app tool** … | It can run that app action, for example `export.video`. |
+| **Run programs on this PC** | It can start other programs. Only allow this for plugins you fully trust. |
+
+If a plugin tries something you didn't allow, it is stopped with a message saying which permission it lacks.
+
+## The Plugins pane
+
+**Window ▸ Plugins ▸ Plugins** lists what you have installed. Each row has buttons to:
+
+- **Enable / Disable**: turn the plugin off without removing it (its panels close and its library items are
+  hidden).
+- **Update**: check GitHub for a newer version, then press it again to install the update (you see the same
+  confirm).
+- **Open Folder**: show the plugin's files.
+- **View on GitHub**: open its page.
+- **Uninstall**: remove the plugin and everything it added. Your projects are never touched.
+
+Open a row with its arrow to see the description, buttons for its panels (lit while the panel is open) and
+scripts, what it is allowed to do, and **Edit** links that open its Luau in the Script Editor.
+
+**Install from Folder…** and **Install from Zip…** install a plugin from your PC, which is handy while you make
+one.
+
+## Making a plugin
+
+A plugin is a folder with a `plugin.json`. This one, **Hello Panel**, ships with Simple Editor's source in
+`examples/plugins/hello-panel`: a panel, a script and a LUT.
+
+```
+hello-panel/
+  plugin.json
+  panels/hello.luau
+  scripts/marker-at-every-cut.luau
+  luts/hello-teal.cube
+```
+
+### plugin.json
+
+```json
+{
+  "id": "hello-panel",
+  "name": "Hello Panel",
+  "version": "1.0.0",
+  "author": "Simple Editor",
+  "description": "An example plugin: a panel that counts the clips, drops markers and nudges the selection, a script, and a LUT.",
+  "min_app_version": "1.4.0",
+  "homepage": "https://github.com/KashTheKing/simple-editor/tree/main/examples/plugins/hello-panel",
+  "icon": "bolt",
+  "contents": {
+    "panels": [
+      { "id": "main", "title": "Hello", "script": "panels/hello.luau", "icon": "bolt" }
+    ],
+    "scripts": ["scripts/marker-at-every-cut.luau"],
+    "luts": ["luts/hello-teal.cube"]
+  },
+  "permissions": {}
+}
+```
+
+- `id` is lower-case letters, digits and dashes; it names the install folder.
+- `contents` lists what the plugin brings: `panels`, `scripts`, `skills`, `effects`, `transitions`, `luts`,
+  `templates`, `icons` and `fonts` (fonts must be under the SIL Open Font License:
+  `{ "file": "fonts/My.ttf", "license": "OFL-1.1" }`).
+- `permissions` lists what it needs beyond the open project: `network` (host names), `files` (`"project"`,
+  `"pick"`), `run_programs` and `mcp_tools` (app tool names). Ask for as little as you can; people are more
+  likely to install a plugin that asks for nothing.
+
+### A panel
+
+A panel's file runs once when the panel opens, then its `draw()` function describes the panel. Simple Editor
+draws it with its own widgets, and calls `draw()` again whenever something changes: a click, an edit to the
+project, a new selection.
+
+```lua
+-- panels/hello.luau
+local note = "Plugin marker"
+local step = 0.5
+local count_markers = true
+
+function draw()
+  local clips = project.clips()
+  local ctx = editor.tool("editor.context", {})
+  local selected = ctx.selected_clips or {}
+
+  ui.heading("Hello from a plugin")
+  ui.label(#clips .. " clips on the timeline, " .. #selected .. " selected")
+  if count_markers then
+    ui.label(#project.markers() .. " markers")
+  end
+  ui.separator()
+
+  note = ui.text("Marker name", note)
+  step = ui.slider("Nudge (s)", step, 0.1, 2)
+  count_markers = ui.checkbox("Count markers", count_markers)
+
+  ui.row(function()
+    if ui.button("Marker at playhead") then
+      editor.tool("markers.add", { t = ctx.playhead or 0, name = note })
+    end
+    if ui.button("Nudge selection") and #selected > 0 then
+      -- every edit made in one click is one undo step
+      editor.tool("timeline.move", { clip_ids = selected, dt = step })
+    end
+  end)
+end
+```
+
+The widgets: `ui.heading`, `ui.label`, `ui.button` (true when clicked), `ui.slider(label, value, min, max)`,
+`ui.text(label, value)`, `ui.checkbox(label, value)`, `ui.dropdown(label, value, {options})`, `ui.row(fn)`,
+`ui.column(fn)`, `ui.separator()`, `ui.space()` and `ui.image("pic.png")`. Each one that holds a value returns
+the value after the user's change, so store it back in a variable as above.
+
+Keep `draw()` quick: it has a few milliseconds (more when it answers a click). If it takes too long or errors,
+the panel stops and shows the error with **Retry** and **Edit Script**. Saving the script reloads the panel.
+
+### A script
+
+```lua
+-- scripts/marker-at-every-cut.luau
+local seen = {}
+for _, c in ipairs(project.clips()) do
+  local t = math.floor(c.start * 1000 + 0.5) / 1000
+  if not seen[t] then
+    seen[t] = true
+    editor.tool("markers.add", { t = t, name = "Cut" })
+  end
+end
+print("Added " .. #query.keys(seen) .. " markers")
+```
+
+Plugin scripts run from **Window ▸ Plugins ▸ Hello Panel**, as one undo step.
+
+### What your Luau can use
+
+Panels and scripts get what your own scripts get (see [Scripting & MCP](scripting)): `editor.tool(name, args)`
+for any project or library tool, and the `project.*`, `library.*` and `query.*` helpers. With the matching
+permission they also get `net.get(url)` (returns `nil` until the download is done, then `{ok, status, body}`),
+`fs.read`, `fs.write`, `fs.list` and `fs.exists`, and `programs.run(exe, {args})`. The full reference is
+`docs/plugins.md` in the repository.
+
+### Publishing
+
+Put the folder in a GitHub repository (with `plugin.json` at the top, or in a folder you link to directly),
+and share the link. To publish versions, make GitHub releases: attach a zip of the plugin folder, or let
+Simple Editor use the release's source archive. **Update** compares the release tag with the installed
+version.
+
+## For AI assistants
+
+Over MCP, `plugins.list` lists what is installed, `plugins.install {url}` downloads a plugin and shows you the
+confirm (it never installs on its own), `plugins.uninstall {id}` asks you first, and `plugins.enable {id, on}`
+turns one on or off.

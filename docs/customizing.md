@@ -502,6 +502,15 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `playhead.get` | Read | - | Current playhead time in seconds. |
 | `playhead.set_timecode` | Ui | text | Parse a timecode/relative string and seek — same parser as the transport label's click-to-edit. |
 
+**`plugins.*`** (4 tools; feat/plugins, see `docs/plugins.md`)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `plugins.enable` | Ui | id, on | Turn a plugin on (its panels, scripts and library content) or off. |
+| `plugins.install` | Ui | url | Download a plugin from a GitHub link (repository, release, tag or folder), then show the user the install confirm; nothing is installed until they press Install. |
+| `plugins.list` | Read | - | Installed plugins: id, name, version, author, enabled, contents, granted permissions, panels (open or not) and scripts. |
+| `plugins.uninstall` | Ui | id | Ask the user to uninstall a plugin (removes its folder and what it added to the library; projects untouched). |
+
 **`preview.*`** (4 tools)
 
 | Tool | Kind | Args | Description |
