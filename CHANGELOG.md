@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Find a Reference
+- **Find a Reference** (Window ▸ Find a Reference, or the Library's right-click): type a line, a reaction or a scene and open its search on **Yarn**, **PlayPhrase**, **Clip.cafe**, **Tenor**, **GIPHY** or **YouTube** in your browser, best match first.
+- **GIPHY and Tenor inside the app**: add your own free key in **Settings ▸ General**, then search and click a result to import it as an MP4, with the "Powered by" line under the results. Only your search and your key are sent.
+- **Just a part**: Import URL and Find a Reference can download only a time range of a link (`1:23-1:45`; a link's `?t=` start fills it in).
+- **References bin**: clips imported from Find a Reference keep where they came from, get a `reference` tag and a **References** smart bin, and are transcribed in the background so the Library and the pane find them by what is said. **Copy Credits** lists every source. A one-time fair-use note comes first; nothing is scraped or bulk-downloaded.
+- MCP: `references.suggest`, `references.search_links`, `references.import_range`, `references.list`, `references.set`, `references.credits`.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.

@@ -707,6 +707,13 @@ fn matches_search(a: &crate::model::Asset, q: &str) -> bool {
         || a.tags.iter().any(|t| t.to_lowercase().contains(&q))
 }
 
+// ---- feat/reference-clips ----
+/// The search text appears in this asset's transcribed reference quote (`Project::references`).
+fn quote_matches(project: &Project, id: Id, q: &str) -> bool {
+    let q = q.trim();
+    !q.is_empty() && project.reference(id).is_some_and(|r| r.quote.to_lowercase().contains(&q.to_lowercase()))
+}
+
 /// Kind chip: 0 All, 1 Video, 2 Audio, 3 Image, 4 Sequences (assets never match), 5 Short SFX (audio
 /// ≤ 10 s), 6 Music (audio > 10 s).
 fn matches_kind(kind: ClipKind, duration: f64, f: u8) -> bool {
@@ -1290,7 +1297,8 @@ fn browser(
                 let a = &project.assets[i];
                 // the folder chosen in the tree only narrows a search - the tree itself shows every folder
                 (!flat || folder_ok(state.folder.as_deref(), &a.folder))
-                    && matches_search(a, &state.search)
+                    // feat/reference-clips: a reference is also found by what is said in it
+                    && (matches_search(a, &state.search) || quote_matches(project, a.id, &state.search))
                     && matches_kind(a.kind, a.duration, state.kind_filter)
                     && (state.label_filter == 0 || a.label == state.label_filter)
                     // same predicate as "Remove unused": moodboard assets are not unused

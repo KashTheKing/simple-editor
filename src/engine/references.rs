@@ -101,11 +101,8 @@ pub fn encode(s: &str) -> String {
 /// "Hello there!" -> "hello-there": lower-case words of letters / digits joined by '-' (percent-encoded
 /// for anything outside ASCII, so "café" survives).
 pub fn slug(s: &str) -> String {
-    let words: Vec<String> = s
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(|w| encode(&w.to_lowercase()))
-        .collect();
+    let words: Vec<String> =
+        s.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(|w| encode(&w.to_lowercase())).collect();
     words.join("-")
 }
 
@@ -117,7 +114,11 @@ pub fn search_url(site: &Site, query: &str) -> String {
 
 /// The query without surrounding whitespace or quote marks (straight or curly).
 pub fn clean_query(query: &str) -> String {
-    query.trim().trim_matches(|c| matches!(c, '"' | '\'' | '\u{201C}' | '\u{201D}' | '\u{2018}' | '\u{2019}')).trim().to_string()
+    query
+        .trim()
+        .trim_matches(|c| matches!(c, '"' | '\'' | '\u{201C}' | '\u{201D}' | '\u{2018}' | '\u{2019}'))
+        .trim()
+        .to_string()
 }
 
 /// What `query` most likely is: a quoted line or a sentence is a Quote, one or two words (or a word like
@@ -163,11 +164,7 @@ pub fn parse_time(s: &str) -> Option<f64> {
     for (i, p) in parts.iter().enumerate() {
         let p = p.trim();
         // only the last field may have a fraction; the others are whole minutes / hours
-        let v: f64 = if i + 1 == parts.len() {
-            p.parse().ok()?
-        } else {
-            p.parse::<u32>().ok()? as f64
-        };
+        let v: f64 = if i + 1 == parts.len() { p.parse().ok()? } else { p.parse::<u32>().ok()? as f64 };
         if i > 0 && v >= 60.0 {
             return None; // "1:75" is a typo, not 2:15
         }
@@ -205,11 +202,7 @@ pub fn fmt_time(t: f64) -> String {
 
 /// yt-dlp arguments that download only `range` (cut at keyframes re-encoded so the part starts clean).
 pub fn ytdlp_section_args(range: (f64, f64)) -> [String; 3] {
-    [
-        "--download-sections".into(),
-        format!("*{:.3}-{:.3}", range.0, range.1),
-        "--force-keyframes-at-cuts".into(),
-    ]
+    ["--download-sections".into(), format!("*{:.3}-{:.3}", range.0, range.1), "--force-keyframes-at-cuts".into()]
 }
 
 /// A start time in a pasted link: YouTube's `t=83` / `t=1m23s` / `start=83`. None when there is none.
@@ -359,7 +352,8 @@ fn n(v: &Value) -> u32 {
 /// A service's search reply -> hits (results without an MP4 are skipped). Err with the service's own
 /// message when it refused (a bad key says so).
 pub fn parse_search(p: Provider, body: &str) -> Result<Vec<GifHit>, String> {
-    let v: Value = serde_json::from_str(body).map_err(|e| format!("{} replied with something unreadable: {e}", p.name()))?;
+    let v: Value =
+        serde_json::from_str(body).map_err(|e| format!("{} replied with something unreadable: {e}", p.name()))?;
     match p {
         Provider::Giphy => {
             // {"meta":{"status":401,"msg":"Unauthorized"}} or {"message":"Invalid authentication credentials"}
@@ -381,7 +375,10 @@ pub fn parse_search(p: Provider, body: &str) -> Result<Vec<GifHit>, String> {
                         .find_map(|u| u.as_str())
                         .unwrap_or_default()
                         .to_string();
-                    let credit = d["user"]["display_name"].as_str().filter(|x| !x.is_empty()).map(str::to_string)
+                    let credit = d["user"]["display_name"]
+                        .as_str()
+                        .filter(|x| !x.is_empty())
+                        .map(str::to_string)
                         .unwrap_or_else(|| s(&d["username"]));
                     Some(GifHit {
                         provider: p,
@@ -419,7 +416,11 @@ pub fn parse_search(p: Provider, body: &str) -> Result<Vec<GifHit>, String> {
                         title: title.to_string(),
                         page: s(&r["itemurl"]),
                         mp4,
-                        still: f["gifpreview"]["url"].as_str().or(f["tinygifpreview"]["url"].as_str()).unwrap_or_default().to_string(),
+                        still: f["gifpreview"]["url"]
+                            .as_str()
+                            .or(f["tinygifpreview"]["url"].as_str())
+                            .unwrap_or_default()
+                            .to_string(),
                         width: n(&dims[0]),
                         height: n(&dims[1]),
                         credit: String::new(),
@@ -450,7 +451,8 @@ pub fn gif_file_name(h: &GifHit) -> String {
 
 /// GET `url` and return the body. Blocking: call from a worker. curl's own error text on failure.
 pub fn http_get(url: &str) -> Result<String, String> {
-    let curl = crate::media::ffpipe::find_exe("curl.exe", "").ok_or("curl.exe not found (it ships with Windows 10 1803+)")?;
+    let curl =
+        crate::media::ffpipe::find_exe("curl.exe", "").ok_or("curl.exe not found (it ships with Windows 10 1803+)")?;
     let out = crate::media::ffpipe::command(&curl)
         // no --fail: an API's error reply carries the reason (a bad key), which parse_search reports
         .args(["--location", "--silent", "--show-error", "--max-time", "20", "--proto", "=https"])
@@ -558,7 +560,10 @@ mod tests {
             assert!(!u.contains('{') && !u.contains(' '), "{} left a placeholder or a space: {u}", s.name);
             assert!(u.to_lowercase().contains("hello"), "{u}");
         }
-        assert_eq!(search_url(site("youtube").unwrap(), "a&b c"), "https://www.youtube.com/results?search_query=a%26b%20c");
+        assert_eq!(
+            search_url(site("youtube").unwrap(), "a&b c"),
+            "https://www.youtube.com/results?search_query=a%26b%20c"
+        );
         assert_eq!(search_url(site("GIPHY").unwrap(), "Mind Blown!"), "https://giphy.com/search/mind-blown");
         assert_eq!(search_url(site("tenor").unwrap(), "eye roll"), "https://tenor.com/search/eye-roll-gifs");
         assert_eq!(SITES.len(), 6, "Yarn, PlayPhrase, Clip.cafe, Tenor, GIPHY, YouTube");
@@ -674,6 +679,9 @@ mod tests {
             credit_line("Shrug GIF", "Tenor", "", None, "https://tenor.com/view/shrug-123"),
             "Shrug GIF - Tenor: https://tenor.com/view/shrug-123"
         );
-        assert_eq!(credit_line("", "YouTube", "Some Channel", Some((83.0, 105.0)), "u"), "YouTube (Some Channel), 1:23-1:45: u");
+        assert_eq!(
+            credit_line("", "YouTube", "Some Channel", Some((83.0, 105.0)), "u"),
+            "YouTube (Some Channel), 1:23-1:45: u"
+        );
     }
 }

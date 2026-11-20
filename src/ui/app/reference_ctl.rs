@@ -32,7 +32,6 @@ pub(super) struct RefState {
     search: Option<(Provider, String, Receiver<Result<Vec<GifHit>, String>>)>,
     /// Result stills arriving from the still worker: (url, picture).
     stills: Option<Receiver<(String, Option<crate::media::Frame>)>>,
-    asked_stills: HashSet<String>,
     /// yt-dlp downloads that become references when they land (matched by their progress).
     pending: Vec<(Arc<Progress>, RefSource)>,
     /// GIF file downloads: progress, where it goes, what it is.
@@ -266,12 +265,12 @@ fn fetch_stills(st: &mut RefState, ctx: &egui::Context) {
         .hits
         .iter()
         .map(|h| h.still.clone())
-        .filter(|u| u.starts_with("https://") && !st.asked_stills.contains(u) && !st.ui.thumbs.contains_key(u))
+        .filter(|u| u.starts_with("https://") && !st.ui.thumbs.contains_key(u))
         .collect();
     if urls.is_empty() {
         return;
     }
-    st.asked_stills.extend(urls.iter().cloned());
+    // replacing the receiver ends the previous search's worker at its next send
     let (tx, rx) = channel();
     let c = ctx.clone();
     let dir = crate::settings::Settings::cache_dir().join("references");
@@ -294,7 +293,11 @@ fn still_name(url: &str) -> String {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     url.hash(&mut h);
-    let ext = url.rsplit('.').next().filter(|e| e.len() <= 4 && e.chars().all(|c| c.is_ascii_alphanumeric())).unwrap_or("img");
+    let ext = url
+        .rsplit('.')
+        .next()
+        .filter(|e| e.len() <= 4 && e.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or("img");
     format!("{:016x}.{ext}", h.finish())
 }
 
@@ -307,6 +310,11 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
     poll_stills(app, ctx);
     poll_gifs(app);
     poll_transcripts(app);
+    // the GIF / whisper workers don't wake the UI themselves: look again soon while one runs (never when idle)
+    let r = &app.references;
+    if !r.gifs.is_empty() || !r.transcribing.is_empty() || !r.to_transcribe.is_empty() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(250));
+    }
 }
 
 fn poll_search(app: &mut App, ctx: &egui::Context) {
@@ -358,7 +366,8 @@ fn poll_gifs(app: &mut App) {
     if app.references.gifs.is_empty() {
         return;
     }
-    let (done, running): (Vec<_>, Vec<_>) = std::mem::take(&mut app.references.gifs).into_iter().partition(|(p, _, _)| p.is_done());
+    let (done, running): (Vec<_>, Vec<_>) =
+        std::mem::take(&mut app.references.gifs).into_iter().partition(|(p, _, _)| p.is_done());
     app.references.gifs = running;
     for (prog, dest, r) in done {
         match prog.error() {
@@ -380,9 +389,13 @@ fn poll_transcripts(app: &mut App) {
     if app.references.to_transcribe.is_empty() && app.references.transcribing.is_empty() {
         return;
     }
-    // start the ones whose probe is in (a placeholder has no duration yet)
+    // start the next one whose probe is in (a placeholder has no duration yet) - one whisper at a time
     let queued = std::mem::take(&mut app.references.to_transcribe);
     for id in queued {
+        if !app.references.transcribing.is_empty() {
+            app.references.to_transcribe.push(id);
+            continue;
+        }
         let Some(a) = app.project.asset(id) else { continue };
         if a.duration <= 0.0 {
             app.references.to_transcribe.push(id); // still probing
@@ -592,7 +605,9 @@ mod tests {
     #[test]
     fn imports_wait_for_the_note_but_browsing_does_not() {
         assert!(needs_note(&Asked::ImportLink) && needs_note(&Asked::ImportGif(0)));
-        assert!(!needs_note(&Asked::OpenSite("yarn")) && !needs_note(&Asked::Search) && !needs_note(&Asked::CopyCredits));
+        assert!(
+            !needs_note(&Asked::OpenSite("yarn")) && !needs_note(&Asked::Search) && !needs_note(&Asked::CopyCredits)
+        );
     }
 
     #[test]
@@ -605,7 +620,14 @@ mod tests {
 
     #[test]
     fn tools_are_registered_once() {
-        for n in ["references.suggest", "references.search_links", "references.import_range", "references.list", "references.set", "references.credits"] {
+        for n in [
+            "references.suggest",
+            "references.search_links",
+            "references.import_range",
+            "references.list",
+            "references.set",
+            "references.credits",
+        ] {
             assert_eq!(crate::mcp::tools::all().filter(|t| t.name == n).count(), 1, "{n}");
         }
         assert!(crate::mcp::tools::leaves_project("references.import_range", &json!({})), "a download waits for Allow");

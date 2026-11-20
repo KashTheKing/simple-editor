@@ -108,7 +108,13 @@ mod tests {
     #[test]
     fn set_reference_tags_and_makes_the_bin_once() {
         let (mut p, id) = with_asset();
-        let r = RefSource { asset: id, site: "Tenor".into(), url: "https://tenor.com/view/x".into(), title: "Shrug".into(), ..Default::default() };
+        let r = RefSource {
+            asset: id,
+            site: "Tenor".into(),
+            url: "https://tenor.com/view/x".into(),
+            title: "Shrug".into(),
+            ..Default::default()
+        };
         p.set_reference(r.clone());
         p.set_reference(r);
         assert_eq!(p.references.len(), 1, "re-setting replaces");

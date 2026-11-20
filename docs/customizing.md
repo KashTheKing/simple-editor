@@ -527,6 +527,17 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `project.set` | Mutate | fps, height, name, width | Change project format/name. |
 | `project.summary` | Read | - | Project overview: format, duration, tracks, clips per track, assets, sequences, subtitles count, planner progress, notes — and the markdown style summary. |
 
+**`references.*`** (6 tools)
+
+| Tool | Kind | Args | Description |
+|---|---|---|---|
+| `references.credits` | Read | - | Copy Credits as text: one line per reference (title - site (uploader), part: link). |
+| `references.import_range` | Job | end, range, start, url | Import a link with yt-dlp as a reference clip, only start..end (or range "1:23-1:45") when given. Source, title and uploader are kept, it is tagged `reference` (the References bin) and transcribed so it is found by quote. Held by the guard (it downloads). |
+| `references.list` | Read | query | The project's reference clips: site, link, title, uploader, part and transcribed quote; query filters by quote / title / file name. |
+| `references.search_links` | Ui | open, query, site | The search address on Yarn, PlayPhrase, Clip.cafe, Tenor, GIPHY and YouTube (or one site); open=true opens it in the browser and shows Find a Reference. |
+| `references.set` | Mutate | asset_id, credit, quote, site, title, url | Mark a library asset as a reference or edit its record. |
+| `references.suggest` | Read | query | The project's references matching a line, the guessed kind (quote / reaction / video), the search links best-first and whether GIPHY / Tenor search has a key. Never searches the web itself. |
+
 **`render.*`** (5 tools)
 
 | Tool | Kind | Args | Description |

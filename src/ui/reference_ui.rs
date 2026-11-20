@@ -112,7 +112,12 @@ fn find(ui: &mut egui::Ui, st: &mut RefUi, out: &mut Vec<Asked>) {
     ui.horizontal_wrapped(|ui| {
         for s in references::suggest(&st.query) {
             let tip = format!("{}\nOpens {} in your browser", s.what, s.name);
-            if ui.add_enabled(!empty, egui::Button::new(s.name)).on_hover_text(tip).on_disabled_hover_text("Type what you're looking for first").clicked() {
+            if ui
+                .add_enabled(!empty, egui::Button::new(s.name))
+                .on_hover_text(tip)
+                .on_disabled_hover_text("Type what you're looking for first")
+                .clicked()
+            {
                 out.push(Asked::OpenSite(s.id));
             }
         }
@@ -124,19 +129,32 @@ fn gifs(ui: &mut egui::Ui, st: &mut RefUi, v: &View, out: &mut Vec<Asked>) {
     let key = v.has_key[st.provider as usize];
     ui.horizontal(|ui| {
         for p in Provider::ALL {
-            if ui.selectable_label(st.provider == p, p.name()).on_hover_text(format!("Search {} inside the app", p.name())).clicked() && st.provider != p {
+            if ui
+                .selectable_label(st.provider == p, p.name())
+                .on_hover_text(format!("Search {} inside the app", p.name()))
+                .clicked()
+                && st.provider != p
+            {
                 st.provider = p;
                 st.hits.clear();
                 st.status.clear();
             }
         }
         if !key {
-            if ui.button("Settings").on_hover_text(format!("Add your free {} key in Settings ▸ General", st.provider.name())).clicked() {
+            if ui
+                .button("Settings")
+                .on_hover_text(format!("Add your free {} key in Settings ▸ General", st.provider.name()))
+                .clicked()
+            {
                 out.push(Asked::OpenSettings);
             }
         } else {
             let can = !st.searching && !references::clean_query(&st.query).is_empty();
-            if ui.add_enabled(can, egui::Button::new("Search")).on_hover_text(format!("Search {} for the text above", st.provider.name())).clicked() {
+            if ui
+                .add_enabled(can, egui::Button::new("Search"))
+                .on_hover_text(format!("Search {} for the text above", st.provider.name()))
+                .clicked()
+            {
                 out.push(Asked::Search);
             }
         }
@@ -153,9 +171,16 @@ fn gifs(ui: &mut egui::Ui, st: &mut RefUi, v: &View, out: &mut Vec<Asked>) {
     if !st.hits.is_empty() {
         ui.horizontal_wrapped(|ui| {
             for (i, h) in st.hits.iter().enumerate() {
-                let w = if h.height > 0 { (THUMB_H * h.width as f32 / h.height as f32).clamp(48.0, 220.0) } else { THUMB_H };
+                let w = if h.height > 0 {
+                    (THUMB_H * h.width as f32 / h.height as f32).clamp(48.0, 220.0)
+                } else {
+                    THUMB_H
+                };
                 let size = egui::vec2(w, THUMB_H);
-                let tip = format!("{}\nClick to import into the Library", if h.title.is_empty() { h.provider.name() } else { &h.title });
+                let tip = format!(
+                    "{}\nClick to import into the Library",
+                    if h.title.is_empty() { h.provider.name() } else { &h.title }
+                );
                 let r = match st.thumbs.get(&h.still) {
                     Some(t) => ui.add(egui::Image::new((t.id(), size)).sense(egui::Sense::click())),
                     None => {
@@ -228,7 +253,9 @@ pub fn prefill_part(link: &str) -> Option<String> {
 fn project_refs(ui: &mut egui::Ui, st: &mut RefUi, v: &View, out: &mut Vec<Asked>) {
     ui.horizontal(|ui| {
         ui.strong("In This Project");
-        let lib = ui.selectable_label(v.library_open, "Library").on_hover_text("Show the Library (its References bin lists these too)");
+        let lib = ui
+            .selectable_label(v.library_open, "Library")
+            .on_hover_text("Show the Library (its References bin lists these too)");
         if lib.clicked() {
             out.push(Asked::ToggleLibrary);
         }
@@ -309,7 +336,13 @@ mod tests {
 
     fn rows() -> Vec<RefRow> {
         vec![
-            RefRow { asset: 1, name: "The scene".into(), site: "YouTube".into(), quote: "you shall not pass".into(), transcribing: false },
+            RefRow {
+                asset: 1,
+                name: "The scene".into(),
+                site: "YouTube".into(),
+                quote: "you shall not pass".into(),
+                transcribing: false,
+            },
             RefRow { asset: 2, name: "Shrug".into(), site: "Tenor".into(), quote: String::new(), transcribing: false },
         ]
     }
