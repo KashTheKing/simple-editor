@@ -294,6 +294,12 @@ pub(super) fn import_subtitles(app: &mut App) {
     let exts = crate::engine::subtitles::IMPORT_EXTS;
     let Some(path) = rfd::FileDialog::new().add_filter("Subtitles", exts).pick_file() else { return };
     let cues = crate::engine::subtitles::read_file(&path).map(|t| crate::engine::subtitles::parse(&t)).unwrap_or_default();
+    offer_cues(app, cues);
+}
+
+/// Imported cues land: replace inline when the project has none, else ask first (Cancel keeps the
+/// existing cues). Shared with Import from Media File… (`formats_ctl`).
+pub(super) fn offer_cues(app: &mut App, cues: Vec<(f64, f64, String)>) {
     if cues.is_empty() {
         app.toast("No subtitles found in that file");
     } else if app.project.subtitles.is_empty() {

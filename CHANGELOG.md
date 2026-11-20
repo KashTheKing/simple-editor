@@ -16,6 +16,8 @@
 
 ### Formats
 - **ASS / SSA subtitles**: Import Subtitles…, `subtitles.import` and the media player's side-car subtitles read Advanced SubStation Alpha and SubStation Alpha files as well as SRT and VTT. Styling and positioning tags are dropped (the project's subtitle style applies), `\N` line breaks are kept, and UTF-16 or ANSI files import too.
+- **Subtitles from a video file**: Subtitles ▸ ⋯ ▸ Import from Media File… reads a subtitle track out of an MKV, MP4, MOV or WebM (a chooser lists the tracks when there are several; picture subtitles are listed as not convertible). MCP: `subtitles.tracks`, `subtitles.extract`.
+- **Soft subtitle tracks**: Export ▸ **Subtitle track** adds the subtitles to MP4, MOV, MKV and WebM exports as a track viewers switch on in their player (an In/Out range export gets the cues of that range), with or without burn-in. Subtitles ▸ ⋯ ▸ Embed in Video File… writes a subtitled copy of any video. MCP: `subtitles.embed`.
 
 ## 1.4.0
 

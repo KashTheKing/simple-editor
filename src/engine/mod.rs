@@ -72,3 +72,5 @@ pub mod tags;
 // ---- ws:voice-input ----
 pub mod voice;
 pub mod xmeml;
+// ---- ws:parity-formats ----
+pub mod formats;

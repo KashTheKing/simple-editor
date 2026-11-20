@@ -603,15 +603,18 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `style.summary` | Read | - | Markdown style summary of the project (how it was edited) — for writing style guides. |
 
-**`subtitles.*`** (5 tools)
+**`subtitles.*`** (8 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `subtitles.animation` | Mutate | color, kind | Set how generated captions animate against the transcript: none \| highlight (color [r,g,b,a]) \| pop \| typewriter. |
+| `subtitles.embed` | Job | path, out | Add the project's subtitles to an MP4 / MOV / MKV / WebM as a soft subtitle track; writes '<name> (subtitled).<ext>' unless out is given. |
+| `subtitles.extract` | Job | path, track | Read a text subtitle track out of a media file into the project's subtitles (replaces, one undo step). |
 | `subtitles.get` | Read | - | Subtitle cues. |
-| `subtitles.import` | Mutate | path | Import .srt/.vtt (replaces). |
+| `subtitles.import` | Mutate | path | Import .srt/.vtt/.ass/.ssa (replaces). |
 | `subtitles.set` | Mutate | cues | Replace all cues: [{start,end,text}]. |
 | `subtitles.style_preset` | Mutate | name | Set project.subtitle_style from a named caption style (builtin or Settings.caption_presets). |
+| `subtitles.tracks` | Read | path | List the subtitle tracks of a media file (index, label, picture), side-car files included. |
 
 **`tasks.*`** (5 tools)
 

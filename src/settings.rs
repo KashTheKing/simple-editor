@@ -719,6 +719,10 @@ pub struct Settings {
     // ---- ws:player-metadata ----
     /// Saved tag sets (Settings ▸ Metadata), applied in one click in the player, the Library and Export.
     pub metadata_presets: Vec<crate::engine::tags::MetaPreset>,
+    // ---- ws:parity-formats ----
+    /// Export ▸ Subtitle track: MP4 / MOV / MKV / WebM exports carry the subtitles as a track viewers
+    /// switch on (`engine::formats::embed_subtitles`), whether or not they are burnt in.
+    pub export_subtitle_track: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1018,6 +1022,7 @@ impl Default for Settings {
             emulator: BTreeMap::new(),
             match_import: true, // ws:project-color-fps
             metadata_presets: Vec::new(), // ws:player-metadata
+            export_subtitle_track: false, // ws:parity-formats
         }
     }
 }

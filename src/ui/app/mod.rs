@@ -190,6 +190,7 @@ mod project_match; // ws:project-color-fps
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
 mod os_paste; // Ctrl+V of a screenshot / copied files
+mod formats_ctl; // ws:parity-formats
 
 enum ExportKind {
     File { path: PathBuf },
@@ -472,6 +473,9 @@ pub struct App {
     // ---- ws:home-page ----
     /// The Home page (`home_ctl`): open, the recents read so far, the rename dialog.
     home: home_ctl::HomeState,
+    // ---- ws:parity-formats ----
+    /// Subtitle extraction / embedding and made-media jobs (`formats_ctl`).
+    formats: formats_ctl::Formats,
     /// The selection `frame::tick` last reacted to, so auto-surface / glow fire once per change.
     sel_sig: frame::SelSig,
     // ---- ws:export-deliver ----
@@ -1130,6 +1134,8 @@ impl App {
             home_dismissed: false,
             // ---- ws:home-page ----
             home: Default::default(),
+            // ---- ws:parity-formats ----
+            formats: Default::default(),
             sel_sig: frame::SelSig::default(),
             // ---- ws:export-deliver ----
             export_queue: std::collections::VecDeque::new(),
@@ -1243,6 +1249,8 @@ impl App {
         }
         // ---- ws:media-library ----: a frame of a numbered still run bakes as one clip instead
         let paths = media_sync::intercept_sequences(self, &paths);
+        // ---- ws:parity-formats ----: an .svg is drawn to a PNG first (in the background)
+        let paths = formats_ctl::intercept(self, &paths);
         // (a project with a linked bin is not empty: opening the file as the project would drop the bin)
         // (ws:timeline-tabs: the whole project - an empty sequence tab must not be replaced by the file)
         if self.project.is_blank() && self.project.linked_bins.is_empty() && paths.len() == 1 {
@@ -1382,6 +1390,8 @@ impl App {
         // ---- ws:media-library ----: every import path (Ctrl+I, drops, MCP media.import) funnels
         // through here, so this one gate covers them all - see media_sync::intercept_sequences
         let paths = media_sync::intercept_sequences(self, &paths);
+        // ---- ws:parity-formats ----: an .svg is drawn to a PNG first (in the background)
+        let paths = formats_ctl::intercept(self, &paths);
         let mut ids = Vec::new();
         let mut fresh: Vec<(Id, String)> = Vec::new();
         for path in &paths {
@@ -2042,6 +2052,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:home-page ----
     home_ctl::TOOLS,
     script_ctl::TOOLS,
+    // ---- ws:parity-formats ----
+    formats_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2234,6 +2246,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     music_ctl::frame,
     // ---- ws:preview-audio-only ----
     audio_only::tick,
+    // ---- ws:parity-formats ----
+    formats_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
@@ -2315,6 +2329,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     project_match::window,
     // ---- ws:timeline-tabs ----
     timeline_tabs::windows,
+    // ---- ws:parity-formats ----
+    formats_ctl::windows,
 ];
 
 pub(crate) const PANE_DRAWERS: &[fn(&mut App, &mut egui::Ui, Pane) -> bool] = &[
