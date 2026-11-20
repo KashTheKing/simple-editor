@@ -99,6 +99,18 @@ pub struct BarOut {
     pub toggle_loop: bool,
     /// The seek bar is being dragged.
     pub scrubbing: bool,
+    /// An In / Out flag is being dragged.
+    pub mark: Option<MarkDrag>,
+}
+
+/// A drag of the seek bar's In (`out` false) or Out flag: the time under the pointer, and whether this
+/// frame started / ended the drag (one undo step per drag).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MarkDrag {
+    pub out: bool,
+    pub t: f64,
+    pub start: bool,
+    pub end: bool,
 }
 
 /// One control in the middle group, in the order they sit.
@@ -213,9 +225,10 @@ pub fn show(
         pos2(rect.right() - 22.0 - total.size().x, sy + 12.0),
     );
     if track.width() > 20.0 {
-        let (seek, dragging) = seek_bar(ui, pal, track, &bar);
+        let (seek, dragging, mark) = seek_bar(ui, pal, track, &bar);
         out.seek = seek.or(out.seek);
         out.scrubbing = dragging;
+        out.mark = mark;
         if let Some(h) = ui.ctx().pointer_hover_pos().filter(|h| track.expand(2.0).contains(*h)) {
             hover_card(ui, pal, track, h.x, &mut bar);
         }
@@ -348,7 +361,7 @@ fn keys(a: Action) -> String {
 
 /// The seek bar: ticks, the track, the in / out band, markers and cut ticks, the played part, the knob.
 /// All of `rect` grabs. Returns the time under the pointer while clicked / dragged, and whether it is.
-fn seek_bar(ui: &mut Ui, pal: &Palette, rect: Rect, bar: &Bar<'_>) -> (Option<f64>, bool) {
+fn seek_bar(ui: &mut Ui, pal: &Palette, rect: Rect, bar: &Bar<'_>) -> (Option<f64>, bool, Option<MarkDrag>) {
     let r = ui.interact(rect, ui.id().with("bar-seek"), Sense::click_and_drag());
     let p = ui.painter();
     let (x0, x1) = (rect.left() + 6.0, rect.right() - 6.0);
@@ -398,7 +411,26 @@ fn seek_bar(ui: &mut Ui, pal: &Palette, rect: Rect, bar: &Bar<'_>) -> (Option<f6
         .interact_pointer_pos()
         .filter(|_| r.dragged() || r.clicked() || r.drag_started())
         .map(|pos| preview::scrub_time(((pos.x - x0) / (x1 - x0)) as f64, bar.dur));
-    (seek, dragging)
+    // the In / Out flags drag like markers (registered after the bar, so they win the pointer there)
+    let mut mark = None;
+    if bar.edit {
+        for (out, m) in [(false, bar.marks.0), (true, bar.marks.1)] {
+            let Some(m) = m else { continue };
+            let hr = Rect::from_center_size(pos2(xt(m), y - 3.0), vec2(10.0, 16.0));
+            let tip = if out { "Out: drag to move" } else { "In: drag to move" };
+            let mr = ui
+                .interact(hr, ui.id().with(("bar-mark", out)), Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::ResizeHorizontal)
+                .on_hover_text(tip);
+            if mr.dragged() || mr.drag_started() || mr.drag_stopped() {
+                if let Some(pos) = mr.interact_pointer_pos().or(ui.ctx().pointer_latest_pos()) {
+                    let t = preview::scrub_time(((pos.x - x0) / (x1 - x0)) as f64, bar.dur);
+                    mark = Some(MarkDrag { out, t, start: mr.drag_started(), end: mr.drag_stopped() });
+                }
+            }
+        }
+    }
+    (seek, dragging, mark)
 }
 
 /// Over the seek bar: the picture at that moment (when the cache has it) with the time; just the time

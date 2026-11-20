@@ -479,6 +479,8 @@ pub struct PreviewResponse {
     pub set_rate: Option<f64>,
     pub reverse: bool,
     pub toggle_loop: bool,
+    /// The bar's In / Out flag is being dragged.
+    pub mark: Option<media_bar::MarkDrag>,
 }
 
 pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) -> PreviewResponse {
@@ -629,6 +631,7 @@ fn bar(ui: &mut egui::Ui, state: &mut PreviewState, c: &mut PreviewCtx<'_>, r: &
     r.set_rate = out.rate;
     r.reverse = out.reverse;
     r.toggle_loop = out.toggle_loop;
+    r.mark = out.mark;
 }
 
 /// Viewer zoom presets: `None` = Fit, else a percentage of the project's own pixels.

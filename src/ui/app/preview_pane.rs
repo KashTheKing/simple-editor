@@ -159,6 +159,9 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
             app.seek(t);
         }
         bar_transport(app, resp.set_rate, resp.reverse, resp.toggle_loop);
+        if let Some(m) = resp.mark {
+            drag_mark(app, m);
+        }
         app.pending_actions.extend(resp.actions);
         if let Some(q) = resp.set_quality {
             app.settings.preview_quality = q;
@@ -260,4 +263,20 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
     app.settings.tool_rail_hidden = !app.settings.tool_rail_hidden;
     app.settings.save();
     true
+}
+
+/// The playback bar's In / Out flag dragged: one undo step per drag, snapped to frames, In never past Out.
+fn drag_mark(app: &mut App, m: crate::ui::media_bar::MarkDrag) {
+    if m.start {
+        app.push_undo();
+    }
+    let t = app.project.snap_frame(m.t.max(0.0));
+    if m.out {
+        app.project.out_point = Some(t.max(app.project.in_point.unwrap_or(0.0)));
+    } else {
+        app.project.in_point = Some(app.project.out_point.map_or(t, |o| t.min(o)));
+    }
+    if m.end {
+        app.after_edit();
+    }
 }

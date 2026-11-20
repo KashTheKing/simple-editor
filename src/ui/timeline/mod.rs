@@ -792,8 +792,14 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                 pal.in_out.gamma_multiply(0.12),
             );
         }
-        for t in ip.into_iter().chain(op) {
-            rp.vline(state.x_at(t), ruler.y_range(), Stroke::new(1.0, pal.in_out));
+        // each mark a line with a flag at the bottom of the ruler pointing into the range (drag it; marker
+        // flags keep the top)
+        for (t, dir) in [(ip, 1.0f32), (op, -1.0)].into_iter().filter_map(|(t, d)| Some((t?, d))) {
+            let x = state.x_at(t);
+            rp.vline(x, ruler.y_range(), Stroke::new(1.5, pal.in_out));
+            let bot = ruler.bottom() - 1.0;
+            let flag = vec![pos2(x, bot - 9.0), pos2(x + dir * 7.0, bot - 6.0), pos2(x + dir * 7.0, bot), pos2(x, bot)];
+            rp.add(egui::Shape::convex_polygon(flag, pal.in_out, Stroke::NONE));
         }
     }
 
@@ -1798,13 +1804,15 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
         if hx < ruler.left() - 4.0 || hx > ruler.right() + 4.0 {
             continue;
         }
-        let hr = Rect::from_center_size(pos2(hx, ruler.bottom() - 3.0), vec2(8.0, 8.0)).intersect(ruler);
+        // the lower half of the ruler around the mark grabs it (the top half is the markers')
+        let hr = Rect::from_min_max(pos2(hx - 5.0, ruler.center().y), pos2(hx + 5.0, ruler.bottom())).intersect(ruler);
         if !hr.is_positive() {
             continue;
         }
         let r = ui
             .interact(hr, id.with(("inout", is_out)), Sense::click_and_drag())
-            .on_hover_cursor(CursorIcon::ResizeHorizontal);
+            .on_hover_cursor(CursorIcon::ResizeHorizontal)
+            .on_hover_text(if is_out { "Out: drag to move · right-click clears it" } else { "In: drag to move · right-click clears it" });
         if r.drag_started_by(egui::PointerButton::Primary) && state.drag.is_none() {
             state.drag = Some(Drag {
                 origin: pointer.unwrap_or(hr.center()),
