@@ -29,7 +29,7 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
             true
         }
         Action::AddEffectZone => {
-            push_undo_json(&mut app.undo, &mut app.redo, app.project.to_json());
+            app.push_undo();
             let (t, d) = app.project.zone_range(app.playhead, &app.selection, None);
             let z = app.project.add_zone(t, d, None, Vec::new());
             zones_ui::select(Some(z));
@@ -81,7 +81,7 @@ pub(super) fn draw_inspector(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bo
     }
     let edited = {
         let App { project, playhead, undo, redo, palette, .. } = app;
-        let mut push = |p: &Project| push_undo_json(undo, redo, p.to_json());
+        let mut push = |p: &Project| push_undo_json(undo, redo, p.clone());
         egui::ScrollArea::vertical().show(ui, |ui| zones_ui::card(ui, project, *playhead, palette, &mut push)).inner
     };
     if edited {

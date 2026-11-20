@@ -22,6 +22,38 @@ thread_local! {
 /// The shortest a range marker gets by dragging an end (a frame-ish).
 const MIN_RANGE: f64 = 0.04;
 
+/// Move one end of range marker `m` to `t` (the other end stays; never shorter than `MIN_RANGE`). True
+/// when it changed.
+fn drag_end(m: &mut crate::model::Marker, right: bool, t: f64) -> bool {
+    let (t0, d0) = (m.t, m.duration);
+    if right {
+        m.duration = (t - m.t).max(MIN_RANGE);
+    } else {
+        let end = m.t + m.duration;
+        m.t = t.clamp(0.0, (end - MIN_RANGE).max(0.0));
+        m.duration = end - m.t;
+    }
+    (m.t - t0).abs() > 1e-9 || (m.duration - d0).abs() > 1e-9
+}
+
+/// Place marker `mid` at timeline time `t`: a project marker moves there (the list stays sorted), a clip
+/// marker stays on its clip, clamped into it. True when the marker exists.
+pub(super) fn place_marker(p: &mut Project, mid: Id, t: f64) -> bool {
+    if let Some(m) = p.markers.iter_mut().find(|m| m.id == mid) {
+        m.t = t.max(0.0);
+        p.sort_markers();
+        return true;
+    }
+    let owner = p.all_clips().find(|(_, cl)| cl.markers.iter().any(|m| m.id == mid)).map(|(_, cl)| (cl.start, cl.duration));
+    match (owner, p.marker_mut(mid)) {
+        (Some((start, dur)), Some(m)) => {
+            m.t = (t - start).clamp(0.0, dur.max(0.0));
+            true
+        }
+        _ => false,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw(
     ui: &mut egui::Ui,
@@ -76,15 +108,7 @@ pub(super) fn draw(
             if let Some(p) = pointer {
                 let t = snapped(c, p.x);
                 if let Some(m) = c.project.markers.iter_mut().find(|m| m.id == d.id) {
-                    let (t0, d0) = (m.t, m.duration);
-                    if d.right {
-                        m.duration = (t - m.t).max(MIN_RANGE);
-                    } else {
-                        let end = m.t + m.duration;
-                        m.t = t.clamp(0.0, end - MIN_RANGE);
-                        m.duration = end - m.t;
-                    }
-                    if (m.t - t0).abs() > 1e-9 || (m.duration - d0).abs() > 1e-9 {
+                    if drag_end(m, d.right, t) {
                         d.changed = true;
                         out.edited = true;
                     }
@@ -110,17 +134,11 @@ pub(super) fn draw(
     }
     egui::DragAndDrop::clear_payload(ui.ctx());
     let mid = payload.0;
-    (c.undo)(c.project, "");
-    let owner: Option<(f64, f64)> =
-        c.project.all_clips().find(|(_, cl)| cl.markers.iter().any(|m| m.id == mid)).map(|(_, cl)| (cl.start, cl.duration));
-    if let Some(m) = c.project.markers.iter_mut().find(|m| m.id == mid) {
-        m.t = t;
-        c.project.sort_markers();
-    } else if let Some((start, dur)) = owner {
-        if let Some(m) = c.project.marker_mut(mid) {
-            m.t = (t - start).clamp(0.0, dur);
-        }
+    if c.project.marker(mid).is_none() {
+        return; // deleted while it was dragged (an undo, an agent): nothing to place, no empty undo step
     }
+    (c.undo)(c.project, "");
+    place_marker(c.project, mid, t);
     out.edited = true;
 }
 
@@ -134,5 +152,41 @@ mod tests {
         v["markers"] = serde_json::json!([{"id": 5, "t": 2.0, "name": "old"}]);
         let p = Project::from_json(&v.to_string()).unwrap();
         assert_eq!((p.markers[0].t, p.markers[0].duration), (2.0, 0.0), "no duration in the file = a point marker");
+    }
+
+    #[test]
+    fn end_drags_keep_the_other_end_and_a_minimum_length() {
+        let base = crate::model::Marker { t: 2.0, duration: 3.0, ..Default::default() };
+        let mut m = base.clone();
+        assert!(drag_end(&mut m, true, 7.0));
+        assert_eq!((m.t, m.duration), (2.0, 5.0), "the end moves, the start stays");
+        drag_end(&mut m, true, 0.0);
+        assert_eq!(m.duration, MIN_RANGE, "never shorter than MIN_RANGE");
+        let mut m = base.clone();
+        assert!(drag_end(&mut m, false, 1.0));
+        assert_eq!((m.t, m.t + m.duration), (1.0, 5.0), "the start moves, the end stays");
+        drag_end(&mut m, false, 50.0);
+        assert!((m.t + m.duration - 5.0).abs() < 1e-9 && (m.duration - MIN_RANGE).abs() < 1e-9);
+        let mut m = base.clone();
+        assert!(!drag_end(&mut m, true, 5.0), "no movement, no change");
+    }
+
+    #[test]
+    fn a_dropped_marker_lands_where_dropped_and_clip_markers_stay_on_their_clip() {
+        let mut p = Project::new();
+        let a = p.add_marker(1.0, "a");
+        let b = p.add_marker(5.0, "b");
+        assert!(place_marker(&mut p, a, 9.0));
+        assert_eq!(p.markers.iter().map(|m| m.id).collect::<Vec<_>>(), vec![b, a], "kept sorted by time");
+        assert_eq!(p.marker(a).unwrap().t, 9.0);
+        let v1 = p.video_tracks()[0];
+        p.tracks[v1].clips.push(Clip::new(50, ClipKind::Video, "c", 10.0, 4.0));
+        p.next_id = p.next_id.max(100);
+        let cm = p.add_clip_marker(50, 1.0, "beat").unwrap();
+        assert!(place_marker(&mut p, cm, 12.5));
+        assert_eq!(p.marker(cm).unwrap().t, 2.5, "clip-local");
+        place_marker(&mut p, cm, 30.0);
+        assert_eq!(p.marker(cm).unwrap().t, 4.0, "clamped into the clip");
+        assert!(!place_marker(&mut p, 9999, 1.0), "unknown marker");
     }
 }

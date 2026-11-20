@@ -3215,3 +3215,121 @@ fn track_waveform_override_beats_the_setting() {
     let p = Project::from_json(&h.project.to_json()).unwrap();
     assert_eq!(p.tracks[ai].wave_detailed, Some(true));
 }
+
+// ---- ws:zones-markers: the live-check items, headless ----
+
+/// Centre-y of zone lane row 0 (the lane sits between the ruler and the tracks while there is a zone).
+fn zone_row_y(h: &Harness) -> f32 {
+    let lane_top = h.state.lanes_rect.top() - zone_lane::height(&h.project);
+    lane_top + 1.0 + zone_lane::ROW_H * 0.5
+}
+
+/// A zone shows a lane above the tracks; a click on its bar picks it (the Inspector shows its card), a
+/// body drag moves it, an end drag resizes it, each gesture one undo; with no zone the lane takes no room.
+#[test]
+fn headless_zone_lane_click_picks_drag_moves_and_ends_resize() {
+    let mut h = Harness::new();
+    let top_without = h.state.lanes_rect.top();
+    let z = h.project.add_zone(2.0, 4.0, None, vec![Effect::new(EffectKind::Grayscale)]);
+    h.frame(vec![]);
+    h.frame(vec![]);
+    assert!(
+        (h.state.lanes_rect.top() - top_without - zone_lane::height(&h.project)).abs() < 0.5,
+        "the tracks move down by the lane's height"
+    );
+    assert!(h.painted_text("Zones").is_some(), "the lane is labelled");
+    crate::ui::zones_ui::select(None);
+    let y = zone_row_y(&h);
+    // click = pick
+    let mid = pos2(h.state.x_at(4.0), y);
+    h.press(mid);
+    h.release(mid);
+    h.frame(vec![]);
+    assert_eq!(crate::ui::zones_ui::selected(), Some(z), "a click picks the zone");
+    assert_eq!(h.undos, 0, "picking is not an edit");
+    // body drag 40 px = 1 s right
+    h.settle();
+    assert!(h.drag(mid, mid + vec2(40.0, 0.0)), "a body drag edits");
+    assert_eq!(h.undos, 1, "one undo per zone drag");
+    let zz = h.project.zone(z).unwrap();
+    assert!((zz.t - 3.0).abs() < 0.05 && (zz.dur - 4.0).abs() < 1e-9, "moved to {}..{}", zz.t, zz.end());
+    // right end drag 40 px = 1 s longer
+    h.settle();
+    let end = pos2(h.state.x_at(h.project.zone(z).unwrap().end()), y);
+    assert!(h.drag(end, end + vec2(40.0, 0.0)), "an end drag edits");
+    assert_eq!(h.undos, 2);
+    let zz = h.project.zone(z).unwrap();
+    assert!((zz.t - 3.0).abs() < 0.05 && (zz.dur - 5.0).abs() < 0.05, "resized to {}..{}", zz.t, zz.end());
+    // gone again: no lane
+    h.project.remove_zone(z);
+    h.frame(vec![]);
+    h.frame(vec![]);
+    assert!((h.state.lanes_rect.top() - top_without).abs() < 0.5, "no zone, no lane");
+    crate::ui::zones_ui::select(None);
+}
+
+/// A zone on one track says which track on its bar.
+#[test]
+fn headless_track_zone_bar_names_its_track() {
+    let mut h = Harness::new();
+    let v1 = h.project.tracks[0].id;
+    let name = h.project.tracks[0].name.clone();
+    h.project.add_zone(1.0, 6.0, Some(v1), vec![Effect::new(EffectKind::Blur)]);
+    h.frame(vec![]);
+    h.frame(vec![]);
+    assert!(
+        h.texts().iter().any(|(s, _)| s.contains(&name) && s.contains('·')),
+        "bar label names the track: {:?}",
+        h.texts()
+    );
+}
+
+/// 30 idle frames with the pointer resting on the zone lane must request no repaint.
+#[test]
+fn assert_no_idle_repaint_timeline_zone_lane() {
+    let mut h = Harness::new();
+    h.project.add_zone(2.0, 4.0, None, vec![Effect::new(EffectKind::Grayscale)]);
+    h.frame(vec![]);
+    h.frame(vec![]);
+    let empty_lane = pos2(h.state.x_at(12.0), zone_row_y(&h)); // lane background, past the bar
+    h.frame(vec![Event::PointerMoved(empty_lane)]);
+    for _ in 0..30 {
+        h.frame(vec![]);
+    }
+    assert!(!h.ctx.has_requested_repaint(), "idle frame over the zone lane requested a repaint");
+}
+
+/// A range marker's end on the ruler drags its length (the start stays), one undo.
+#[test]
+fn headless_range_marker_end_drag_changes_its_length() {
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let mid = h.project.add_marker(2.0, "verse");
+    h.project.markers[0].duration = 2.0;
+    h.frame(vec![]);
+    let end = pos2(h.state.x_at(4.0), lanes.top() - RULER_H * 0.5);
+    assert!(h.drag(end, end + vec2(80.0, 0.0)), "the end drag edits");
+    assert_eq!(h.undos, 1, "one undo per end drag");
+    let m = h.project.marker(mid).unwrap();
+    assert!((m.t - 2.0).abs() < 1e-9, "the start stays: {}", m.t);
+    assert!((m.duration - 4.0).abs() < 0.05, "the end moved 2 s: {}", m.duration);
+}
+
+/// A row dragged out of the Markers panel and dropped on the tracks puts that marker there, one undo.
+#[test]
+fn headless_markers_panel_row_drop_places_the_marker() {
+    use crate::ui::markers_ui::MarkerDragId;
+    let mut h = Harness::new();
+    let lanes = h.state.lanes_rect;
+    let mid = h.project.add_marker(1.0, "hook");
+    h.frame(vec![]);
+    let at = pos2(h.state.x_at(6.0), lanes.top() + 30.0);
+    h.press(pos2(10.0, 10.0));
+    egui::DragAndDrop::set_payload(&h.ctx, MarkerDragId(mid));
+    h.frame(vec![Event::PointerMoved(at)]);
+    let r = h.release(at);
+    assert!(r.edited, "the drop edits");
+    assert_eq!(h.undos, 1, "one undo");
+    assert!((h.project.marker(mid).unwrap().t - 6.0).abs() < 0.05, "at {}", h.project.marker(mid).unwrap().t);
+    assert!(egui::DragAndDrop::payload::<MarkerDragId>(&h.ctx).is_none(), "the payload is used up");
+}

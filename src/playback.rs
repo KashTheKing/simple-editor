@@ -1613,6 +1613,22 @@ pub(crate) fn video_dirty_spans(old: &Project, new: &Project) -> Option<Vec<(f64
             spans.push((c.start, c.end));
         }
     }
+    // ---- ws:zones-markers ---- a zone edit repaints the zone's old and new window. The player diffs the
+    // drawn view (zones already folded into tracks / clip effects), but Movie Mode diffs the project itself.
+    if json(&old.zones) != json(&new.zones) {
+        let span = |z: &crate::model::EffectZone| (z.t, z.end());
+        let olds: HashMap<crate::model::Id, &crate::model::EffectZone> = old.zones.iter().map(|z| (z.id, z)).collect();
+        for z in &new.zones {
+            match olds.get(&z.id) {
+                Some(o) if json(*o) == json(z) => {}
+                Some(o) => spans.extend([span(o), span(z)]),
+                None => spans.push(span(z)),
+            }
+        }
+        for z in old.zones.iter().filter(|o| !new.zones.iter().any(|z| z.id == o.id)) {
+            spans.push(span(z));
+        }
+    }
     for (ot, nt) in old.tracks.iter().zip(&new.tracks) {
         // ws:player-rate-loop: a reorder (same ids, different index) can flip z-order between two
         // video tracks - bound spans computed against the OLD index assignment would be wrong for the
@@ -3231,6 +3247,22 @@ mod tests {
             None,
             "an angle switch changes Project.sequences, which video_dirty_spans already treats as unbounded"
         );
+    }
+
+    /// ws:zones-markers: Movie Mode diffs the project itself, so a zone edit must dirty the zone's window.
+    #[test]
+    fn zone_edits_dirty_their_window() {
+        let mut p = Project::new();
+        let before = p.clone();
+        let z = p.add_zone(10.0, 5.0, None, vec![crate::model::Effect::new(crate::model::EffectKind::Grayscale)]);
+        assert_eq!(video_dirty_spans(&before, &p), Some(vec![(10.0, 15.0)]), "added");
+        let before = p.clone();
+        p.set_zone_range(z, 20.0, 2.0);
+        assert_eq!(video_dirty_spans(&before, &p), Some(vec![(10.0, 15.0), (20.0, 22.0)]), "moved: old and new");
+        let before = p.clone();
+        p.remove_zone(z);
+        assert_eq!(video_dirty_spans(&before, &p), Some(vec![(20.0, 22.0)]), "removed");
+        assert_eq!(video_dirty_spans(&p, &p.clone()), Some(vec![]), "unchanged");
     }
 
     #[test]

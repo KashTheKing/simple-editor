@@ -47,6 +47,23 @@ fn rows(zones: &[&EffectZone]) -> Vec<(Id, usize)> {
     out
 }
 
+/// Apply a drag to timeline time `t`: move (keeping the grab offset) or one end (never shorter than
+/// `MIN_ZONE`, the left end never past the right). True when the zone changed.
+fn drag_to(z: &mut EffectZone, op: Op, t: f64) -> bool {
+    let (old_t, old_d) = (z.t, z.dur);
+    let min = crate::model::ops::zones::MIN_ZONE;
+    match op {
+        Op::Move { grab } => z.t = (t - grab).max(0.0),
+        Op::End { right: true } => z.dur = (t - z.t).max(min),
+        Op::End { right: false } => {
+            let end = z.end();
+            z.t = t.clamp(0.0, (end - min).max(0.0));
+            z.dur = end - z.t;
+        }
+    }
+    (z.t - old_t).abs() > 1e-9 || (z.dur - old_d).abs() > 1e-9
+}
+
 /// The lane's height: a row per stack of overlapping zones, none without a zone.
 pub(super) fn height(p: &Project) -> f32 {
     let z: Vec<&EffectZone> = p.zones_here().collect();
@@ -192,18 +209,7 @@ pub(super) fn draw(
                     c.snap.then(|| snap::target(c.project, raw_t, thr, *c.playhead, &[], &[], None, c.snap_markers)).flatten();
                 let t = hit.map(|(x, _)| x).unwrap_or(raw_t);
                 if let Some(z) = c.project.zone_mut(drag.id) {
-                    let (old_t, old_d) = (z.t, z.dur);
-                    let min = crate::model::ops::zones::MIN_ZONE;
-                    match drag.op {
-                        Op::Move { grab } => z.t = (t - grab).max(0.0),
-                        Op::End { right: true } => z.dur = (t - z.t).max(min),
-                        Op::End { right: false } => {
-                            let end = z.end();
-                            z.t = t.clamp(0.0, end - min);
-                            z.dur = end - z.t;
-                        }
-                    }
-                    if (z.t - old_t).abs() > 1e-9 || (z.dur - old_d).abs() > 1e-9 {
+                    if drag_to(z, drag.op, t) {
                         drag.changed = true;
                         out.edited = true;
                     }
@@ -254,5 +260,32 @@ mod tests {
         assert_eq!(r, vec![0, 1, 0], "the third starts where the first ends: back on row 0");
         assert_eq!(height(&p), 2.0 * ROW_H + 2.0);
         assert_eq!(height(&Project::new()), 0.0, "no zone, no lane");
+    }
+
+    #[test]
+    fn drags_move_and_resize_within_limits() {
+        let min = crate::model::ops::zones::MIN_ZONE;
+        let z0 = EffectZone { t: 10.0, dur: 4.0, ..Default::default() };
+        // move keeps the grab offset and never goes before 0
+        let mut z = z0.clone();
+        assert!(drag_to(&mut z, Op::Move { grab: 1.0 }, 13.0));
+        assert_eq!((z.t, z.dur), (12.0, 4.0));
+        assert!(drag_to(&mut z, Op::Move { grab: 1.0 }, 0.5));
+        assert_eq!(z.t, 0.0, "clamped at the timeline start");
+        // the right end changes only the length, never below MIN_ZONE
+        let mut z = z0.clone();
+        assert!(drag_to(&mut z, Op::End { right: true }, 20.0));
+        assert_eq!((z.t, z.dur), (10.0, 10.0));
+        drag_to(&mut z, Op::End { right: true }, 2.0);
+        assert_eq!(z.dur, min);
+        // the left end keeps the right end where it is, and stops MIN_ZONE before it
+        let mut z = z0.clone();
+        assert!(drag_to(&mut z, Op::End { right: false }, 8.0));
+        assert_eq!((z.t, z.end()), (8.0, 14.0));
+        drag_to(&mut z, Op::End { right: false }, 99.0);
+        assert!((z.t - (14.0 - min)).abs() < 1e-9 && (z.end() - 14.0).abs() < 1e-9);
+        // no movement, no change (no undo step)
+        let mut z = z0.clone();
+        assert!(!drag_to(&mut z, Op::Move { grab: 0.0 }, 10.0));
     }
 }

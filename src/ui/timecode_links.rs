@@ -38,7 +38,8 @@ pub fn find(text: &str) -> Vec<(Range<usize>, f64)> {
     out
 }
 
-/// The seconds of `text` when the whole of it is one timecode.
+/// The seconds of `text` when the whole of it is one timecode (the tests pin `find` with it).
+#[cfg(test)]
 pub fn parse(text: &str) -> Option<f64> {
     let t = text.trim();
     match find(t).as_slice() {

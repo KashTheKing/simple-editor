@@ -1168,4 +1168,67 @@ mod tests {
         h.menu(at, "Delete");
         assert_eq!(h.project.markers.iter().map(|m| m.id).collect::<Vec<_>>(), vec![a]);
     }
+
+    // ---- ws:zones-markers ----
+
+    /// Right-click ▸ Category ▸ Fix types the marker, one undo.
+    #[test]
+    fn row_menu_category_sets_it_with_one_undo() {
+        let mut h = H::new();
+        let id = h.project.add_marker(1.0, "Intro");
+        h.frame(vec![]);
+        let at = h.rect(&format!("name{id}")).center();
+        h.menu(at, "Category"); // opens the submenu
+        h.frame(vec![]);
+        let fix = h.text_at("Fix").expect("the built-in categories are listed");
+        h.time += 1.0;
+        let out = h.click(fix);
+        assert!(out.edited);
+        assert_eq!(h.project.marker(id).unwrap().category, "Fix");
+        assert_eq!(h.undos, 1, "one undo");
+    }
+
+    /// The category filter shows one category's markers ("" = uncategorised ones).
+    #[test]
+    fn category_filter_shows_one_category() {
+        let mut h = H::new();
+        let a = h.project.add_marker(1.0, "Intro");
+        h.project.add_marker(2.0, "Outro");
+        h.project.set_marker_category(a, "Todo");
+        h.state.filter_category = Some("todo".into());
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert!(h.text_at("Intro").is_some() && h.text_at("Outro").is_none(), "only Todo markers");
+        h.state.filter_category = Some(String::new());
+        h.frame(vec![]);
+        h.frame(vec![]);
+        assert!(h.text_at("Intro").is_none() && h.text_at("Outro").is_some(), "only uncategorised ones");
+        // a category that went away (renamed, undone) drops the filter instead of hiding everything
+        h.state.filter_category = Some("Gone".into());
+        h.frame(vec![]);
+        assert_eq!(h.state.filter_category, None);
+    }
+
+    /// Dragging a row carries the marker (the timeline places it where it is dropped).
+    #[test]
+    fn dragging_a_row_carries_the_marker() {
+        let mut h = H::new();
+        let id = h.project.add_marker(1.0, "Intro");
+        h.frame(vec![]);
+        let at = h.rect(&format!("name{id}")).center();
+        h.frame(vec![Event::PointerMoved(at)]);
+        h.frame(vec![Event::PointerButton { pos: at, button: PointerButton::Primary, pressed: true, modifiers: Modifiers::NONE }]);
+        for i in 1..=4 {
+            h.frame(vec![Event::PointerMoved(at + Vec2::new(0.0, 15.0 * i as f32))]);
+        }
+        let carried = egui::DragAndDrop::payload::<MarkerDragId>(&h.ctx).map(|p| p.0);
+        assert_eq!(carried, Some(id));
+        h.frame(vec![Event::PointerButton {
+            pos: at + Vec2::new(0.0, 60.0),
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: Modifiers::NONE,
+        }]);
+        assert_eq!(h.undos, 0, "the panel itself edits nothing");
+    }
 }
