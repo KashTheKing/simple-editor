@@ -10,6 +10,8 @@
 ### Fixed
 - **Opening the Audio or Export page no longer freezes the editor**: the microphone list (Voiceover) and the encoder list (Export) are looked up in the background after launch instead of the first time the page draws (that could take 5-16 seconds).
 - **Switching pages is smoother**: the page switch saves your layout in the background, and the Inspector and the Library no longer read a video's file size from disk on every frame (on a busy or sleeping drive either could hold a page's first frame for a tenth of a second or more).
+### Home page
+- **A Home page instead of the small start card**: the app opens on it. **New** is a row of cards (a **+** for a blank project, then one per format, Shorts / TikTok / Reels starting at Max length 1:00, then your saved formats) that go straight into the editor; **Projects** lists your recent projects with a thumbnail, **Rename**, **Open Folder** and **Open**, and a double-click opens one. Missing projects are greyed out with **Remove**. **File ▸ Quit to Project List**, the app icon and the house button go back (through the save prompt), **File ▸ New** goes there too; **Settings ▸ General ▸ Home page** turns it off for the old card. MCP: `home.show`, `project.recent`.
 
 ## 1.4.0
 

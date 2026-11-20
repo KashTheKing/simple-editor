@@ -781,6 +781,10 @@ fn home_window(app: &mut App, ctx: &egui::Context) {
     if app.onboarding.is_some() {
         return; // the wizard comes first; the cards appear once it is done
     }
+    // ---- ws:home-page ---- the card is the Home page's off-switch fallback
+    if !super::home_ctl::popup_allowed(app) {
+        return;
+    }
     // ws:timeline-tabs: the whole project, not the timeline in front (an empty sequence tab showed the cards)
     let empty = app.project.is_blank();
     let Some(action) = home::show(ctx, &app.settings, &app.hotkeys, empty, app.home_dismissed) else { return };

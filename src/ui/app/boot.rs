@@ -22,6 +22,8 @@ pub(crate) fn run(app: &mut App) {
         layout_ctl::switch_page(app, &name);
     }
     first_run(app);
+    // ---- ws:home-page ----
+    home_ctl::boot(app);
 }
 
 /// `SE_BENCH_FIRST_FRAME=<file>`: write launch -> first painted frame (ms since the process was created)
