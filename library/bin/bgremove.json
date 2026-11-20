@@ -1,0 +1,43 @@
+{
+  "name": "Background removal (MODNet / BiRefNet on ONNX Runtime)",
+  "version": "0.1.0",
+  "parts": [
+    {
+      "id": "helper",
+      "url": "https://github.com/KashTheKing/simple-editor/releases/download/bgremove-v0.1.0/se-matte.exe",
+      "save": "se-matte.exe",
+      "size": 485888,
+      "sha256": "d27bb65fc5d1f3983e253e2022bf07572f4c54aa2665298e158556fd5f47a78a",
+      "license": "MIT (tools/se-matte in this repository)"
+    },
+    {
+      "id": "runtime",
+      "url": "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.directml/1.22.0/microsoft.ml.onnxruntime.directml.1.22.0.nupkg",
+      "extract": [
+        "runtimes/win-x64/native/onnxruntime.dll",
+        "runtimes/win-x64/native/onnxruntime_providers_shared.dll",
+        "LICENSE",
+        "ThirdPartyNotices.txt"
+      ],
+      "size": 17898472,
+      "sha256": "29f9872d786236b79aa83f94482f3a17c14297e4833768d6d0ed4883ee732e60",
+      "license": "MIT (ONNX Runtime 1.22.0, Microsoft; DirectML is the DirectML.dll Windows 10 1903+ ships)"
+    },
+    {
+      "id": "fast",
+      "url": "https://huggingface.co/Xenova/modnet/resolve/fa2fa546052fba4c08921230a26cc69a333fca12/onnx/model.onnx",
+      "save": "modnet.onnx",
+      "size": 25888640,
+      "sha256": "07c308cf0fc7e6e8b2065a12ed7fc07e1de8febb7dc7839d7b7f15dd66584df9",
+      "license": "Apache-2.0 (MODNet, ZHKKKe/MODNet; ONNX export Xenova/modnet)"
+    },
+    {
+      "id": "best",
+      "url": "https://huggingface.co/onnx-community/BiRefNet_lite-ONNX/resolve/de15b22ba131738a16dff04aab8bdf8dc32e3ac1/onnx/model.onnx",
+      "save": "birefnet_lite.onnx",
+      "size": 224005088,
+      "sha256": "5600024376f572a557870a5eb0afb1e5961636bef4e1e22132025467d0f03333",
+      "license": "MIT (BiRefNet lite, ZhengPeng7/BiRefNet; ONNX export onnx-community/BiRefNet_lite-ONNX)"
+    }
+  ]
+}

@@ -311,6 +311,17 @@ Optional programs the app installs on a click, never bundled in the exe. Each ma
   4. Commit `library/bin/enhancer.json` on `main` and push: the manifest on `main` is the switch (same rule
      and throwaway-worktree trick as the se-html manifest). Existing installs update by Uninstall + Install.
 
+- `bin/bgremove.json` (ws:addon-bg-removal): background removal. Not one download but `parts`, each
+  `{"id", "url", "size", "sha256", "save" | "extract": [members], "license"}`: `helper` (`se-matte.exe`, built
+  from `tools/se-matte`, MIT; **to be published** as `bgremove-v0.1.0` on this repository's releases),
+  `runtime` (Microsoft's `Microsoft.ML.OnnxRuntime.DirectML` 1.22.0 NuGet package straight from nuget.org,
+  MIT; `onnxruntime.dll`, `onnxruntime_providers_shared.dll`, `LICENSE` and `ThirdPartyNotices.txt` are taken
+  out of it), `fast` (MODNet, Apache-2.0) and `best` (BiRefNet lite, MIT), both ONNX files from Hugging Face
+  pinned to a commit. `engine::bgremove::install` fetches only what the asked quality still lacks into
+  `%APPDATA%\SimpleEditor\bin\bgremove`. To publish the helper: build it (`tools/se-matte/README.md`),
+  `gh release create bgremove-v0.1.0 <exe> --repo KashTheKing/simple-editor --title "Background removal 0.1.0"`,
+  then put its size and SHA-256 in the `helper` part (they are those of the build described there).
+
 ## index.json (generated)
 
 ```json

@@ -129,6 +129,10 @@ pub struct Clip {
     /// Present for Browser clips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub browser: Option<BrowserStyle>,
+    // ---- ws:addon-bg-removal ----
+    /// Background removal (no green screen): drawn with its cached matte (`engine::bgremove`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bg_removal: Option<BgRemoval>,
 }
 
 /// Essential-Sound role tag for an audio (or audio-bearing) clip. Sole definition - other
@@ -194,6 +198,7 @@ impl Clip {
             exposed: Vec::new(),
             blocks: Vec::new(),
             browser: (kind == ClipKind::Browser).then(BrowserStyle::default),
+            bg_removal: None,
         }
     }
     /// True when this container has no media (asset == 0 for video/image/audio).

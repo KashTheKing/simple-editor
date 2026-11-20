@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Remove Background** without a green screen (optional add-on): right-click a video or picture clip ▸ Remove Background ▸ Fast (MODNet, people) or Best (BiRefNet, any subject), or the Inspector's Remove Background section. The matte is computed as a job (progress and cancel in Jobs) on the graphics card through DirectML, or the CPU, cached per frame with a light temporal smoothing so edges do not flicker; the clip plays unkeyed until its frames are ready. Edge (shrink / feather) and Show Matte controls; works with Chroma Key, masks and exports. Installed on demand and checked against its checksums (Settings ▸ General ▸ Background removal). MCP: `clip.remove_background`.
+
 ## 1.4.0
 
 ### Media player

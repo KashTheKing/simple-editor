@@ -63,6 +63,11 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         ui.horizontal(enhancer_row);
         ui.end_row();
 
+        // ---- ws:addon-bg-removal ----
+        ui.label("Background removal");
+        ui.horizontal(bgremove_row);
+        ui.end_row();
+
         ui.label("Downloads folder");
         ui.horizontal(|ui| {
             changed |= ui
@@ -268,6 +273,43 @@ fn enhancer_row(ui: &mut egui::Ui) {
             Some(e) => ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}")),
             None => ui.weak("optional, about 45 MB"),
         };
+    }
+}
+
+// ---- ws:addon-bg-removal ----
+/// Install / uninstall the optional background-removal add-on (clip ▸ Remove Background).
+fn bgremove_row(ui: &mut egui::Ui) {
+    use crate::engine::bgremove;
+    use crate::model::BgQuality;
+    if let Some(p) = bgremove::installing() {
+        ui.add(egui::Spinner::new());
+        ui.weak(format!("{:.0}% · {}", p.fraction() * 100.0, p.status()));
+        return;
+    }
+    let i = bgremove::installed();
+    let tip = |q: BgQuality| match q {
+        BgQuality::Fast => "MODNet: fast, made for people. About 45 MB with the runtime.",
+        BgQuality::Best => "BiRefNet: slower, any subject, finer edges. About 225 MB.",
+    };
+    for (q, have) in [(BgQuality::Fast, i.helper && i.runtime && i.fast), (BgQuality::Best, i.helper && i.runtime && i.best)] {
+        if have {
+            ui.weak(format!("{} installed", q.label())).on_hover_text(tip(q));
+        } else if ui.button(format!("Install {}", q.label())).on_hover_text(tip(q)).clicked() {
+            bgremove::start_install(q);
+        }
+    }
+    if i.helper || i.runtime || i.fast || i.best {
+        let id = egui::Id::new("bgremove_uninstall_error");
+        if ui.button("Uninstall").on_hover_text("Removes the add-on; mattes already computed stay in the cache").clicked() {
+            let r = bgremove::uninstall().err();
+            ui.data_mut(|d| d.insert_temp(id, r));
+        }
+        if let Some(e) = ui.data(|d| d.get_temp::<Option<String>>(id)).flatten() {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+    }
+    if let Some(e) = bgremove::install_error() {
+        ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}"));
     }
 }
 

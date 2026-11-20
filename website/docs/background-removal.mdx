@@ -1,0 +1,66 @@
+---
+title: Background removal
+description: Cut a person or object out of any video or picture without a green screen.
+---
+
+**Remove Background** cuts the subject out of a video or picture clip, no green screen needed. It is an
+optional add-on: the models are downloaded the first time you use them, and the app itself stays small.
+
+## Remove a background
+
+1. Right-click a video or picture clip on the timeline ▸ **Remove Background** ▸ **Fast** or **Best**
+   (or use the **Remove Background** section of the [Inspector](inspector)).
+2. The first time, the app offers to install the add-on. It downloads it, checks every file against its
+   checksum and shows the install in **Jobs**.
+3. The matte is computed as a job (**Jobs** shows it, with Cancel). The clip plays **unkeyed until its
+   frames are ready**, and keyed frames appear as they finish whenever the preview is paused.
+
+Only the part of the file the clip shows (plus half a second each side) is computed. The mattes are kept
+in the cache, so trimming, undo, copying the clip or opening the project again does not compute them again.
+
+| Quality | Model | Good for |
+|---|---|---|
+| **Fast** | MODNet | People: talking heads, vlogs, webcam footage. Quick. |
+| **Best** | BiRefNet | Any subject (objects, animals, products), finer edges. Slower. |
+
+## Controls
+
+The Inspector's **Remove Background** section:
+
+- **Quality**: Fast or Best. Switching computes the other model's frames (both are kept).
+- **Matte**: what is ready. *Not installed* (with **Install**), a progress bar while it computes (with
+  **Cancel**), *N / M frames* (with **Compute** for the rest), or *Ready*.
+- **Edge**: below 0 shrinks the matte for a harder edge (good against a halo), above 0 feathers it.
+- **Show Matte**: shows the matte itself (white is kept, black removed), to check it.
+- **Off** turns it off (the computed frames stay in the cache).
+
+Background removal runs before the clip's effects, so a **Chroma Key** or a mask still works on top of it,
+and the clip blends over the tracks below like any picture with transparency. Exports use the same mattes.
+
+## Speed
+
+Time per frame of a 1080p clip on an RTX 2060 SUPER (GPU through DirectML) and its 8-core CPU:
+
+| Quality | GPU | CPU |
+|---|---|---|
+| Fast (MODNet, 512 px) | SPEED_FAST_GPU | SPEED_FAST_CPU |
+| Best (BiRefNet, 1024 px) | SPEED_BEST_GPU | SPEED_BEST_CPU |
+
+The GPU path works on any DirectX 12 graphics card; without one the CPU takes over by itself. Playback
+never runs the models: it only reads frames that are already computed.
+
+## Install, uninstall, licences
+
+**Settings ▸ General ▸ Background removal** installs Fast or Best and uninstalls the add-on. Everything goes
+into `%APPDATA%\SimpleEditor\bin\bgremove`; mattes live in the cache folder (`mattes\`), cleared with the
+rest of the cache.
+
+| Part | Size | Licence |
+|---|---|---|
+| `se-matte.exe`, the helper | 0.5 MB | MIT |
+| ONNX Runtime 1.22 (DirectML build), from Microsoft's NuGet package | 18 MB | MIT |
+| DirectML | (part of Windows) | Microsoft, ships with Windows 10 1903 and later |
+| MODNet (Fast) | 25 MB | Apache-2.0 |
+| BiRefNet lite (Best) | 224 MB | MIT |
+
+Nothing is sent anywhere: the footage never leaves your computer.

@@ -398,6 +398,11 @@ actions! {
     AiUpscale2Real => "ai_upscale_2_real", "AI Upscale ×2 (Real-World)", None;
     AiUpscale4Game => "ai_upscale_4_game", "AI Upscale ×4 (Game / Animation)", None;
     AiUpscale4Real => "ai_upscale_4_real", "AI Upscale ×4 (Real-World)", None;
+    // ---- ws:addon-bg-removal ----
+    // clip menu ▸ Remove Background (the optional MODNet / BiRefNet add-on); ui::app::bgremove_ctl::act. Unbound.
+    RemoveBackgroundFast => "remove_background_fast", "Remove Background (Fast)", None;
+    RemoveBackgroundBest => "remove_background_best", "Remove Background (Best)", None;
+    RemoveBackgroundOff => "remove_background_off", "Turn Off Background Removal", None;
     SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
     PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
     // ---- ws:music-burn ----

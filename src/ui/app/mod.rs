@@ -164,6 +164,7 @@ mod tools_library;
 mod tools_social;
 // ---- ws:ai-enhancer ----
 mod enhance_ctl;
+pub(crate) mod bgremove_ctl; // ws:addon-bg-removal
 mod whatsnew;
 mod perf_ctl; // ws:perf-window
 mod quick_export; // ws:quick-export
@@ -1869,6 +1870,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     tools_social::TOOLS,
     // ---- ws:ai-enhancer ----
     enhance_ctl::TOOLS,
+    // ---- ws:addon-bg-removal ----
+    bgremove_ctl::TOOLS,
     // ---- ws:perf-window ----
     perf_ctl::TOOLS,
     // ---- ws:quick-export ----
@@ -1972,6 +1975,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     browser_ctl::act,
     // ---- ws:ai-enhancer ----
     enhance_ctl::act,
+    // ---- ws:addon-bg-removal ----
+    bgremove_ctl::act,
     // ---- ws:perf-window ----
     perf_ctl::act,
     // ---- ws:quick-export ----
@@ -2066,6 +2071,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     caches::tick,
     // ---- ws:ai-enhancer ----
     enhance_ctl::tick,
+    // ---- ws:addon-bg-removal ----
+    bgremove_ctl::tick,
     // ---- ws:perf-window ----
     perf_ctl::tick,
     // ---- ws:animator ----

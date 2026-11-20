@@ -7,6 +7,7 @@ pub mod app;
 pub mod autocut_ui;
 pub mod autohide; // overlay controls that hide when the pointer leaves (player, fullscreen Preview)
 pub mod beat_aligner; // ws:beat-aligner
+pub mod bgremove_ui; // ws:addon-bg-removal
 pub mod music_ui; // ws:music-burn
 pub mod capture_ui;
 pub mod voiceover_ui; // ws:panels-multiscreen

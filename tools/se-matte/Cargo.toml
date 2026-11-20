@@ -1,0 +1,29 @@
+# se-matte: the background-removal helper (ONNX Runtime, DirectML on the GPU with a CPU fallback).
+# A SEPARATE program, not a member of the app's build: the app starts it as a child process and talks to
+# it over stdin/stdout (raw RGB frames in, 8-bit mattes out; see src/main.rs). onnxruntime.dll is not
+# linked: it is loaded at run time from beside the exe (`load-dynamic`), so the add-on download carries
+# Microsoft's own build of it. Build: `cargo build` in this folder (dev profile, deps at opt-level 3).
+[package]
+name = "se-matte"
+version = "0.1.0"
+edition = "2021"
+description = "Simple Editor's background-removal helper (MODNet / BiRefNet through ONNX Runtime)"
+license = "MIT"
+publish = false
+
+[workspace]
+
+[dependencies]
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["std", "load-dynamic", "directml"] }
+
+[profile.dev]
+opt-level = 3
+debug = false
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
