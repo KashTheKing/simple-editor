@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Preview tools, video cleanup and two effects
+- **Grid and safe areas on the Preview**: right-click ▸ **Grid** (thirds, 2 x 2, 4 x 4, 8 x 8, 16 x 9, 16 x 16 or your own columns and rows) and **Safe Areas** (action safe 90 %, title safe 80 %, both adjustable). Dragging a clip snaps to their lines while they're shown; they're never exported.
+- **Zoom at 10 % and 25 %** in the Preview's Zoom menu.
+- **Timeline ▸ Clean Up**: **Denoise Video** (Fast: hqdn3d, Best: nlmeans; Light / Medium / Strong) and **Deinterlace** (bwdif) filter the selected clip's source file and swap it in, keeping its effects, position, speed and trims; **Stabilize** and **Denoise Audio** are in the same menu now. MCP: `export.denoise_video`, `export.deinterlace`.
+- **Corner Pin** and **Lens Correction** effects (Gallery ▸ Effects ▸ Transform): pin the four corners of a clip onto a screen or sign in the shot, and straighten barrel or pincushion lens distortion.
+
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.
 - **Crop is built into every clip**: Crop Left / Right / Top / Bottom sit in the Inspector's Transform section, keyframable like Position and Scale, and the Preview's Crop tool drags them (one undo step per drag). Preview, export, proxies and the Platform Emulator all show it, at no extra cost while playing. Old projects' Crop effects turn into the built-in crop when that looks the same; the Crop effect left the Add Effect list. `clip.crop` and `clip.set` set the built-in crop.
