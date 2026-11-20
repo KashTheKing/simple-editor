@@ -35,6 +35,21 @@ struct Session {
     result: Arc<Mutex<Option<Result<(sam2::Matte, Value), String>>>>,
     /// Last helper reply ("iou", "ms") or error, for the status line.
     note: String,
+    /// The helper warm-up (the model load) started on entering click mode; None once it is not needed.
+    warm: Option<Arc<Progress>>,
+}
+
+impl Session {
+    /// Something will land without input (a mask job, the model loading), so the tick keeps waking.
+    /// Idle click mode (points shown, nothing running, or a warm-up that failed) asks for no frames.
+    fn busy(&self) -> bool {
+        self.job.is_some() || self.warm.as_ref().is_some_and(|w| !w.is_done())
+    }
+}
+
+/// The frame hook wants another frame soon: a session or a track still has work in flight.
+fn wants_frames(session: Option<&Session>, tracking: bool) -> bool {
+    tracking || session.is_some_and(Session::busy)
 }
 
 /// One track in flight.
@@ -133,12 +148,16 @@ pub(super) fn enter(app: &mut App, clip: Id) -> Result<(), String> {
         job: None,
         result: Arc::new(Mutex::new(None)),
         note: String::new(),
+        warm: None,
     });
-    // warm the helper up: the model load is the slow part (seconds; DirectML compiles on first use)
-    let _ = export::spawn_job("sam2-warm", |p| {
-        let _ = sam2::device().map(|_| ()).or_else(|| sam2::warm(&|| p.is_cancelled()).ok());
-        Ok(())
-    });
+    // warm the helper up: the model load is the slow part (seconds; DirectML compiles on first use).
+    // A failure shows on the first click (segment starts the helper again and reports why).
+    if sam2::device().is_none() {
+        let warm = export::spawn_job("sam2-warm", |p| sam2::warm(&|| p.is_cancelled()));
+        if let Some(s) = session().as_mut() {
+            s.warm = Some(warm);
+        }
+    }
     if !app.selection.contains(&clip) {
         app.selection = vec![clip];
     }
@@ -286,15 +305,19 @@ pub(super) fn start_track(
 
 /// FRAME_HOOKS: land mask jobs (and start the next if the points moved on), finish tracks.
 pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
-    let mut busy = false;
+    let mut busy;
     {
         let mut g = session();
         if let Some(s) = g.as_mut() {
             if app.project.clip(s.clip).is_none() {
                 *g = None;
             } else {
+                if let Some(w) = s.warm.take_if(|w| w.is_done()) {
+                    if let Some(e) = w.error().filter(|_| !w.is_cancelled()) {
+                        s.note = format!("The object-mask helper did not start: {e}");
+                    }
+                }
                 if let Some((p, pts)) = s.job.clone() {
-                    busy = true;
                     if p.is_done() {
                         s.job = None;
                         match s.result.lock().unwrap_or_else(|e| e.into_inner()).take() {
@@ -319,18 +342,16 @@ pub(super) fn tick(app: &mut App, ctx: &egui::Context) {
                         kick(app, s);
                     }
                 }
-                if s.job.is_some() || (s.points.is_empty() && sam2::device().is_none()) {
-                    busy = true;
-                }
             }
         }
+        busy = wants_frames(g.as_ref(), false);
     }
     let finished: Vec<Track> = {
         let mut list = tracks();
         for t in list.iter() {
             t.done.set(t.prog.fraction(), t.prog.status());
         }
-        busy |= !list.is_empty();
+        busy |= wants_frames(None, !list.is_empty());
         let (done, pending): (Vec<Track>, Vec<Track>) = std::mem::take(&mut *list).into_iter().partition(|t| t.prog.is_done());
         *list = pending;
         done
@@ -420,7 +441,7 @@ pub(super) fn overlay(app: &mut App, ui: &mut egui::Ui) {
     let (tex, points, note, busy, count) = {
         let g = session();
         let s = g.as_ref().expect("checked above");
-        (s.tex.clone(), s.points.clone(), s.note.clone(), s.job.is_some(), s.points.len())
+        (s.tex.clone(), s.points.clone(), s.note.clone(), s.busy(), s.points.len())
     };
     if on_frame {
         if let Some(t) = &tex {
@@ -440,11 +461,11 @@ pub(super) fn overlay(app: &mut App, ui: &mut egui::Ui) {
         for p in &points {
             let c = to_screen(p.x, p.y);
             let fill = if p.add { egui::Color32::from_rgb(60, 220, 90) } else { egui::Color32::from_rgb(235, 70, 60) };
-            painter.circle(c, 5.0, fill, egui::Stroke::new(1.5, egui::Color32::WHITE));
+            painter.circle(c, 5.0, fill, egui::Stroke::new(1.5_f32, egui::Color32::WHITE));
         }
     }
     // the outline of the clip being masked
-    painter.add(egui::Shape::closed_line(corners.to_vec(), egui::Stroke::new(1.0, pal.accent)));
+    painter.add(egui::Shape::closed_line(corners.to_vec(), egui::Stroke::new(1.0_f32, pal.accent)));
 
     // the clicks: on top of the video, so the clip underneath is not moved or selected
     let hit = ui.interact(rect, egui::Id::new("object-mask-clicks"), egui::Sense::click_and_drag());
@@ -686,6 +707,42 @@ pub(crate) const TOOLS: &[ToolDef] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn idle_session() -> Session {
+        Session {
+            clip: 1,
+            src_t: 0.0,
+            at: 0.0,
+            points: vec![Point { x: 0.5, y: 0.5, add: true }],
+            preview: None,
+            tex: None,
+            shown: vec![Point { x: 0.5, y: 0.5, add: true }],
+            job: None,
+            result: Arc::new(Mutex::new(None)),
+            note: String::new(),
+            warm: None,
+        }
+    }
+
+    /// The frame hook asks for frames only while work is in flight: no session, idle click mode with
+    /// its mask shown, and a warm-up that ended (even one that failed) all stay asleep.
+    #[test]
+    fn assert_no_idle_repaint_object_mask() {
+        assert!(!wants_frames(None, false), "no click mode and no track: the hook never wakes the UI");
+        let mut s = idle_session();
+        assert!(!wants_frames(Some(&s), false), "points shown, nothing running");
+        let warm = Progress::new();
+        s.warm = Some(warm.clone());
+        assert!(wants_frames(Some(&s), false), "the model is loading: the strip shows it");
+        warm.finish(Some("no DirectML".into()));
+        assert!(!wants_frames(Some(&s), false), "a failed warm-up must not keep repainting");
+        s.job = Some((Progress::new(), s.points.clone()));
+        assert!(wants_frames(Some(&s), false), "a mask job lands without input");
+        assert!(wants_frames(None, true), "a running track updates its Jobs row and the mask");
+        for a in [Action::ObjectMask, Action::ObjectMaskTrack] {
+            assert_eq!(Action::from_id(a.id()), Some(a));
+        }
+    }
 
     #[test]
     fn object_mask_tools_are_registered_once_with_the_right_kinds() {

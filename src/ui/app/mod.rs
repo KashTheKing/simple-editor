@@ -167,6 +167,7 @@ mod tools_social;
 // ---- ws:ai-enhancer ----
 mod enhance_ctl;
 mod object_mask_ctl; // ws:addon-sam2: Object Mask (the SAM 2 add-on)
+pub(crate) use object_mask_ctl::active_clip as object_mask_clip; // ws:addon-sam2: the Inspector lights its button
 mod whatsnew;
 mod perf_ctl; // ws:perf-window
 mod quick_export; // ws:quick-export

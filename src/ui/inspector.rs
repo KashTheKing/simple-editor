@@ -1325,7 +1325,11 @@ fn clip_section(
                 let mut body_add = false;
                 let mut body_edit = false;
                 // sam2: Object Mask (the optional SAM 2 add-on) clicks the object in the Preview instead
-                let object_tip = "Click the object in the Preview: left-click adds a point, right-click removes                                   one, Shift+click marks what is not the object. Then Track follows its                                   outline through the clip. Uses the optional object-mask add-on.";
+                let object_tip = "Click the object in the Preview: left-click adds a point, right-click removes \
+                                  one, Shift+click marks what is not the object. Then Track follows its \
+                                  outline through the clip. Uses the optional object-mask add-on.";
+                // lit while the Preview is in Object Mask's click mode on this clip (the button toggles it)
+                let object_on = crate::ui::app::object_mask_clip() == Some(clip.id);
                 let mut body_object = false;
                 fold(ui, &mut folds, "mask", "Mask", Some(&mut mask_menu), |ui| match &mut clip.mask {
                     None => {
@@ -1333,7 +1337,7 @@ fn clip_section(
                             let r = ui.button("Add mask");
                             mark(ui, "add_mask", &r);
                             body_add = r.clicked();
-                            let r = ui.button("Object Mask").on_hover_text(object_tip);
+                            let r = ui.add(egui::Button::new("Object Mask").selected(object_on)).on_hover_text(object_tip);
                             mark(ui, "object_mask", &r);
                             body_object = r.clicked();
                         });
@@ -1345,7 +1349,7 @@ fn clip_section(
                                 mark(ui, "edit_mask", &r);
                                 body_edit = r.clicked();
                             }
-                            let r = ui.button("Object Mask").on_hover_text(object_tip);
+                            let r = ui.add(egui::Button::new("Object Mask").selected(object_on)).on_hover_text(object_tip);
                             mark(ui, "object_mask", &r);
                             body_object = r.clicked();
                         });
