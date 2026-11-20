@@ -17,6 +17,8 @@ serde_json = "1"
 # already in the build (eframe -> arboard -> image -> png): named here to decode the live HTML preview's
 # frames in-process instead of one ffmpeg.exe per picture
 png = "0.18"
+# feat/plugins: already in the build (png / flate2 -> miniz_oxide): inflate plugin zips in-process
+miniz_oxide = "0.8"
 cpal = "0.18"
 rfd = "0.17"
 winreg = "0.56"

@@ -215,7 +215,7 @@ pub const TRUNCATED: &str = "\n[output truncated: refine your query (filter, fie
 
 /// The Luau half of the API, loaded before the script. Everything goes through `editor.tool`, so the
 /// host's allow list and the tools' own validation cover it.
-const PRELUDE: &str = r#"
+pub(crate) const PRELUDE: &str = r#"
 local tool = editor.tool
 local function merge(a, b)
   local t = {}
@@ -398,7 +398,7 @@ impl Out {
 }
 
 /// How `print` shows a value: tables as compact JSON, everything else as `tostring` would.
-fn show(v: &mlua::Value) -> String {
+pub(crate) fn show(v: &mlua::Value) -> String {
     match v {
         mlua::Value::Nil => "nil".into(),
         mlua::Value::Boolean(b) => b.to_string(),
@@ -639,7 +639,7 @@ pub fn meta(path: &Path) -> ScriptMeta {
 
 /// Lua value -> JSON. Tables with only positive-integer keys become arrays; everything else an object.
 /// A table nested deeper than 100 (a cycle, usually) is an error, not a stack overflow.
-fn lua_to_json(v: mlua::Value) -> mlua::Result<Value> {
+pub(crate) fn lua_to_json(v: mlua::Value) -> mlua::Result<Value> {
     lua_to_json_at(v, 0)
 }
 
@@ -686,7 +686,7 @@ fn lua_to_json_at(v: mlua::Value, depth: usize) -> mlua::Result<Value> {
 }
 
 /// JSON -> Lua value.
-fn json_to_lua(lua: &mlua::Lua, v: &Value) -> mlua::Result<mlua::Value> {
+pub(crate) fn json_to_lua(lua: &mlua::Lua, v: &Value) -> mlua::Result<mlua::Value> {
     Ok(match v {
         Value::Null => mlua::Value::Nil,
         Value::Bool(b) => mlua::Value::Boolean(*b),
