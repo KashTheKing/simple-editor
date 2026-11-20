@@ -140,7 +140,7 @@ impl Project {
                 }
             }
             // a block whose span the copies landed in has hand-made keys now: its controls pause
-            for b in c.blocks.iter_mut().filter(|b| n > before && b.props.contains(p) && b.end() > to + BK_EPS && b.t < end) {
+            for b in c.blocks.iter_mut().filter(|b| n > before && !b.is_proc() && b.props.contains(p) && b.end() > to + BK_EPS && b.t < end) {
                 if let Some(ctl) = b.ctl.as_mut() {
                     ctl.edited = true;
                 }
@@ -708,7 +708,7 @@ impl Clip {
             .into_iter()
             .filter(|(a, b, props)| {
                 b - a > BK_EPS
-                    && !self.blocks.iter().any(|bl| bl.t < *b && bl.end() > *a && bl.props.iter().any(|p| props.contains(&p.as_str())))
+                    && !self.blocks.iter().any(|bl| !bl.is_proc() && bl.t < *b && bl.end() > *a && bl.props.iter().any(|p| props.contains(&p.as_str())))
             })
             .map(|(a, b, _)| (a, b))
             .collect()

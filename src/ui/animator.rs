@@ -2613,7 +2613,8 @@ fn ch_moved(
 /// A key edited by hand inside a block pauses that block's controls (they would rewrite the key).
 fn touch_blocks(c: &mut Clip, p: &str, t: f64) {
     for b in &mut c.blocks {
-        if b.props.iter().any(|q| q == p) && t >= b.t - 1e-4 && t <= b.end() + 1e-4 {
+        // (a procedural block owns no keys: a key under it leaves its controls live)
+        if !b.is_proc() && b.props.iter().any(|q| q == p) && t >= b.t - 1e-4 && t <= b.end() + 1e-4 {
             if let Some(ctl) = b.ctl.as_mut() {
                 ctl.edited = true;
             }

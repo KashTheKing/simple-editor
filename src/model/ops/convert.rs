@@ -49,7 +49,7 @@ pub struct HandRun {
 }
 
 fn in_block(c: &Clip, p: &str, t0: f64, t1: f64) -> bool {
-    c.blocks.iter().any(|b| b.props.iter().any(|q| q == p) && b.t <= t0 + BK_EPS && b.end() >= t1 - BK_EPS)
+    c.blocks.iter().any(|b| !b.is_proc() && b.props.iter().any(|q| q == p) && b.t <= t0 + BK_EPS && b.end() >= t1 - BK_EPS)
 }
 
 /// Stretches from one key to the next on `p` where the value changes and no block owns them.
@@ -89,7 +89,8 @@ impl Clip {
             let joins = runs.last().is_some_and(|r| {
                 a <= r.t1 + BK_EPS
                     && !self.blocks.iter().any(|bl| {
-                        bl.t < b.max(r.t1) - BK_EPS
+                        !bl.is_proc()
+                            && bl.t < b.max(r.t1) - BK_EPS
                             && bl.end() > r.t0 + BK_EPS
                             && bl.props.iter().any(|q| q == p || r.props.contains(q))
                     })

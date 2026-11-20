@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Procedural motion blocks
+- **Camera Shake, Shake, Wobble, Wiggle, Pulse and Drift are procedural blocks**: dropping or double-clicking one from the Blocks tab adds the motion with no keyframes. It repeats for as long as the block lasts (stretching it makes it longer, not slower), and it fades in from exactly where the clip is placed and settles back there at the end, so it never starts or stops with a jump.
+- **Inspector**: Strength, Speed, Duration, Fade In, Fade Out, Decay, Seed with **Randomise**, the axes it moves (X, Y, Rotation, Scale) and, for shakes, Cover Edges. The Blocks lane shows the block's live waveform tapering at both ends; Curves shows the motion as a ghost over the keyed curve.
+- **Convert to Keyframes** (right-click or the Inspector) bakes it into keys at the project frame rate in one undo step; **Make Procedural** turns it back while the keys are unedited. Projects with shakes from earlier versions play unchanged. MCP: `keyblocks.apply` takes `params`, plus `keyblocks.bake` and `keyblocks.make_procedural`.
+
 ### Crash recovery
 - **The recovery prompt says what happened**: after a crash, the next start names what the editor was doing ("closed unexpectedly while playing clip.mp4", "while applying an effect to a.mov (Glow)", "while exporting final.mp4") and offers **Recover**, **Recover Without Media** (every file offline for that session) and **Recover Without Effects** (one Undo turns them back on). It can reopen the project even when there is no newer autosave.
 - **A file that crashes the editor no longer crashes it again**: the file it died on is taken offline, so the project opens and shows it as missing; **Bring the File Back** tries it again. A file whose import hangs or fails is skipped after 30 seconds instead of holding up the rest of the import.
