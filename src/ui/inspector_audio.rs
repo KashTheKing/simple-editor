@@ -404,7 +404,7 @@ pub(super) fn section(
                     .width(crate::ui::PROP_VAL_W)
                     .show_ui(ui, |ui| {
                         for b in BlendMode::ALL {
-                            g.note(&ui.selectable_value(&mut clip.blend, b, b.name()));
+                            g.note(&ui.selectable_value(&mut clip.blend, b, b.name()).on_hover_text(b.desc()));
                         }
                     });
             });

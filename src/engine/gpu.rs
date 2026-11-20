@@ -2708,7 +2708,7 @@ mod tests {
             seen.push((n, name.trim().to_string()));
         }
         seen.dedup();
-        assert_eq!(seen.len(), 12, "expected one branch per non-Normal mode: {seen:?}");
+        assert_eq!(seen.len(), BlendMode::ALL.len() - 1, "expected one branch per non-Normal mode: {seen:?}");
         for (n, name) in seen {
             let want = BlendMode::ALL[n].name().replace(' ', "");
             assert_eq!(name, want, "GLSL branch {n} is {name}, enum says {want}");

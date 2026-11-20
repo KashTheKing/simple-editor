@@ -211,11 +211,42 @@ float blend_1(int mode, float s, float d) {
         if (s <= 0.0) { return 0.0; }
         return 1.0 - min((1.0 - d) / s, 1.0);
     }
+    if (mode == 13) { return s + d - 2.0 * s * d; }                     // Exclusion
     return s;                                                           // Normal
+}
+
+// Non-separable modes (W3C compositing spec), mirroring engine::blend::blend_pixel.
+float bl_lum(vec3 c) { return dot(c, vec3(0.3, 0.59, 0.11)); }
+vec3 bl_clip(vec3 c) {
+    float l = bl_lum(c);
+    float n = min(c.r, min(c.g, c.b));
+    float x = max(c.r, max(c.g, c.b));
+    if (n < 0.0 && l - n > 1e-6) { c = l + (c - l) * l / (l - n); }
+    if (x > 1.0 && x - l > 1e-6) { c = l + (c - l) * (1.0 - l) / (x - l); }
+    return clamp(c, 0.0, 1.0);
+}
+vec3 bl_set_lum(vec3 c, float l) { return bl_clip(c + (l - bl_lum(c))); }
+float bl_sat(vec3 c) { return max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b)); }
+vec3 bl_set_sat(vec3 c, float s) {
+    float r = bl_sat(c);
+    if (r <= 1e-6) { return vec3(0.0); }
+    return (c - min(c.r, min(c.g, c.b))) * s / r;
+}
+vec3 bl_saturate(vec3 s, vec3 d) {
+    float k = 1.0;
+    if (s.r > 1e-6) { k = min(k, max((1.0 - d.r) / s.r, 0.0)); }
+    if (s.g > 1e-6) { k = min(k, max((1.0 - d.g) / s.g, 0.0)); }
+    if (s.b > 1e-6) { k = min(k, max((1.0 - d.b) / s.b, 0.0)); }
+    return clamp(d + s * k, 0.0, 1.0);
 }
 
 vec3 blend(int mode, vec3 s, vec3 d) {
     if (mode == 0) { return s; }
+    if (mode == 14) { return bl_saturate(s, d); }                                   // Saturate
+    if (mode == 15) { return bl_set_lum(bl_set_sat(s, bl_sat(d)), bl_lum(d)); }     // Hue
+    if (mode == 16) { return bl_set_lum(bl_set_sat(d, bl_sat(s)), bl_lum(d)); }     // Saturation
+    if (mode == 17) { return bl_set_lum(s, bl_lum(d)); }                            // Color
+    if (mode == 18) { return bl_set_lum(d, bl_lum(s)); }                            // Luminosity
     return vec3(blend_1(mode, s.r, d.r), blend_1(mode, s.g, d.g), blend_1(mode, s.b, d.b));
 }
 "#;

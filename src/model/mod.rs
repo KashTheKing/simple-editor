@@ -102,10 +102,20 @@ pub enum BlendMode {
     HardLight,
     ColorDodge,
     ColorBurn,
+    // ---- parity-effects: appended so the GLSL `int mode` of older modes never moves ----
+    Exclusion,
+    /// Adds the layer only as far as the canvas has headroom, so no channel clips (Cairo's saturate
+    /// operator, read against the opaque canvas's brightness instead of its alpha).
+    Saturate,
+    /// The four non-separable HSL modes (W3C compositing spec formulas).
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
 }
 
 impl BlendMode {
-    pub const ALL: [BlendMode; 13] = [
+    pub const ALL: [BlendMode; 19] = [
         BlendMode::Normal,
         BlendMode::Multiply,
         BlendMode::Screen,
@@ -119,6 +129,12 @@ impl BlendMode {
         BlendMode::HardLight,
         BlendMode::ColorDodge,
         BlendMode::ColorBurn,
+        BlendMode::Exclusion,
+        BlendMode::Saturate,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Color,
+        BlendMode::Luminosity,
     ];
     pub fn name(self) -> &'static str {
         match self {
@@ -135,6 +151,36 @@ impl BlendMode {
             BlendMode::HardLight => "Hard Light",
             BlendMode::ColorDodge => "Color Dodge",
             BlendMode::ColorBurn => "Color Burn",
+            BlendMode::Exclusion => "Exclusion",
+            BlendMode::Saturate => "Saturate",
+            BlendMode::Hue => "Hue",
+            BlendMode::Saturation => "Saturation",
+            BlendMode::Color => "Color",
+            BlendMode::Luminosity => "Luminosity",
+        }
+    }
+    /// One-line tooltip for the Blend combo (labels stay just the name).
+    pub fn desc(self) -> &'static str {
+        match self {
+            BlendMode::Normal => "The layer covers what is below it",
+            BlendMode::Multiply => "Darkens: white leaves the picture unchanged",
+            BlendMode::Screen => "Lightens: black leaves the picture unchanged",
+            BlendMode::Overlay => "Multiply in the shadows, Screen in the highlights of the picture below",
+            BlendMode::Darken => "Keeps the darker of the two per channel",
+            BlendMode::Lighten => "Keeps the lighter of the two per channel",
+            BlendMode::Add => "Adds the layer's light, clipping at white",
+            BlendMode::Subtract => "Subtracts the layer from the picture",
+            BlendMode::Difference => "The absolute difference of the two",
+            BlendMode::SoftLight => "A gentle Overlay driven by the layer",
+            BlendMode::HardLight => "Overlay driven by the layer instead of the picture",
+            BlendMode::ColorDodge => "Brightens the picture to reflect the layer",
+            BlendMode::ColorBurn => "Darkens the picture to reflect the layer",
+            BlendMode::Exclusion => "Like Difference with lower contrast",
+            BlendMode::Saturate => "Adds the layer only as far as the picture has room, so colours never clip",
+            BlendMode::Hue => "The layer's hue with the picture's saturation and brightness",
+            BlendMode::Saturation => "The layer's saturation with the picture's hue and brightness",
+            BlendMode::Color => "The layer's hue and saturation with the picture's brightness",
+            BlendMode::Luminosity => "The layer's brightness with the picture's colour",
         }
     }
 }
