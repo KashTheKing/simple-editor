@@ -181,6 +181,8 @@ impl CompareMode {
 pub enum PickTarget {
     Chroma,
     Qualifier,
+    /// parity-effects: the picked colour should be neutral grey - Primaries gains are rebalanced.
+    WhiteBalance,
 }
 
 /// Snapshot taken at `drag_started` so every frame's value is a ratio / angle / fraction from a fixed

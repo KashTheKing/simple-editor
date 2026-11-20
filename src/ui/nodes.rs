@@ -1051,7 +1051,7 @@ fn blend_ui(
 ) {
     egui::ComboBox::from_label("Mode").selected_text(mode.name()).show_ui(ui, |ui| {
         for m in BlendMode::ALL {
-            e.add(&ui.selectable_value(mode, m, m.name()));
+            e.add(&ui.selectable_value(mode, m, m.name()).on_hover_text(m.desc()));
         }
     });
     let wired = graph.input_of(id, 2).is_some();

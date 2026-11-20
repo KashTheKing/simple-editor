@@ -28,6 +28,9 @@ pub struct ShaderMeta {
     /// `// @camera`: a 3D shader that takes the visualizer camera as uniforms (`u_cam_pos`,
     /// `u_cam_target`, `u_fov`, `u_cam_roll`; `engine::visualizer::camera_at`).
     pub camera: bool,
+    /// parity-effects: `// @image <path>` - the picture a gradient-wipe transition reads as `u_gradient`.
+    /// Never in a library file: the Inspector writes it into a transition's own copy of the source.
+    pub image: String,
 }
 
 /// Names a `@param` may not take: they are already something in the assembled program.
@@ -77,6 +80,7 @@ pub fn parse_meta(src: &str) -> ShaderMeta {
                 }
             }
             "camera" => m.camera = true,
+            "image" => m.image = val.to_string(),
             "param" => {
                 let w: Vec<&str> = val.split_whitespace().collect();
                 let n: Vec<f64> = w.iter().skip(1).filter_map(|v| v.parse().ok()).collect();
@@ -91,6 +95,36 @@ pub fn parse_meta(src: &str) -> ShaderMeta {
         }
     }
     m
+}
+
+/// parity-effects: whether `line` is a `// @image <path>` header line.
+pub fn is_image_line(line: &str) -> bool {
+    line.trim().strip_prefix("//").is_some_and(|r| r.trim_start().starts_with("@image"))
+}
+
+/// `src` with its `// @image` line set to `path` (or removed when `path` is empty). The line goes
+/// right after the `@name` line, inside the header, so `parse_meta` reads it.
+pub fn with_image(src: &str, path: &str) -> String {
+    let mut out = String::with_capacity(src.len() + path.len() + 16);
+    let mut placed = path.is_empty();
+    for line in src.lines() {
+        if is_image_line(line) {
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+        if !placed && line.trim_start().starts_with("//") && line.contains("@name") {
+            out.push_str(&format!("// @image {}\n", path.replace(['\n', '\r'], "")));
+            placed = true;
+        }
+    }
+    if !placed {
+        out = format!("// @image {}\n{out}", path.replace(['\n', '\r'], ""));
+    }
+    if !src.ends_with('\n') {
+        out.pop();
+    }
+    out
 }
 
 /// "glow_size" -> "Glow Size": what the Inspector shows for a `@param` or an HTML field id.
@@ -164,5 +198,19 @@ vec4 effect(vec4 s, vec2 uv) { return s; }").prev_gap, 4);
         assert!(lint("// @name A\n// @desc B\n// @tags c\nuniform float x;\nvec4 transition(vec2 uv){}", true)
             .iter()
             .any(|e| e.contains("uniform")));
+    }
+
+    #[test]
+    fn image_line_is_set_replaced_and_removed() {
+        let src = "// @name Gradient Wipe\n// @desc D.\n// @tags w\nvec4 transition(vec2 uv) { return vec4(0.0); }\n";
+        assert_eq!(parse_meta(src).image, "");
+        let a = with_image(src, "C:\\wipes\\clouds.png");
+        assert_eq!(parse_meta(&a).image, "C:\\wipes\\clouds.png");
+        assert_eq!(parse_meta(&a).name, "Gradient Wipe", "the header still parses");
+        let b = with_image(&a, "D:/x.jpg");
+        assert_eq!(parse_meta(&b).image, "D:/x.jpg");
+        assert_eq!(b.matches("@image").count(), 1, "replaced, not added");
+        assert_eq!(with_image(&b, ""), src, "removing it gives the original back");
+        assert!(is_image_line("  //   @image x") && !is_image_line("// @name x"));
     }
 }

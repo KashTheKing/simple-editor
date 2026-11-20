@@ -76,7 +76,27 @@ fn write_picked_color_on_clip(c: &mut Clip, target: PickTarget, rgb: [u8; 3]) {
             let e = find_or_add(c, EffectKind::Qualifier);
             e.params[0].value = rgb_hue_degrees(rgb) as f64;
         }
+        PickTarget::WhiteBalance => {
+            let e = find_or_add(c, EffectKind::Primaries);
+            let gains = white_balance_gains([e.params[6].value, e.params[7].value, e.params[8].value], rgb);
+            for (i, g) in gains.into_iter().enumerate() {
+                e.params[6 + i].value = g;
+            }
+        }
     }
+}
+
+/// New Primaries gains (R, G, B) that turn `picked` (sampled from the graded frame, so it already
+/// carries the current gains) into a neutral grey of the same average brightness. Each channel's gain
+/// is scaled by mean / channel; a near-black or clipped pick changes nothing. Picking again on the same
+/// spot converges (gamma and lift are left alone, so one pick is close, not exact, on a heavy grade).
+pub(crate) fn white_balance_gains(current: [f64; 3], picked: [u8; 3]) -> [f64; 3] {
+    let c = picked.map(|v| v as f64);
+    let mean = (c[0] + c[1] + c[2]) / 3.0;
+    if mean < 8.0 || c.iter().any(|&v| v < 1.0 || v >= 254.5) {
+        return current;
+    }
+    [0, 1, 2].map(|i| (current[i] * mean / c[i]).clamp(0.0, 3.0))
 }
 
 /// Shared by the eyedropper's UI click path (`preview_pane.rs`) and the `color.pick` MCP tool: writes
@@ -389,7 +409,8 @@ fn run(app: &mut App, name: &str, args: &Value) -> Result<Value, String> {
             let target = match req(arg_str(args, "target"), "target")? {
                 "chroma" => PickTarget::Chroma,
                 "qualifier" => PickTarget::Qualifier,
-                _ => return Err("target: chroma|qualifier".into()),
+                "white_balance" => PickTarget::WhiteBalance,
+                _ => return Err("target: chroma|qualifier|white_balance".into()),
             };
             let stats = stats_now(app, app.playhead).ok_or("GPU rendering not available")?;
             let (sw, sh) = (stats.sample_w.max(1), stats.sample_h.max(1));
@@ -473,8 +494,8 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "color.pick",
-        desc: "Sample the frame at (x,y); if a clip is selected, writes its ChromaKey/Qualifier target too.",
-        args: &["x:number:true:0..1 in the letterbox", "y:number:true:", "target:string:true:chroma|qualifier"],
+        desc: "Sample the frame at (x,y); if a clip is selected, writes its ChromaKey key, Qualifier hue or white balance (Primaries gains that make the picked colour neutral).",
+        args: &["x:number:true:0..1 in the letterbox", "y:number:true:", "target:string:true:chroma|qualifier|white_balance"],
         kind: ToolKind::Mutate,
         run: |a, v| run(a, "color.pick", v).map(ToolOutcome::Done),
     },
@@ -515,6 +536,25 @@ mod tests {
         write_picked_color_on_clip(c, PickTarget::Qualifier, [0, 255, 0]);
         let e = c.effects.iter().find(|e| e.kind == EffectKind::Qualifier).unwrap();
         assert!((e.params[0].value - 120.0).abs() < 0.5, "qualifier centre = green's hue");
+    }
+
+    #[test]
+    fn white_balance_pick_neutralises_the_cast() {
+        // a warm grey (orange cast) picked off a clip with no grade yet
+        let mut c = Clip::new(1, ClipKind::Video, "c", 0.0, 2.0);
+        write_picked_color_on_clip(&mut c, PickTarget::WhiteBalance, [180, 150, 120]);
+        let e = c.effects.iter().find(|e| e.kind == EffectKind::Primaries).expect("adds Primaries");
+        let g = [e.params[6].value, e.params[7].value, e.params[8].value];
+        let out = [180.0 * g[0], 150.0 * g[1], 120.0 * g[2]];
+        assert!((out[0] - out[2]).abs() < 0.5 && (out[0] - out[1]).abs() < 0.5, "neutral after: {out:?}");
+        assert!((out[1] - 150.0).abs() < 0.5, "keeps the brightness");
+        // a second pick on the now-neutral colour changes nothing
+        assert_eq!(white_balance_gains(g, [150, 150, 150]), g);
+        // black and clipped picks are ignored rather than blowing the gains up
+        assert_eq!(white_balance_gains([1.0; 3], [2, 2, 2]), [1.0; 3]);
+        assert_eq!(white_balance_gains([1.0; 3], [255, 200, 180]), [1.0; 3]);
+        // the gains stay in the Primaries range
+        assert!(white_balance_gains([2.9; 3], [200, 20, 200]).iter().all(|g| (0.0..=3.0).contains(g)));
     }
 
     #[test]

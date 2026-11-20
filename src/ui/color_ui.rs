@@ -24,11 +24,11 @@ const ORDER: [EffectKind; 5] =
 
 #[derive(Default)]
 pub struct ColorResponse {
-    /// The user clicked "Eyedropper" for this clip - arms a pending sample request. ponytail: nothing
-    /// consumes it into an actual pixel read yet (that needs a canvas click handler in `preview.rs`,
-    /// owned by canvas-handles-monitor, not this workstream); `App::poll_panels` still drains it and
-    /// toasts an honest "not wired yet" instead of silently swallowing the click.
+    /// The user clicked "Eyedropper" for this clip - arms a pending sample request, consumed by
+    /// `monitor_tick` into `pick_armed`; the next click on the preview writes the ChromaKey colour.
     pub eyedrop: bool,
+    /// The user clicked the White Balance eyedropper: the next click on the preview neutralises that colour.
+    pub white_balance: bool,
     pub auto: bool,
     /// The user picked a clip from the "Match to" combo and clicked "Match" - its id.
     pub match_ref: Option<Id>,
@@ -296,6 +296,11 @@ pub fn show(
             .on_hover_text("Eyedropper: pick a colour from the preview (click a point on the canvas)");
         if r.clicked() {
             out.eyedrop = true;
+        }
+        let r = glyph_text_button(ui, Glyph::Eyedropper, "White Balance")
+            .on_hover_text("Click something that should be white or grey in the preview to remove a colour cast");
+        if r.clicked() {
+            out.white_balance = true;
         }
     });
     if !others.is_empty() {
