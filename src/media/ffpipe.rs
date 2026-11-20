@@ -186,6 +186,9 @@ pub fn probe(path: &str) -> Result<Asset, String> {
         let is_image =
             !animated && (is_image_path(path) || str_of(&format, "format_name").ends_with("_pipe") || single);
         a.kind = if is_image { ClipKind::Image } else { ClipKind::Video };
+        if !is_image {
+            crate::media::playcheck::announce(path); // ws:forum-preview: start the VFR probe (its own thread)
+        }
         if is_image {
             a.duration = 0.0;
         }

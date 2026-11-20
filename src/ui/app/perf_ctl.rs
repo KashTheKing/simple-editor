@@ -345,26 +345,30 @@ fn refresh_project(app: &mut App) {
     (app.perf.project, app.perf.extra, app.perf.project_at) = (rows, extra, Some(Instant::now()));
 }
 
+/// Build a proxy for asset `id` next (one undo step): the Fix here and the health chip's
+/// (ws:forum-preview `health_ctl`) both come through this.
+pub(super) fn make_proxy(app: &mut App, id: Id) {
+    let Some(path) = app.project.asset(id).map(|a| a.path.clone()) else { return };
+    app.push_undo();
+    if let Some(a) = app.project.assets.iter_mut().find(|a| a.id == id) {
+        a.proxy = Some(true);
+    }
+    app.after_edit();
+    (app.proxy_next, app.proxy_scan_at) = (Some(path.clone()), None);
+    if !app.settings.use_proxies {
+        app.settings.use_proxies = true; // a proxy is only played with proxies on
+        app.settings.save();
+    }
+    app.toast(format!("Building a proxy for {}", file_name(&path)));
+}
+
 fn apply(app: &mut App, c: Click) {
     match c {
         Click::Jump(id, t) => {
             app.selection = vec![id];
             app.seek(t);
         }
-        Click::Fix(Fix::Proxy(id)) => {
-            let Some(path) = app.project.asset(id).map(|a| a.path.clone()) else { return };
-            app.push_undo();
-            if let Some(a) = app.project.assets.iter_mut().find(|a| a.id == id) {
-                a.proxy = Some(true);
-            }
-            app.after_edit();
-            (app.proxy_next, app.proxy_scan_at) = (Some(path.clone()), None);
-            if !app.settings.use_proxies {
-                app.settings.use_proxies = true; // a proxy is only played with proxies on
-                app.settings.save();
-            }
-            app.toast(format!("Building a proxy for {}", file_name(&path)));
-        }
+        Click::Fix(Fix::Proxy(id)) => make_proxy(app, id),
         Click::Fix(Fix::Prerender(a, b)) => match app.request_prerender_range(a, b) {
             Ok(()) => app.toast(format!("Pre-rendering {a:.1}–{b:.1} s")),
             Err(e) => app.toast(e),

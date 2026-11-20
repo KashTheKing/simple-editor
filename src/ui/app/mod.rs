@@ -190,6 +190,7 @@ mod project_match; // ws:project-color-fps
 mod timeline_tabs; // ws:timeline-tabs
 mod home_ctl; // ws:home-page
 mod os_paste; // Ctrl+V of a screenshot / copied files
+mod health_ctl; // ws:forum-preview
 
 enum ExportKind {
     File { path: PathBuf },
@@ -599,6 +600,9 @@ pub struct App {
     // ---- ws:timeline-tabs ----
     /// The background timeline tabs' views and the Rename Sequence window.
     tabs: timeline_tabs::TabsState,
+    // ---- ws:forum-preview ----
+    /// Playback health chip and the VFR notice (`health_ctl`).
+    health: health_ctl::State,
 }
 
 // ---- ws:canvas-handles-monitor ----
@@ -1176,6 +1180,7 @@ impl App {
             emulator_tex: None,
             match_offer: None, // ws:project-color-fps
             tabs: Default::default(), // ws:timeline-tabs
+            health: Default::default(), // ws:forum-preview
             // ---- ws:pro-schema ----
             assistant: Default::default(),
             // ---- ws:play-decode-path ----
@@ -2042,6 +2047,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     // ---- ws:home-page ----
     home_ctl::TOOLS,
     script_ctl::TOOLS,
+    // ---- ws:forum-preview ----
+    health_ctl::TOOLS,
 ];
 
 pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
@@ -2234,6 +2241,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     music_ctl::frame,
     // ---- ws:preview-audio-only ----
     audio_only::tick,
+    // ---- ws:forum-preview ----
+    health_ctl::tick,
 ];
 
 pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[

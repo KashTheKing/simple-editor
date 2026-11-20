@@ -7,6 +7,7 @@ pub mod d3d;
 pub mod bg;
 pub mod ffpipe;
 pub mod mf;
+pub mod playcheck; // ws:forum-preview
 pub mod proxy;
 pub mod renames;
 pub mod thumbs;

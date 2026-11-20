@@ -214,6 +214,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
     if app.settings.hud {
         crate::ui::hud::draw(ui, &app.hud, app.player.dropped_frames()); // ws:perf-baseline
     }
+    super::health_ctl::chip(app, ui); // ws:forum-preview
 }
 
 /// The bar's speed menu, Reverse and Loop (`ui::media_bar`). A speed plays at it, keeping the direction;

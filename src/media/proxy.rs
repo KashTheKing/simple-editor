@@ -196,7 +196,9 @@ pub fn has_alpha(src: &str) -> Option<bool> {
 /// restarts the pipe, so a small overlay (an HTML layer) needs its stacked proxy just as much. Not
 /// yet a file still being probed for alpha (`None`): the next scan asks again.
 pub fn eligible(a: &crate::model::Asset, _h: u32) -> bool {
-    usable(a) && wants(a)
+    // ws:forum-preview: not before the frame-rate probe has answered - a VFR source's proxy is a
+    // constant-rate one under its own name, and building the plain one first would be wasted work
+    usable(a) && wants(a) && crate::media::playcheck::traits(&a.path).is_some()
 }
 
 /// Video that may play from a proxy: not a throw-away draft, not switched off, alpha probe answered.
@@ -212,9 +214,11 @@ pub fn usable(a: &crate::model::Asset) -> bool {
         && has_alpha(&a.path).is_some()
 }
 
-/// Should a proxy be BUILT for `a`: switched on by hand, alpha, or too expensive to decode in real time.
+/// Should a proxy be BUILT for `a`: switched on by hand, alpha, too expensive to decode in real time, or
+/// variable frame rate (ws:forum-preview: phone and screen recordings get a constant-rate proxy, so steps
+/// and scrubs land on even frames).
 fn wants(a: &crate::model::Asset) -> bool {
-    a.proxy == Some(true) || has_alpha(&a.path) == Some(true) || needs_proxy(a)
+    a.proxy == Some(true) || has_alpha(&a.path) == Some(true) || needs_proxy(a) || crate::media::playcheck::is_vfr(&a.path)
 }
 
 /// Codecs Media Foundation decodes (in hardware where the GPU can); anything else goes through an
@@ -316,6 +320,11 @@ pub fn stacked_or_plain(src: &str, height: u32, stacked: bool) -> PathBuf {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (src.to_ascii_lowercase(), mtime_secs(src), height).hash(&mut h);
+    // ws:forum-preview: a VFR source's proxy is constant-rate (`cfr_rate`): its own name, so a plain
+    // proxy built before is never mistaken for it. Every other source keeps the name it always had.
+    if cfr_rate(src).is_some() {
+        "cfr".hash(&mut h);
+    }
     dir().join(format!("{:016x}{}.mp4", h.finish(), if stacked { "-a" } else { "" }))
 }
 
@@ -477,6 +486,7 @@ fn run_with(src: &str, dst: &PathBuf, height: u32, prog: &Progress, encode: &[&s
         let _ = std::fs::remove_file(stacked_or_plain(src, height, false));
     }
     cmd.args(["-vf", &vf]).args(encode);
+    cmd.args(cfr_args(src)); // ws:forum-preview
     cmd.arg(&tmp.0);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("ffmpeg: {e}"))?;
@@ -498,6 +508,19 @@ fn run_with(src: &str, dst: &PathBuf, height: u32, prog: &Progress, encode: &[&s
     }
     export::wait_ffmpeg(&mut child, tail, prog)?;
     tmp.commit(dst.as_path())
+}
+
+// ---- ws:forum-preview ----
+/// The constant rate a VFR source's proxy is made at (`playcheck`), None for a constant-rate source or
+/// one not probed yet.
+pub fn cfr_rate(src: &str) -> Option<f64> {
+    crate::media::playcheck::traits(src).filter(|t| t.vfr).map(|t| if t.fps > 0.0 { t.fps } else { 30.0 })
+}
+
+/// ffmpeg output options that make the proxy constant-rate (frames repeated or dropped to the even grid,
+/// each one still the source frame showing at that time), or none.
+pub fn cfr_args(src: &str) -> Vec<String> {
+    cfr_rate(src).map_or_else(Vec::new, |r| ["-fps_mode", "cfr", "-r"].iter().map(|s| s.to_string()).chain([format!("{r}")]).collect())
 }
 
 #[cfg(test)]
