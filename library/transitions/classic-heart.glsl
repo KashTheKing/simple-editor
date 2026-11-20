@@ -5,7 +5,7 @@
 vec4 transition(vec2 uv) {
     if (progress <= 0.0) return getFromColor(uv);
     if (progress >= 1.0) return getToColor(uv);
-    float r = pow(progress, 1.5) * 1.8 * max(ratio, 1.0);
+    float r = pow(progress, 2.5) * 1.8 * max(ratio, 1.0);
     vec2 p = (uv - vec2(0.5, 0.45)) * vec2(ratio, 1.0) / max(r, 0.0001);
     float a = dot(p, p) - 1.0;
     float f = a * a * a - p.x * p.x * p.y * p.y * p.y;
