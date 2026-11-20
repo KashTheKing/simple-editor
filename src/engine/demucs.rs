@@ -18,7 +18,10 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// The AVX2 + FMA build (x86-64-v3): the one the install checks and most PCs run.
 pub const EXE: &str = "demucs_mt.cpp.main.exe";
+/// The SSE4.2 build (x86-64-v2) beside it, for processors without AVX2 (`tools/demucs-helper/build.sh`).
+pub const EXE_V2: &str = "demucs_mt.cpp.main.v2.exe";
 pub const MODEL: &str = "ggml-model-htdemucs-4s-f16.bin";
 /// The library file that names the download.
 pub const MANIFEST: &str = "bin/demucs.json";
@@ -66,7 +69,30 @@ pub fn exe() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("SE_DEMUCS").map(PathBuf::from).filter(|p| p.is_file()) {
         return Some(p);
     }
-    Some(dir().join(EXE)).filter(|p| p.is_file())
+    let d = dir();
+    pick_exe(&d, has_avx2()).filter(|p| p.is_file())
+}
+
+/// The processor runs the AVX2 + FMA build.
+fn has_avx2() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        std::is_x86_feature_detected!("avx2") && std::is_x86_feature_detected!("fma")
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+/// Which build in `d`: the AVX2 one when the processor has it, else the SSE4.2 one when the zip carried it
+/// (an older zip has only the one exe: use it as before).
+fn pick_exe(d: &Path, avx2: bool) -> Option<PathBuf> {
+    let (fast, compat) = (d.join(EXE), d.join(EXE_V2));
+    if !fast.is_file() {
+        return None; // the install puts EXE there; without it nothing is installed
+    }
+    Some(if !avx2 && compat.is_file() { compat } else { fast })
 }
 
 /// The weights: `SE_DEMUCS_MODEL`, else beside the installed exe.
@@ -211,7 +237,7 @@ pub fn install(prog: &Progress) -> Result<PathBuf, String> {
             return Err(format!("could not unpack: {}", String::from_utf8_lossy(&out.stderr).trim()));
         }
         let root = find_exe(&fresh).ok_or(format!("the download has no {EXE}"))?;
-        check_runs(&root.join(EXE))?;
+        check_runs(&pick_exe(&root, has_avx2()).unwrap_or_else(|| root.join(EXE)))?;
         std::fs::rename(&weights, root.join(MODEL)).map_err(|e| e.to_string())?;
         let dest = dir();
         let _ = std::fs::remove_dir_all(&dest);
@@ -339,6 +365,11 @@ fn input_args(src: &Path, stream: usize, out: &Path) -> Vec<String> {
     v
 }
 
+/// The separator's arguments, run in the work folder: `<model> in.wav raw <threads>`.
+fn separator_args(weights: &Path, threads: usize) -> Vec<std::ffi::OsString> {
+    vec![weights.as_os_str().to_owned(), "in.wav".into(), "raw".into(), threads.to_string().into()]
+}
+
 /// One child to the end, killed on cancel; Err carries its stderr tail.
 fn run_child(mut cmd: Command, what: &str, prog: &Progress) -> Result<(), String> {
     cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped());
@@ -401,7 +432,9 @@ fn separate(
     let n = threads();
     let raw = work.join("raw");
     let mut cmd = low(sep);
-    cmd.arg(weights).arg(&input).arg(&raw).arg(n.to_string());
+    // the WAVs by name inside the work folder: demucs.cpp opens files through narrow (ANSI) paths, so a
+    // cache folder under a non-ASCII user name stays out of its arguments (its UTF-8 manifest covers the model)
+    cmd.current_dir(work).args(separator_args(weights, n));
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("separator: {e}"))?;
     let tail = export::stderr_tail(&mut child);
@@ -508,6 +541,28 @@ mod tests {
         assert_eq!(stem_file(Path::new("d"), Stem::Vocals), Path::new("d").join("vocals.wav"));
         assert_eq!(cached(&f, 0), None);
         let _ = std::fs::remove_file(&f);
+    }
+
+    #[test]
+    fn the_separator_runs_on_names_inside_the_work_folder() {
+        let a = separator_args(Path::new(r"C:\Users\Zoë\AppData\Roaming\SimpleEditor\bin\demucs\m.bin"), 3);
+        assert_eq!(a[1..], ["in.wav", "raw", "3"].map(std::ffi::OsString::from));
+        assert!(a[0].to_string_lossy().ends_with("m.bin"));
+    }
+
+    #[test]
+    fn the_sse_build_is_picked_only_without_avx2() {
+        let d = std::env::temp_dir().join(format!("se-demucs-pick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(pick_exe(&d, true), None);
+        std::fs::write(d.join(EXE), b"x").unwrap();
+        // an older zip with one exe: that one either way
+        assert_eq!(pick_exe(&d, false), Some(d.join(EXE)));
+        std::fs::write(d.join(EXE_V2), b"x").unwrap();
+        assert_eq!(pick_exe(&d, true), Some(d.join(EXE)));
+        assert_eq!(pick_exe(&d, false), Some(d.join(EXE_V2)));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

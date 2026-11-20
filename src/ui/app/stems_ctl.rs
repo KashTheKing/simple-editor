@@ -217,8 +217,15 @@ pub(crate) fn place(p: &mut Project, clip: Id, stems: &[(Stem, Id)], mode: Mode)
     let Some(orig) = p.clip(clip).cloned() else { return Vec::new() };
     let link = p.new_id();
     let mut out = Vec::new();
+    // right under the clip's own track, in stem order (add_track appends; nothing before `at` moves)
+    let mut at = p.track_of(clip).map_or(usize::MAX, |ti| ti + 1);
     for &(s, asset) in stems {
-        let ti = p.add_track(TrackKind::Audio);
+        let added = p.add_track(TrackKind::Audio);
+        let mut track = p.tracks.remove(added);
+        track.name = s.label().into();
+        let ti = at.min(p.tracks.len());
+        p.tracks.insert(ti, track);
+        at = ti + 1;
         let mut c = orig.clone();
         c.id = p.new_id();
         c.asset = asset;
@@ -252,6 +259,18 @@ pub(crate) fn placed_stem(p: &Project, clip: Id, stem: Stem) -> Option<Id> {
         .filter(|(_, x)| (x.start - start).abs() < 1e-3)
         .find(|(_, x)| p.asset(x.asset).is_some_and(|a| a.path.to_lowercase() == want))
         .map(|(_, x)| x.id)
+}
+
+/// What AutoDuck lowers for the music pick `clip`: its placed vocals stem when the song was split onto tracks
+/// (the instrumental stems keep playing), else None (duck the clip itself, as before).
+pub(crate) fn duck_target(p: &Project, clip: Id) -> Option<Id> {
+    placed_stem(p, clip, Stem::Vocals).filter(|&v| v != clip)
+}
+
+/// The file the Beat Aligner reads for the song `path`: its cached drums stem once separated (a cleaner
+/// beat grid on a busy mix), else the song itself.
+pub(crate) fn beat_source(path: &str) -> String {
+    cached_stem(path, Stem::Drums).map_or_else(|| path.to_string(), |f| f.to_string_lossy().into_owned())
 }
 
 /// The cached stem file of the song asset `path` (stream 0), if it has been separated.
@@ -433,9 +452,19 @@ mod tests {
     #[test]
     fn placing_aligns_four_linked_copies_and_mutes_the_original() {
         let (mut p, ids) = project();
+        let below = p.add_track(TrackKind::Audio); // a track the stems must go above
+        p.tracks[below].name = "Music".into();
         let tracks = p.tracks.len();
+        let song_track = p.track_of(10).unwrap();
         let new = place(&mut p, 10, &ids, Mode::Tracks);
         assert_eq!((new.len(), p.tracks.len()), (4, tracks + 4));
+        // the four stem tracks sit right under the song's track, in stem order, named after the stem
+        let names: Vec<&str> = p.tracks[song_track + 1..song_track + 5].iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["Drums", "Bass", "Other", "Vocals"]);
+        assert_eq!(p.tracks.last().unwrap().name, "Music");
+        for (k, &id) in new.iter().enumerate() {
+            assert_eq!(p.track_of(id), Some(song_track + 1 + k));
+        }
         let link = p.clip(new[0]).unwrap().link;
         assert_ne!(link, 0);
         for (&id, &(s, asset)) in new.iter().zip(&ids) {
@@ -460,6 +489,32 @@ mod tests {
         let new = place(&mut p, 10, &ids, Mode::OnlyVocals);
         let on: Vec<bool> = new.iter().map(|&id| p.clip(id).unwrap().enabled).collect();
         assert_eq!(on, [false, false, false, true]);
+    }
+
+    #[test]
+    fn autoduck_lowers_only_the_placed_vocals() {
+        let (mut p, ids) = project();
+        assert_eq!(duck_target(&p, 10), None); // not split: duck the song itself
+        let new = place(&mut p, 10, &ids, Mode::Tracks);
+        assert_eq!(duck_target(&p, 10), Some(new[3]));
+        assert_eq!(duck_target(&p, new[0]), Some(new[3])); // picked the drums stem: still the vocals
+        assert_eq!(duck_target(&p, new[3]), None); // picked the vocals stem: that clip itself
+    }
+
+    #[test]
+    fn beats_read_the_drums_stem_once_separated() {
+        let song = std::env::temp_dir().join(format!("se-stems-beats-{}.wav", std::process::id()));
+        std::fs::write(&song, b"song").unwrap();
+        let path = song.to_string_lossy().into_owned();
+        assert_eq!(beat_source(&path), path);
+        let dir = demucs::stems_dir(&song, 0);
+        std::fs::create_dir_all(&dir).unwrap();
+        for s in Stem::ALL {
+            std::fs::write(demucs::stem_file(&dir, s), b"x").unwrap();
+        }
+        assert_eq!(beat_source(&path), demucs::stem_file(&dir, Stem::Drums).to_string_lossy());
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&song);
     }
 
     #[test]
