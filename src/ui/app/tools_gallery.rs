@@ -1008,7 +1008,8 @@ mod tests {
         let audio = crate::ui::gallery::card_names(GalleryTab::AudioAnimate, &s);
         let video = crate::ui::gallery::card_names(GalleryTab::Animate, &s);
         for n in ["Sound Swell", "Sound Fade", "Duck", "Tremolo", "Pan Sweep", "Pan Swing"] {
-            assert!(audio.iter().any(|a| a == n) && !video.iter().any(|v| v == n), "{n} is on the Audio side only");
+            // Blocks lists them too, in its Sound section (as the + Animation menu does)
+            assert!(audio.iter().any(|a| a == n) && video.iter().any(|v| v == n), "{n} on both sides");
         }
         assert!(video.iter().any(|v| v == "Pop In") && !audio.iter().any(|a| a == "Pop In"));
         for name in &audio {

@@ -545,6 +545,10 @@ pub struct Settings {
     /// The Animate page has been added to `pages` once (a settings file from before it gets it after Edit;
     /// deleting it afterwards sticks).
     pub animate_page: bool,
+    /// The Animator's property list: properties hidden by kind (`x`, `opacity`, ...) and the groups folded
+    /// (`Transform`, ...). A view choice, the same on every clip.
+    pub anim_hidden_props: Vec<String>,
+    pub anim_folded: Vec<String>,
     // ---- ws:beat-aligner ----
     /// Beat Aligner tap latency (ms taken off every tap; Calibrate measures it).
     pub beat_latency_ms: f64,
@@ -926,6 +930,8 @@ impl Default for Settings {
             key_blocks: Vec::new(),
             // ---- ws:animator ----
             animate_page: false,
+            anim_hidden_props: Vec::new(),
+            anim_folded: Vec::new(),
             // ---- ws:beat-aligner ----
             beat_latency_ms: 0.0,
             // ---- ws:perf-baseline ----

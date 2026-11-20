@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Animator
+- **Fold and choose the properties**: in Curves each clip's Properties list folds to its title (▼ / ▶) and each group folds; right-click the title, a group or a row to tick which properties show, or Show All, Hide Unkeyed, Only Keyed, Collapse All / Expand All and Reset to Default View. Hidden properties keep their keys, and the choice (and the folded groups) is remembered for every clip.
+- **Gallery ▸ Blocks**: the Animate tab is now Blocks, sorted like the + Animation menu (Transitions, In, Out, Physics, Emphasis, Camera, Text, Sound, Speed, Mine), each card with its kind's colour dot. Clicking into the Animator switches a visible Gallery back to Blocks unless you picked another tab since.
+- **Drag blocks onto the Animator**: drop a block card on a clip's lane in any view (Blocks, Curves, Flow, Speed) and it starts there, on that clip; drop a transition on the Timeline lane for a timeline span. A ghost shows the block's length while dragging (on the timeline too), and each drop is one undo step.
+
 ## 1.4.0
 
 ### Media player

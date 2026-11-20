@@ -113,7 +113,21 @@ pub struct AnimState {
     /// Curves: properties hidden on the graph, folded channel groups, every key of the clip (not just the
     /// selected block's), the key / handle a drag holds, where a right-click on empty space landed.
     hidden: Vec<&'static str>,
-    folded: Vec<&'static str>,
+    /// Folded channel groups (`Settings.anim_folded`, by group name: the same on every clip).
+    pub folded: Vec<String>,
+    /// Properties left out of the channel list and the graph (`Settings.anim_hidden_props`, by kind: the
+    /// same on every clip). A view choice: their keys stay; the list's right-click brings them back.
+    pub props_off: Vec<String>,
+    /// Clips whose "Properties - <clip>" row is folded to its title.
+    clip_folded: Vec<Id>,
+    /// `props_off` / `folded` were read from Settings (the app does it once).
+    pub view_loaded: bool,
+    /// The property rows drawn last frame, as (clip, property).
+    #[cfg(test)]
+    ch_rows: Vec<(Id, &'static str)>,
+    /// Where a Gallery card could land last frame: (lane, its clip; None = the Timeline lane).
+    #[cfg(test)]
+    drop_pos: Vec<(Rect, Option<Id>)>,
     whole_clip: bool,
     grab: Option<(&'static str, usize, i8)>,
     /// Curves: the channel list's order as the user dragged it - group names and property names in one list
@@ -200,9 +214,14 @@ fn linkable(st: &AnimState) -> Option<Vec<(Id, usize)>> {
 }
 
 /// Add `block` to clip `id` at clip-local `at` (None = after its last block) and pick it.
-fn add_act(id: Id, block: KeyBlock, at: Option<f64>) -> Act {
+/// `exact`: start right at `at` (a Gallery drop) even over another block; else chain after the blocks there.
+fn add_act(id: Id, block: KeyBlock, at: Option<f64>, exact: bool) -> Act {
     Box::new(move |p, s, o| {
-        if let Some((t, _)) = p.apply_key_block(id, &block, at, None) {
+        let placed = match (exact, at) {
+            (true, Some(t)) => p.place_key_block(id, &block, t, None),
+            _ => p.apply_key_block(id, &block, at, None),
+        };
+        if let Some((t, _)) = placed {
             let i = p.clip(id).and_then(|c| c.blocks.iter().position(|x| (x.t - t).abs() < 1e-9));
             (s.sel, s.multi) = (i.map(|i| (id, i)), Vec::new());
             o.toast = Some(format!("Added {}", block.name));
@@ -729,6 +748,8 @@ pub fn show(
     }
     #[cfg(test)]
     st.key_pos.clear();
+    #[cfg(test)]
+    st.ch_rows.clear();
     let main = st.sel;
     st.multi.retain(|&(id, i)| Some((id, i)) != main && project.clip(id).is_some_and(|c| i < c.blocks.len()));
     SEL.with(|s| s.set(st.sel));
@@ -968,20 +989,45 @@ fn span_add_act(t: f64, dur: f64, k: SpanKind) -> Act {
     })
 }
 
+/// The kinds of animation, in the "+ Animation" menu's order (the Gallery's Blocks tab uses the same): In and
+/// Out are how a clip arrives or leaves, the rest move it while it is on screen.
+pub const BLOCK_GROUPS: [(&str, &[&str]); 8] = [
+    ("In", &["Fade In", "Pop In", "Slide In Left", "Drop In", "Swing In", "Elastic"]),
+    ("Out", &["Fade Out", "Pop Out", "Slide Out Right", "Whip"]),
+    ("Physics", &["Gravity Fall", "Throw & Bounce", "Bounce Drop", "Spring In", "Throw Out", "Wobble"]),
+    ("Emphasis", &["Pulse", "Zoom Punch", "Shake", "Wiggle", "Bounce", "Spin", "Flash"]),
+    ("Camera", &["Ken Burns", "Drift", "Camera Shake"]),
+    ("Text", &["Typewriter"]),
+    ("Sound", &["Sound Swell", "Sound Fade", "Duck", "Pan Sweep", "Pan Swing", "Tremolo"]),
+    ("Speed", &["Speed Ramp In", "Speed Ramp Out", "Slow-mo Hit", "Speed Up"]),
+];
+
+/// The Gallery's Blocks tab sections, in the "+ Animation" menu's order: the timeline's transitions (its
+/// Transitions ▸ Timeline), `BLOCK_GROUPS`, then your own blocks.
+pub fn block_sections() -> Vec<&'static str> {
+    std::iter::once("Transitions").chain(BLOCK_GROUPS.iter().map(|g| g.0)).chain(["Mine"]).collect()
+}
+
+/// The `BLOCK_GROUPS` group block `name` belongs to ("Mine" for one of yours): the menu's own rows first,
+/// then by name (the other slides), else Emphasis.
+pub fn block_group(name: &str, mine: bool) -> &'static str {
+    if mine {
+        return "Mine";
+    }
+    if let Some(g) = BLOCK_GROUPS.iter().find(|g| g.1.contains(&name)) {
+        return g.0;
+    }
+    match name {
+        n if n.starts_with("Slide In") => "In",
+        n if n.starts_with("Slide Out") => "Out",
+        _ => "Emphasis",
+    }
+}
+
 /// (`span` = where a pick under Transitions ▸ Timeline goes; None leaves that row out.)
 fn anim_menu(ui: &mut Ui, presets: &[KeyBlock], mut span: Option<&mut Option<SpanKind>>) -> Option<String> {
     let mut pick = None;
-    let groups: [(&str, &[&str]); 8] = [
-        ("In", &["Fade In", "Pop In", "Slide In Left", "Drop In", "Swing In", "Elastic"]),
-        ("Out", &["Fade Out", "Pop Out", "Slide Out Right", "Whip"]),
-        ("Physics", &["Gravity Fall", "Throw & Bounce", "Bounce Drop", "Spring In", "Throw Out", "Wobble"]),
-        ("Emphasis", &["Pulse", "Zoom Punch", "Shake", "Wiggle", "Bounce", "Spin", "Flash"]),
-        ("Camera", &["Ken Burns", "Drift", "Camera Shake"]),
-        ("Text", &["Typewriter"]),
-        ("Sound", &["Sound Swell", "Sound Fade", "Duck", "Pan Sweep", "Pan Swing", "Tremolo"]),
-        ("Speed", &["Speed Ramp In", "Speed Ramp Out", "Slow-mo Hit", "Speed Up"]),
-    ];
-    for (n, (g, names)) in groups.into_iter().enumerate() {
+    for (n, (g, names)) in BLOCK_GROUPS.into_iter().enumerate() {
         // a transition is how a clip arrives or leaves; everything else moves it while it is on screen
         match n {
             0 => {
@@ -1406,6 +1452,7 @@ fn lanes_view(
         let mut rects: Vec<(Rect, (Id, usize))> = Vec::new(); // every block bar drawn, for the selection box
         let mut rects_tr: Vec<Rect> = Vec::new(); // every transition bar drawn (a drag on one is not a box)
         let mut heads: Vec<(Rect, Id, usize)> = Vec::new(); // every clip's label cell and how many blocks it has
+        let mut drops: Vec<(Rect, Option<Id>)> = Vec::new(); // where a Gallery card lands: a clip's lane, None = Timeline
         // Alt+wheel: taller / shorter lanes, like the timeline's tracks (taken before the list scrolls by it)
         let over = ui.rect_contains_pointer(full);
         let dz = ui.input_mut(|i| if over && i.modifiers.alt { std::mem::take(&mut i.smooth_scroll_delta.y) } else { 0.0 });
@@ -1434,6 +1481,7 @@ fn lanes_view(
                 let g = elided(ui, "Timeline", FontId::proportional(12.0), look::TEXT, head.width() - 30.0);
                 p.galley(pos2(head.left() + 22.0, row.center().y - g.size().y / 2.0), g, look::TEXT);
             }
+            drops.push((body, None));
             ui.interact(head, ui.id().with("span-head"), Sense::hover()).on_hover_text(
                 "Transitions over the clips: a bar here puts its transition on every cut under it, wherever you move it. Right-click the lane to add one",
             );
@@ -1601,10 +1649,13 @@ fn lanes_view(
             // Curves / Flow / Speed: the clip's row is its graph on the same time axis, its controls in the
             // label column
             if view != View::Blocks {
-                let (row, _) = ui.allocate_exact_size(vec2(full.width(), graph_h), Sense::hover());
+                let folded = view == View::Curves && st.clip_folded.contains(&id);
+                let h = if folded { 26.0 } else { graph_h };
+                let (row, _) = ui.allocate_exact_size(vec2(full.width(), h), Sense::hover());
                 let head = Rect::from_min_max(row.min, pos2(body_x0, row.bottom()));
                 let body = Rect::from_min_max(pos2(body_x0, row.top()), row.max);
                 ui.painter_at(body).rect_filled(body, 0.0, look::DEEP);
+                drops.push((body, Some(id)));
                 match view {
                     View::Curves => curve_row(ui, st, project, &c, head, body, (t0, t1), playhead, pal, undo, out),
                     View::Flow => {
@@ -1620,7 +1671,7 @@ fn lanes_view(
                 let gr = ui
                     .interact(grip, ui.id().with(("an-row-h", id)), Sense::drag())
                     .on_hover_cursor(CursorIcon::ResizeVertical);
-                if gr.dragged() {
+                if gr.dragged() && !folded {
                     st.graph_h = Some((graph_h + gr.drag_delta().y).clamp(GRAPH_MIN, 900.0));
                 }
                 continue;
@@ -1701,7 +1752,7 @@ fn lanes_view(
             menu::context(&hr, |ui| {
                 menu::sub(ui, None, "Add animation", |ui| {
                     if let Some(b) = anim_menu(ui, presets, None).and_then(|n| find_block(presets, &n)) {
-                        act = Some(add_act(id, b, None));
+                        act = Some(add_act(id, b, None, false));
                     }
                 });
                 let r = ui
@@ -1716,6 +1767,7 @@ fn lanes_view(
             });
             // everything in time draws and clicks only inside the lanes, never over the label column when zoomed
             let body = Rect::from_min_max(pos2(body_x0, row.top() - 1.0), pos2(full.right(), row.bottom() + 1.0));
+            drops.push((body, Some(id)));
             let p = ui.painter_at(body);
             // right-click the lane's empty space: add an animation where the pointer is (under the blocks, so
             // theirs win)
@@ -1727,7 +1779,7 @@ fn lanes_view(
             menu::context(&lane_bg, |ui| {
                 ui.weak("Add animation here");
                 if let Some(b) = anim_menu(ui, presets, None).and_then(|n| find_block(presets, &n)) {
-                    act = Some(add_act(id, b, at));
+                    act = Some(add_act(id, b, at, false));
                 }
             });
             // keys made by hand: a dashed "Hand keys" bar per cluster; a click makes it a block with controls
@@ -2323,6 +2375,27 @@ fn lanes_view(
                 Stroke::new(1.0, Color32::from_rgb(0xF2, 0xC1, 0x4E)),
             );
         }
+        // a Gallery card dragged over the lanes: a block onto a clip's lane, a transition onto the Timeline lane
+        #[cfg(test)]
+        st.drop_pos.clone_from(&drops);
+        let pos = ui.input(|i| i.pointer.latest_pos()).filter(|p| ui.clip_rect().contains(*p));
+        let at = pos.and_then(|p| drops.iter().find(|d| d.0.contains(p)).map(|d| (p, d.0, d.1)));
+        if let (Some(pl), Some((pos, lane, on))) = (egui::DragAndDrop::payload::<crate::ui::DragPayload>(ui.ctx()), at) {
+            let t = t0 + ((pos.x - body_x0) / bw) as f64 * (t1 - t0);
+            if let Some((dur, drop)) = card_drop(project, presets, &pl, on, t, ((t1 - t0) / 4.0).max(1.0)) {
+                // where it lands and a ghost of its length
+                let p = ui.painter_at(lane);
+                let g = Rect::from_min_max(pos2(x(t), lane.top() + 3.0), pos2(x(t + dur), lane.bottom() - 3.0));
+                p.rect(g, 4.0, pal.accent.gamma_multiply(0.25), Stroke::new(1.0, pal.accent), egui::StrokeKind::Inside);
+                p.line_segment([pos2(x(t), lane.top()), pos2(x(t), lane.bottom())], Stroke::new(2.0, pal.accent));
+                ui.ctx().set_cursor_icon(CursorIcon::Copy);
+                if ui.input(|i| i.pointer.any_released()) {
+                    egui::DragAndDrop::clear_payload(ui.ctx());
+                    act = Some(drop);
+                    st.here = true;
+                }
+            }
+        }
         if let Some(f) = act {
             undo(project);
             f(project, st, out);
@@ -2331,6 +2404,32 @@ fn lanes_view(
     });
     let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), SCROLL_H), Sense::hover());
     time_scrollbar(ui, Rect::from_min_max(pos2(bar.left() + head_w, bar.top()), bar.max), &mut st.win, fit);
+}
+
+/// What a Gallery card dropped at timeline time `t` on lane `on` (a clip's; None = the Timeline lane) does:
+/// its length (for the ghost) and the edit. A block lands on that clip from `t`, a transition on the Timeline
+/// lane is a span of `span` seconds from `t`; anything else has no place here (None).
+fn card_drop(
+    project: &Project,
+    presets: &[KeyBlock],
+    pl: &crate::ui::DragPayload,
+    on: Option<Id>,
+    t: f64,
+    span: f64,
+) -> Option<(f64, Act)> {
+    use crate::ui::DragPayload as D;
+    match (pl, on) {
+        (D::KeyBlock(name), Some(id)) => {
+            let b = find_block(presets, name)?;
+            let c = project.clip(id)?;
+            let at = (t - c.start).clamp(0.0, c.duration);
+            Some((b.dur, add_act(id, b, Some(at), true)))
+        }
+        (D::Transition(k), None) if project.editing.is_none() => {
+            Some((span, span_add_act(t.max(0.0), span, (*k, String::new()))))
+        }
+        _ => None,
+    }
 }
 
 // ---------- curves ----------
@@ -2484,7 +2583,7 @@ fn curve_ctx(st: &AnimState, c: &Clip) -> CurveCtx {
     let shown = channels
         .iter()
         .copied()
-        .filter(|p| !st.hidden.contains(p) && prop_ref(c, p).is_some_and(|a| a.is_animated()))
+        .filter(|p| !st.hidden.contains(p) && !prop_off(st, p) && prop_ref(c, p).is_some_and(|a| a.is_animated()))
         .filter(|p| bi.is_none_or(|i| c.blocks[i].props.iter().any(|q| q == p)))
         .collect();
     CurveCtx { bi, span: curve_span(c, bi), channels, shown }
@@ -2598,9 +2697,19 @@ fn curves_bar(
 }
 
 /// A graph row's label cell: the clip's dot and "<what the row is> - <clip>" on its first line; returns the
-/// rest of the cell.
-fn row_title(ui: &Ui, head: Rect, c: &Clip, what: &str, pal: &Palette) -> Rect {
+/// rest of the cell. `open` = a fold caret before the dot (▼ open, ▶ folded): its click, when it has one.
+fn row_title(ui: &Ui, head: Rect, c: &Clip, what: &str, pal: &Palette, open: Option<bool>) -> (Rect, Option<egui::Response>) {
     let p = ui.painter_at(head);
+    let y = head.top() + 12.0;
+    let caret = open.map(|o| {
+        let r = Rect::from_center_size(pos2(head.left() + 9.0, y), vec2(16.0, 18.0));
+        let hint = if o { "Fold to the title" } else { "Show the properties" };
+        let resp = ui.interact(r, ui.id().with(("an-fold", c.id)), Sense::click()).on_hover_text(hint);
+        let col = if resp.hovered() { look::TEXT } else { look::MUTED };
+        p.text(r.center(), Align2::CENTER_CENTER, if o { "▼" } else { "▶" }, FontId::proportional(9.0), col);
+        resp
+    });
+    let head = if caret.is_some() { Rect::from_min_max(pos2(head.left() + 14.0, head.top()), head.max) } else { head };
     let dot = match c.kind {
         ClipKind::Audio => pal.clip_audio,
         ClipKind::Image => pal.clip_image,
@@ -2608,12 +2717,11 @@ fn row_title(ui: &Ui, head: Rect, c: &Clip, what: &str, pal: &Palette) -> Rect {
         ClipKind::Sequence => pal.clip_sequence,
         _ => pal.clip_video,
     };
-    let y = head.top() + 12.0;
     p.circle_filled(pos2(head.left() + 11.0, y), 4.0, dot);
     let title = format!("{what} - {}", c.name);
     let g = elided(ui, &title, FontId::proportional(12.0), look::TEXT, head.width() - 30.0);
     p.galley(pos2(head.left() + 22.0, y - g.size().y / 2.0), g, look::TEXT);
-    Rect::from_min_max(pos2(head.left(), head.top() + 24.0), head.max)
+    (Rect::from_min_max(pos2(head.left(), head.top() + 24.0), head.max), caret)
 }
 
 /// Curves' row for one clip: its channel list in the label column, its keys as curves in the lane.
@@ -2639,13 +2747,27 @@ fn curve_row(
     let stash = (st.key_clip != Some(id)).then(|| (std::mem::take(&mut st.keys), st.ranges.take()));
     // what the row is, then the clip: the picked block, else the clip's properties
     let what = cx.bi.map_or("Properties", |i| c.blocks[i].name.as_str());
-    let list = row_title(ui, head, c, what, pal);
-    let mut hui = ui.new_child(egui::UiBuilder::new().id_salt(("an-head", id)).max_rect(list.shrink2(vec2(2.0, 1.0))));
-    hui.set_clip_rect(list.intersect(ui.clip_rect()));
-    channel_list(&mut hui, st, project, id, &cx.channels, playhead, undo, out);
-    let resp = ui.interact(body, ui.id().with(("an-graph", id)), Sense::click_and_drag());
+    let folded = st.clip_folded.contains(&id);
+    let (list, caret) = row_title(ui, head, c, what, pal, Some(!folded));
+    if caret.is_some_and(|r| r.clicked()) {
+        if folded {
+            st.clip_folded.retain(|x| *x != id);
+        } else {
+            st.clip_folded.push(id);
+        }
+    }
+    if !folded {
+        let mut hui =
+            ui.new_child(egui::UiBuilder::new().id_salt(("an-head", id)).max_rect(list.shrink2(vec2(2.0, 1.0))));
+        hui.set_clip_rect(list.intersect(ui.clip_rect()));
+        channel_list(&mut hui, st, project, id, &cx.channels, playhead, undo, out);
+        let resp = ui.interact(body, ui.id().with(("an-graph", id)), Sense::click_and_drag());
+        let c = project.clip(id).cloned().unwrap_or_else(|| c.clone());
+        graph(ui, st, project, &c, cx.span, &cx.shown, focus, body, resp, win, playhead, pal, undo, out);
+    }
+    // a right-click anywhere in the label cell (the title, a group, a property): which properties show
     let c = project.clip(id).cloned().unwrap_or_else(|| c.clone());
-    graph(ui, st, project, &c, cx.span, &cx.shown, focus, body, resp, win, playhead, pal, undo, out);
+    menu::context_area(ui, ui.id().with(("an-view", id)), head, |ui| view_menu(ui, st, &c, &cx.channels));
     if let Some((keys, ranges)) = stash {
         if st.keys.is_empty() {
             (st.keys, st.ranges) = (keys, ranges);
@@ -2726,20 +2848,21 @@ fn channel_list(
         let mut drawn: Vec<(usize, Option<&'static str>)> = Vec::new();
         for (gi, (g, props)) in groups.iter().enumerate() {
             let g = *g;
-            let list: Vec<&'static str> = props.iter().copied().filter(|p| channels.contains(p)).collect();
+            let list: Vec<&'static str> =
+                props.iter().copied().filter(|p| channels.contains(p) && !prop_off(st, p)).collect();
             if list.is_empty() {
                 continue;
             }
-            let open = !st.folded.contains(&g);
+            let open = !st.folded.iter().any(|x| x == g);
             let any_keyed = list.iter().any(|p| prop_ref(&c, p).is_some_and(|a| a.is_animated()));
             let r = group_row(ui, &mut rows, n, g, open, !any_keyed, 0);
             n += 1;
             drawn.push((gi, None));
             if r.toggled {
                 if open {
-                    st.folded.push(g);
+                    st.folded.push(g.to_string());
                 } else {
-                    st.folded.retain(|x| *x != g);
+                    st.folded.retain(|x| x != g);
                 }
             }
             if let Some(k) = r.ctrl {
@@ -2755,6 +2878,8 @@ fn channel_list(
                 let (r, lr) = prop_list_row(ui, &mut rows, n, id, p, prop_label(p), &v, 1, hidden || !a.is_animated(), 0);
                 n += 1;
                 drawn.push((gi, Some(p)));
+                #[cfg(test)]
+                st.ch_rows.push((id, p));
                 // the focused one gets a bar
                 if st.focus == Some(p) {
                     ui.painter().rect_filled(r.label.expand2(vec2(4.0, 1.0)), 3.0, pal_accent(ui).gamma_multiply(0.12));
@@ -2778,6 +2903,9 @@ fn channel_list(
                     todo.push((p, k));
                 }
             }
+        }
+        if n == 0 && !channels.is_empty() {
+            ui.weak("No properties shown").on_hover_text("Right-click for Show All");
         }
         // a drag of a row's handle (or Alt+Up / Down on the selected row) reorders the list: a group among the
         // groups, a property inside its group. A view order: the project does not change, so no undo step
@@ -2839,6 +2967,73 @@ fn channel_list(
             }
         }
     });
+}
+
+/// Property `p` is left out of the channel list (and the graph) by the view.
+fn prop_off(st: &AnimState, p: &str) -> bool {
+    st.props_off.iter().any(|x| x == p)
+}
+
+/// The channel list's right-click (a clip's title, a group or a property): which properties show, grouped
+/// like the list, the folds, and the default view. A view choice: nothing in the project changes, and the
+/// choice holds for every clip (the app keeps it in Settings).
+fn view_menu(ui: &mut Ui, st: &mut AnimState, c: &Clip, channels: &[&'static str]) {
+    for (g, props) in ch_groups(&st.ch_order) {
+        let list: Vec<&'static str> = props.into_iter().filter(|p| channels.contains(p)).collect();
+        if list.is_empty() {
+            continue;
+        }
+        ui.weak(g);
+        for p in list {
+            if menu::check_keep(ui, !prop_off(st, p), prop_label(p)).clicked() {
+                if prop_off(st, p) {
+                    st.props_off.retain(|x| x != p);
+                } else {
+                    st.props_off.push(p.into());
+                }
+            }
+        }
+    }
+    ui.separator();
+    let unkeyed: Vec<&str> =
+        channels.iter().copied().filter(|p| !prop_ref(c, p).is_some_and(|a| a.is_animated())).collect();
+    if menu::row(ui, None, "Show All", "").clicked() {
+        st.props_off.clear();
+    }
+    if menu::row(ui, None, "Hide Unkeyed", "").clicked() {
+        for p in &unkeyed {
+            if !prop_off(st, p) {
+                st.props_off.push(p.to_string());
+            }
+        }
+    }
+    if menu::row(ui, None, "Only Keyed", "").clicked() {
+        st.props_off.retain(|x| !channels.contains(&x.as_str()));
+        st.props_off.extend(unkeyed.iter().map(|p| p.to_string()));
+    }
+    ui.separator();
+    if menu::row(ui, None, "Collapse All", "").clicked() {
+        st.folded = CHANNELS.iter().map(|g| g.0.to_string()).collect();
+    }
+    if menu::row(ui, None, "Expand All", "").clicked() {
+        st.folded.clear();
+        st.clip_folded.clear();
+    }
+    ui.separator();
+    if menu::row(ui, None, "Reset to Default View", "").clicked() {
+        st.reset_view();
+    }
+}
+
+impl AnimState {
+    /// The channel list as it first was: every property shown, nothing folded, the built-in order.
+    pub fn reset_view(&mut self) {
+        self.props_off.clear();
+        self.folded.clear();
+        self.clip_folded.clear();
+        self.ch_order.clear();
+        self.hidden.clear();
+    }
 }
 
 fn pal_accent(ui: &Ui) -> Color32 {
@@ -3313,7 +3508,7 @@ fn flow_row(
         .map(|s| s.prop.clone())
         .or_else(|| c.blocks.iter().flat_map(|b| b.props.iter()).find(|p| MOTION_PROPS.contains(&p.as_str())).cloned())
         .unwrap_or_else(|| "scale".into());
-    let rest = row_title(ui, head, c, &format!("{} speed", prop_label(&prop)), pal);
+    let (rest, _) = row_title(ui, head, c, &format!("{} speed", prop_label(&prop)), pal, None);
     if let Some(n) = &next {
         let g = elided(ui, &format!("→ {}", n.name), FontId::proportional(10.5), look::MUTED, head.width() - 30.0);
         ui.painter_at(head).galley(pos2(head.left() + 22.0, rest.top()), g, look::MUTED);
@@ -3474,7 +3669,7 @@ fn speed_row(
     out: &mut AnimResp,
 ) {
     let id = c.id;
-    let rest = row_title(ui, head, c, "Speed", pal);
+    let (rest, _) = row_title(ui, head, c, "Speed", pal, None);
     let tr = project.track_of(id).unwrap_or(0);
     let next = project.tracks[tr].clips.iter().find(|n| (n.start - c.end()).abs() < 1.5 / project.fps).map(|n| n.id);
     // what the menu asked for: these keys (0..1 across the clip; none = normal speed), or a ramp through the cut
@@ -4341,6 +4536,7 @@ mod tests {
         ph: f64,
         width: f32,
         undos: usize,
+        shapes: Vec<egui::epaint::ClippedShape>,
     }
     impl H {
         fn new(width: f32) -> H {
@@ -4351,7 +4547,8 @@ mod tests {
             p.apply_key_block(1, &f("Slide In Left"), Some(0.0), None);
             p.apply_key_block(1, &f("Zoom Punch"), Some(5.5), None);
             p.apply_key_block(2, &f("Camera Shake"), Some(0.0), None);
-            H { ctx: egui::Context::default(), st: AnimState::default(), p, sel: vec![1, 2], ph: 0.5, width, undos: 0 }
+            let (st, ctx) = (AnimState::default(), egui::Context::default());
+            H { ctx, st, p, sel: vec![1, 2], ph: 0.5, width, undos: 0, shapes: Vec::new() }
         }
         fn frame(&mut self) -> AnimResp {
             self.frame_with(Vec::new(), false)
@@ -4367,14 +4564,147 @@ mod tests {
                 ..Default::default()
             };
             let (st, p, sel, ph, undos) = (&mut self.st, &mut self.p, &self.sel, &mut self.ph, &mut self.undos);
-            let _ = self.ctx.run(input, |ctx| {
+            let full = self.ctx.run(input, |ctx| {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     let pal = Palette::new(true, Color32::from_rgb(0x33, 0x66, 0xFF));
                     out = show(ui, st, p, sel, ph, false, &pal, &[], &mut |_| *undos += 1);
                 });
             });
+            self.shapes = full.shapes;
             out
         }
+        /// Centre of the last painted text reading exactly `label` (a menu row is painted over the list).
+        fn text_at(&self, label: &str) -> Option<Pos2> {
+            self.shapes.iter().rev().find_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text() == label => Some(t.pos + t.galley.rect.center().to_vec2()),
+                _ => None,
+            })
+        }
+        /// A press and release of `button` at `pos`, a frame each (after a frame moving there).
+        fn press(&mut self, pos: Pos2, button: egui::PointerButton) {
+            self.frame_with(vec![egui::Event::PointerMoved(pos)], false);
+            for pressed in [true, false] {
+                let e = egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE };
+                self.frame_with(vec![e], false);
+            }
+            self.frame();
+        }
+    }
+
+    /// The channel list's view: hidden properties are left out of the list and the graph but keep their keys;
+    /// folded groups and clips draw no rows; the choice survives Settings' JSON.
+    #[test]
+    fn the_property_view_hides_rows_not_keys_and_round_trips() {
+        let mut h = H::new(1100.0);
+        h.st.view = View::Curves;
+        h.frame();
+        for p in ["x", "y", "scale", "opacity", "speed"] {
+            assert!(h.st.ch_rows.contains(&(1, p)), "{p} is listed");
+        }
+        let keys = h.p.clip(1).unwrap().x.keys.len();
+        assert!(keys > 0);
+        h.st.props_off = vec!["x".into()];
+        h.frame();
+        assert!(!h.st.ch_rows.contains(&(1, "x")) && !h.st.ch_rows.contains(&(2, "x")), "hidden on every clip");
+        assert!(h.st.ch_rows.contains(&(1, "y")));
+        assert!(!curve_ctx(&h.st, h.p.clip(1).unwrap()).shown.contains(&"x"), "and off the graph");
+        assert_eq!(h.p.clip(1).unwrap().x.keys.len(), keys, "its keys stay");
+        // a folded group: none of its rows; a folded clip: no rows at all
+        h.st.folded = vec!["Transform".into()];
+        h.frame();
+        assert!(!h.st.ch_rows.iter().any(|r| r.1 == "y") && h.st.ch_rows.contains(&(1, "opacity")));
+        h.st.clip_folded = vec![1];
+        h.frame();
+        assert!(!h.st.ch_rows.iter().any(|r| r.0 == 1) && h.st.ch_rows.contains(&(2, "opacity")));
+        h.st.reset_view();
+        h.frame();
+        assert!(h.st.ch_rows.contains(&(1, "x")) && h.st.props_off.is_empty() && h.st.folded.is_empty());
+        // Settings keep the choice by kind / group name
+        let mut s = crate::settings::Settings::default();
+        (s.anim_hidden_props, s.anim_folded) = (vec!["x".into(), "speed".into()], vec!["Opacity".into()]);
+        let back: crate::settings::Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!((back.anim_hidden_props, back.anim_folded), (s.anim_hidden_props, s.anim_folded));
+    }
+
+    /// Right-click a clip's "Properties" title: a checkable list of its properties; a click hides one (the
+    /// menu stays open for the next), another click shows it again; Only Keyed / Show All.
+    #[test]
+    fn the_property_menu_toggles_visibility() {
+        let mut h = H::new(1100.0);
+        h.st.view = View::Curves;
+        h.frame();
+        let title = h.text_at("Properties - Gameplay A").expect("the clip's title");
+        h.press(title, egui::PointerButton::Secondary);
+        // the menu's rows are painted after the list's, so the last "Position Y" is the menu's
+        let row = h.text_at("Position Y").expect("Position Y in the menu");
+        assert!(h.text_at("Hide Unkeyed").is_some() && h.text_at("Reset to Default View").is_some());
+        h.press(row, egui::PointerButton::Primary);
+        assert_eq!(h.st.props_off, ["y"]);
+        assert!(!h.st.ch_rows.contains(&(1, "y")), "the row is gone");
+        let row = h.text_at("Position Y").expect("the menu is still open");
+        h.press(row, egui::PointerButton::Primary);
+        assert!(h.st.props_off.is_empty(), "shown again");
+        h.press(h.text_at("Only Keyed").unwrap(), egui::PointerButton::Primary);
+        // clip 1 animates x and scale: everything else it can animate is hidden, no key changed
+        assert!(h.st.props_off.iter().any(|p| p == "opacity") && !h.st.props_off.iter().any(|p| p == "x" || p == "scale"));
+        assert_eq!(h.undos, 0, "a view choice, not an edit");
+        let title = h.text_at("Properties - Gameplay A").unwrap();
+        h.press(title, egui::PointerButton::Secondary);
+        h.press(h.text_at("Show All").unwrap(), egui::PointerButton::Primary);
+        assert!(h.st.props_off.is_empty());
+        // the caret folds the clip to its title
+        let caret = h.text_at("▼").unwrap();
+        h.press(caret, egui::PointerButton::Primary);
+        assert_eq!(h.st.clip_folded.len(), 1);
+    }
+
+    /// A block card dropped on a clip's lane lands on that clip at the drop time, as one undo step; a
+    /// transition dropped on the Timeline lane is a span there. Every view takes a block.
+    #[test]
+    fn a_dropped_block_lands_on_the_lane_at_the_drop_time_in_one_undo() {
+        use crate::ui::DragPayload;
+        for view in [View::Blocks, View::Curves, View::Flow, View::Speed] {
+            let mut h = H::new(1100.0);
+            h.st.view = view;
+            h.frame();
+            let (lane, _) = *h.st.drop_pos.iter().find(|d| d.1 == Some(2)).expect("clip 2's lane");
+            let (t0, t1) = h.st.win.unwrap();
+            let at = |t: f64| pos2(lane.left() + ((t - t0) / (t1 - t0)) as f32 * lane.width(), lane.center().y);
+            let want = 6.0 + 0.5 * (t1.min(12.0) - 6.0); // inside clip 2 (6-12 s) and the window
+            let pos = at(want);
+            let (undos, n1) = (h.undos, h.p.clip(1).unwrap().blocks.len());
+            // the press began in the Gallery (off the panel); the card rides the pointer to the lane
+            let off = pos2(-40.0, -40.0);
+            egui::DragAndDrop::set_payload(&h.ctx, DragPayload::KeyBlock("Pulse".into()));
+            h.frame_with(vec![egui::Event::PointerMoved(off), egui::Event::PointerButton { pos: off, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE }], false);
+            egui::DragAndDrop::set_payload(&h.ctx, DragPayload::KeyBlock("Pulse".into()));
+            h.frame_with(vec![egui::Event::PointerMoved(pos)], false);
+            assert!(h.p.clip(2).unwrap().blocks.iter().all(|b| b.name != "Pulse"), "{view:?}: nothing lands while dragging");
+            h.frame_with(vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }], false);
+            let c = h.p.clip(2).unwrap();
+            let b = c.blocks.iter().find(|b| b.name == "Pulse").unwrap_or_else(|| panic!("{view:?}: Pulse on clip 2"));
+            assert!((c.start + b.t - want).abs() < 0.05, "{view:?}: at {want}, got {}", c.start + b.t);
+            assert_eq!(h.undos, undos + 1, "{view:?}: one undo step");
+            assert_eq!(h.p.clip(1).unwrap().blocks.len(), n1, "{view:?}: only the clip under the drop");
+            assert!(egui::DragAndDrop::payload::<DragPayload>(&h.ctx).is_none());
+        }
+        // a transition on the Timeline lane: a span from the drop time
+        let mut h = H::new(1100.0);
+        h.frame();
+        let (lane, _) = *h.st.drop_pos.iter().find(|d| d.1.is_none()).expect("the Timeline lane");
+        let (t0, t1) = h.st.win.unwrap();
+        let want = (t0 + t1) / 2.0;
+        let pos = pos2(lane.left() + ((want - t0) / (t1 - t0)) as f32 * lane.width(), lane.center().y);
+        let k = crate::model::TransitionKind::CrossFade;
+        egui::DragAndDrop::set_payload(&h.ctx, DragPayload::Transition(k));
+        h.frame_with(vec![egui::Event::PointerMoved(pos)], false);
+        h.frame_with(vec![egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE }], false);
+        assert_eq!(h.p.spans.len(), 1);
+        assert!((h.p.spans[0].t - want).abs() < 0.05, "from the drop time");
+        assert_eq!(h.undos, 1);
+        // a block on the Timeline lane, a transition on a clip's lane: nothing
+        assert!(card_drop(&h.p, &[], &DragPayload::KeyBlock("Pulse".into()), None, 1.0, 1.0).is_none());
+        assert!(card_drop(&h.p, &[], &DragPayload::Transition(k), Some(1), 1.0, 1.0).is_none());
     }
 
     #[test]

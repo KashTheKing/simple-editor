@@ -146,11 +146,14 @@ impl GalleryTab {
         }
     }
     pub fn from_name(s: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|t| t.name().eq_ignore_ascii_case(s))
+        // (the Animate tab reads "Blocks")
+        let blocks = s.eq_ignore_ascii_case("blocks").then_some(Self::Animate);
+        Self::ALL.into_iter().find(|t| t.name().eq_ignore_ascii_case(s)).or(blocks)
     }
     fn label(self) -> &'static str {
         match self {
             Self::SpeedRamps => "Speed", // short, so every tab fits a ~350 pt pane
+            Self::Animate => "Blocks",
             Self::AudioAnimate => "Animate",
             Self::AudioTransitions => "Transitions",
             Self::AudioEffects => "Effects",
@@ -721,6 +724,7 @@ fn tab_cats(tab: GalleryTab, lib: Option<&LibView>, lib_tab: bool, now: f64) -> 
         _ if lib_tab => Vec::new(),
         GalleryTab::Effects => crate::ui::effects_ui::categories().into_iter().map(String::from).collect(),
         GalleryTab::Transitions => TR_CATS.iter().map(|s| s.to_string()).collect(),
+        GalleryTab::Animate => crate::ui::animator::block_sections().into_iter().map(String::from).collect(),
         _ => Vec::new(),
     };
     let mut extra: Vec<String> = Vec::new();
@@ -1081,6 +1085,9 @@ pub struct GalleryState {
     /// caller (`ui::app::gallery_ctl::draw`) right after a Titles card is placed - a plain state field
     /// rather than an `egui::Id`-keyed temp, since `App` already owns `GalleryState` per frame.
     pub customize: Vec<(Id, String)>,
+    /// The user picked a tab other than Blocks since the Animator last switched the Gallery to it (a click
+    /// into the Animator then leaves the tab alone).
+    pub picked: bool,
 }
 
 #[derive(Default)]
@@ -1643,7 +1650,7 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
         GalleryTab::Animate | GalleryTab::AudioAnimate => crate::model::builtin_blocks()
             .into_iter()
             .chain(settings.key_blocks.iter().cloned())
-            .filter(|b| is_audio_block(b) == (tab == GalleryTab::AudioAnimate))
+            .filter(|b| tab == GalleryTab::Animate || is_audio_block(b))
             .map(|b| b.name)
             .collect(),
         GalleryTab::AudioTransitions => AUDIO_TRANSITIONS.iter().map(|s| s.to_string()).collect(),
@@ -1685,6 +1692,23 @@ fn visualizer_picture(p: &egui::Painter, tile: Rect, name: &str) {
         })));
         orb.paint(p, tile.shrink(1.0), &style.src);
     });
+}
+
+/// A Blocks section's title row in the card grid: the kind's colour dot (as in the "+ Animation" menu) and
+/// its name, on a row of its own.
+fn section_head(ui: &mut egui::Ui, name: &str, kind: &str) {
+    ui.end_row();
+    let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width().max(40.0), 18.0), Sense::hover());
+    let p = ui.painter();
+    p.circle_filled(egui::pos2(r.left() + 5.0, r.center().y), 4.0, crate::ui::animator::kind_color(kind));
+    let col = ui.visuals().text_color();
+    p.text(egui::pos2(r.left() + 14.0, r.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(12.0), col);
+    ui.end_row();
+}
+
+/// A Blocks card's kind: its colour as a dot in the tile's corner.
+fn kind_mark(p: &egui::Painter, tile: Rect, col: Color32) {
+    p.circle_filled(tile.left_top() + egui::vec2(7.0, 7.0), 3.5, col);
 }
 
 /// An Animate card's picture: each animated property's curve over the block, normalised to the tile,
@@ -1968,6 +1992,7 @@ pub fn show(
             if ui.selectable_label(state.lib.is_none() && state.tab == tab, tab.label()).clicked() {
                 state.tab = tab;
                 state.lib = None;
+                state.picked = tab != GalleryTab::Animate;
                 remember_tab(settings, tab);
             }
         }
@@ -1976,6 +2001,7 @@ pub fn show(
             for (kind, label) in LIB_TABS {
                 if ui.selectable_label(state.lib == Some(kind), label).clicked() {
                     state.lib = Some(kind);
+                    state.picked = true;
                 }
             }
         }
@@ -2041,7 +2067,11 @@ pub fn show(
                 };
                 let origin =
                     if tab == GalleryTab::Luts || is_mine(tab, &n, settings, now) { Src::Mine } else { Src::BuiltIn };
-                let (tags, created) = mine_meta(tab, &n, now);
+                let (mut tags, created) = mine_meta(tab, &n, now);
+                if tab == GalleryTab::Animate {
+                    // the category menu's sections: the "+ Animation" menu's kinds
+                    tags.push(crate::ui::animator::block_group(&n, origin == Src::Mine).to_string());
+                }
                 (n, short, origin, tags, created)
             })
             .filter(|(_, short, origin, tags, _)| {
@@ -2052,6 +2082,22 @@ pub fn show(
         gf::sort_by(&mut rows, f.sort, |r| (r.1.clone(), used_of(settings, tab.name(), &r.0), r.4));
         names = rows.into_iter().map(|r| r.0).collect();
     }
+    // Blocks: by section (in the menu's order), each in the order picked
+    let secs = crate::ui::animator::block_sections();
+    let sec_of = |n: &str| crate::ui::animator::block_group(n, is_mine(tab, n, settings, now));
+    if tab == GalleryTab::Animate {
+        names.sort_by_key(|n| secs.iter().position(|s| *s == sec_of(n)));
+    }
+    // ...after the timeline's transitions (dragged onto the Animator's Timeline lane: a span)
+    let trs: Vec<crate::model::TransitionKind> = match tab {
+        GalleryTab::Animate => crate::model::TransitionKind::ALL
+            .into_iter()
+            .filter(|k| state.f.passes(Src::BuiltIn, &["Transitions"], k.name()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    state.count_acc.0 += trs.len();
+    state.count_acc.1 += if tab == GalleryTab::Animate { crate::model::TransitionKind::ALL.len() } else { 0 };
     state.count_acc.0 += names.len();
     state.count_acc.1 += total_names;
     let _scroll = scroll_area(ui).show(ui, |ui| {
@@ -2091,7 +2137,7 @@ pub fn show(
             } else {
                 HashMap::new()
             };
-        if names.is_empty() && lut_cells.is_empty() && !matches!(tab, GalleryTab::Sounds) {
+        if names.is_empty() && lut_cells.is_empty() && trs.is_empty() && !matches!(tab, GalleryTab::Sounds) {
             ui.weak(if total_names == 0 && state.count_acc.1 == 0 {
                 match tab {
                     GalleryTab::Luts => {
@@ -2111,7 +2157,31 @@ pub fn show(
                     lib_cell(ui, c, t, false, None, &mut out);
                 }
             }
+            if !trs.is_empty() {
+                section_head(ui, "Transitions", "Transition");
+            }
+            for &k in &trs {
+                let col = crate::ui::animator::kind_color("Transition");
+                let drag = Some(DragPayload::Transition(k));
+                let r = card(ui, ("blk-tr", k.name()), k.name(), drag, false, |p, t| {
+                    type_tile(p, t, col, Some(crate::ui::tools::Glyph::Transition), "");
+                    kind_mark(p, t, col);
+                })
+                .on_hover_text(format!(
+                    "{} - click: at the start of the selection · drag onto the Animator's Timeline lane or a cut",
+                    k.name()
+                ));
+                if r.clicked() && !selection.is_empty() {
+                    out.apply = Some((GalleryTab::Transitions, k.name().to_string(), 1.0));
+                    out.apply_where = Some(transitions_ui::Where::All.name());
+                }
+            }
+            let mut sec = "";
             for name in &names {
+                if tab == GalleryTab::Animate && sec_of(name) != sec {
+                    sec = sec_of(name);
+                    section_head(ui, sec, if sec == "Mine" { "Custom" } else { sec });
+                }
                 let r = match tab {
                     GalleryTab::Looks => {
                         let idx = crate::engine::presets::builtin_looks().iter().position(|p| &p.name == name);
@@ -2151,9 +2221,12 @@ pub fn show(
                         card(ui, ("blk", name), name, Some(drag), false, |p, t| {
                             if let Some(b) = &b {
                                 block_picture(p, t, b);
+                                kind_mark(p, t, crate::ui::animator::kind_of(&b.name, b.gen).1);
                             }
                         })
-                        .on_hover_text(format!("{name} - click: at the playhead · drag onto a clip"))
+                        .on_hover_text(format!(
+                            "{name} - click: at the playhead · drag onto a clip, or a clip's lane in the Animator"
+                        ))
                     }
                     GalleryTab::Templates => {
                         // ws:animator-templates: the picture chosen in the Template Builder, else the rendered one
@@ -3344,8 +3417,8 @@ mod tests {
     #[test]
     fn animate_tab_lists_builtin_blocks_then_saved_ones() {
         let mut settings = Settings::default();
-        // (sound-only blocks are on the Audio side: `is_audio_block`)
-        let n = crate::model::builtin_blocks().iter().filter(|b| !is_audio_block(b)).count();
+        // (sound-only blocks too, as in the "+ Animation" menu's Sound; Audio ▸ Animate has only those)
+        let n = crate::model::builtin_blocks().len();
         settings.key_blocks.push(crate::model::KeyBlock { name: "Mine".into(), dur: 1.0, ..Default::default() });
         let names = card_names(GalleryTab::Animate, &settings);
         assert_eq!(names.len(), n + 1);
@@ -3369,6 +3442,36 @@ mod tests {
         for t in GalleryTab::ALL {
             assert_eq!(GalleryTab::from_name(t.name()), Some(t));
         }
+        // the Animate tab reads Blocks, and `gallery.tab` takes either name
+        assert_eq!(GalleryTab::Animate.label(), "Blocks");
+        assert_eq!(GalleryTab::from_name("blocks"), Some(GalleryTab::Animate));
+    }
+
+    /// The Blocks tab's categories are the "+ Animation" menu's: the timeline's transitions, its kinds in its
+    /// order, then yours; every block the menu lists is in its section.
+    #[test]
+    fn blocks_tab_categories_match_the_animation_menu() {
+        use crate::ui::animator::{block_group, block_sections, BLOCK_GROUPS};
+        let mut want = vec!["Transitions"];
+        want.extend(BLOCK_GROUPS.iter().map(|g| g.0));
+        want.push("Mine");
+        assert_eq!(block_sections(), want);
+        assert_eq!(want[1..9], ["In", "Out", "Physics", "Emphasis", "Camera", "Text", "Sound", "Speed"]);
+        assert_eq!(tab_cats(GalleryTab::Animate, None, false, 0.0), want);
+        let mut settings = Settings::default();
+        settings.key_blocks.push(crate::model::KeyBlock { name: "My Move".into(), dur: 1.0, ..Default::default() });
+        let names = card_names(GalleryTab::Animate, &settings);
+        for (g, list) in BLOCK_GROUPS {
+            for n in list {
+                assert!(names.iter().any(|x| x == n), "{n} is a card");
+                assert_eq!(block_group(n, false), g, "{n}");
+            }
+        }
+        for n in &names {
+            assert!(want.contains(&block_group(n, is_mine(GalleryTab::Animate, n, &settings, 0.0))), "{n}");
+        }
+        assert_eq!(block_group("My Move", true), "Mine");
+        assert_eq!(block_group("Slide In Top", false), "In");
     }
 
     #[test]

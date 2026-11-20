@@ -37,6 +37,21 @@ Each kind of animation has its own colour (In teal, Out orange, Physics purple, 
 yellow, Camera blue, Text sky, Sound green, Speed red, Custom slate), on the block, its Inspector pill, its
 Gallery card and the strip along the bottom of the timeline clip. The timeline itself no longer draws keys.
 
+## The Blocks tab
+
+The Animate page's Gallery opens on its **Blocks** tab, sorted like the **+ Animation** menu: Transitions, In,
+Out, Physics, Emphasis, Camera, Text, Sound, Speed, then your own (Mine). Each card shows the block's move as a
+small curve with its kind's colour dot. Clicking into the Animator brings a visible Gallery back to Blocks,
+unless you picked another tab since.
+
+- **Click** a card: the block goes on the selected clips at the playhead, like **+ Animation**.
+- **Drag** a card onto a clip's lane in the Animator (any view: Blocks, Curves, Flow or Speed) or onto a clip
+  on the timeline: it starts where you drop it, on that clip. A ghost shows its length while you drag.
+- **Drag a transition** onto the Animator's **Timeline** lane to make a timeline span there, or onto a cut on
+  the timeline.
+
+Each drop is one undo step.
+
 **Hand keys**: keys you set yourself with ◆ show as a dashed **Hand keys** row. Click it (or right-click the
 clip ▸ **Turn hand keys into blocks**) to turn them into a Custom block with controls; the motion stays the
 same. **Record** off means changing a value never adds a key.
@@ -56,6 +71,18 @@ pan) and the **Selected clips / Whole timeline** switch on the right.
   Slow-mo Hit and Speed Up blocks, and "Ramp through the cut".
 
 Drag a row's bottom edge (or <kbd>Alt</kbd>+wheel) for taller graphs.
+
+In **Curves** each clip's **Properties** list folds: the **▼** before its title folds the clip to one line, and
+each group (Transform, Opacity, Sound, Speed) folds with its own arrow. The 👁 on a row shows or hides that
+property's curve on the graph. Right-click the title, a group or a row to choose which properties are listed:
+
+- tick or untick each property (the menu stays open while you pick),
+- **Show All**, **Hide Unkeyed**, **Only Keyed**,
+- **Collapse All** / **Expand All**,
+- **Reset to Default View**.
+
+Hiding a property only changes the view: its keys stay and still play. The choice is the same on every clip
+and is remembered with your settings, along with the folded groups.
 
 ## Special blocks
 
