@@ -305,6 +305,10 @@ pub(super) fn clip_menu(
                 }
                 acts(ui, &[Some(Normalize), Some(MatchLoudness), Some(AutoDuck), None]);
                 acts(ui, &[Some(DetectBeats), Some(SplitAtBeats), None, Some(AutoCut)]);
+                // ---- ws:addon-demucs ---- the optional Demucs add-on (an action offers to install it first)
+                menu::sub(ui, None, "Stems", |ui| {
+                    acts(ui, &[Some(SeparateStems), Some(SeparateStemsToTracks), None, Some(RemoveVocals), Some(KeepOnlyVocals)])
+                });
             });
         }
         // ws:preview-audio-only: top level on a song, where it is found (was under Audio ▸)

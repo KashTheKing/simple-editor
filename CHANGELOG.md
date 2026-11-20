@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Stem Separation** (optional add-on, Demucs htdemucs, about 85 MB): right-click a song or video clip ▸ Audio ▸ Stems ▸ Separate Stems splits it into drums, bass, other and vocals, cached and linked into the Library as a Stems bin; Separate Stems to Tracks, Remove Vocals and Keep Only Vocals place them on new tracks under the clip. Ducking can lower just the vocals stem and the Beat Aligner can read the drums stem (`audio.stems`, `audio.duck stem`, `beats.detect source`).
+
 ## 1.4.0
 
 ### Media player

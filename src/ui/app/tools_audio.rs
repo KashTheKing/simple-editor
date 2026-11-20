@@ -164,11 +164,22 @@ pub const TOOLS: &[ToolDef] = &[
             "depth_db:number:false:default Settings.duck_depth_db",
             "ramp_s:number:false:default Settings.duck_ramp_ms/1000",
             "dry_run:boolean:false:default false",
+            "stem:string:false:vocals = duck only the song's vocals stem (placed with audio.stems mode=tracks), the instrumental stays",
         ],
         kind: ToolKind::Mutate,
         run: |app, args| {
             let a = Args(args);
             let music = req(a.id("music_id"), "music_id")?;
+            // ---- ws:addon-demucs ----
+            let music = match a.str("stem") {
+                None => music,
+                Some(s) => {
+                    let stem = crate::engine::demucs::Stem::parse(s).ok_or("stem: drums, bass, other or vocals")?;
+                    super::stems_ctl::placed_stem(&app.project, music, stem).ok_or(
+                        "that song has no placed stems: audio.stems action=separate mode=tracks first",
+                    )?
+                }
+            };
             let dialogue = req(a.ids("dialogue_ids"), "dialogue_ids")?;
             let depth_db = a.f64("depth_db").unwrap_or(app.settings.duck_depth_db as f64);
             let ramp_s = a.f64("ramp_s").unwrap_or(app.settings.duck_ramp_ms as f64 / 1000.0);

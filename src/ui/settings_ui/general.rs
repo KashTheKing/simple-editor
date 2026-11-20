@@ -63,6 +63,11 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         ui.horizontal(enhancer_row);
         ui.end_row();
 
+        // ---- ws:addon-demucs ----
+        ui.label("Stem Separation");
+        ui.horizontal(demucs_row);
+        ui.end_row();
+
         ui.label("Downloads folder");
         ui.horizontal(|ui| {
             changed |= ui
@@ -267,6 +272,41 @@ fn enhancer_row(ui: &mut egui::Ui) {
         match enhance::install_error() {
             Some(e) => ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}")),
             None => ui.weak("optional, about 45 MB"),
+        };
+    }
+}
+
+// ---- ws:addon-demucs ----
+/// Install / uninstall the optional stem separation add-on (Demucs, used by clip ▸ Audio ▸ Stems).
+fn demucs_row(ui: &mut egui::Ui) {
+    use crate::engine::demucs;
+    if let Some(p) = demucs::installing() {
+        ui.add(egui::Spinner::new());
+        ui.weak(format!("{:.0}% · {}", p.fraction() * 100.0, p.status()));
+    } else if demucs::available() {
+        ui.weak(match demucs::version() {
+            Some(v) => format!("installed ({v})"),
+            None => "installed".into(),
+        });
+        let id = egui::Id::new("demucs_uninstall_error");
+        if ui.button("Uninstall").on_hover_text("Removes the add-on; stems it already separated stay in the cache").clicked() {
+            let r = demucs::uninstall().err();
+            ui.data_mut(|d| d.insert_temp(id, r));
+        }
+        if let Some(e) = ui.data(|d| d.get_temp::<Option<String>>(id)).flatten() {
+            ui.colored_label(ui.visuals().error_fg_color, e);
+        }
+    } else {
+        if ui
+            .button("Install")
+            .on_hover_text("Demucs (htdemucs) splits a song into drums, bass, other and vocals on the processor: right-click a clip ▸ Audio ▸ Stems. About 85 MB, downloaded once.")
+            .clicked()
+        {
+            demucs::start_install();
+        }
+        match demucs::install_error() {
+            Some(e) => ui.colored_label(ui.visuals().error_fg_color, format!("install failed: {e}")),
+            None => ui.weak("optional, about 85 MB"),
         };
     }
 }

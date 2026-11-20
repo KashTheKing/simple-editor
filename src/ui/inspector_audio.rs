@@ -306,6 +306,13 @@ pub(super) fn section(
                     act = Some(a);
                 }
             }
+            // ---- ws:addon-demucs ----
+            ui.separator();
+            for a in [Action::SeparateStems, Action::SeparateStemsToTracks, Action::RemoveVocals, Action::KeepOnlyVocals] {
+                if menu::item(ui, a, true) {
+                    act = Some(a);
+                }
+            }
         };
         fold(ui, folds, "audio", "Audio", Some(&mut menu_fn), |ui| {
             for (p, label) in [("volume", "Volume"), ("pan", "Pan")] {
