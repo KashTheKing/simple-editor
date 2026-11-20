@@ -47,20 +47,22 @@ Script** then open the file there instead of in the pane.
 -- @desc Shows how long the project is and how many tracks it has
 -- @icon bolt
 -- @hotkey Ctrl+Shift+H
-local s = editor.tool("project.summary", {})
-editor.log("Project: " .. tostring(s.duration) .. " s, " .. tostring(#s.tracks) .. " tracks")
+local s = tool("project.summary", {})
+print("Project: " .. tostring(s.duration) .. " s, " .. tostring(#s.tracks) .. " tracks")
 ```
 
-A script sees one table, `editor`:
+A script is plain Luau with these globals:
 
 | Function | What it does |
 |---|---|
-| `editor.tool(name, args)` | Calls any tool from the catalogue and returns its result |
-| `editor.tools()` | Lists every tool as `{name, description}` |
-| `editor.log(text)` | Shows a short message (it disappears after a few seconds) |
-| `editor.event` | In a hook (below): what happened, as a table |
+| `tool(name, args)` | Calls any tool from the catalogue and returns its result |
+| `tools()` | Lists every tool as `{name, description}` |
+| `print(...)` | Shows a message (tables as JSON); it disappears after a few seconds |
+| `warn(...)` | Shows a message as a warning |
+| `error(message)` | Stops the script and shows the message |
+| `event` | In a hook (below): what happened, as a table |
 
-Scripts run sandboxed: there is no `io`, `os` or file access, only `editor`. A script gets 5 seconds.
+Scripts run sandboxed: there is no `io`, `os` or file access, only the app's tools. A script gets 5 seconds.
 
 **The header** is a block of `-- @key value` lines at the top: `@name`, `@desc`, `@icon` (one of `bolt`,
 `terminal`, `wrench`, `gear`, `clock`, `magnet`, `target`, `waveform`, `notepad`, `bookmark`,
@@ -70,7 +72,7 @@ Scripts run sandboxed: there is no `io`, `os` or file access, only `editor`. A s
 
 Add one or more `-- @on <event>` lines and the script runs by itself:
 
-| Event | When | `editor.event` |
+| Event | When | `event` |
 |---|---|---|
 | `selection_changed` | The selection changes (clips, a transition, a subtitle or an edit point) | `{clip_ids}` |
 | `import` | An image sequence finished importing | `{asset_id, path, frames}` |

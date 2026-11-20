@@ -311,7 +311,7 @@ impl App {
         &self.script_meta_cache.1
     }
 
-    /// Run every script whose `-- @on` list contains `event`, passing `payload` as Luau's `editor.event`
+    /// Run every script whose `-- @on` list contains `event`, passing `payload` as Luau's `event`
     /// - re-entrancy guarded (`self.hook_running`; a hook that itself triggers another `fire_hook` call,
     /// directly or via a tool it runs, is a no-op instead of recursing) and per-script budget-limited
     /// (`ScriptMeta::budget`, default 250 ms - see `scripting::DEFAULT_HOOK_BUDGET`). A script whose run
@@ -345,7 +345,7 @@ impl App {
                 scripting::run_hook(&src, &m.name, &payload, m.budget, &mut call, &mut logs)
             };
             for l in &logs {
-                self.toast(format!("{}: {l}", m.name));
+                self.script_line_toast(&m.name, l);
             }
             if let Err(e) = result {
                 if is_budget_error(&e) {

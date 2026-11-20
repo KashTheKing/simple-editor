@@ -1,7 +1,7 @@
 //! ---- ws:assistant-luau ----
 //! `scripts.eval`: the Assistant runs a Luau script straight away against the live project and library,
 //! as ONE undo step labelled with the script's purpose. The script reaches the project and the library
-//! through `editor.tool` and the `library` / `project` / `query` API (`scripting::PRELUDE`) - and nothing
+//! through `tool` and the `library` / `project` / `query` API (`scripting::PRELUDE`) - and nothing
 //! else: `script_may_call` admits project / library tools only (no files, exports, settings, network,
 //! other scripts or UI), and the VM itself has no io / os / require (`scripting::run_api`). Because it
 //! cannot leave the project, the Assistant guard does not hold it for Allow (`mcp::tools::leaves_project`
@@ -183,10 +183,11 @@ pub const TOOLS: &[ToolDef] = &[ToolDef {
            work - organising, tagging, renaming, auditing, many clip edits. Sandboxed: project and library \
            only - no files, folders, exports, settings, network, require or other scripts, so it needs no \
            Allow. Budget: budget_ms wall-clock (default 10000), an instruction cap and 256 MB of memory. \
-           print(...) (tables print as JSON) and the chunk's return value come back, capped at max_output \
-           characters (default 16000) with a 'truncated, refine your query' note.\n\
-           API: editor.tool(name, args) calls a project / library tool (same names and args as your tools; \
-           editor.tools() lists the ones a script may call). library.assets(filter) -> every asset with id, \
+           print(...) (tables print as JSON), warn(...) (a 'warning: ' line) and the chunk's return value come \
+           back, capped at max_output characters (default 16000) with a 'truncated, refine your query' note; \
+           error(...) fails the run.\n\
+           API: tool(name, args) calls a project / library tool (same names and args as your tools; tools() \
+           lists the ones a script may call). library.assets(filter) -> every asset with id, \
            name, path, ext, kind (video|audio|image|html), duration, width, height, fps, codec, size, tags, \
            label, folder, description, used, uses (filter: kind, folder, nested, used, query, tags, label, \
            ext, untagged, ids); library.get(id); library.summary(); library.set(ids, {folder, tags, add_tags, \

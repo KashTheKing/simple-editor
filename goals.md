@@ -44,7 +44,7 @@ Pulled forward from CHANGELOG.md — mark new completions here as they land.
 - [x] RAM-scaled playback cache (`cache_mb`, auto = ¼ RAM) + read-ahead costed from real entry sizes
 - [x] Proxy swaps evict only their source's spans (decoders + frames); decoded-source-frame cache
 - [x] Per-asset proxy status (queued / building N% / ready) in library, inspector and preview badge
-- [x] Luau scripting embedded (`editor.tool()` bridges into the MCP tool catalogue)
+- [x] Luau scripting embedded (the `tool()` global bridges into the MCP tool catalogue)
 - [x] **God-file split + registry protocol** (issues #16, #17): `app.rs`/`model.rs`/`timeline.rs`
   split into `src/ui/app/*.rs` (58 files) / `src/model/*.rs` + `src/model/ops/*.rs` / `src/ui/timeline/*.rs`
   (9 files), zero behaviour change; five dispatch registries (`TOOL_TABLES`/`ACT_HANDLERS`/

@@ -481,7 +481,7 @@ pub struct App {
     /// tick` (re-parsing every script's header on every frame would be silly - see `App::script_metas`).
     script_meta_cache: (Instant, Vec<scripting::ScriptMeta>),
     /// Re-entrancy guard for `App::fire_hook`: true while a hook is already running, so a hook that
-    /// itself calls `editor.tool`/triggers another hook-firing event can't recurse.
+    /// itself calls `tool`/triggers another hook-firing event can't recurse.
     hook_running: bool,
     /// Scripts disabled for the session after their `@on` hook overran its budget once (one toast, then
     /// silently skipped by `fire_hook` for the rest of the session).

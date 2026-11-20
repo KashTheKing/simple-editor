@@ -1907,7 +1907,7 @@ mod tests {
         state.push(Line::Text("Trimmed **3** pauses.".into()));
         state.push(Line::Done { undo: Some((4, "Assistant: Tighten the intro".into())) });
         let id = task_writing(state.tasks_mut(), "Cut the ums");
-        task_hand_over(state.tasks_mut(), Some(id), "Cut ums", "editor.log('x')", "cuts them");
+        task_hand_over(state.tasks_mut(), Some(id), "Cut ums", "print('x')", "cuts them");
         state.pinned.push(Chip { label: "In/Out 1.0s–2.0s".into(), data: serde_json::json!({"kind": "range"}) });
         let chips = [("selection", "2 clips".to_string()), ("playhead", "Playhead 0:12".to_string())];
         let all = test_skills();

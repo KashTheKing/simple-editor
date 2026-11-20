@@ -11,7 +11,7 @@
 //! hand-kept mutating-tool name list are replaced by one `ToolDef` per tool (each still living next to its handler in a `ui::app::tools_*`
 //! module) flattened here through `crate::ui::app::TOOL_TABLES` - see the registry protocol in
 //! `plans/ui-overhaul/README.md`. `all()`/`find()`/`list_json()` below are now generic over that
-//! registry instead of one local array, so `tools/list` and `editor.tools()` need no change when a
+//! registry instead of one local array, so `tools/list` and `tools()` need no change when a
 //! later workstream adds its own `tools_<ws>.rs` file and registers it in `TOOL_TABLES`.
 
 use serde_json::{json, Value};

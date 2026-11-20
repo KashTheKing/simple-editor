@@ -1,5 +1,5 @@
 //! Embedded Luau scripting: `.luau` files in the scripts folder drive the editor through the same
-//! tool catalogue the MCP server exposes (`editor.tool("timeline.add_clip", {...})`). The VM is
+//! tool catalogue the MCP server exposes (`tool("timeline.add_clip", {...})`). The VM is
 //! sandboxed (no io/os/ffi) and interrupted after a wall-clock budget so a runaway loop cannot hang
 //! the UI. Scripts run on the UI thread against the live project; the app wraps each run in one
 //! undo step.
@@ -39,10 +39,10 @@ pub fn list() -> Vec<PathBuf> {
     out
 }
 
-const EXAMPLE: &str = r#"-- Simple Editor script. `editor.tool(name, args)` calls the same tools the MCP server exposes;
--- `editor.tools()` lists them; `editor.log(text)` shows a toast.
-local s = editor.tool("project.summary", {})
-editor.log("Project: " .. tostring(s.duration or "?") .. " s, " .. tostring(#(s.tracks or {})) .. " tracks")
+const EXAMPLE: &str = r#"-- Simple Editor script. `tool(name, args)` calls the same tools the MCP server exposes;
+-- `tools()` lists them; `print(...)` shows a toast, `warn(...)` a warning, `error(...)` stops the script.
+local s = tool("project.summary", {})
+print("Project: " .. tostring(s.duration or "?") .. " s, " .. tostring(#(s.tracks or {})) .. " tracks")
 "#;
 
 // ---- feat/scripts-editor ----
@@ -52,12 +52,12 @@ editor.log("Project: " .. tostring(s.duration or "?") .. " s, " .. tostring(#(s.
 /// What Add Script writes into a new file: a header the Scripts menu reads, and a small working body.
 pub const TEMPLATE: &str = r#"-- @desc What this script does, in one line (the Scripts menu shows it as a tooltip).
 -- A Simple Editor script: it runs against the open project as ONE undo step.
---   editor.tool(name, args)  calls any tool the MCP server lists (editor.tools() lists them)
---   editor.log(text)         shows a toast
+--   tool(name, args)  calls any tool the MCP server lists (tools() lists them)
+--   print(...)        shows a toast; warn(...) shows a warning; error(...) stops the script
 -- Optional header lines above the code: -- @icon bolt, -- @hotkey Ctrl+Alt+1, -- @on selection_changed
 
-local summary = editor.tool("project.summary", {})
-editor.log("The project is " .. tostring(summary.duration or 0) .. " s long")
+local summary = tool("project.summary", {})
+print("The project is " .. tostring(summary.duration or 0) .. " s long")
 "#;
 
 /// The name Add Script starts from.
@@ -231,10 +231,7 @@ fn associated_app(ext: &str) -> Option<String> {
 // ---- ws:command-palette ----
 /// Shared VM bootstrap for `run` and `run_hook`: a sandboxed Lua with a wall-clock interrupt at
 /// `budget` (`run` always passes the fixed 5 s `BUDGET`; a fired `@on` hook passes its own, defaulting
-/// to 250 ms - see `ScriptMeta::budget`/`DEFAULT_HOOK_BUDGET`). Building the `editor` table itself stays
-/// separate in each caller - it borrows that call's own `call`/`logs` (and, for a hook, `event`), which
-/// `Lua::scope`'s lifetime ties to the closure that builds it - so this covers exactly the part that
-/// can't otherwise drift between the two paths.
+/// to 250 ms - see `ScriptMeta::budget`/`DEFAULT_HOOK_BUDGET`). The globals are bound in `run_own`.
 fn setup_vm(budget: Duration) -> Result<mlua::Lua, String> {
     let lua = mlua::Lua::new();
     lua.sandbox(true).map_err(|e| e.to_string())?;
@@ -249,63 +246,54 @@ fn setup_vm(budget: Duration) -> Result<mlua::Lua, String> {
     Ok(lua)
 }
 
-/// Run `src` with an `editor` global. `call` executes one tool against the live project and is
-/// invoked re-entrantly from inside the VM; `logs` collects `editor.log` lines for the app to show.
+/// The prefix `warn(...)` puts on its line in a run's logs and output: the app shows such a line as a
+/// warning (`warning`), everything else `print`ed as a plain line.
+pub const WARN: &str = "warning: ";
+
+/// The text of a `warn(...)` line, or `None` for a plain `print` line.
+pub fn warning(line: &str) -> Option<&str> {
+    line.strip_prefix(WARN)
+}
+
+/// One `print` / `warn` line: the arguments shown the way `show` does (tables as compact JSON), tab-joined.
+fn line_of(args: &mlua::Variadic<mlua::Value>) -> String {
+    args.iter().map(show).collect::<Vec<_>>().join("\t")
+}
+
+/// The hidden `editor` table of scripts written before `tool` / `tools` / `print` / `event` were globals:
+/// `editor.tool`, `editor.tools`, `editor.log` (= `print`) and, in the given order, any `extra` fields.
+/// Not documented, not completed and not in `scripting_api::API`: it only keeps saved scripts, tasks and
+/// plugins working.
+fn legacy_editor(lua: &mlua::Lua, extra: &[(&str, mlua::Value)]) -> mlua::Result<mlua::Table> {
+    let g = lua.globals();
+    let t = lua.create_table()?;
+    t.set("tool", g.get::<mlua::Value>("tool")?)?;
+    t.set("tools", g.get::<mlua::Value>("tools")?)?;
+    t.set("log", g.get::<mlua::Value>("print")?)?;
+    for (k, v) in extra {
+        t.set(*k, v.clone())?;
+    }
+    Ok(t)
+}
+
+/// Run `src` as a user script: the globals `tool(name, args)` (`call` executes one tool against the live
+/// project, re-entrantly from inside the VM), `tools()`, and `print` / `warn`, whose lines land in `logs`
+/// (a `warn` line starts with `WARN`) for the app to show. `error(...)` fails the run as in any Luau.
 pub fn run(
     src: &str,
     chunk_name: &str,
     call: &mut dyn FnMut(&str, &Value) -> Result<Value, String>,
     logs: &mut Vec<String>,
 ) -> Result<(), String> {
-    let lua = setup_vm(BUDGET)?;
-    let call = std::cell::RefCell::new(call);
-    let logs = std::cell::RefCell::new(logs);
-    lua.scope(|scope| {
-        let editor = lua.create_table()?;
-        editor.set(
-            "tool",
-            scope.create_function(|lua, (name, args): (String, Option<mlua::Table>)| {
-                let args = match args {
-                    Some(t) => lua_to_json(mlua::Value::Table(t))?,
-                    None => Value::Object(Default::default()),
-                };
-                let r = (call.borrow_mut())(&name, &args).map_err(mlua::Error::runtime)?;
-                json_to_lua(lua, &r)
-            })?,
-        )?;
-        editor.set(
-            "tools",
-            scope.create_function(|lua, ()| {
-                let t = lua.create_table()?;
-                for (i, def) in crate::mcp::tools::all().enumerate() {
-                    let row = lua.create_table()?;
-                    row.set("name", def.name)?;
-                    row.set("description", def.desc)?;
-                    t.set(i + 1, row)?;
-                }
-                Ok(t)
-            })?,
-        )?;
-        editor.set(
-            "log",
-            scope.create_function(|_, s: String| {
-                logs.borrow_mut().push(s);
-                Ok(())
-            })?,
-        )?;
-        lua.globals().set("editor", editor)?;
-        lua.load(src).set_name(chunk_name).exec()
-    })
-    .map_err(|e| e.to_string())
+    run_own(src, chunk_name, None, BUDGET, call, logs)
 }
 
 // ---- ws:command-palette ----
 
-/// Run `src` as a fired `-- @on` hook: the same sandbox surface as `run` (`editor.tool`/`editor.tools`/
-/// `editor.log`), plus `editor.event` set to `event` (the hook's payload, as JSON), under its own
-/// `budget` instead of `run`'s fixed 5 s (see `ScriptMeta::budget`). `App::fire_hook` is the only
-/// caller - it supplies the re-entrancy guard and per-session disable-on-overrun policy; this fn just
-/// runs one hook once.
+/// Run `src` as a fired `-- @on` hook: the same globals as `run`, plus `event` set to `event` (the hook's
+/// payload, as JSON), under its own `budget` instead of `run`'s fixed 5 s (see `ScriptMeta::budget`).
+/// `App::fire_hook` is the only caller - it supplies the re-entrancy guard and per-session
+/// disable-on-overrun policy; this fn just runs one hook once.
 pub fn run_hook(
     src: &str,
     chunk_name: &str,
@@ -314,12 +302,24 @@ pub fn run_hook(
     call: &mut dyn FnMut(&str, &Value) -> Result<Value, String>,
     logs: &mut Vec<String>,
 ) -> Result<(), String> {
+    run_own(src, chunk_name, Some(event), budget, call, logs)
+}
+
+/// `run` and `run_hook` in one place, so the two can't drift: `event` = a hook's payload.
+fn run_own(
+    src: &str,
+    chunk_name: &str,
+    event: Option<&Value>,
+    budget: Duration,
+    call: &mut dyn FnMut(&str, &Value) -> Result<Value, String>,
+    logs: &mut Vec<String>,
+) -> Result<(), String> {
     let lua = setup_vm(budget)?;
     let call = std::cell::RefCell::new(call);
     let logs = std::cell::RefCell::new(logs);
     lua.scope(|scope| {
-        let editor = lua.create_table()?;
-        editor.set(
+        let g = lua.globals();
+        g.set(
             "tool",
             scope.create_function(|lua, (name, args): (String, Option<mlua::Table>)| {
                 let args = match args {
@@ -330,7 +330,7 @@ pub fn run_hook(
                 json_to_lua(lua, &r)
             })?,
         )?;
-        editor.set(
+        g.set(
             "tools",
             scope.create_function(|lua, ()| {
                 let t = lua.create_table()?;
@@ -343,25 +343,37 @@ pub fn run_hook(
                 Ok(t)
             })?,
         )?;
-        editor.set(
-            "log",
-            scope.create_function(|_, s: String| {
-                logs.borrow_mut().push(s);
+        g.set(
+            "print",
+            scope.create_function(|_, args: mlua::Variadic<mlua::Value>| {
+                logs.borrow_mut().push(line_of(&args));
                 Ok(())
             })?,
         )?;
-        editor.set("event", json_to_lua(&lua, event)?)?;
-        lua.globals().set("editor", editor)?;
+        g.set(
+            "warn",
+            scope.create_function(|_, args: mlua::Variadic<mlua::Value>| {
+                logs.borrow_mut().push(format!("{WARN}{}", line_of(&args)));
+                Ok(())
+            })?,
+        )?;
+        let mut extra = Vec::new();
+        if let Some(event) = event {
+            let ev = json_to_lua(&lua, event)?;
+            g.set("event", ev.clone())?;
+            extra.push(("event", ev));
+        }
+        g.set("editor", legacy_editor(&lua, &extra)?)?;
         lua.load(src).set_name(chunk_name).exec()
     })
     .map_err(|e| e.to_string())
 }
 
 // ---- ws:assistant-luau ----
-// The Assistant's script runner (`scripts.eval`): the same `editor` table plus a project / library API
+// The Assistant's script runner (`scripts.eval`): the same `tool` / `tools` / `print` / `warn` plus a project / library API
 // (`library.*`, `project.*`, `query.*`, the prelude below), under a sandbox an agent cannot leave: no `io`,
 // no `require` / `package` (mlua's Luau `require` reads files), no `loadstring` / `getfenv` / `setfenv`,
-// an `os` cut down to the clock; `editor.tool` goes through the host's allow list (`script_ctl`). It is
+// an `os` cut down to the clock; `tool` goes through the host's allow list (`script_ctl`). It is
 // bounded by wall-clock time, interpreter steps and memory, and its `print` / `return` come back capped.
 
 /// What one `run_api` may use.
@@ -396,10 +408,10 @@ pub struct ApiRun {
 
 pub const TRUNCATED: &str = "\n[output truncated: refine your query (filter, fields, limit) or print less]";
 
-/// The Luau half of the API, loaded before the script. Everything goes through `editor.tool`, so the
-/// host's allow list and the tools' own validation cover it.
+/// The Luau half of the API, loaded before the script. Everything goes through `tool`, so the host's
+/// allow list and the tools' own validation cover it.
 pub(crate) const PRELUDE: &str = r#"
-local tool = editor.tool
+local tool = tool
 local function merge(a, b)
   local t = {}
   for k, v in pairs(a or {}) do t[k] = v end
@@ -554,7 +566,7 @@ function query.has(s, words)
 end
 "#;
 
-/// `print` / `editor.log` / the returned value, kept under `cap` characters.
+/// `print` / `warn` / the returned value, kept under `cap` characters.
 struct Out {
     text: String,
     cap: usize,
@@ -634,9 +646,9 @@ fn setup_api_vm(limits: &Limits, steps: std::sync::Arc<std::sync::atomic::Atomic
     Ok(lua)
 }
 
-/// Run an agent's script: `editor.tool` / `editor.tools` (only the tools `allowed` admits) /
-/// `editor.log` / `editor.purpose`, `print`, the prelude's `library` / `project` / `query`, and the
-/// chunk's return value. Never panics; every failure is `ApiRun::error` (with the output so far).
+/// Run an agent's script: `tool` / `tools` (only the tools `allowed` admits), `print` / `warn` (into
+/// `ApiRun::output`, a warning line starting with `WARN`), `json`, `purpose`, the prelude's `library` /
+/// `project` / `query`, and the chunk's return value. Never panics; every failure is `ApiRun::error` (with the output so far).
 pub fn run_api(
     src: &str,
     chunk_name: &str,
@@ -660,8 +672,8 @@ pub fn run_api(
     };
     let call = std::cell::RefCell::new(call);
     let result = lua.scope(|scope| {
-        let editor = lua.create_table()?;
-        editor.set(
+        let g = lua.globals();
+        g.set(
             "tool",
             scope.create_function(|lua, (name, args): (String, Option<mlua::Table>)| {
                 if !allowed(&name) {
@@ -679,7 +691,7 @@ pub fn run_api(
                 json_to_lua(lua, &r)
             })?,
         )?;
-        editor.set(
+        g.set(
             "tools",
             scope.create_function(|lua, ()| {
                 let t = lua.create_table()?;
@@ -693,18 +705,30 @@ pub fn run_api(
                 Ok(t)
             })?,
         )?;
-        let print = scope.create_function(|_, args: mlua::Variadic<mlua::Value>| {
-            let line: Vec<String> = args.iter().map(show).collect();
-            let mut o = out.borrow_mut();
-            o.push(&line.join("\t"));
-            o.push("\n");
-            Ok(())
-        })?;
-        editor.set("log", print.clone())?;
-        editor.set("json", scope.create_function(|_, v: mlua::Value| Ok(show(&v)))?)?;
-        editor.set("purpose", purpose)?;
-        lua.globals().set("editor", editor)?;
-        lua.globals().set("print", print)?;
+        g.set(
+            "print",
+            scope.create_function(|_, args: mlua::Variadic<mlua::Value>| {
+                let mut o = out.borrow_mut();
+                o.push(&line_of(&args));
+                o.push("\n");
+                Ok(())
+            })?,
+        )?;
+        g.set(
+            "warn",
+            scope.create_function(|_, args: mlua::Variadic<mlua::Value>| {
+                let mut o = out.borrow_mut();
+                o.push(WARN);
+                o.push(&line_of(&args));
+                o.push("\n");
+                Ok(())
+            })?,
+        )?;
+        let json = scope.create_function(|_, v: mlua::Value| Ok(show(&v)))?;
+        g.set("json", json.clone())?;
+        g.set("purpose", purpose)?;
+        let purpose = mlua::Value::String(lua.create_string(purpose)?);
+        g.set("editor", legacy_editor(&lua, &[("json", mlua::Value::Function(json)), ("purpose", purpose)])?)?;
         lua.load(PRELUDE).set_name("prelude").exec()?;
         let ret: mlua::MultiValue = lua.load(src).set_name(chunk_name).eval()?;
         match ret.into_iter().next() {
@@ -921,13 +945,13 @@ mod tests {
     fn tool_call_round_trips() {
         let (r, calls, logs) = run_src(
             r#"
-            local r = editor.tool("clip.set", { id = 7, speed = 2.0, tags = {"a", "b"} })
+            local r = tool("clip.set", { id = 7, speed = 2.0, tags = {"a", "b"} })
             assert(r.ok == true)
             assert(r.n == 3)
             assert(r.list[2] == 2)
             assert(r.echo.id == 7)
             assert(r.echo.tags[1] == "a")
-            editor.log("done " .. tostring(r.n))
+            print("done " .. tostring(r.n))
             "#,
         );
         assert_eq!(r, Ok(()));
@@ -944,14 +968,14 @@ mod tests {
     fn errors_and_budget() {
         let mut logs = Vec::new();
         let mut fail = |_: &str, _: &Value| -> Result<Value, String> { Err("no such clip".into()) };
-        let e = run(r#"editor.tool("clip.set", {})"#, "t", &mut fail, &mut logs).unwrap_err();
+        let e = run(r#"tool("clip.set", {})"#, "t", &mut fail, &mut logs).unwrap_err();
         assert!(e.contains("no such clip"), "{e}");
         // sandbox: io/os are gone
         let (r, _, _) = run_src(r#"assert(io == nil and os.exit == nil)"#);
         assert_eq!(r, Ok(()));
         // the 5 s budget is too slow for a unit test to exercise for real; trust set_interrupt and
         // just confirm the catalogue is visible
-        let (r, _, _) = run_src(r#"assert(#editor.tools() > 10)"#);
+        let (r, _, _) = run_src(r#"assert(#tools() > 10)"#);
         assert_eq!(r, Ok(()));
     }
 
@@ -983,9 +1007,9 @@ mod tests {
             assert(loadstring == nil and getfenv == nil and setfenv == nil and dofile == nil, "loaders")
             assert(os.execute == nil and os.remove == nil and os.exit == nil and os.getenv == nil, "os")
             assert(type(os.clock()) == "number")
-            local ok, err = pcall(function() return editor.tool("export.video", {path = "C:/x.mp4"}) end)
+            local ok, err = pcall(function() return tool("export.video", {path = "C:/x.mp4"}) end)
             assert(not ok and string.find(tostring(err), "not available to scripts"), tostring(err))
-            for _, t in ipairs(editor.tools()) do assert(string.sub(t.name, 1, 7) ~= "export.") end
+            for _, t in ipairs(tools()) do assert(string.sub(t.name, 1, 7) ~= "export.") end
             "#,
             Limits::default(),
         );
@@ -1081,11 +1105,11 @@ mod tests {
     }
 
     #[test]
-    fn run_hook_sets_editor_event_and_uses_its_own_budget() {
+    fn run_hook_sets_event_and_uses_its_own_budget() {
         let mut logs = Vec::new();
         let mut call = |_: &str, _: &Value| -> Result<Value, String> { Ok(json!({})) };
         let r = run_hook(
-            r#"assert(editor.event.kind == "selection_changed"); editor.log("ok " .. tostring(#editor.event.ids))"#,
+            r#"assert(event.kind == "selection_changed"); print("ok " .. tostring(#event.ids))"#,
             "hook",
             &json!({"kind": "selection_changed", "ids": [1, 2]}),
             Duration::from_millis(250),
@@ -1094,6 +1118,82 @@ mod tests {
         );
         assert_eq!(r, Ok(()));
         assert_eq!(logs, vec!["ok 2".to_string()]);
+    }
+}
+
+// ---- feat/script-globals ----
+/// Plain Luau in every context: `print` lands in the run's logs / output, `warn` as a warning line, `error`
+/// fails the run with its message, `tool` and `tools` are globals, and old `editor.tool` code still runs.
+#[cfg(test)]
+mod globals_tests {
+    use super::*;
+    use crate::engine::plugins::{runtime, Permissions};
+    use serde_json::json;
+
+    /// Every context runs this; `{event}` is filled in for the hook.
+    const BODY: &str = r#"
+        assert(type(tool) == "function" and type(tools) == "function", "tool / tools are globals")
+        assert(#tools() > 0, "tools() lists the tools")
+        local r = tool("timeline.list", {n = 1})
+        print("tracks", r.n, {a = 1})
+        warn("careful", 2)
+        local old = editor.tool("timeline.list", {})
+        editor.log("old " .. tostring(old.n))
+    "#;
+
+    fn reply(_: &str, _: &Value) -> Result<Value, String> {
+        Ok(json!({"n": 3}))
+    }
+
+    /// (lines logged, the error) of `src` in each context, by name.
+    fn each(src: &str) -> Vec<(&'static str, Vec<String>, Result<(), String>)> {
+        let mut out = Vec::new();
+        let mut logs = Vec::new();
+        let r = run(src, "s", &mut reply, &mut logs);
+        out.push(("Script", logs, r));
+        let mut logs = Vec::new();
+        let hook_src = format!("assert(event.kind == 'x' and editor.event.kind == 'x')\n{src}");
+        let r = run_hook(&hook_src, "h", &json!({"kind": "x"}), Duration::from_secs(2), &mut reply, &mut logs);
+        out.push(("Hook", logs, r));
+        let a = run_api(src, "a", "test", &Limits::default(), &|_| true, &mut reply);
+        let logs: Vec<String> = a.output.lines().map(str::to_string).collect();
+        out.push(("Agent", logs, a.error.map_or(Ok(()), Err)));
+        let c = runtime::Ctx {
+            id: "p".into(),
+            name: "P".into(),
+            version: "1".into(),
+            dir: std::env::temp_dir(),
+            granted: Permissions::default(),
+            declared: Permissions::default(),
+            folders: Vec::new(),
+            net: Default::default(),
+        };
+        let base = |n: &str| n == "timeline.list";
+        let mut call = reply;
+        let env = runtime::Env::new(&c, None, &base, &mut call);
+        let r = runtime::run_script(&env, src, "p.luau").map(|_| ());
+        let logs = env.log.borrow().clone();
+        out.push(("Plugin", logs, r));
+        out
+    }
+
+    #[test]
+    fn print_warn_error_tool_and_tools_are_plain_luau_in_every_context() {
+        for (ctx, logs, r) in each(BODY) {
+            assert_eq!(r, Ok(()), "{ctx}");
+            assert_eq!(
+                logs,
+                vec!["tracks\t3\t{\"a\":1}".to_string(), format!("{WARN}careful\t2"), "old 3".to_string()],
+                "{ctx}: print, warn and the old editor.log land in the logs"
+            );
+            assert_eq!(warning(&logs[1]), Some("careful\t2"), "{ctx}: warn is a warning line");
+            assert_eq!(warning(&logs[0]), None, "{ctx}: print is a plain line");
+        }
+        for (ctx, logs, r) in each("print('before')\nerror('it broke')\nprint('after')") {
+            let e = r.expect_err(ctx);
+            assert!(e.contains("it broke"), "{ctx}: error fails the run with its message: {e}");
+            assert_eq!(logs, vec!["before".to_string()], "{ctx}: nothing runs after error");
+        }
     }
 }
 

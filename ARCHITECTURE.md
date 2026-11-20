@@ -87,7 +87,7 @@ src/media/thumbs.rs     thumbnail cache (timeline filmstrips, library rows)
 src/media/proxy.rs      background all-intra proxy transcodes (preview plays these, exports never do)
 src/media/ytdlp.rs      optional URL download
 
-src/scripting.rs        embedded Luau (mlua): sandboxed `editor.tool/tools/log` bridge into the MCP
+src/scripting.rs        embedded Luau (mlua): sandboxed `tool`/`tools`/`print`/`warn` globals into the MCP
                         tool catalogue; `-- @name/@desc/@icon/@hotkey/@on <event>/@budget_ms` header
                         parsing (`meta()`); 5 s run budget, 250 ms default `@on` hook budget
 src/engine/gpu.rs       GPU renderer: FBO pool, programs, node-graph eval, transitions, masks, readback
@@ -155,7 +155,7 @@ src/playback.rs         Player: render thread + audio thread + wall clock; decod
                         loop_range (player-rate-loop)
 src/mcp/mod.rs          MCP server (HTTP + JSON-RPC), ToolCall channel, png_encode
 src/mcp/tools.rs        ToolDef/ToolKind/ToolOutcome + `all()`/`find()`/`list_json()` — flattens
-                        `ui::app::TOOL_TABLES`, the shared truth for `tools/list`, `editor.tools()`
+                        `ui::app::TOOL_TABLES`, the shared truth for `tools/list`, `tools()`
                         and the palette
 
 src/ui/mod.rs           shared UI types/helpers (DragPayload, label_name, duration_text, …)
@@ -532,7 +532,7 @@ entry — never a neighbour's:
 
 | Registry | Type | Tried from | Wins when |
 |---|---|---|---|
-| `TOOL_TABLES` | `&[&[mcp::tools::ToolDef]]` | `mcp::tools::all()` (flattens for `tools/list`, `editor.tools()`, the palette) | always included — not a fallthrough dispatcher |
+| `TOOL_TABLES` | `&[&[mcp::tools::ToolDef]]` | `mcp::tools::all()` (flattens for `tools/list`, `tools()`, the palette) | always included — not a fallthrough dispatcher |
 | `ACT_HANDLERS` | `&[fn(&mut App, Action) -> bool]` | `act()`'s prelude, before its own `match` | first handler returning `true` |
 | `FRAME_HOOKS` | `&[fn(&mut App, &egui::Context)]` | `update()`, once per frame | every hook runs (not a fallthrough — polling, not dispatch) |
 | `WINDOW_DRAWERS` | `&[fn(&mut App, &egui::Context)]` | `windows()`, before its own body | every drawer runs |
@@ -551,7 +551,7 @@ feature branches only ever add fields, never touch an existing type definition's
 `ToolDef { name, desc, args, kind: ToolKind, run }` beside its handler in a `tools_<group>.rs` file
 (a `pub const TOOLS: &[ToolDef]`, registered once in `TOOL_TABLES`; several files use a local
 `row!(name, kind, desc, args)` macro over the same shape). `ToolKind::{Read, Mutate, Job, Ui}` drives
-undo policy in `App::run_tool_undoable` — the single wrapper for MCP calls, Luau's `editor.tool`, and
+undo policy in `App::run_tool_undoable` — the single wrapper for MCP calls, Luau's `tool`, and
 the palette's arg-free/`:` rows: `Mutate` snapshots JSON, runs, pushes one undo step iff the JSON
 changed, rolls back on `Err`; `Read`/`Ui` just run; `Job` polls the existing `McpJob`/`Progress`
 machinery. `tools_registry_tests.rs`'s `every_edit_op_has_a_tool` scans every `src/model/ops/*.rs` for
@@ -808,8 +808,8 @@ blocking Yes/No dialogs), debounced autosave with crash recovery, cache-clear/si
 panel restore (forgiveness).
 **AI** — MCP server (toggle in Settings) exposing **240 tools** over `http://127.0.0.1:<port>/mcp`
 (default port 7337; see `docs/customizing.md` for the full, namespace-grouped table). Luau scripts
-(`src/scripting.rs`, Scripts menu) call the identical tool catalogue in-process via `editor.tool`/
-`editor.tools`/`editor.log` — one API surface for scripts and MCP clients; each script run is a single
+(`src/scripting.rs`, Scripts menu) call the identical tool catalogue in-process via `tool`/
+`tools`/`print` — one API surface for scripts and MCP clients; each script run is a single
 undo step; `-- @on <event>` headers fire on real `fire_hook` call sites (see `docs/customizing.md`'s
 event table — not every originally-planned event has one yet, and that doc says which).
 

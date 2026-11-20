@@ -1,15 +1,15 @@
 //! ---- feat/plugins ----
 //! Running plugin code. A plugin's scripts and panels run in a Luau VM with the same sandbox as the
 //! Assistant's scripts (no io / require / load / debug, an `os` cut down to the clock, a memory cap and an
-//! interrupt that enforces a wall-clock deadline), the same project API (`editor.tool`, `library`,
-//! `project`, `query`) and, on top, what its permissions allow:
+//! interrupt that enforces a wall-clock deadline), the same project API (`tool`, `tools`, `print`, `warn`,
+//! `library`, `project`, `query`) and, on top, what its permissions allow:
 //!
 //! - `net.get(url)`: needs `network` with the URL's host granted. Non-blocking: nil while the download
 //!   runs (the panel redraws when it lands), then `{ok, status, body}`.
 //! - `fs.read / write / list / exists(path)`: needs `files`; the open project's folder (`project`) or a
 //!   folder the user picked (`pick`). Relative paths are inside the project folder.
 //! - `programs.run(exe, args)`: needs `run_programs`.
-//! - `editor.tool(name, args)`: the project / library tools every script may call, plus the app tools
+//! - `tool(name, args)`: the project / library tools every script may call, plus the app tools
 //!   granted in `mcp_tools`.
 //!
 //! Every refusal names the plugin and the permission it is missing. The host table the API calls into is
@@ -219,7 +219,7 @@ pub struct Env<'a> {
     /// The project / library tools every script may call (`script_ctl::script_may_call`).
     pub base_tool: &'a dyn Fn(&str) -> bool,
     pub call: RefCell<&'a mut dyn FnMut(&str, &Value) -> Result<Value, String>>,
-    /// `print` / `editor.log` lines (capped).
+    /// `print` / `warn` lines (capped; a `warn` line starts with `scripting::WARN`).
     pub log: RefCell<Vec<String>>,
     /// How downloads are made (tests swap it).
     pub fetch: fn(&str) -> Result<Vec<u8>, String>,
@@ -235,8 +235,10 @@ impl<'a> Env<'a> {
 
 const LOG_LINES: usize = 200;
 
-/// The Lua side of the bridge: stable functions (`editor.tool`, `net.get`, `ui.button`, ...) that call into
-/// a host table swapped in for each run, so code holding `editor.tool` from an earlier run still works.
+/// The Lua side of the bridge: stable functions (`tool`, `net.get`, `ui.button`, ...) that call into a host
+/// table swapped in for each run, so code holding `tool` from an earlier run still works. `editor` is the
+/// hidden alias table of plugins written before `tool` / `tools` / `print` were globals (not documented,
+/// not completed, not in `scripting_api::API`).
 const BOOT: &str = r#"
 local info = ...
 local host = {}
@@ -252,12 +254,17 @@ local function ns(prefix, names)
   end
   return t
 end
-editor = ns("editor", {"tool", "tools", "log", "json"})
+local core = ns("core", {"tool", "tools", "print", "warn", "json"})
+tool = core.tool
+tools = core.tools
+print = core.print
+warn = core.warn
+json = core.json
+editor = {tool = core.tool, tools = core.tools, log = core.print, json = core.json}
 net = ns("net", {"get"})
 fs = ns("fs", {"read", "write", "list", "exists"})
 programs = ns("programs", {"run"})
 ui = ns("ui", {"label", "heading", "button", "slider", "text", "checkbox", "dropdown", "row", "column", "separator", "space", "image"})
-print = editor.log
 plugin = info
 return function(h) host = h end
 "#;
@@ -348,7 +355,7 @@ fn bind<'s, 'r, 'a: 'r>(scope: &'s mlua::Scope<'s, 'r>, lua: &mlua::Lua, host: &
     use crate::scripting::{json_to_lua, lua_to_json, show};
     let ctx: &'r Ctx = env.ctx;
     host.set(
-        "editor.tool",
+        "core.tool",
         scope.create_function(move |lua, (name, args): (String, Option<mlua::Table>)| {
             ctx.check_tool(&name, env.base_tool).map_err(mlua::Error::runtime)?;
             let args = match args {
@@ -361,7 +368,7 @@ fn bind<'s, 'r, 'a: 'r>(scope: &'s mlua::Scope<'s, 'r>, lua: &mlua::Lua, host: &
         })?,
     )?;
     host.set(
-        "editor.tools",
+        "core.tools",
         scope.create_function(move |lua, ()| {
             let t = lua.create_table()?;
             for def in crate::mcp::tools::all().filter(|d| ctx.check_tool(d.name, env.base_tool).is_ok()) {
@@ -373,15 +380,17 @@ fn bind<'s, 'r, 'a: 'r>(scope: &'s mlua::Scope<'s, 'r>, lua: &mlua::Lua, host: &
             Ok(t)
         })?,
     )?;
-    let log = scope.create_function(move |_, args: mlua::Variadic<mlua::Value>| {
-        let mut l = env.log.borrow_mut();
-        if l.len() < LOG_LINES {
-            l.push(args.iter().map(show).collect::<Vec<_>>().join("\t"));
-        }
-        Ok(())
-    })?;
-    host.set("editor.log", log)?;
-    host.set("editor.json", scope.create_function(|_, v: mlua::Value| Ok(show(&v)))?)?;
+    for (key, prefix) in [("core.print", ""), ("core.warn", crate::scripting::WARN)] {
+        let log = scope.create_function(move |_, args: mlua::Variadic<mlua::Value>| {
+            let mut l = env.log.borrow_mut();
+            if l.len() < LOG_LINES {
+                l.push(format!("{prefix}{}", args.iter().map(show).collect::<Vec<_>>().join("\t")));
+            }
+            Ok(())
+        })?;
+        host.set(key, log)?;
+    }
+    host.set("core.json", scope.create_function(|_, v: mlua::Value| Ok(show(&v)))?)?;
     host.set(
         "net.get",
         scope.create_function(move |lua, url: String| {
@@ -542,9 +551,9 @@ pub(crate) mod tests {
     #[test]
     fn tools_files_and_programs_need_their_permissions() {
         let c = ctx(Permissions::default(), Permissions::default());
-        let (r, made) = run(&c, r#"editor.tool("timeline.list", {})"#);
+        let (r, made) = run(&c, r#"tool("timeline.list", {})"#);
         assert!(r.is_ok() && made == ["timeline.list"], "project tools need no permission");
-        let (r, made) = run(&c, r#"editor.tool("export.video", {})"#);
+        let (r, made) = run(&c, r#"tool("export.video", {})"#);
         assert!(r.unwrap_err().contains("mcp_tools") && made.is_empty());
         assert!(run(&c, r#"fs.read("notes.txt")"#).0.unwrap_err().contains("\"files\""));
         assert!(run(&c, r#"programs.run("notepad.exe", {})"#).0.unwrap_err().contains("run_programs"));
@@ -555,7 +564,7 @@ pub(crate) mod tests {
         }
         let tools = Permissions { mcp_tools: vec!["export.video".into()], ..Default::default() };
         let c = ctx(tools.clone(), tools);
-        let (r, made) = run(&c, r#"editor.tool("export.video", {})"#);
+        let (r, made) = run(&c, r#"tool("export.video", {})"#);
         assert!(r.is_ok() && made == ["export.video"]);
     }
 

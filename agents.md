@@ -283,7 +283,7 @@ wave 0: `registries-schema-hooks`, `size-diet`, `split-god-files` — wave 1: `a
 `text-titles` — wave 4: `docs-refresh`.
 
 **The five dispatch registries** (`src/ui/app/mod.rs`): `TOOL_TABLES` (`&[&[ToolDef]]`,
-flattened by `mcp::tools::all()` for `tools/list`/`editor.tools()`/the palette),
+flattened by `mcp::tools::all()` for `tools/list`/Luau's `tools()`/the palette),
 `ACT_HANDLERS` (`&[fn(&mut App, Action) -> bool]`, tried before `act()`'s match — first `true`
 wins), `FRAME_HOOKS`/`WINDOW_DRAWERS` (`&[fn(&mut App, &egui::Context)]`, polled once per frame /
 inside `windows()`), `PANE_DRAWERS` (`&[fn(&mut App, &mut egui::Ui, Pane) -> bool]`, tried before

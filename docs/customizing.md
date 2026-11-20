@@ -12,8 +12,8 @@ Scripts live in `%APPDATA%\SimpleEditor\scripts\*.luau` (`src/scripting.rs`; the
 starter `example.luau` are created the first time it's listed). Run one from the Scripts menu, bind
 it to a hotkey, or trigger it over MCP (`scripts.run`).
 
-**Sandbox**: no `io`/`os`/`ffi` — a script can only reach the editor through `editor.tool`/
-`editor.tools`/`editor.log` (and `editor.event` when fired as a hook). A manual run gets a 5-second
+**Sandbox**: no `io`/`os`/`ffi` — a script can only reach the editor through `tool`/`tools`
+(and `event` when fired as a hook); `print`/`warn`/`error` work as in any Luau. A manual run gets a 5-second
 wall-clock budget; a fired `-- @on` hook gets 250 ms by default (`DEFAULT_HOOK_BUDGET`), overridable
 per script with `@budget_ms`. A hook that blows its budget is disabled for the rest of the session
 with exactly one toast — an ordinary UI event (a selection change, an import finishing) must never
@@ -22,16 +22,18 @@ be allowed to make the editor feel like it hitched.
 Every name a script can use, with parameters, types and where it exists, is in [scripting-api.md](scripting-api.md)
 (generated from `src/scripting_api.rs`, which the Script Editor's completion reads).
 
-**Bridge surface** (`editor` table, `src/scripting.rs`):
-- `editor.tool(name, args)` — call any MCP tool by name, same catalogue as the table below.
-- `editor.tools()` — every tool as `{name, description}` (no `kind`/`args` — those aren't part of
-  this bridge's return shape; see "A note on `gen_docs.luau`" below).
-- `editor.log(text)` — shows a toast. **This is a 5-10 second auto-expiring toast with no copy
-  button** (`palette_ctl.rs`'s `fire_hook`/the app's toast draw) — never a place to read output you
-  need to keep. If you need real output, write to a file with `editor.tool("frame.export", …)` /
-  `editor.tool("transcript.export", …)` style tools that write files, or query the same data over
-  `curl` against the MCP endpoint directly.
-- `editor.event` — set only inside a fired `-- @on` hook, to the event's JSON payload.
+**Globals** (`src/scripting.rs`; plain Luau, the same in a script, a hook, `scripts.eval` and a plugin):
+- `tool(name, args)` — call any MCP tool by name, same catalogue as the table below.
+- `tools()` — every tool as `{name, description}` (no `kind`/`args` — those aren't part of
+  this return shape; see "A note on `gen_docs.luau`" below).
+- `print(...)` — a line in the run's log (tables as compact JSON), shown as a toast. **This is a 5-10
+  second auto-expiring toast with no copy button** (`palette_ctl.rs`'s `fire_hook`/the app's toast draw) —
+  never a place to read output you need to keep. If you need real output, write to a file with
+  `tool("frame.export", …)` / `tool("transcript.export", …)` style tools that write files, or query the
+  same data over `curl` against the MCP endpoint directly.
+- `warn(...)` — the same, as a warning (a warning toast; a `warning: ` line in `scripts.eval` output).
+- `error(message)` — plain Luau: fails the run, and the app shows the message as it shows any script error.
+- `event` — set only inside a fired `-- @on` hook, to the event's JSON payload.
 
 ### Assistant scripts (`scripts.eval`)
 
@@ -41,16 +43,17 @@ assets, audits a timeline or makes many edits in one go without reading 60 KB of
 
 - **One undo step**, labelled `Script: <purpose>` (inside an Assistant request it joins the request's step). If the
   script errors, every edit it made is undone. `dry_run: true` runs it, reports, then undoes it.
-- **Output**: `print(...)` (tables print as JSON) and the chunk's `return` value come back, capped at `max_output`
-  characters (default 16 000) with a "truncated: refine your query" note.
-- **API** (the prelude in `src/scripting.rs`): `editor.tool(name, args)` for any project / library tool,
+- **Output**: `print(...)` (tables print as JSON), `warn(...)` (a `warning: ` line) and the chunk's `return` value
+  come back, capped at `max_output` characters (default 16 000) with a "truncated: refine your query" note.
+  `error(...)` fails the run.
+- **API** (the prelude in `src/scripting.rs`): `tool(name, args)` for any project / library tool,
   `library.assets(filter)` (every field: id, name, path, ext, kind, duration, width, height, fps, codec, size, tags,
   label, folder, description, used, uses), `library.get / summary / set / update / move / tag`, `library.bins /
   create_bin / rename_bin / move_bin / delete_bin`, `library.linked / linked_files` (read-only listing of linked
   folders), `project.get / summary / timeline / clips / tracks / markers / subtitles / sequences / spans / blocks`,
   and `query.filter / find / map / pluck / ids / sort / group_by / count_by / sum / keys / has`.
 - **Sandbox**: no `io`, no `require` / `package` (mlua's Luau `require` would read files), no `loadstring` /
-  `getfenv` / `setfenv`, an `os` cut down to `clock / time / date / difftime`. `editor.tool` admits project and
+  `getfenv` / `setfenv`, an `os` cut down to `clock / time / date / difftime`. `tool` admits project and
   library tools only (`script_may_call`): Read / Mutate tools, none that take a path, folder-on-disk or URL argument,
   none of `export.*`, `project.open / new / save`, `settings.*`, `scripts.*`, `tasks.*`, `skills.*`, `assistant.*`,
   `ui.*`, the content library's downloads, imports / exports to files. The only file-system effect is listing a
@@ -186,7 +189,7 @@ cross-reference (each tool's own `ToolDef.kind` in its `tools_*.rs` file), not s
 in the raw JSON. `Mutate` pushes one undo step iff the project JSON actually changed and rolls back
 on error; `Read`/`Ui` never touch the undo stack; `Job` starts a background job and replies when it
 finishes. Names, args and descriptions below are transcribed directly from the `tools/list` response
-above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expiring bridge (see
+above — not from `tools()`/`print()`, which is a lossy, auto-expiring bridge (see
 "Luau scripting" above).
 
 **Totals by kind**: 109 Mutate, 70 Read, 48 Ui, 13 Job.
@@ -873,8 +876,8 @@ the user to review and run; each run is one undo step labelled `Assistant task: 
 ### A note on `gen_docs.luau`
 
 `scripts/gen_docs.luau` (next to this doc, copy into `%APPDATA%\SimpleEditor\scripts`) is a live
-spot-check, not a way to (re)generate the table above. It calls `editor.tools()`, which only returns
-`{name, description}` — no `kind`, no `args` — because that's genuinely all `editor.tools()`'s Lua
+spot-check, not a way to (re)generate the table above. It calls `tools()`, which only returns
+`{name, description}` — no `kind`, no `args` — because that's genuinely all `tools()`'s Lua
 bridge exposes (`src/scripting.rs`); it isn't a documentation shortfall, it's the bridge's real
 shape. Run it from the Scripts menu, eyeball the toast's name count and a few names against this
 table before it auto-expires (5-10 s, no copy button), and treat any mismatch as a signal the table

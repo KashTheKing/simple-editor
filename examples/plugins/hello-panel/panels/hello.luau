@@ -8,7 +8,7 @@ local count_markers = true
 
 function draw()
   local clips = project.clips()
-  local ctx = editor.tool("editor.context", {})
+  local ctx = tool("editor.context", {})
   local selected = ctx.selected_clips or {}
 
   ui.heading("Hello from a plugin")
@@ -24,11 +24,11 @@ function draw()
 
   ui.row(function()
     if ui.button("Marker at playhead") then
-      editor.tool("markers.add", { t = ctx.playhead or 0, name = note })
+      tool("markers.add", { t = ctx.playhead or 0, name = note })
     end
     if ui.button("Nudge selection") and #selected > 0 then
       -- every edit made in one click is one undo step
-      editor.tool("timeline.move", { clip_ids = query.ids(selected), dt = step })
+      tool("timeline.move", { clip_ids = query.ids(selected), dt = step })
     end
   end)
 end
