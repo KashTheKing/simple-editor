@@ -635,10 +635,15 @@ pub fn update_source(p: &Plugin) -> Option<github::Source> {
 }
 
 /// Download and stage `url` (blocking: a background thread). The staged copy waits for the confirm.
-pub fn download(roots: &Roots, url: &str) -> Result<Staged, String> {
+pub fn download(roots: &Roots, url: &str, get: github::Getter) -> Result<Staged, String> {
     let src = github::parse(url)?;
-    let (bytes, tag) = github::fetch(&src)?;
+    let (bytes, tag) = github::fetch(&src, get)?;
     stage_zip(roots, &bytes, &src.path, url.trim(), &tag)
+}
+
+/// The version an installed plugin compares against for updates: its release tag, else its version.
+pub fn installed_version(p: &Plugin) -> String {
+    if p.state.tag.is_empty() { p.manifest.version.clone() } else { p.state.tag.clone() }
 }
 
 #[cfg(test)]
@@ -792,6 +797,54 @@ pub(crate) mod tests {
         assert!(list(&roots).is_empty());
         let staging = roots.plugins.join(".staging");
         assert!(std::fs::read_dir(&staging).map(|d| d.count()).unwrap_or(0) == 0, "failed stages are cleaned up");
+    }
+
+    /// A fake GitHub: the API answers for `owner/hello-panel` with release `tag` (with a zip asset when
+    /// `asset`), the asset and codeload URLs answer with the example plugin at `version`; anything else is 404.
+    fn fake_github(tag: &'static str, version: &'static str, asset: bool) -> impl Fn(&str, bool) -> Result<Vec<u8>, String> {
+        move |url: &str, json: bool| {
+            let assets = if asset {
+                format!(r#"[{{"name":"hello-panel.zip","browser_download_url":"https://github.com/owner/hello-panel/releases/download/{tag}/hello-panel.zip"}}]"#)
+            } else {
+                "[]".to_string()
+            };
+            match url {
+                "https://api.github.com/repos/owner/hello-panel/releases/latest" if json => Ok(format!(r#"{{"tag_name":"{tag}","assets":{assets}}}"#).into_bytes()),
+                u if u == format!("https://github.com/owner/hello-panel/releases/download/{tag}/hello-panel.zip") => Ok(example_zip(version)),
+                u if u == format!("https://codeload.github.com/owner/hello-panel/zip/{tag}") => Ok(example_zip(version)),
+                _ => Err(format!("404 {url}")),
+            }
+        }
+    }
+
+    #[test]
+    fn install_and_update_from_a_mocked_github() {
+        let roots = scratch("github");
+        let url = "https://github.com/owner/hello-panel";
+        // the latest release's zip asset
+        let s = download(&roots, url, &fake_github("v1.0.0", "1.0.0", true)).unwrap();
+        assert_eq!((s.manifest.version.as_str(), s.tag.as_str(), s.source.as_str()), ("1.0.0", "v1.0.0", url));
+        let p = commit(&roots, &s, &Permissions::default(), true).unwrap();
+        assert_eq!(installed_version(&p), "v1.0.0");
+        // Update: the API says nothing newer, then v1.1.0
+        let src = update_source(&p).unwrap();
+        assert_eq!(github::check_update(&src, &installed_version(&p), &fake_github("v1.0.0", "1.0.0", true)).unwrap(), None);
+        let newer = fake_github("v1.1.0", "1.1.0", false);
+        assert_eq!(github::check_update(&src, &installed_version(&p), &newer).unwrap().as_deref(), Some("v1.1.0"));
+        // a release without a zip asset installs the tag's source archive
+        let s = download(&roots, url, &newer).unwrap();
+        assert_eq!((s.replaces.as_deref(), s.tag.as_str()), (Some("1.0.0"), "v1.1.0"));
+        let p = commit(&roots, &s, &Permissions::default(), true).unwrap();
+        assert_eq!(p.manifest.version, "1.1.0");
+        // no release at all (404): the default branch's archive
+        let branch = |u: &str, _: bool| if u == "https://codeload.github.com/owner/hello-panel/zip/HEAD" { Ok(example_zip("2.0.0")) } else { Err(format!("404 {u}")) };
+        let s = download(&roots, url, &branch).unwrap();
+        assert_eq!((s.manifest.version.as_str(), s.tag.as_str()), ("2.0.0", ""));
+        s.discard();
+        // a broken download installs nothing
+        assert!(download(&roots, url, &|_: &str, _: bool| Err("offline".to_string())).is_err());
+        assert_eq!(list(&roots).len(), 1);
+        uninstall(&roots, "hello-panel").unwrap();
     }
 
     #[test]

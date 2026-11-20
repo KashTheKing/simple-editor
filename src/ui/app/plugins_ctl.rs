@@ -312,7 +312,7 @@ pub(super) fn start_install(app: &mut App, url: &str, ctx: Option<&egui::Context
     let slot: Pending<Staged> = Arc::default();
     let (roots, url, s2, ctx) = (app.plugins.roots(), url.trim().to_string(), slot.clone(), ctx.cloned());
     std::thread::spawn(move || {
-        let r = plugins::download(&roots, &url);
+        let r = plugins::download(&roots, &url, &plugins::github::get);
         *s2.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
         if let Some(c) = ctx {
             c.request_repaint();
@@ -346,15 +346,9 @@ fn check_update(app: &mut App, id: &str) {
     };
     let slot: Pending<Option<String>> = Arc::default();
     let s2 = slot.clone();
-    let installed = if p.state.tag.is_empty() { p.manifest.version.clone() } else { p.state.tag.clone() };
+    let installed = plugins::installed_version(&p);
     std::thread::spawn(move || {
-        let r = match src.release_api() {
-            Some(api) => plugins::github::get(&api, true)
-                .and_then(|b| plugins::github::release_zip(&String::from_utf8_lossy(&b)))
-                .map(|(tag, _)| plugins::github::newer(&tag, &installed).then_some(tag)),
-            // a branch / folder link has no versions: offer to reinstall it
-            None => Ok(Some("the latest commit".to_string())),
-        };
+        let r = plugins::github::check_update(&src, &installed, &plugins::github::get);
         *s2.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
     });
     app.plugins.updates.insert(id.to_string(), slot);
@@ -541,68 +535,95 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     }
 }
 
-fn manager(app: &mut App, ui: &mut egui::Ui) {
+/// What the Plugins pane's header and list asked for this frame.
+#[derive(Default, Debug, PartialEq)]
+struct Asked {
+    url: bool,
+    folder: bool,
+    zip: bool,
+    reload: bool,
+    /// (row, control) clicked: see `ROW_CTRLS`.
+    ctrl: Option<(usize, usize)>,
+    /// A row's arrow: open / close its details.
+    toggle: Option<String>,
+}
+
+/// The Plugins pane without the app: the buttons, then one aligned row per plugin; `body` draws an opened
+/// row's details right under it.
+fn manager_ui(ui: &mut egui::Ui, list: &[Plugin], open: &[String], url_open: bool, busy: Option<&str>, body: &mut dyn FnMut(&mut egui::Ui, &Plugin)) -> Asked {
+    let mut a = Asked::default();
     ui.horizontal(|ui| {
-        if ui.add(egui::Button::new("Install from URL…").selected(app.plugins.url_open)).on_hover_text("Install a plugin from a GitHub link").clicked() {
-            app.plugins.url_open = !app.plugins.url_open;
-        }
-        if ui.button("Install from Folder…").on_hover_text("Install a plugin folder from this PC (for plugin authors)").clicked() {
-            if let Some(dir) = rfd::FileDialog::new().set_title("Plugin folder (with plugin.json)").pick_folder() {
-                stage_local(app, &dir);
-            }
-        }
-        if ui.button("Install from Zip…").on_hover_text("Install a plugin .zip from this PC").clicked() {
-            if let Some(f) = rfd::FileDialog::new().add_filter("Plugin", &["zip"]).pick_file() {
-                stage_local(app, &f);
-            }
-        }
-        if ui.button("Reload").on_hover_text("Read the plugins folder again and restart open plugin panels").clicked() {
-            app.plugins.panels.clear();
-            refresh(app);
-        }
+        a.url = ui.add(egui::Button::new("Install from URL…").selected(url_open)).on_hover_text("Install a plugin from a GitHub link").clicked();
+        a.folder = ui.button("Install from Folder…").on_hover_text("Install a plugin folder from this PC (for plugin authors)").clicked();
+        a.zip = ui.button("Install from Zip…").on_hover_text("Install a plugin .zip from this PC").clicked();
+        a.reload = ui.button("Reload").on_hover_text("Read the plugins folder again and restart open plugin panels").clicked();
     });
-    if let Some((what, _)) = &app.plugins.job {
+    if let Some(what) = busy {
         ui.horizontal(|ui| {
             ui.spinner();
             ui.label(what);
         });
     }
     ui.separator();
-    if app.plugins.list.is_empty() {
+    if list.is_empty() {
         ui.weak("No plugins installed. A plugin adds panels, scripts, effects, LUTs and more; see Help ▸ Tutorial & Docs ▸ Plugins.");
-        return;
+        return a;
     }
-    let list = app.plugins.list.clone();
-    let mut act: Option<(usize, usize)> = None;
-    let mut toggle: Option<String> = None;
     egui::ScrollArea::vertical().auto_shrink([false, true]).show(ui, |ui| {
         let mut rows = Rows::new(ui, "plugins_list", ROW_CTRLS, &[70.0], false).fixed_order();
         for (i, p) in list.iter().enumerate() {
             let id = &p.manifest.id;
-            let open = app.plugins.open.contains(id);
+            let opened = open.contains(id);
             let state = if p.error.is_some() { "broken" } else if p.state.enabled { "on" } else { "off" };
             let ver = format!("{} · {state}", p.manifest.version);
             let label = format!("{} - {}", p.manifest.name, p.manifest.author);
-            let r = rows.row(ui, i, &RowSpec { key: i as u64, label: &label, open: Some(open), dim: !p.runnable(), values: &[ver.as_str()], ..Default::default() });
+            let r = rows.row(ui, i, &RowSpec { key: i as u64, label: &label, open: Some(opened), dim: !p.runnable(), values: &[ver.as_str()], ..Default::default() });
             if r.toggled {
-                toggle = Some(id.clone());
+                a.toggle = Some(id.clone());
             }
             if let Some(k) = r.ctrl {
-                act = Some((i, k));
+                a.ctrl = Some((i, k));
             }
-            if open {
-                body(app, ui, p);
+            if opened {
+                body(ui, p);
             }
         }
         let _ = rows.finish(ui);
     });
-    if let Some(id) = toggle {
+    a
+}
+
+fn manager(app: &mut App, ui: &mut egui::Ui) {
+    let list = app.plugins.list.clone();
+    let open = app.plugins.open.clone();
+    let busy = app.plugins.job.as_ref().map(|(w, _)| w.clone());
+    let url_open = app.plugins.url_open;
+    let asked = manager_ui(ui, &list, &open, url_open, busy.as_deref(), &mut |ui, p| body(app, ui, p));
+    if asked.url {
+        app.plugins.url_open = !app.plugins.url_open;
+    }
+    if asked.folder {
+        if let Some(dir) = rfd::FileDialog::new().set_title("Plugin folder (with plugin.json)").pick_folder() {
+            stage_local(app, &dir);
+        }
+    }
+    if asked.zip {
+        if let Some(f) = rfd::FileDialog::new().add_filter("Plugin", &["zip"]).pick_file() {
+            stage_local(app, &f);
+        }
+    }
+    if asked.reload {
+        app.plugins.panels.clear();
+        refresh(app);
+    }
+    if let Some(id) = asked.toggle {
         if let Some(i) = app.plugins.open.iter().position(|x| *x == id) {
             app.plugins.open.remove(i);
         } else {
             app.plugins.open.push(id);
         }
     }
+    let act = asked.ctrl;
     if let Some((i, k)) = act {
         let p = &list[i];
         let id = p.manifest.id.clone();
@@ -901,6 +922,33 @@ pub(crate) const TOOLS: &[ToolDef] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fake(id: &str, enabled: bool) -> Plugin {
+        let manifest = plugins::Manifest { id: id.into(), name: format!("Plugin {id}"), version: "1.0.0".into(), author: "A".into(), ..Default::default() };
+        Plugin { manifest, dir: std::env::temp_dir(), state: plugins::Installed { enabled, ..Default::default() }, error: None }
+    }
+
+    #[test]
+    fn assert_no_idle_repaint_plugins_pane() {
+        let list = vec![fake("one", true), fake("two-with-a-much-longer-name", false)];
+        for (list, open) in [(vec![], vec![]), (list.clone(), vec![]), (list, vec!["one".to_string()])] {
+            let ctx = egui::Context::default();
+            let mut bodies = 0;
+            for _ in 0..3 {
+                let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        let a = manager_ui(ui, &list, &open, false, None, &mut |ui, p| {
+                            bodies += 1;
+                            ui.label(&p.manifest.description);
+                        });
+                        assert_eq!(a, Asked::default());
+                    });
+                });
+            }
+            assert_eq!(bodies, if open.is_empty() { 0 } else { 3 }, "only opened rows draw their details");
+            assert!(!ctx.has_requested_repaint(), "an idle Plugins pane must not repaint");
+        }
+    }
 
     #[test]
     fn plugin_tools_are_registered() {

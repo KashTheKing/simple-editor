@@ -158,9 +158,12 @@ pub fn get(url: &str, accept_json: bool) -> Result<Vec<u8>, String> {
     Ok(out.stdout)
 }
 
+/// How a download is made: `(url, wants_json) -> body`. `get` in the app; tests pass a mock of GitHub.
+pub type Getter<'a> = &'a dyn Fn(&str, bool) -> Result<Vec<u8>, String>;
+
 /// The zip to install for `src`, and the version tag it came from ("" = a branch archive). A source
 /// without a release (the API answers 404) falls back to the branch archive.
-pub fn fetch(src: &Source) -> Result<(Vec<u8>, String), String> {
+pub fn fetch(src: &Source, get: Getter) -> Result<(Vec<u8>, String), String> {
     if let Some(api) = src.release_api() {
         if let Ok(body) = get(&api, true) {
             if let Ok((tag, zip)) = release_zip(&String::from_utf8_lossy(&body)) {
@@ -178,6 +181,18 @@ pub fn fetch(src: &Source) -> Result<(Vec<u8>, String), String> {
         _ => String::new(),
     };
     Ok((get(&src.fallback_archive(), false)?, tag))
+}
+
+/// Is there something newer than `installed` (a tag or a version) at `src`? Some(tag) = yes. A branch or
+/// folder link has no versions: it always offers "the latest commit".
+pub fn check_update(src: &Source, installed: &str, get: Getter) -> Result<Option<String>, String> {
+    match src.release_api() {
+        Some(api) => {
+            let (tag, _) = release_zip(&String::from_utf8_lossy(&get(&api, true)?))?;
+            Ok(newer(&tag, installed).then_some(tag))
+        }
+        None => Ok(Some("the latest commit".to_string())),
+    }
 }
 
 #[cfg(test)]
