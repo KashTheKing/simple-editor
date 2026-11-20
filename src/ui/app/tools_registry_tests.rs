@@ -169,6 +169,9 @@ const OP_TOOLS: &[(&str, &str)] = &[
     ("loop_keys", "keyblocks.loop_keys"),
     ("collide_drop", "animate.collide"),
     ("recollide", "keyblocks.set"),
+    // ---- feat/procedural-blocks ----
+    ("bake_key_block", "keyblocks.bake"),
+    ("unbake_key_block", "keyblocks.make_procedural"),
     // ---- ws:browser-layer ----
     ("add_browser_clip", "browser.add"),
     ("browser_fit_pages", "browser.page"),
@@ -271,6 +274,7 @@ const OP_FILES: &[&str] = &[
     // ---- ws:pro-monitor ----
     include_str!("../../model/ops/multicam.rs"),
     include_str!("../../model/ops/paths.rs"),
+    include_str!("../../model/ops/procedural.rs"), // feat/procedural-blocks
     include_str!("../../model/ops/planner.rs"),
     include_str!("../../model/ops/queries.rs"),
     include_str!("../../model/ops/references.rs"), // feat/reference-clips

@@ -604,7 +604,7 @@ impl Project {
 
 /// The keys of `props` in clip-local [from, to] as a block of absolute values: a plain origin -> target move
 /// whose controls rewrite exactly these keys.
-fn abs_block(c: &Clip, name: &str, props: &[String], from: f64, to: f64) -> KeyBlock {
+pub(crate) fn abs_block(c: &Clip, name: &str, props: &[String], from: f64, to: f64) -> KeyBlock {
     let track = |p: &String| {
         let keys = prop_ref(c, p)?.keys.iter().filter(|k| k.t >= from - BK_EPS && k.t <= to + BK_EPS);
         let keys = keys.map(|k| BlockKey { f: (k.t - from) / (to - from), v: BlockVal::Abs(k.v), ease: k.ease });
@@ -615,7 +615,7 @@ fn abs_block(c: &Clip, name: &str, props: &[String], from: f64, to: f64) -> KeyB
 
 /// Put a key on `a` at `t` without changing the curve: the segment it lands in is cut in two, each half a
 /// bezier following the old ease (de Casteljau). Nothing when a key is already there or `a` has no keys.
-fn cut_at(a: &mut Animated, t: f64) {
+pub(crate) fn cut_at(a: &mut Animated, t: f64) {
     if a.keys.is_empty() || a.key_index_at(t).is_some() {
         return;
     }

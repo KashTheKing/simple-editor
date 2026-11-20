@@ -369,12 +369,13 @@ fn hash(seed: u32, i: i64) -> f64 {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct Unbaked {
     pub proc: ProcCtl,
-    /// The keys of its properties that sat strictly inside the block before (the conversion sampled over them).
+    /// The keys of its properties in [start, end] before the conversion (it sampled over them), and the key
+    /// just before the start (the conversion re-eased it to keep the curve).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub under: Vec<(String, Keyframe)>,
-    /// The properties' key counts right after the conversion (a quick edited check before the full one).
-    #[serde(default)]
-    pub keys: usize,
+    /// The keys the conversion wrote: while the block's keys are still exactly these, it was not edited.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub baked: Vec<(String, Keyframe)>,
 }
 
 impl AppliedBlock {
