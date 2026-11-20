@@ -223,8 +223,8 @@ fn start_search(ctx: Option<&egui::Context>, settings: &crate::settings::Setting
     let srcs = sources_on(settings);
     CTL.with(|c| {
         let mut c = c.borrow_mut();
-        let key = (q.clone(), srcs.clone());
-        if let Some((t, found)) = c.cache.get(&key).cloned() {
+        let ck = (q.clone(), srcs.clone());
+        if let Some((t, found)) = c.cache.get(&ck).cloned() {
             if t.elapsed() < CACHE_FOR {
                 land(&mut c, q, found, reply);
                 return;
