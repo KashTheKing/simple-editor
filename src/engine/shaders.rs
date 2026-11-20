@@ -163,6 +163,8 @@ pub fn body(kind: crate::model::EffectKind) -> Option<&'static str> {
         K::Qualifier => QUALIFIER,
         K::Lut => LUT,
         K::FrameBlend => FRAME_BLEND,
+        K::CornerPin => CORNER_PIN, // ws:parity-preview-tools
+        K::LensCorrection => LENS,
         // Wobble / Plane3d move the layer (see engine::effects::wobble / plane3d_matrix);
         // Shader is wrapped by `user_shader` instead.
         K::Wobble | K::Plane3d | K::Shader => return None,
@@ -1416,6 +1418,72 @@ void main() {
 /// Extra uniforms gpu.rs must bind (this kind reports `EffectKind::needs_motion()`):
 ///   sampler2D u_prev / u_next  the layer one frame before / after
 ///   float     u_frames         how many of those are real: 0, 1 (prev only) or 2
+// ---- ws:parity-preview-tools ----
+/// Corner pin: p0..p7 = the four corners (top left, top right, bottom right, bottom left) as layer
+/// fractions. Each pixel reads the unit-square point the inverse square-to-quad homography gives it
+/// (`engine::effects::corner_pin_matrix` is the CPU twin); outside the quad is transparent, with a
+/// one-pixel soft edge.
+const CORNER_PIN: &str = r#"
+mat3 fx_square_to_quad(vec2 q0, vec2 q1, vec2 q2, vec2 q3) {
+    vec2 d1 = q1 - q2;
+    vec2 d2 = q3 - q2;
+    vec2 d3 = q0 - q1 + q2 - q3;
+    float den = d1.x * d2.y - d2.x * d1.y;
+    float g = 0.0;
+    float h = 0.0;
+    if (abs(den) > 1e-12) {
+        g = (d3.x * d2.y - d2.x * d3.y) / den;
+        h = (d1.x * d3.y - d3.x * d1.y) / den;
+    }
+    // column-major: columns (a, d, g), (b, e, h), (c, f, 1)
+    return mat3(q1.x - q0.x + g * q1.x, q1.y - q0.y + g * q1.y, g,
+                q3.x - q0.x + h * q3.x, q3.y - q0.y + h * q3.y, h,
+                q0.x, q0.y, 1.0);
+}
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_res;
+    vec4 src = texture(tex, uv);
+    mat3 hm = fx_square_to_quad(vec2(p0, p1), vec2(p2, p3), vec2(p4, p5), vec2(p6, p7));
+    vec4 res = vec4(0.0);
+    if (abs(determinant(hm)) > 1e-9) {
+        vec3 q = inverse(hm) * vec3(uv, 1.0);
+        if (q.z > 1e-12) {
+            vec2 st = q.xy / q.z;
+            vec2 e = min(st, 1.0 - st) * u_res;
+            float cov = clamp(min(e.x, e.y) + 0.5, 0.0, 1.0);
+            vec2 ht = 0.5 / max(u_res, vec2(1.0));
+            res = texture(tex, clamp(st, ht, 1.0 - ht));
+            res.a *= cov;
+        }
+    }
+    float m = u_has_mask > 0.5 ? texture(u_mask, uv).r : 1.0;
+    out_color = mix(src, res, m);
+}
+"#;
+
+/// Lens correction: p0/p1 centre, p2 / p3 the r^2 / r^4 terms, p4 zoom. r is in pixels over the half
+/// diagonal, so the correction is round on any aspect (`engine::effects::lens_source` is the CPU twin).
+const LENS: &str = r#"
+void main() {
+    vec2 uv = gl_FragCoord.xy / u_res;
+    vec4 src = texture(tex, uv);
+    vec2 c = vec2(p0, p1);
+    vec2 d = (uv - c) * u_res;
+    float hd = 0.5 * length(u_res);
+    float r2 = dot(d, d) / max(hd * hd, 1e-9);
+    float k = (1.0 + p2 * r2 + p3 * r2 * r2) / max(p4, 0.05);
+    vec2 st = c + d * k / u_res;
+    vec2 e = min(st, 1.0 - st) * u_res;
+    float cov = clamp(min(e.x, e.y) + 0.5, 0.0, 1.0);
+    vec2 ht = 0.5 / max(u_res, vec2(1.0));
+    vec4 res = texture(tex, clamp(st, ht, 1.0 - ht));
+    res.a *= cov;
+    float m = u_has_mask > 0.5 ? texture(u_mask, uv).r : 1.0;
+    out_color = mix(src, res, m);
+}
+"#;
+
 const FRAME_BLEND: &str = r#"
 uniform sampler2D u_prev;
 uniform sampler2D u_next;

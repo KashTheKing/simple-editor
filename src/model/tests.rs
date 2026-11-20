@@ -762,9 +762,17 @@ fn no_effect_kind_applies_to_audio_yet() {
 /// total (compiles) for every kind; `needs_motion()` is true for exactly `MotionBlur`/`FrameBlend`.
 #[test]
 fn effect_kind_all_has_29_entries_in_declared_order() {
-    assert_eq!(EffectKind::ALL.len(), 29);
+    // ws:parity-preview-tools: + CornerPin, LensCorrection (also before Shader)
+    assert_eq!(EffectKind::ALL.len(), 31);
     let shader_i = EffectKind::ALL.iter().position(|&k| k == EffectKind::Shader).unwrap();
-    for k in [EffectKind::Primaries, EffectKind::Qualifier, EffectKind::Lut, EffectKind::FrameBlend] {
+    for k in [
+        EffectKind::Primaries,
+        EffectKind::Qualifier,
+        EffectKind::Lut,
+        EffectKind::FrameBlend,
+        EffectKind::CornerPin,
+        EffectKind::LensCorrection,
+    ] {
         let i = EffectKind::ALL.iter().position(|&x| x == k).unwrap();
         assert!(i < shader_i, "{k:?} must sit before Shader in ALL");
     }
