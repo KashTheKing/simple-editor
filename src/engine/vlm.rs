@@ -201,15 +201,6 @@ fn check_runs(exe: &Path) -> Result<(), String> {
     }
 }
 
-/// Remove the add-on (runtime and every model).
-pub fn uninstall() -> Result<(), String> {
-    let d = dir();
-    if d.exists() {
-        std::fs::remove_dir_all(&d).map_err(|e| format!("{}: {e}", d.display()))?;
-    }
-    Ok(())
-}
-
 static INSTALLING: Mutex<Option<Arc<Progress>>> = Mutex::new(None);
 
 pub fn installing() -> Option<Arc<Progress>> {

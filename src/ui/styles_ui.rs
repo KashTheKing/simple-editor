@@ -83,7 +83,7 @@ pub fn context_button(ui: &mut egui::Ui, pal: &Palette, open: bool) -> bool {
 }
 
 pub fn styles_tab(ui: &mut egui::Ui, st: &mut StylesState, v: &View) -> Out {
-    let pal = crate::theme::palette(ui.ctx());
+    let pal = crate::ui::titlebar::palette(ui.ctx());
     let mut out = Out::None;
     ui.horizontal_wrapped(|ui| {
         let r = ui.button("Learn this style…").on_hover_text(
@@ -405,7 +405,7 @@ pub struct CtxView<'a> {
 
 pub fn context_pane(ui: &mut egui::Ui, st: &mut CtxState, v: &CtxView) -> CtxOut {
     use super::layout::Pane;
-    let pal = crate::theme::palette(ui.ctx());
+    let pal = crate::ui::titlebar::palette(ui.ctx());
     let mut out = CtxOut::None;
     let id = egui::Id::new("project_context_text");
     let focused = ui.memory(|m| m.has_focus(id));

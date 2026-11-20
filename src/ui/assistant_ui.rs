@@ -564,7 +564,6 @@ fn top_bar(ui: &mut egui::Ui, state: &mut AssistantState, v: &View, wide: bool, 
                 state.new_chat();
             }
             // feat/styles-context: the Project Context pane, lit while it is open
-            let pal = crate::theme::palette(ui.ctx());
             if crate::ui::styles_ui::context_button(ui, &pal, v.context_open) {
                 *out = Out::Styles(crate::ui::styles_ui::Out::ToggleContext);
             }
