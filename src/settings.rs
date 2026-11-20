@@ -723,7 +723,7 @@ pub struct Settings {
     /// Settings ▸ Performance ▸ GPU: "" = Automatic, "power", "performance", or an adapter's name
     /// (`engine::gpu_pick`). Applies at the next start.
     pub gpu_adapter: String,
-    /// Settings ▸ Performance ▸ Full-range export: SDR 4:2:0 exports at 0-255 (tagged full) instead of 16-235.
+    /// Settings ▸ Export ▸ Levels ▸ Full range: SDR 4:2:0 exports at 0-255 (tagged full) instead of 16-235.
     pub export_full_range: bool,
     /// Read a Contour ShuttlePRO / ShuttleXpress when one is plugged in (`engine::shuttle`).
     #[serde(default = "default_true")]

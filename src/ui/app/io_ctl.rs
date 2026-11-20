@@ -201,7 +201,7 @@ fn stream_tick(app: &mut App, ctx: &egui::Context) {
                     app.toast_with_folder("Stream recorded - adding it to the Library", rec.out.clone());
                     app.import_recording(rec.out.clone(), None, None);
                 }
-                Err(e) => app.toast(format!("The stream recording failed, ffmpeg said: {e}")),
+                Err(e) => app.toast(format!("The stream recording stopped without a file: {e}")),
             }
         }
     }

@@ -438,7 +438,7 @@ fn rgba_bt709(mut vf: String, rgba_in: bool, args: &[String]) -> (String, Vec<St
 // ---- ws:parity-io ----
 static FULL_RANGE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Settings ▸ Performance ▸ Full-range export (`ui::app::io_ctl` keeps it in step with the setting).
+/// Settings ▸ Export ▸ Levels ▸ Full range (`ui::app::io_ctl` keeps it in step with the setting).
 pub fn set_full_range(on: bool) {
     FULL_RANGE.store(on, std::sync::atomic::Ordering::Relaxed);
 }
@@ -821,7 +821,7 @@ fn run_export_with(
     cmd.args(input_args(video, fed, fps, &ports, main_audio));
     let (vf, af) = output_filters(opts, fed, !inputs.is_empty(), &args);
     let (vf, colour_tags) = if hdr { hdr_vf(vf, &args, project.color) } else { rgba_bt709(vf, video == Some(VideoIn::Rgba), &args) };
-    // ws:parity-io: Settings ▸ Performance ▸ Full-range export
+    // ws:parity-io: Settings ▸ Export ▸ Levels ▸ Full range
     let (vf, colour_tags) = match hdr || !full_range_on() {
         true => (vf, colour_tags),
         false => full_range(vf, colour_tags, video == Some(VideoIn::Nv12), &args),
@@ -2424,7 +2424,6 @@ pub(crate) mod tests {
         assert!(s(input_args(Some(VideoIn::Rgba), (2, 2), 30.0, &[1, 2, 3], 1)).ends_with("-map 0:v -map 1:a"));
     }
 
-    /// RGBA into a 4:2:0 encode converts and tags BT.709 limited like the NV12 path; gif/NV12 untouched.
     /// ws:parity-io: full-range export rewrites the limited conversion and tags, expands the GPU's NV12,
     /// and leaves non-4:2:0 outputs alone.
     #[test]
@@ -2442,6 +2441,7 @@ pub(crate) mod tests {
         assert_eq!(full_range("x".into(), Vec::new(), true, &gif), ("x".to_string(), Vec::new()));
     }
 
+    /// RGBA into a 4:2:0 encode converts and tags BT.709 limited like the NV12 path; gif/NV12 untouched.
     #[test]
     fn rgba_path_is_bt709_limited_and_tagged() {
         let x264 = codec_args("mp4", "libx264", 18, "medium", &[]);

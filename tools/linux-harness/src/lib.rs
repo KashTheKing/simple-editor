@@ -14,6 +14,7 @@ pub mod media {
     pub use crate::io_override_src as io_override;
 }
 pub mod engine {
+    pub mod html { pub fn tie_to_us(_: &std::process::Child) {} }
     pub use crate::{media_info_src as media_info, netstream_src as netstream, shuttle_src as shuttle};
 }
 // the app's own files (`#[path]` at the crate root: a path inside an inline module would go through a

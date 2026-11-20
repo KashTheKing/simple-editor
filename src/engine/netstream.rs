@@ -113,6 +113,7 @@ impl Preview {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("ffmpeg: {e}"))?;
+        crate::engine::html::tie_to_us(&child); // never outlives the app
         let (mut out, mut err) = (child.stdout.take().ok_or("no stdout")?, child.stderr.take());
         let p = Preview { child: Arc::new(Mutex::new(Some(child))), latest: Default::default(), error: Default::default() };
         let (latest, error) = (p.latest.clone(), p.error.clone());
@@ -185,6 +186,8 @@ impl Recording {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("ffmpeg: {e}"))?;
+        // ends with the app however it ends (Matroska is written as it goes, so the file stays playable)
+        crate::engine::html::tie_to_us(&child);
         let stdin = child.stdin.take();
         let done: Arc<Mutex<Option<String>>> = Default::default();
         let d = done.clone();

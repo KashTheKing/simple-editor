@@ -2047,7 +2047,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     media_api::TOOLS,
     // ---- ws:home-page ----
     home_ctl::TOOLS,
-    script_ctl::TOOLS,    // ---- ws:parity-io ----
+    script_ctl::TOOLS,
+    // ---- ws:parity-io ----
     io_ctl::TOOLS,
 ];
 
@@ -2147,7 +2148,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     // ---- ws:timeline-tabs ----
     timeline_tabs::act,
     // ---- ws:home-page ----
-    home_ctl::act,    // ---- ws:parity-io ----
+    home_ctl::act,
+    // ---- ws:parity-io ----
     io_ctl::act,
 ];
 
@@ -2241,7 +2243,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:music-burn ----
     music_ctl::frame,
     // ---- ws:preview-audio-only ----
-    audio_only::tick,    // ---- ws:parity-io ----
+    audio_only::tick,
+    // ---- ws:parity-io ----
     io_ctl::tick,
 ];
 
@@ -2323,7 +2326,8 @@ pub(crate) const WINDOW_DRAWERS: &[fn(&mut App, &egui::Context)] = &[
     // ---- ws:project-color-fps ----
     project_match::window,
     // ---- ws:timeline-tabs ----
-    timeline_tabs::windows,    // ---- ws:parity-io ----
+    timeline_tabs::windows,
+    // ---- ws:parity-io ----
     io_ctl::windows,
 ];
 
