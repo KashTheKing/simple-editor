@@ -151,7 +151,8 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
         return false;
     }
     let digest = app.styles_ctx.digest_open.then(|| context::digest(&app.project));
-    let v = CtxView { doc: &app.project.context, applied: applied(app), digest };
+    let open = [Pane::Planner, Pane::Moodboard, Pane::Markers].map(|p| app.pane_drawn(p));
+    let v = CtxView { doc: &app.project.context, applied: applied(app), digest, open };
     match styles_ui::context_pane(ui, &mut app.styles_ctx, &v) {
         CtxOut::None => {}
         CtxOut::Edited(text) => {
@@ -170,7 +171,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
             app.assistant.tab = crate::ui::assistant_ui::Tab::Styles;
             app.surface(Pane::Assistant);
         }
-        CtxOut::Open(p) => app.surface(p),
+        CtxOut::Open(p) => app.toggle_panel(p),
     }
     true
 }

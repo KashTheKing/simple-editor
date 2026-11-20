@@ -389,10 +389,7 @@ fn send(app: &mut App) {
     st.dirty = true;
     if app.settings.assistant_backend == "external" {
         // assistant.wait attaches the live context itself; pinned chips ride along in the text
-        let text = match ctx.get("pinned") {
-            Some(p) => format!("{request}\n\nPinned context: {p}"),
-            None => request,
-        };
+        let text = external_text(request, &ctx, &app.project);
         app.assistant.pending.push_back(text);
         app.assistant_rt.attachments = images;
         app.assistant.push(Line::Info("Waiting for a connected agent (assistant.wait)…".into()));
@@ -468,6 +465,16 @@ fn comment_req(comment: Value, id: Id, conv: u64, project_ctx: &str) -> Req {
         preamble(&ctx, &[])
     );
     Req { kind: Kind::Comment(id), conv, label: format!("Comment: {}", aui::short(&note, 50)), full, images: Vec::new(), skill: None }
+}
+
+/// What `assistant.wait` hands a connected agent: the request, pinned chips (the live context it attaches
+/// itself) and, feat/styles-context, Project Context and its digest like every other backend gets.
+fn external_text(request: String, ctx: &Value, p: &crate::model::Project) -> String {
+    let text = match ctx.get("pinned") {
+        Some(pin) => format!("{request}\n\nPinned context: {pin}"),
+        None => request,
+    };
+    text + &crate::model::context::for_request(p)
 }
 
 fn switch_mcp_on(app: &mut App) {
@@ -1945,5 +1952,16 @@ mod tests {
         assert!(TASK_BRIEF.contains("tasks.add{title, code, note}") && TASK_BRIEF.contains("editor.tool(name, args)"));
         let r = comment_req(json!({"note": "trim this", "marker_id": 4}), 4, 7, "");
         assert!(r.full.contains("Comment: trim this") && r.kind == Kind::Comment(4) && r.label == "Comment: trim this");
+    }
+
+    /// feat/styles-context: the external backend's requests carry Project Context too (blank: nothing added).
+    #[test]
+    fn external_requests_carry_project_context() {
+        let mut p = crate::model::Project::new();
+        assert_eq!(external_text("cut the pauses".into(), &json!({}), &p), "cut the pauses");
+        p.set_context_section("Rules", "- Never cut mid-word.");
+        let t = external_text("cut the pauses".into(), &json!({"pinned": [1]}), &p);
+        assert!(t.starts_with("cut the pauses\n\nPinned context: [1]"), "{t}");
+        assert!(t.contains("Project Context (") && t.contains("- Never cut mid-word."), "{t}");
     }
 }

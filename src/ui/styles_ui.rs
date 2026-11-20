@@ -393,6 +393,7 @@ pub enum CtxOut {
     Commit,
     RemoveStyle,
     OpenStyles,
+    /// A pane button in the digest: toggle that pane.
     Open(super::layout::Pane),
 }
 
@@ -401,6 +402,8 @@ pub struct CtxView<'a> {
     pub doc: &'a str,
     pub applied: Option<String>,
     pub digest: Option<String>,
+    /// Whether the Planner, Moodboard and Markers panes are open (their buttons in the digest light up).
+    pub open: [bool; 3],
 }
 
 pub fn context_pane(ui: &mut egui::Ui, st: &mut CtxState, v: &CtxView) -> CtxOut {
@@ -455,8 +458,11 @@ pub fn context_pane(ui: &mut egui::Ui, st: &mut CtxState, v: &CtxView) -> CtxOut
         ui.add_space(6.0);
         let h = egui::CollapsingHeader::new("Digest").id_salt("ctx_digest").default_open(false).open(Some(st.digest_open)).show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                for (p, label) in [(Pane::Planner, "Planner"), (Pane::Moodboard, "Moodboard"), (Pane::Markers, "Markers")] {
-                    if ui.small_button(label).on_hover_text(format!("Open the {label}")).clicked() {
+                // pane buttons toggle their pane and stay lit while it is open
+                for (k, (p, label)) in [(Pane::Planner, "Planner"), (Pane::Moodboard, "Moodboard"), (Pane::Markers, "Markers")].into_iter().enumerate() {
+                    let open = v.open[k];
+                    let tip = if open { format!("Close the {label}") } else { format!("Open the {label}") };
+                    if ui.add(egui::Button::new(label).small().selected(open)).on_hover_text(tip).clicked() {
                         out = CtxOut::Open(p);
                     }
                 }
@@ -494,7 +500,7 @@ mod tests {
         ctx.set_fonts(crate::theme::test_fonts());
         let mut st = CtxState::default();
         let doc = crate::model::context::apply_style(&crate::model::context::template(), "vlog", "Fast.", "- Short shots.");
-        let v = CtxView { doc: &doc, applied: Some("vlog".into()), digest: Some("### Notes\n#### Tone\nCalm.".into()) };
+        let v = CtxView { doc: &doc, applied: Some("vlog".into()), digest: Some("### Notes\n#### Tone\nCalm.".into()), open: [false, true, false] };
         run(&ctx, 30, |ui| {
             let _ = context_pane(ui, &mut st, &v);
         });
