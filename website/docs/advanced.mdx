@@ -98,6 +98,11 @@ shows every animated value of the selected clip as a curve.
   across the cut: the second clip's moves pick up at the speed the first one's ended.
 - **Render in Place** (**Timeline** menu) bakes a heavy clip into a new video file, and **Render Selection**
   pre-renders it for smooth playback.
+- **Timeline ▸ Clean Up** writes a fixed copy of the selected clip's video and swaps it in, as a job with
+  one undo step; the original stays in the Library:
+  - **Denoise Video** (Fast or Best, Light / Medium / Strong) and **Deinterlace** work on the source file,
+    so the clip keeps its effects, position, speed and trims. Best keeps more detail but is many times slower.
+  - **Stabilize** and **Denoise Audio** render the clip with its effects first.
 
 ## Planner, Moodboard and History
 

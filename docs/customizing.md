@@ -296,6 +296,8 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `export.bake` | Job | clip_ids | Render the given clip(s) in place (effects flattened into a new asset) and swap them onto it; the original asset stays in the library. Blocks until the swap lands. |
 | `export.denoise` | Job | clip_ids | Bake the clip(s) through ffmpeg afftdn spectral audio denoise, then swap them onto the result. |
+| `export.denoise_video` | Job | clip_ids, strength, method | Filter the clips' source file through hqdn3d (fast) or nlmeans (best) and swap the video clips onto it, keeping their edits. |
+| `export.deinterlace` | Job | clip_ids | Filter the clips' source file through bwdif and swap the video clips onto it, keeping their edits. |
 | `export.edl` | Read | path | Write the main timeline as CMX 3600 EDL (for Avid): one file per video track (the first at path, others as <stem>_V2.edl …), the first also carrying every audio track; dissolves as D events. |
 | `export.preset_apply` | Ui | name | Apply an export preset card (any kind) to the Export pane, as clicking it does. |
 | `export.preset_delete` | Ui | name | Delete a custom export preset. Built-in and platform presets refuse. |
