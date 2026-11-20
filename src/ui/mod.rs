@@ -42,6 +42,7 @@ pub mod import_ui;
 pub mod inspector;
 pub mod inspector_audio;
 pub mod inspector_footage; // ws:mixed-footage
+pub mod denoise_ui; // ws:addon-deepfilternet: Clean Audio row + A / B
 pub mod inspector_text;
 pub mod layout;
 pub mod library;

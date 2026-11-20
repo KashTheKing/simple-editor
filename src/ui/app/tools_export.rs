@@ -21,8 +21,8 @@ pub(crate) enum BakeKind {
     Render,
     /// + ffmpeg `deshake`.
     Stabilize,
-    /// + ffmpeg `afftdn`.
-    Denoise,
+    /// + speech denoise: Some(strength) = DeepFilterNet (the add-on), None = ffmpeg `afftdn`.
+    Denoise(Option<f64>),
     /// + `setpts`/`minterpolate` at this speed factor (0.5 = half speed).
     SlowMo(f64),
     // ---- ws:mixed-footage ----
@@ -37,7 +37,7 @@ impl BakeKind {
         match self {
             BakeKind::Render => "Render in place",
             BakeKind::Stabilize => "Stabilize",
-            BakeKind::Denoise => "Denoise",
+            BakeKind::Denoise(_) => "Denoise",
             BakeKind::SlowMo(_) => "Slow motion",
             BakeKind::Flow(_) => "Optical flow",
         }
@@ -46,7 +46,7 @@ impl BakeKind {
         match self {
             BakeKind::Render => "baked",
             BakeKind::Stabilize => "stabilized",
-            BakeKind::Denoise => "denoised",
+            BakeKind::Denoise(_) => "denoised",
             BakeKind::SlowMo(_) => "slowmo",
             BakeKind::Flow(_) => "flow",
         }
@@ -55,7 +55,7 @@ impl BakeKind {
         match self {
             BakeKind::Render => None,
             BakeKind::Stabilize => Some(BakeFilter::Stabilize),
-            BakeKind::Denoise => Some(BakeFilter::Denoise),
+            BakeKind::Denoise(_) => Some(BakeFilter::Denoise),
             BakeKind::SlowMo(f) | BakeKind::Flow(f) => Some(BakeFilter::SlowMo { factor: f, fps }),
         }
     }
@@ -394,6 +394,15 @@ fn advance_bake(app: &mut App, mut job: BakeJob) {
             if prog.is_cancelled() { format!("{} cancelled", job.label) } else { format!("{} failed: {e}", job.label) };
         app.push_toast(Toast::new(msg.clone()).kind(ToastKind::Error));
         job.overall.finish(Some(msg));
+        return;
+    }
+    // ---- ws:addon-deepfilternet ---- the Denoise bake through DeepFilterNet: picture copied, sound cleaned
+    if let (BakeStage::Render(_), BakeKind::Denoise(Some(strength))) = (&job.stage, job.kind) {
+        let (src, out) = (job.tmp.clone(), job.out.clone());
+        let p = export::spawn_job("denoise-bake", move |p| crate::engine::deepfilter::remux(&src, &out, strength, p));
+        job.overall.set(0.5, "Cleaning speech…");
+        job.stage = BakeStage::Filter(p);
+        app.bake_jobs.push(job);
         return;
     }
     if matches!(job.stage, BakeStage::Render(_)) {
@@ -1041,10 +1050,17 @@ pub const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "export.denoise",
-        desc: "Bake the clip(s) through ffmpeg afftdn spectral audio denoise, then swap them onto the result.",
-        args: &["clip_ids:array:true:"],
+        desc: "Bake the clip(s) through speech denoise - DeepFilterNet when the add-on is installed (denoise.install), else ffmpeg afftdn - then swap them onto the result.",
+        args: &[
+            "clip_ids:array:true:",
+            "engine:string:false:deepfilter | ffmpeg (default deepfilter when installed)",
+            "strength:number:false:0..1, default 0.8 (DeepFilterNet only)",
+        ],
         kind: ToolKind::Job,
-        run: |app, args| bake_tool(app, args, BakeKind::Denoise),
+        run: |app, args| {
+            let engine = denoise_ctl::bake_engine(args)?;
+            bake_tool(app, args, BakeKind::Denoise(engine))
+        },
     },
     ToolDef {
         name: "markers.export",
@@ -1382,7 +1398,8 @@ mod tests {
         assert_eq!(BakeKind::Stabilize.filter(30.0), Some(BakeFilter::Stabilize));
         assert_eq!(BakeKind::SlowMo(0.5).filter(25.0), Some(BakeFilter::SlowMo { factor: 0.5, fps: 25.0 }));
         assert_eq!(BakeKind::SlowMo(0.25).factor(), 0.25);
-        assert_eq!(BakeKind::Denoise.factor(), 1.0);
+        assert_eq!(BakeKind::Denoise(None).factor(), 1.0);
+        assert_eq!(BakeKind::Denoise(Some(0.8)).filter(30.0), Some(BakeFilter::Denoise));
     }
 }
 

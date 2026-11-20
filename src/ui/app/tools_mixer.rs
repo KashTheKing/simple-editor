@@ -97,13 +97,22 @@ pub const TOOLS: &[ToolDef] = &[
         desc: "Route clips through a one-click DSP chain (a named bus + filters), left fully editable \
                in the Mixer; re-applying reuses the bus (a sweep gets its own, keyed over the clips). \
                Presets: repair, clarity and every Gallery audio effect (gallery.list tab=AudioEffects). \
-               Returns the bus id.",
-        args: &["clip_ids:array:true:", "preset:string:true:repair|clarity|telephone|radio|hall|… (id or name)"],
+               Returns the bus id. Preset clean is Clean Audio instead (audio.clean: speech denoise \
+               into a cleaned file, engine deepfilter | ffmpeg).",
+        args: &[
+            "clip_ids:array:true:",
+            "preset:string:true:repair|clarity|clean|telephone|radio|hall|… (id or name)",
+            "engine:string:false:preset clean: deepfilter | ffmpeg (default deepfilter when installed)",
+            "strength:number:false:preset clean: 0..1, default 0.8",
+        ],
         kind: ToolKind::Mutate,
         run: |app, args| {
             let a = Args(args);
             let ids = req(a.ids("clip_ids"), "clip_ids")?;
             let preset = req(a.str("preset"), "preset")?;
+            if preset.eq_ignore_ascii_case("clean") {
+                return super::denoise_ctl::clean_tool(app, args); // ws:addon-deepfilternet
+            }
             let bus = app.project.apply_repair(&ids, preset);
             if bus == 0 {
                 return Err(format!("unknown preset '{preset}' (repair, clarity or a Gallery audio effect), or no such clip"));
