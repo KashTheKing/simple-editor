@@ -18,9 +18,14 @@ use std::sync::Arc;
 
 /// Fonts shipped inside the exe (SIL Open Font License 1.1, see `assets/fonts/OFL-*.txt`): static
 /// Bold Latin subsets made from the upstream variable fonts. TikTok Sans for the TikTok text styles,
-/// Inter for the Snapchat ones. Registered before the system fonts, so they work on any PC.
-pub const BUNDLED_FONTS: [&[u8]; 2] =
-    [include_bytes!("../../assets/fonts/TikTokSans-Bold.ttf"), include_bytes!("../../assets/fonts/Inter-Bold.ttf")];
+/// Inter for the Snapchat ones, Comic Neue for the Classic 2000s titles when Comic Sans MS is not
+/// installed (`engine::retro::FONT`; Comic Sans itself is never bundled). Registered before the system
+/// fonts, so they work on any PC.
+pub const BUNDLED_FONTS: [&[u8]; 3] = [
+    include_bytes!("../../assets/fonts/TikTokSans-Bold.ttf"),
+    include_bytes!("../../assets/fonts/Inter-Bold.ttf"),
+    include_bytes!("../../assets/fonts/ComicNeue-Bold.ttf"),
+];
 
 /// Largest rendered text image side - keeps silly sizes from allocating gigabytes.
 const MAX_SIDE: u32 = 8192;
@@ -155,16 +160,7 @@ impl TextRasterizer {
     /// Resolve a font by family name + weight/style (used for the base style and for any span that
     /// overrides font/bold/italic). Unknown family falls back to the first loaded face, same as before.
     fn font_for(&mut self, family: &str, bold: bool, italic: bool) -> Option<FontArc> {
-        // "Pricedown, Impact": the first one installed (a font a template may not ship, then a stand-in)
-        let mut families: Vec<Family> = family.split(',').map(str::trim).filter(|f| !f.is_empty()).map(Family::Name).collect();
-        families.push(Family::SansSerif);
-        let q = Query {
-            families: &families,
-            weight: if bold { Weight::BOLD } else { Weight::NORMAL },
-            style: if italic { Style::Italic } else { Style::Normal },
-            stretch: Default::default(),
-        };
-        let id = self.db.query(&q).or_else(|| self.db.faces().next().map(|f| f.id))?;
+        let id = self.face_for(family, bold, italic)?;
         let db = &self.db;
         self.fonts
             .entry(id)
@@ -174,6 +170,26 @@ impl TextRasterizer {
                     .map(FontArc::new)
             })
             .clone()
+    }
+
+    /// The face a family list resolves to: "Pricedown, Impact" is the first one installed (a font a
+    /// template may not ship, then a stand-in), then any sans font, then the first face loaded.
+    fn face_for(&self, family: &str, bold: bool, italic: bool) -> Option<ID> {
+        let mut families: Vec<Family> = family.split(',').map(str::trim).filter(|f| !f.is_empty()).map(Family::Name).collect();
+        families.push(Family::SansSerif);
+        let q = Query {
+            families: &families,
+            weight: if bold { Weight::BOLD } else { Weight::NORMAL },
+            style: if italic { Style::Italic } else { Style::Normal },
+            stretch: Default::default(),
+        };
+        self.db.query(&q).or_else(|| self.db.faces().next().map(|f| f.id))
+    }
+
+    /// The family name a style's font list draws with on this PC (what the fallback picked).
+    pub fn resolved_family(&self, family: &str, bold: bool) -> Option<String> {
+        let id = self.face_for(family, bold, false)?;
+        self.db.face(id)?.families.first().map(|(n, _)| n.clone())
     }
 
     fn rasterize(&mut self, style: &TextStyle, scale: f32, t: f64, bar_w: f32) -> Option<Frame> {
@@ -1047,5 +1063,29 @@ mod tests {
         assert!(wa > 0.0);
         assert!((fa - wa).abs() / fa < 0.15, "flat={fa} waved={wa}");
         assert_ne!(flat.rgba, waved.rgba, "a nonzero wave must move pixels");
+    }
+
+    /// feat-retro-2000s-pack: the Classic 2000s font list falls back to the bundled Comic Neue on a PC
+    /// without Comic Sans MS, and uses Comic Sans MS when it is there.
+    #[test]
+    fn classic_font_falls_back_to_comic_neue_without_comic_sans() {
+        // only the bundled fonts: a PC with no Comic Sans MS
+        let mut r = TextRasterizer::new();
+        for f in BUNDLED_FONTS {
+            r.db.load_font_data(f.to_vec());
+        }
+        r.refresh_families();
+        assert!(r.families().iter().any(|f| f == "Comic Neue"), "{:?}", r.families());
+        assert_eq!(r.resolved_family(crate::engine::retro::FONT, true).as_deref(), Some("Comic Neue"));
+        assert_eq!(r.resolved_family(crate::engine::retro::FONT, false).as_deref(), Some("Comic Neue"));
+        // and it draws: a classic title renders ink
+        let style = crate::engine::retro::text_style("My Movie", 64.0);
+        let f = r.render(&style, 1.0, 0.0);
+        assert!(f.width > 50 && alpha_sum(&f) > 0);
+        // with the system fonts: Comic Sans MS wins when installed, else still Comic Neue
+        let mut sys = TextRasterizer::new();
+        sys.load_system_fonts();
+        let want = if sys.families().iter().any(|f| f == "Comic Sans MS") { "Comic Sans MS" } else { "Comic Neue" };
+        assert_eq!(sys.resolved_family(crate::engine::retro::FONT, true).as_deref(), Some(want));
     }
 }

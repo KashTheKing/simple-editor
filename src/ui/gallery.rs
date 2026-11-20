@@ -722,8 +722,15 @@ fn library_grid(
 fn tab_cats(tab: GalleryTab, lib: Option<&LibView>, lib_tab: bool, now: f64) -> Vec<String> {
     let mut v: Vec<String> = match tab {
         _ if lib_tab => Vec::new(),
-        GalleryTab::Effects => crate::ui::effects_ui::categories().into_iter().map(String::from).collect(),
-        GalleryTab::Transitions => TR_CATS.iter().map(|s| s.to_string()).collect(),
+        // feat-retro-2000s-pack: the library's `classic 2000s` tag, as one named category
+        GalleryTab::Effects => crate::ui::effects_ui::categories()
+            .into_iter()
+            .chain([crate::engine::retro::CATEGORY])
+            .map(String::from)
+            .collect(),
+        GalleryTab::Transitions => {
+            TR_CATS.iter().chain(&[crate::engine::retro::CATEGORY]).map(|s| s.to_string()).collect()
+        }
         GalleryTab::Animate => crate::ui::animator::block_sections().into_iter().map(String::from).collect(),
         GalleryTab::Titles => crate::engine::presets::TITLE_CATEGORIES.iter().map(|s| s.to_string()).collect(),
         _ => Vec::new(),
@@ -745,6 +752,19 @@ fn tab_cats(tab: GalleryTab, lib: Option<&LibView>, lib_tab: bool, now: f64) -> 
     }
     v.truncate(60);
     v
+}
+
+/// feat-retro-2000s-pack: the Make Slideshow card - a royal-blue card with three tilted photos on it.
+fn slideshow_picture(p: &egui::Painter, tile: Rect) {
+    let [r, g, b, _] = crate::engine::retro::BLUE;
+    p.rect_filled(tile, 4.0, Color32::from_rgb(r, g, b));
+    let c = tile.center();
+    let s = tile.height().min(tile.width()) * 0.32;
+    for (i, (dx, tint)) in [(-0.9f32, (240, 200, 120)), (0.0, (140, 200, 240)), (0.9, (170, 220, 140))].into_iter().enumerate() {
+        let photo = Rect::from_center_size(c + egui::vec2(dx * s, (i as f32 - 1.0).abs() * s * 0.12), egui::vec2(s * 1.2, s));
+        p.rect_filled(photo.expand(s * 0.06), 2.0, Color32::WHITE);
+        p.rect_filled(photo, 1.0, Color32::from_rgb(tint.0, tint.1, tint.2));
+    }
 }
 
 /// The Transitions tab's categories.
@@ -1645,6 +1665,8 @@ pub fn card_names(tab: GalleryTab, settings: &Settings) -> Vec<String> {
         GalleryTab::Titles => crate::engine::presets::builtin_titles()
             .into_iter()
             .map(|t| t.name)
+            // feat-retro-2000s-pack: Make Slideshow sits with the Classic 2000s titles
+            .chain([crate::engine::retro::SLIDESHOW_CARD.to_string()])
             .chain(
                 settings
                     .templates
@@ -2270,6 +2292,13 @@ pub fn show(
                             1 => "1 slot for your footage · click: fill it and place it at the playhead".to_string(),
                             n => format!("{n} slots for your footage · click: fill them and place it at the playhead"),
                         })
+                    }
+                    // feat-retro-2000s-pack: not a title - a button that makes a slideshow of the selection
+                    GalleryTab::Titles if name == crate::engine::retro::SLIDESHOW_CARD => {
+                        card(ui, ("card", tab.name(), name), name, None, false, slideshow_picture).on_hover_text(
+                            "Make a slideshow of the selected photos and clips: a pan and zoom on each photo, a classic \
+                             transition between each, a blue title card first and credits at the end. One undo step.",
+                        )
                     }
                     GalleryTab::Titles => {
                         let pic = tpl_pics.get(name.as_str()).copied().unwrap_or_default();
@@ -3548,7 +3577,8 @@ mod tests {
     fn speed_ramps_tab_lists_the_five_builtins() {
         let settings = Settings::default();
         let names = card_names(GalleryTab::SpeedRamps, &settings);
-        assert_eq!(names, vec!["Montage", "Hero", "Bullet", "Jump", "Flash"]);
+        assert_eq!(names[..5], ["Montage", "Hero", "Bullet", "Jump", "Flash"]);
+        assert!(names.iter().any(|n| n == "Slow Down, Half"), "feat-retro-2000s-pack: the classic speed presets");
     }
 
     // ---- ws:text-titles ----
@@ -3561,7 +3591,12 @@ mod tests {
         settings.templates.push(crate::engine::presets::capture_template("My Title", &p, &[text_id]));
         let names = card_names(GalleryTab::Titles, &settings);
         let social = crate::engine::presets::social_title_names().len(); // ws:social-text
-        assert_eq!(names.len(), 6 + social + 1, "6 builtins (ws:browser-layer added Browser Window, ws:forum-ui News Ticker + Scrolling Credits), the Social ones, + the one saved text template");
+        let classic = crate::engine::retro::TITLES.len() + 1; // feat-retro-2000s-pack: its titles + Make Slideshow
+        assert_eq!(
+            names.len(),
+            6 + social + classic + 1,
+            "6 builtins (ws:browser-layer added Browser Window, ws:forum-ui News Ticker + Scrolling Credits), the Social ones, the Classic 2000s ones, + the one saved text template"
+        );
         assert!(names.contains(&"My Title".to_string()));
         assert!(names.contains(&"Lower Third".to_string()));
     }

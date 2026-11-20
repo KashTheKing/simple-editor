@@ -94,6 +94,153 @@
       "thumb": "thumbs/effects-chromatic-aberration.jpg"
     },
     {
+      "id": "effects/classic-3d-ripple",
+      "kind": "effect",
+      "name": "3D Ripple",
+      "desc": "Classic 2000s: rings of water ripple out from the centre with light and shade on each wave.",
+      "tags": [
+        "classic 2000s",
+        "ripple",
+        "water",
+        "wave",
+        "3d",
+        "retro"
+      ],
+      "file": "effects/classic-3d-ripple.glsl",
+      "size": 787,
+      "credit": "",
+      "thumb": "thumbs/effects-classic-3d-ripple.jpg"
+    },
+    {
+      "id": "effects/classic-black-white",
+      "kind": "effect",
+      "name": "Black and White",
+      "desc": "Classic 2000s: a plain greyscale picture, with a contrast control.",
+      "tags": [
+        "classic 2000s",
+        "black and white",
+        "greyscale",
+        "grayscale",
+        "mono",
+        "retro"
+      ],
+      "file": "effects/classic-black-white.glsl",
+      "size": 398,
+      "credit": "",
+      "thumb": "thumbs/effects-classic-black-white.jpg"
+    },
+    {
+      "id": "effects/classic-blur",
+      "kind": "effect",
+      "name": "Soft Blur",
+      "desc": "Classic 2000s: a soft, even blur over the whole picture.",
+      "tags": [
+        "classic 2000s",
+        "blur",
+        "soft",
+        "defocus",
+        "retro"
+      ],
+      "file": "effects/classic-blur.glsl",
+      "size": 569,
+      "credit": "",
+      "thumb": "thumbs/effects-classic-blur.jpg"
+    },
+    {
+      "id": "effects/classic-edge-detect",
+      "kind": "effect",
+      "name": "Edge Detect",
+      "desc": "Classic 2000s: only the outlines of the picture stay, glowing on black, or dark lines on white.",
+      "tags": [
+        "classic 2000s",
+        "edge",
+        "outline",
+        "sobel",
+        "sketch",
+        "retro"
+      ],
+      "file": "effects/classic-edge-detect.glsl",
+      "size": 1129,
+      "credit": "",
+      "thumb": "thumbs/effects-classic-edge-detect.jpg"
+    },
+    {
+      "id": "effects/classic-film-age",
+      "kind": "effect",
+      "name": "Film Age",
+      "desc": "Classic 2000s: footage that has sat in a drawer for decades: faded yellowed colour, dark corners, dust and the odd scratch.",
+      "tags": [
+        "classic 2000s",
+        "film",
+        "age",
+        "old",
+        "faded",
+        "yellow",
+        "dust",
+        "vintage",
+        "retro"
+      ],
+      "file": "effects/classic-film-age.glsl",
+      "size": 1180,
+      "credit": "",
+      "thumb": "thumbs/effects-classic-film-age.jpg"
+    },
+    {
+      "id": "effects/classic-posterize",
+      "kind": "effect",
+      "name": "Posterize",
+      "desc": "Classic 2000s: cuts the picture down to a few flat levels of each colour, like a cheap print.",
+      "tags": [
+        "classic 2000s",
+        "posterize",
+        "poster",
+        "levels",
+        "flat",
+        "retro"
+      ],
+      "file": "effects/classic-posterize.glsl",
+      "size": 349,
+      "credit": "",
+      "thumb": "thumbs/effects-classic-posterize.jpg"
+    },
+    {
+      "id": "effects/classic-sepia",
+      "kind": "effect",
+      "name": "Sepia Tone",
+      "desc": "Classic 2000s: warm brown old-photo toning.",
+      "tags": [
+        "classic 2000s",
+        "sepia",
+        "brown",
+        "vintage",
+        "photo",
+        "retro"
+      ],
+      "file": "effects/classic-sepia.glsl",
+      "size": 396,
+      "credit": "",
+      "thumb": "thumbs/effects-classic-sepia.jpg"
+    },
+    {
+      "id": "effects/classic-watercolor",
+      "kind": "effect",
+      "name": "Watercolour",
+      "desc": "Classic 2000s: soft washes of colour that pool darker at the edges, on rough paper.",
+      "tags": [
+        "classic 2000s",
+        "watercolour",
+        "watercolor",
+        "paint",
+        "artistic",
+        "paper",
+        "retro"
+      ],
+      "file": "effects/classic-watercolor.glsl",
+      "size": 1512,
+      "credit": "",
+      "thumb": "thumbs/effects-classic-watercolor.jpg"
+    },
+    {
       "id": "effects/crt",
       "kind": "effect",
       "name": "CRT Monitor",
@@ -437,13 +584,14 @@
       "name": "Mirror",
       "desc": "Mirrors one half of the picture onto the other: left to right, right to left, top to bottom or bottom to top.",
       "tags": [
+        "classic 2000s",
         "mirror",
         "symmetry",
         "flip",
         "reflection"
       ],
       "file": "effects/mirror.glsl",
-      "size": 744,
+      "size": 759,
       "credit": "",
       "thumb": "thumbs/effects-mirror.jpg"
     },
@@ -510,6 +658,7 @@
       "name": "Old Film",
       "desc": "Silent-film look: sepia or mono, flicker, scratches, dust, gate weave and a vignette.",
       "tags": [
+        "classic 2000s",
         "film",
         "vintage",
         "retro",
@@ -519,7 +668,7 @@
         "silent"
       ],
       "file": "effects/old-film.glsl",
-      "size": 2344,
+      "size": 2359,
       "credit": "",
       "thumb": "thumbs/effects-old-film.jpg"
     },
@@ -797,6 +946,7 @@
       "name": "Blinds",
       "desc": "Venetian blinds: a row of slats each opens to reveal the incoming picture, with a soft edge.",
       "tags": [
+        "classic 2000s",
         "blinds",
         "slats",
         "venetian",
@@ -804,7 +954,7 @@
         "stripes"
       ],
       "file": "transitions/blinds.glsl",
-      "size": 734,
+      "size": 749,
       "credit": "",
       "thumb": "thumbs/transitions-blinds.jpg"
     },
@@ -826,11 +976,332 @@
       "thumb": "thumbs/transitions-burn-through.jpg"
     },
     {
+      "id": "transitions/classic-bars",
+      "kind": "transition",
+      "name": "Bars",
+      "desc": "Classic 2000s: thin bars of the incoming picture appear in random order until they fill the frame.",
+      "tags": [
+        "classic 2000s",
+        "bars",
+        "stripes",
+        "random",
+        "wipe",
+        "retro"
+      ],
+      "file": "transitions/classic-bars.glsl",
+      "size": 521,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-bars.jpg"
+    },
+    {
+      "id": "transitions/classic-bow-tie",
+      "kind": "transition",
+      "name": "Bow Tie",
+      "desc": "Classic 2000s: two wedges close in from the left and right edges like a bow tie and meet in the middle.",
+      "tags": [
+        "classic 2000s",
+        "bow tie",
+        "wedge",
+        "triangle",
+        "wipe",
+        "retro"
+      ],
+      "file": "transitions/classic-bow-tie.glsl",
+      "size": 653,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-bow-tie.jpg"
+    },
+    {
+      "id": "transitions/classic-checkerboard",
+      "kind": "transition",
+      "name": "Checkerboard",
+      "desc": "Classic 2000s: a checkerboard of squares wipes across, the white squares first and the black ones half a square behind.",
+      "tags": [
+        "classic 2000s",
+        "checkerboard",
+        "squares",
+        "wipe",
+        "retro"
+      ],
+      "file": "transitions/classic-checkerboard.glsl",
+      "size": 630,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-checkerboard.jpg"
+    },
+    {
+      "id": "transitions/classic-diagonal",
+      "kind": "transition",
+      "name": "Diagonal Wipe",
+      "desc": "Classic 2000s: a straight diagonal edge sweeps from one corner to the opposite one.",
+      "tags": [
+        "classic 2000s",
+        "diagonal",
+        "wipe",
+        "corner",
+        "retro"
+      ],
+      "file": "transitions/classic-diagonal.glsl",
+      "size": 731,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-diagonal.jpg"
+    },
+    {
+      "id": "transitions/classic-dissolve",
+      "kind": "transition",
+      "name": "Pixel Dissolve",
+      "desc": "Classic 2000s: the incoming picture appears a few random pixels at a time until it fills the frame.",
+      "tags": [
+        "classic 2000s",
+        "dissolve",
+        "pixels",
+        "random",
+        "retro"
+      ],
+      "file": "transitions/classic-dissolve.glsl",
+      "size": 488,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-dissolve.jpg"
+    },
+    {
+      "id": "transitions/classic-eye-iris",
+      "kind": "transition",
+      "name": "Eye Iris",
+      "desc": "Classic 2000s: an eye-shaped opening widens from a line across the middle until the incoming picture fills the frame.",
+      "tags": [
+        "classic 2000s",
+        "iris",
+        "eye",
+        "open",
+        "shape",
+        "retro"
+      ],
+      "file": "transitions/classic-eye-iris.glsl",
+      "size": 653,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-eye-iris.jpg"
+    },
+    {
+      "id": "transitions/classic-fade-black",
+      "kind": "transition",
+      "name": "Fade Through Black",
+      "desc": "Classic 2000s: the outgoing picture fades down to black, then the incoming one fades up. On a clip edge it is a fade in or out from black.",
+      "tags": [
+        "classic 2000s",
+        "fade",
+        "black",
+        "dip",
+        "retro"
+      ],
+      "file": "transitions/classic-fade-black.glsl",
+      "size": 593,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-fade-black.jpg"
+    },
+    {
+      "id": "transitions/classic-fade-white",
+      "kind": "transition",
+      "name": "Fade Through White",
+      "desc": "Classic 2000s: the outgoing picture fades up to white, then the incoming one fades in from it. On a clip edge it is a fade in or out from white.",
+      "tags": [
+        "classic 2000s",
+        "fade",
+        "white",
+        "dip",
+        "flash",
+        "retro"
+      ],
+      "file": "transitions/classic-fade-white.glsl",
+      "size": 606,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-fade-white.jpg"
+    },
+    {
+      "id": "transitions/classic-flip",
+      "kind": "transition",
+      "name": "Flip",
+      "desc": "Classic 2000s: the picture turns over like a card on its vertical axis, showing the incoming picture on its back.",
+      "tags": [
+        "classic 2000s",
+        "flip",
+        "card",
+        "turn",
+        "3d",
+        "retro"
+      ],
+      "file": "transitions/classic-flip.glsl",
+      "size": 769,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-flip.jpg"
+    },
+    {
+      "id": "transitions/classic-heart",
+      "kind": "transition",
+      "name": "Heart",
+      "desc": "Classic 2000s: a heart opens from the centre and grows until the incoming picture fills the frame.",
+      "tags": [
+        "classic 2000s",
+        "heart",
+        "iris",
+        "shape",
+        "love",
+        "wedding",
+        "retro"
+      ],
+      "file": "transitions/classic-heart.glsl",
+      "size": 959,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-heart.jpg"
+    },
+    {
+      "id": "transitions/classic-keyhole",
+      "kind": "transition",
+      "name": "Keyhole",
+      "desc": "Classic 2000s: a keyhole opens in the middle of the frame and grows until the incoming picture fills it.",
+      "tags": [
+        "classic 2000s",
+        "keyhole",
+        "iris",
+        "shape",
+        "spy",
+        "retro"
+      ],
+      "file": "transitions/classic-keyhole.glsl",
+      "size": 897,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-keyhole.jpg"
+    },
+    {
+      "id": "transitions/classic-rectangle-zoom",
+      "kind": "transition",
+      "name": "Rectangle Zoom",
+      "desc": "Classic 2000s: the incoming picture starts as a small framed rectangle in the centre and zooms out to fill the frame.",
+      "tags": [
+        "classic 2000s",
+        "rectangle",
+        "zoom",
+        "box",
+        "grow",
+        "retro"
+      ],
+      "file": "transitions/classic-rectangle-zoom.glsl",
+      "size": 671,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-rectangle-zoom.jpg"
+    },
+    {
+      "id": "transitions/classic-roll",
+      "kind": "transition",
+      "name": "Roll",
+      "desc": "Classic 2000s: the outgoing picture rolls away around its bottom-left corner, uncovering the incoming one.",
+      "tags": [
+        "classic 2000s",
+        "roll",
+        "rotate",
+        "swing",
+        "retro"
+      ],
+      "file": "transitions/classic-roll.glsl",
+      "size": 613,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-roll.jpg"
+    },
+    {
+      "id": "transitions/classic-shatter-in",
+      "kind": "transition",
+      "name": "Shatter In",
+      "desc": "Classic 2000s: the incoming picture flies together from spinning triangle shards that grow into place.",
+      "tags": [
+        "classic 2000s",
+        "shatter",
+        "shards",
+        "glass",
+        "pieces",
+        "retro"
+      ],
+      "file": "transitions/classic-shatter-in.glsl",
+      "size": 1435,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-shatter-in.jpg"
+    },
+    {
+      "id": "transitions/classic-spiral",
+      "kind": "transition",
+      "name": "Spiral",
+      "desc": "Classic 2000s: the incoming picture is uncovered along a thick spiral arm that winds out from the centre.",
+      "tags": [
+        "classic 2000s",
+        "spiral",
+        "swirl",
+        "radial",
+        "wipe",
+        "retro"
+      ],
+      "file": "transitions/classic-spiral.glsl",
+      "size": 823,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-spiral.jpg"
+    },
+    {
+      "id": "transitions/classic-sweep",
+      "kind": "transition",
+      "name": "Sweep",
+      "desc": "Classic 2000s: an edge swings around a corner like a fan, sweeping the incoming picture in.",
+      "tags": [
+        "classic 2000s",
+        "sweep",
+        "fan",
+        "radial",
+        "wipe",
+        "retro"
+      ],
+      "file": "transitions/classic-sweep.glsl",
+      "size": 753,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-sweep.jpg"
+    },
+    {
+      "id": "transitions/classic-whirlwind",
+      "kind": "transition",
+      "name": "Whirlwind",
+      "desc": "Classic 2000s: the outgoing picture twists into a whirl and the incoming one untwists out of it.",
+      "tags": [
+        "classic 2000s",
+        "whirlwind",
+        "twist",
+        "swirl",
+        "spin",
+        "retro"
+      ],
+      "file": "transitions/classic-whirlwind.glsl",
+      "size": 904,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-whirlwind.jpg"
+    },
+    {
+      "id": "transitions/classic-zigzag",
+      "kind": "transition",
+      "name": "Zig-Zag",
+      "desc": "Classic 2000s: a saw-toothed edge wipes across the frame from left to right.",
+      "tags": [
+        "classic 2000s",
+        "zigzag",
+        "zig-zag",
+        "teeth",
+        "wipe",
+        "retro"
+      ],
+      "file": "transitions/classic-zigzag.glsl",
+      "size": 638,
+      "credit": "",
+      "thumb": "thumbs/transitions-classic-zigzag.jpg"
+    },
+    {
       "id": "transitions/clock-wipe",
       "kind": "transition",
       "name": "Clock Wipe",
       "desc": "The incoming picture is revealed by a hand sweeping clockwise from 12 o'clock around the centre.",
       "tags": [
+        "classic 2000s",
         "clock",
         "wipe",
         "radial",
@@ -838,7 +1309,7 @@
         "angular"
       ],
       "file": "transitions/clock-wipe.glsl",
-      "size": 641,
+      "size": 656,
       "credit": "",
       "thumb": "thumbs/transitions-clock-wipe.jpg"
     },
@@ -1094,6 +1565,7 @@
       "name": "Iris Circle",
       "desc": "A circular iris opens from the centre and reveals the incoming picture.",
       "tags": [
+        "classic 2000s",
         "iris",
         "circle",
         "wipe",
@@ -1101,7 +1573,7 @@
         "round"
       ],
       "file": "transitions/iris-circle.glsl",
-      "size": 601,
+      "size": 616,
       "credit": "",
       "thumb": "thumbs/transitions-iris-circle.jpg"
     },
@@ -1111,6 +1583,7 @@
       "name": "Iris Diamond",
       "desc": "A diamond-shaped iris opens from the centre and reveals the incoming picture.",
       "tags": [
+        "classic 2000s",
         "iris",
         "diamond",
         "wipe",
@@ -1118,7 +1591,7 @@
         "shape"
       ],
       "file": "transitions/iris-diamond.glsl",
-      "size": 663,
+      "size": 678,
       "credit": "",
       "thumb": "thumbs/transitions-iris-diamond.jpg"
     },
@@ -1128,6 +1601,7 @@
       "name": "Iris Star",
       "desc": "A five-pointed star iris grows from the centre, turning slightly, and reveals the incoming picture.",
       "tags": [
+        "classic 2000s",
         "iris",
         "star",
         "wipe",
@@ -1135,7 +1609,7 @@
         "shape"
       ],
       "file": "transitions/iris-star.glsl",
-      "size": 1241,
+      "size": 1256,
       "credit": "",
       "thumb": "thumbs/transitions-iris-star.jpg"
     },
@@ -1198,6 +1672,7 @@
       "name": "Page Turn",
       "desc": "The outgoing picture peels from the bottom-right corner around a curl, showing its pale back and casting a soft shadow.",
       "tags": [
+        "classic 2000s",
         "page",
         "curl",
         "book",
@@ -1205,7 +1680,7 @@
         "peel"
       ],
       "file": "transitions/page-turn.glsl",
-      "size": 3505,
+      "size": 3520,
       "credit": "",
       "thumb": "thumbs/transitions-page-turn.jpg"
     },
@@ -1232,13 +1707,14 @@
       "name": "Pixelate",
       "desc": "The picture breaks into bigger and bigger square blocks up to the midpoint, swaps, then resolves again.",
       "tags": [
+        "classic 2000s",
         "pixelate",
         "mosaic",
         "blocks",
         "retro"
       ],
       "file": "transitions/pixelate.glsl",
-      "size": 619,
+      "size": 634,
       "credit": "",
       "thumb": "thumbs/transitions-pixelate.jpg"
     },
@@ -1265,12 +1741,13 @@
       "name": "Ripple",
       "desc": "Ripples spread from the center while crossfading.",
       "tags": [
+        "classic 2000s",
         "ripple",
         "wave",
         "blend"
       ],
       "file": "transitions/ripple.glsl",
-      "size": 485,
+      "size": 500,
       "credit": "gre, gl-transitions (MIT)",
       "thumb": "thumbs/transitions-ripple.jpg"
     },

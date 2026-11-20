@@ -41,6 +41,8 @@ pub mod stretch; // pitch-keeping time stretch (Keep Pitch clips, the shuttle)
 pub mod prerender;
 pub mod presets;
 pub mod references; // feat/reference-clips: Find a Reference
+pub mod retro; // feat-retro-2000s-pack: the Classic 2000s pack
+pub mod slideshow; // feat-retro-2000s-pack: Make Slideshow
 pub mod templates; // ws:animator-templates
 pub mod html;
 pub mod blitz; // ws:html-layer: the fast renderer (se-html helper)

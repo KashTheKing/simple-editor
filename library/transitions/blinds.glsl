@@ -1,6 +1,6 @@
 // @name Blinds
 // @desc Venetian blinds: a row of slats each opens to reveal the incoming picture, with a soft edge.
-// @tags blinds, slats, venetian, wipe, stripes
+// @tags classic 2000s, blinds, slats, venetian, wipe, stripes
 // @param slats 12 2 60
 // @param angle 0 0 180
 // @param softness 0.15 0 0.5

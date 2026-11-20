@@ -1,6 +1,6 @@
 // @name Mirror
 // @desc Mirrors one half of the picture onto the other: left to right, right to left, top to bottom or bottom to top.
-// @tags mirror, symmetry, flip, reflection
+// @tags classic 2000s, mirror, symmetry, flip, reflection
 // @param mode 0 0 3
 // @param offset 0 -0.4 0.4
 float mirror_fold(float x) {
