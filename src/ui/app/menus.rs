@@ -151,6 +151,11 @@ impl App {
         titlebar::drag_area(ui, bar, maximized);
         let caption = titlebar::caption_buttons(ui, &self.palette, bar, maximized);
         let caption_w = ui.max_rect().right() - caption.left();
+        // ---- ws:home-page ---- on the Home page the bar is just the window: drag area + caption buttons, no
+        // menus, pages or tool buttons (nothing there applies before a project is open)
+        if home_ctl::showing(self) {
+            return out;
+        }
         // MenuBar lays its row out at the outer widget height first: the full bar's, so nothing starts below the top
         ui.spacing_mut().interact_size.y = titlebar::BUTTON.y;
         egui::MenuBar::new().style(titlebar::bar_style).ui(ui, |ui| {
