@@ -1,6 +1,6 @@
 // @name Old Film
 // @desc Silent-film look: sepia or mono, flicker, scratches, dust, gate weave and a vignette.
-// @tags film, vintage, retro, sepia, scratches, dust, silent
+// @tags classic 2000s, film, vintage, retro, sepia, scratches, dust, silent
 // @param sepia 0.8 0 1
 // @param flicker 0.5 0 1
 // @param scratches 0.6 0 1

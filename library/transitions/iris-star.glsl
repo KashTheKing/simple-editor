@@ -1,6 +1,6 @@
 // @name Iris Star
 // @desc A five-pointed star iris grows from the centre, turning slightly, and reveals the incoming picture.
-// @tags iris, star, wipe, reveal, shape
+// @tags classic 2000s, iris, star, wipe, reveal, shape
 // @param softness 0.03 0 0.3
 // @param spin 0.12 -0.5 0.5
 // @param cx 0.5 0 1

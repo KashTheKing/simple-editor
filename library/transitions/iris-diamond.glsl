@@ -1,6 +1,6 @@
 // @name Iris Diamond
 // @desc A diamond-shaped iris opens from the centre and reveals the incoming picture.
-// @tags iris, diamond, wipe, reveal, shape
+// @tags classic 2000s, iris, diamond, wipe, reveal, shape
 // @param softness 0.04 0 0.3
 // @param cx 0.5 0 1
 // @param cy 0.5 0 1

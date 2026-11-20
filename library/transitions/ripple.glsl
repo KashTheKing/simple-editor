@@ -1,6 +1,6 @@
 // @name Ripple
 // @desc Ripples spread from the center while crossfading.
-// @tags ripple, wave, blend
+// @tags classic 2000s, ripple, wave, blend
 // @param amplitude 100 0 300
 // @param speed 50 0 150
 // @credit gre, gl-transitions (MIT)

@@ -1,6 +1,6 @@
 // @name Page Turn
 // @desc The outgoing picture peels from the bottom-right corner around a curl, showing its pale back and casting a soft shadow.
-// @tags page, curl, book, paper, peel
+// @tags classic 2000s, page, curl, book, paper, peel
 // @param radius 0.14 0.04 0.4
 // @param angle 30 0 80
 // @param shadow 0.7 0 1
