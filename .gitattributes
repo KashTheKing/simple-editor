@@ -17,3 +17,6 @@ CHANGELOG.md merge=union
 # library/html/*.html; a CRLF checkout made the generated pages differ (library_templates_are_the_starters).
 library/thread/*.css text eol=lf
 *.ttf binary
+
+# feat/styles-context: built-in styles are include_str!d and parsed / compared as LF text (styles_tools_list_get_and_learn_status)
+library/styles/*.md text eol=lf

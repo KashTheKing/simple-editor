@@ -409,6 +409,7 @@ fn poll_transcripts(app: &mut App) {
         if !transcribe::have_model(model) {
             continue;
         }
+        let (engine, _, _) = app.pick_engine(None, Some(false)); // ws:addon-faster-whisper: the Settings engine
         let job = transcribe::start(transcribe::Options {
             path: a.path.clone(),
             src_start: 0.0,
@@ -418,6 +419,8 @@ fn poll_transcripts(app: &mut App) {
             words: false,
             prompt: String::new(),
             islands: Vec::new(),
+            engine,
+            align: false,
         });
         app.references.transcribing.push((id, job));
     }
