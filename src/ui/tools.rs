@@ -830,6 +830,7 @@ fn mask_glyph(m: MaskShape) -> Glyph {
         MaskShape::Ellipse => Glyph::Ellipse,
         MaskShape::Polygon => Glyph::Poly(5),
         MaskShape::Path => Glyph::Pencil,
+        MaskShape::Object => Glyph::Mask,
     }
 }
 

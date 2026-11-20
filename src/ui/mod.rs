@@ -592,6 +592,11 @@ pub(crate) fn mask_grid(ui: &mut egui::Ui, m: &mut Mask, lt: f64, palette: &Pale
         seed_mask_points(m);
         prop_field(ui, "Enabled", |ui| g.note(&ui.checkbox(&mut m.enabled, "")));
         prop_field(ui, "Invert", |ui| g.note(&ui.checkbox(&mut m.invert, "")));
+        if m.shape == MaskShape::Object {
+            // sam2: the outline comes from the tracked mask frames; only strength applies on top
+            prop_row(ui, "Opacity", &mut m.opacity, lt, palette, g, &[], |v| DragValue::new(v).range(0.0..=1.0).speed(0.01));
+            return;
+        }
         // X/Y/radius are here too: a mask added from a panel has no viewport drag behind it and would
         // otherwise be stuck at its default rect in the middle of the layer.
         let rows: [(&str, f64, f64, f64); 8] = [

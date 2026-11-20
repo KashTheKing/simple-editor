@@ -413,6 +413,11 @@ actions! {
     SeparateStemsToTracks => "separate_stems_to_tracks", "Separate Stems to Tracks", None;
     RemoveVocals => "remove_vocals", "Remove Vocals", None;
     KeepOnlyVocals => "keep_only_vocals", "Keep Only Vocals", None;
+    // ---- ws:addon-sam2 ----
+    // Object Mask (the optional SAM 2 add-on): click the object in the Preview, Track follows it;
+    // ui::app::object_mask_ctl::act. Unbound.
+    ObjectMask => "object_mask", "Object Mask", None;
+    ObjectMaskTrack => "object_mask_track", "Object Mask: Track", None;
     SharpenZooms => "sharpen_zooms", "Browser: Sharpen Zooms", None;
     PageMakeEditable => "page_make_editable", "Browser: Make the Page Editable", None;
     // ---- ws:music-burn ----
@@ -806,6 +811,8 @@ pub fn group(a: Action) -> &'static str {
         AiUpscale2Game | AiUpscale2Real | AiUpscale4Game | AiUpscale4Real => "Clip",
         // ---- ws:addon-demucs ----
         SeparateStems | SeparateStemsToTracks | RemoveVocals | KeepOnlyVocals => "Clip",
+        // ---- ws:addon-sam2 ----
+        ObjectMask | ObjectMaskTrack => "Clip",
         // ---- ws:perf-window ----
         PerfWindow => "Playback",
         // ---- ws:quick-export ----

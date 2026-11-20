@@ -169,6 +169,8 @@ mod tools_social;
 mod enhance_ctl;
 mod denoise_ctl; // ws:addon-deepfilternet
 mod stems_ctl; // ws:addon-demucs
+mod object_mask_ctl; // ws:addon-sam2: Object Mask (the SAM 2 add-on)
+pub(crate) use object_mask_ctl::active_clip as object_mask_clip; // ws:addon-sam2: the Inspector lights its button
 mod whatsnew;
 mod perf_ctl; // ws:perf-window
 mod quick_export; // ws:quick-export
@@ -2060,6 +2062,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     denoise_ctl::TOOLS,
     // ---- ws:addon-demucs ----
     stems_ctl::TOOLS,
+    // ---- ws:addon-sam2 ----
+    object_mask_ctl::TOOLS,
     // ---- ws:perf-window ----
     perf_ctl::TOOLS,
     // ---- ws:quick-export ----
@@ -2181,6 +2185,8 @@ pub(crate) const ACT_HANDLERS: &[fn(&mut App, Action) -> bool] = &[
     enhance_ctl::act,
     // ---- ws:addon-demucs ----
     stems_ctl::act,
+    // ---- ws:addon-sam2 ----
+    object_mask_ctl::act,
     // ---- ws:perf-window ----
     perf_ctl::act,
     // ---- ws:quick-export ----
@@ -2292,6 +2298,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     denoise_ctl::tick,
     // ---- ws:addon-demucs ----
     stems_ctl::tick,
+    // ---- ws:addon-sam2 ----
+    object_mask_ctl::tick,
     // ---- ws:perf-window ----
     perf_ctl::tick,
     // ---- ws:animator ----

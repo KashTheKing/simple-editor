@@ -664,7 +664,7 @@ impl Compositor {
                 fade_to(&mut self.src, extra.color, extra.fade);
                 p.cx += extra.dx;
                 p.cy += extra.dy;
-                let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
+                let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy, p.w, p.h, p.rot), &mut self.cov);
                 let crop = clip.crop_at(lt);
                 draw_layer_masked(out, &self.src, p, clip.blend, opacity, project.scaler, &mut self.layer, m, crop);
             }
@@ -724,7 +724,7 @@ impl Compositor {
                 fade_to(&mut nested, extra.color, extra.fade);
                 p.cx += extra.dx;
                 p.cy += extra.dy;
-                let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
+                let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy, p.w, p.h, p.rot), &mut self.cov);
                 let crop = clip.crop_at(lt);
                 draw_layer_masked(out, &nested, p, clip.blend, opacity, project.scaler, &mut self.layer, m, crop);
                 self.seq[depth] = nested;
@@ -763,13 +763,13 @@ impl Compositor {
             fade_to(&mut self.src, extra.color, extra.fade);
             p.cx += extra.dx;
             p.cy += extra.dy;
-            let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
+            let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy, p.w, p.h, p.rot), &mut self.cov);
             let crop = clip.crop_at(lt);
             draw_layer_masked(out, &self.src, p, clip.blend, opacity, project.scaler, &mut self.layer, m, crop);
         } else {
             p.cx += extra.dx;
             p.cy += extra.dy;
-            let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy), &mut self.cov);
+            let m = clip_mask(clip, w, h, lt, s, (p.cx, p.cy, p.w, p.h, p.rot), &mut self.cov);
             let crop = clip.crop_at(lt);
             draw_layer_masked(out, img, p, clip.blend, opacity, project.scaler, &mut self.layer, m, crop);
         }
@@ -828,7 +828,15 @@ fn apply_effects(
             continue; // an effect that resized the layer cannot be mixed pixel-for-pixel
         }
         let centre = (img.width as f32 / 2.0, img.height as f32 / 2.0);
-        mask_coverage(mask.unwrap(), img.width, img.height, lt, img_scale, centre, cov);
+        let mask = mask.unwrap();
+        if mask.shape == MaskShape::Object {
+            // sam2: the layer is the source frame, so the cached outline maps straight onto it
+            if !crate::engine::sam2::coverage_layer(mask, clip, clip.start + lt, img.width, img.height, cov) {
+                continue; // no mask frame yet: the effect applies everywhere
+            }
+        } else {
+            mask_coverage(mask, img.width, img.height, lt, img_scale, centre, cov);
+        }
         for ((px, pp), &c) in img.rgba.chunks_exact_mut(4).zip(pre.rgba.chunks_exact(4)).zip(cov.iter()) {
             if c == 255 {
                 continue;
@@ -848,11 +856,18 @@ fn clip_mask<'a>(
     h: u32,
     lt: f64,
     s: f32,
-    centre: (f32, f32),
+    // the layer's placement: centre, size, rotation (an object mask maps through all of it)
+    centre: (f32, f32, f32, f32, f32),
     cov: &'a mut Vec<u8>,
 ) -> Option<&'a [u8]> {
     let mask = clip.mask.as_ref().filter(|m| m.enabled)?;
-    mask_coverage(mask, w, h, lt, s, centre, cov);
+    if mask.shape == MaskShape::Object {
+        // sam2: the object's outline from the mask cache, mapped through the layer's placement
+        let (cx, cy, pw, ph, rot) = centre;
+        return crate::engine::sam2::coverage_canvas(mask, clip, clip.start + lt, w, h, (cx, cy, pw, ph, rot), cov)
+            .then_some(&cov[..]);
+    }
+    mask_coverage(mask, w, h, lt, s, (centre.0, centre.1), cov);
     Some(&cov[..])
 }
 
