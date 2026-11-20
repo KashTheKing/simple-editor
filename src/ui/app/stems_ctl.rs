@@ -125,7 +125,7 @@ pub(super) fn start(app: &mut App, clip: Id, mode: Mode) -> Result<(Arc<Progress
     let (src, stream) = (PathBuf::from(&a.path), c.audio_stream);
     if demucs::cached(&src, stream).is_none() {
         if !demucs::available() {
-            return Err("Stem Separation is not installed (Settings ▸ General ▸ Stem Separation, or audio.stems action=install)".into());
+            return Err("Stem Separation is not installed (Settings ▸ Add-ons ▸ Stem Separation, or audio.stems action=install)".into());
         }
         if media::ffpipe::ffmpeg_exe().is_none() {
             return Err("ffmpeg.exe not found".into());
@@ -293,7 +293,7 @@ fn offer_install() {
     crate::ui::confirm::ask_app(
         "Install Stem Separation?",
         "Separate Stems uses Demucs (htdemucs), an optional add-on (about 85 MB, runs on the processor).\n\
-         Download and install it now? Nothing else is sent anywhere. Uninstall any time in Settings ▸ General.",
+         Download and install it now? Nothing else is sent anywhere. Uninstall any time in Settings ▸ Add-ons.",
         |app| {
             demucs::start_install();
             app.toast("Installing Stem Separation - see Jobs; run it again when it is done");

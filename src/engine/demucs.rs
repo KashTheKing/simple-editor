@@ -192,17 +192,7 @@ pub fn install(prog: &Progress) -> Result<PathBuf, String> {
     use crate::engine::library::Source;
     let src = Source::of(&crate::settings::Settings::load());
     prog.set(0.02, "Looking up Stem Separation…");
-    let text = match &src {
-        Source::Dir(d) => {
-            std::fs::read_to_string(d.join(MANIFEST)).map_err(|e| format!("{}: {e}", d.join(MANIFEST).display()))?
-        }
-        Source::Url(_) => {
-            let url = src.url(MANIFEST).ok_or("no library address")?;
-            let dest = crate::engine::library::cache_root().join(MANIFEST);
-            blitz::curl(&url, &dest, 30)?;
-            std::fs::read_to_string(&dest).map_err(|e| e.to_string())?
-        }
-    };
+    let text = crate::engine::library::manifest(&src, MANIFEST)?;
     let m = parse_manifest(&text)?;
     let bin = blitz::bin_dir();
     std::fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;

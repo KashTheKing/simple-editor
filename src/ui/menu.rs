@@ -54,6 +54,11 @@ pub fn publish(s: MenuSnapshot) {
 }
 
 /// Actions clicked through `action_item` / `action_menu` since the last call.
+/// Run `a` after this frame, as a menu row's click does.
+pub fn queue(a: Action) {
+    QUEUE.with(|q| q.borrow_mut().push(a));
+}
+
 pub fn take_queued() -> Vec<Action> {
     QUEUE.with(|q| std::mem::take(&mut *q.borrow_mut()))
 }

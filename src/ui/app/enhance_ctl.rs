@@ -76,7 +76,7 @@ fn refusal(project: &Project, clip: Id) -> Option<String> {
 pub(super) fn start(app: &mut App, clip: Id, scale: u32, model: Model) -> Result<(Arc<Progress>, PathBuf), String> {
     if !enhance::available() {
         return Err(
-            "The AI enhancer add-on is not installed (Settings ▸ General ▸ AI enhancer, or enhance.install)".into()
+            "The AI enhancer add-on is not installed (Settings ▸ Add-ons ▸ AI enhancer, or enhance.install)".into()
         );
     }
     if media::ffpipe::ffmpeg_exe().is_none() {
@@ -220,7 +220,7 @@ pub(crate) fn offer_install() {
     crate::ui::confirm::ask_app(
         "Install the AI enhancer?",
         "AI Upscale uses Real-ESRGAN, an optional add-on (about 45 MB, runs on the graphics card).\n\
-         Download and install it now? Nothing else is sent anywhere. Uninstall any time in Settings ▸ General.",
+         Download and install it now? Nothing else is sent anywhere. Uninstall any time in Settings ▸ Add-ons.",
         |app| {
             enhance::start_install();
             app.toast("Installing the AI enhancer - see Jobs; run AI Upscale again when it is done");

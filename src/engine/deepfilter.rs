@@ -20,7 +20,7 @@ pub const EXE: &str = "deep-filter.exe";
 /// The library file that names the download.
 pub const MANIFEST: &str = "bin/deepfilter.json";
 pub const NOT_INSTALLED: &str =
-    "Speech denoise (DeepFilterNet) is not installed (Settings ▸ General ▸ Speech denoise, or denoise.install)";
+    "Speech denoise (DeepFilterNet) is not installed (Settings ▸ Add-ons ▸ Speech denoise, or denoise.install)";
 /// The strength a first Clean uses: strong, with a little of the room left so voices stay natural.
 pub const DEFAULT_STRENGTH: f64 = 0.8;
 /// Source seconds kept each side of what the clips use (room for trims and fades).
@@ -150,17 +150,7 @@ pub fn install(prog: &Progress) -> Result<PathBuf, String> {
     use crate::engine::library::Source;
     let src = Source::of(&crate::settings::Settings::load());
     prog.set(0.02, "Looking up speech denoise…");
-    let text = match &src {
-        Source::Dir(d) => {
-            std::fs::read_to_string(d.join(MANIFEST)).map_err(|e| format!("{}: {e}", d.join(MANIFEST).display()))?
-        }
-        Source::Url(_) => {
-            let url = src.url(MANIFEST).ok_or("no library address")?;
-            let dest = crate::engine::library::cache_root().join(MANIFEST);
-            blitz::curl(&url, &dest, 30)?;
-            std::fs::read_to_string(&dest).map_err(|e| e.to_string())?
-        }
-    };
+    let text = crate::engine::library::manifest(&src, MANIFEST)?;
     let m = parse_manifest(&text)?;
     let bin = blitz::bin_dir();
     std::fs::create_dir_all(&bin).map_err(|e| format!("{}: {e}", bin.display()))?;

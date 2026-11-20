@@ -125,6 +125,23 @@ pub fn act(app: &mut App, a: Action) -> bool {
             app.after_edit();
             true
         }
+        // Keep Pitch on / off for the selected clips with sound (and their linked audio): one undo step
+        Action::ToggleKeepPitch => {
+            let ids = crate::ui::autocut_ui::audio_targets(&app.project, &app.selection);
+            let Some(on) = ids.first().and_then(|&id| app.project.clip(id)).map(|c| !c.keep_pitch) else {
+                app.toast("Select a clip with sound");
+                return true;
+            };
+            let before = app.project.to_json();
+            for id in app.project.expand_links(&ids) {
+                if let Some(c) = app.project.clip_mut(id) {
+                    c.keep_pitch = on;
+                }
+            }
+            app.push_undo_labeled(before, if on { "Keep Pitch" } else { "Pitch Follows Speed" });
+            app.after_edit();
+            true
+        }
         // ---- ws:audio-visualizer ----
         Action::AddAudioVisualizer => {
             let Some(&src) = crate::ui::autocut_ui::audio_targets(&app.project, &app.selection).first() else {
@@ -133,6 +150,11 @@ pub fn act(app: &mut App, a: Action) -> bool {
             };
             let before = app.project.to_json();
             let backend = app.backend();
+            // a style picked in the clip menu becomes the one used from now on (as in the player)
+            if let Some(name) = crate::engine::visualizer::take_next() {
+                app.settings.visualizer_style = name;
+                app.settings.save();
+            }
             let style = crate::engine::visualizer::last_used(&app.settings.visualizer_style);
             match crate::engine::visualizer::add(&mut app.project, src, &style, backend) {
                 Ok(id) => {

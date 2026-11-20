@@ -58,44 +58,6 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         // ---- feat/reference-clips ----
         changed |= reference_keys(ui, s);
 
-        // ---- ws:ai-enhancer ----
-        ui.label("AI enhancer");
-        ui.horizontal(enhancer_row);
-        ui.end_row();
-
-        // ---- ws:addon-deepfilternet ----
-        ui.label("Speech denoise");
-        ui.horizontal(denoise_row);
-        ui.end_row();
-
-        // ---- ws:addon-faster-whisper ----
-        ui.label("Transcription");
-        changed |= transcription_row(ui, s);
-        ui.end_row();
-
-        // ---- ws:addon-demucs ----
-        ui.label("Stem Separation");
-        ui.horizontal(demucs_row);
-        ui.end_row();
-
-        // ---- ws:addon-sam2 ----
-        ui.label("Object masks");
-        ui.horizontal(object_masks_row);
-        ui.end_row();
-
-        // ---- ws:addon-bg-removal ----
-        ui.label("Background removal");
-        ui.horizontal(bgremove_row);
-        ui.end_row();
-
-        // ---- ws:addon-voice ----
-        ui.label("Kokoro voices");
-        ui.horizontal(|ui| crate::ui::app::speech_addon_row(ui, crate::engine::tts_addon::Addon::Kokoro));
-        ui.end_row();
-        ui.label("Chatterbox voices");
-        ui.horizontal(|ui| crate::ui::app::speech_addon_row(ui, crate::engine::tts_addon::Addon::Chatterbox));
-        ui.end_row();
-
         ui.label("Downloads folder");
         ui.horizontal(|ui| {
             changed |= ui
@@ -279,6 +241,52 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
 /// held in `state.port_edit` while the user drags or types and only written when the gesture ends -
 /// otherwise a drag from 7337 to 7400 walks through ~60 ports and one busy port in between turns the
 /// server off. Returns true when the setting changed.
+/// Settings ▸ Add-ons: the optional downloads, one row each (Install / Uninstall, progress, why it failed).
+pub(super) fn addons_tab(ui: &mut egui::Ui, s: &mut Settings) -> bool {
+    let mut changed = false;
+    egui::Grid::new("addons").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        // ---- ws:ai-enhancer ----
+        ui.label("AI enhancer");
+        ui.horizontal(enhancer_row);
+        ui.end_row();
+
+        // ---- ws:addon-deepfilternet ----
+        ui.label("Speech denoise");
+        ui.horizontal(denoise_row);
+        ui.end_row();
+
+        // ---- ws:addon-faster-whisper ----
+        ui.label("Transcription");
+        changed |= transcription_row(ui, s);
+        ui.end_row();
+
+        // ---- ws:addon-demucs ----
+        ui.label("Stem Separation");
+        ui.horizontal(demucs_row);
+        ui.end_row();
+
+        // ---- ws:addon-sam2 ----
+        ui.label("Object masks");
+        ui.horizontal(object_masks_row);
+        ui.end_row();
+
+        // ---- ws:addon-bg-removal ----
+        ui.label("Background removal");
+        ui.horizontal(bgremove_row);
+        ui.end_row();
+
+        // ---- ws:addon-voice ----
+        ui.label("Kokoro voices");
+        ui.horizontal(|ui| crate::ui::app::speech_addon_row(ui, crate::engine::tts_addon::Addon::Kokoro));
+        ui.end_row();
+        ui.label("Chatterbox voices");
+        ui.horizontal(|ui| crate::ui::app::speech_addon_row(ui, crate::engine::tts_addon::Addon::Chatterbox));
+        ui.end_row();
+
+    });
+    changed
+}
+
 pub(super) fn port_field(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Settings) -> bool {
     let mut port = state.port_edit.unwrap_or(s.mcp_port);
     let r = ui.add(egui::DragValue::new(&mut port).range(1024..=65535));

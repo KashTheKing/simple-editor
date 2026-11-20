@@ -684,7 +684,7 @@ mod tests {
         let cards = cards(&Settings::default());
         let mut out = None;
         let _ = ctx.run(raw, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| out = show(ui, &cards, rows));
+            egui::CentralPanel::default().show(ctx, |ui| out = show(ui, &cards, rows, None));
         });
         out
     }

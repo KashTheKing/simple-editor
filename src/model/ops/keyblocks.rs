@@ -756,7 +756,7 @@ mod tests {
         names.dedup();
         assert_eq!(names.len(), all.len());
         for b in &all {
-            assert!(b.dur > 0.0 && (!b.tracks.is_empty() || b.gen.is_some()), "{}", b.name);
+            assert!(b.dur > 0.0 && (!b.tracks.is_empty() || b.gen.is_some() || b.proc.is_some()), "{}", b.name);
             for t in &b.tracks {
                 assert!(BLOCK_PROPS.contains(&t.prop.as_str()), "{}: {}", b.name, t.prop);
             }

@@ -233,17 +233,7 @@ pub fn install(prog: &Progress) -> Result<PathBuf, String> {
 pub fn install_from(src: &crate::engine::library::Source, bin: &Path, prog: &Progress) -> Result<PathBuf, String> {
     use crate::engine::library::Source;
     prog.set(0.01, "Looking up the object-mask add-on…");
-    let text = match src {
-        Source::Dir(d) => {
-            std::fs::read_to_string(d.join(MANIFEST)).map_err(|e| format!("{}: {e}", d.join(MANIFEST).display()))?
-        }
-        Source::Url(_) => {
-            let url = src.url(MANIFEST).ok_or("no library address")?;
-            let dest = crate::engine::library::cache_root().join(MANIFEST);
-            blitz::curl(&url, &dest, 30)?;
-            std::fs::read_to_string(&dest).map_err(|e| e.to_string())?
-        }
-    };
+    let text = crate::engine::library::manifest(src, MANIFEST)?;
     let m = parse_manifest(&text)?;
     let (dl, fresh, dest) = (bin.join("sam2.dl"), bin.join("sam2.new"), bin.join("sam2"));
     std::fs::create_dir_all(&dl).map_err(|e| format!("{}: {e}", dl.display()))?;

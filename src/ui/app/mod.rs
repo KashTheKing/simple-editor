@@ -202,6 +202,7 @@ mod windows_dlg;
 mod project_match; // ws:project-color-fps
 mod footage_ctl; // ws:mixed-footage
 mod timeline_tabs; // ws:timeline-tabs
+mod addons_ctl;
 mod home_ctl; // ws:home-page
 mod group_sync; // ws:gap-group-sync
 mod plugins_ctl; // feat/plugins: the Plugins pane, plugin panels, Install from URL
@@ -677,7 +678,7 @@ pub fn caches_bytes_for_ui() -> u64 {
     caches::cache_bytes()
 }
 
-/// ws:addon-voice: Settings ▸ General's Install / Remove row for a voice add-on.
+/// ws:addon-voice: Settings ▸ Add-ons' Install / Remove row for a voice add-on.
 pub fn speech_addon_row(ui: &mut egui::Ui, addon: crate::engine::tts_addon::Addon) {
     speech_ctl::addon_row(ui, addon)
 }
@@ -2434,6 +2435,7 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     reference_ctl::tick,
     // ---- feat/scripts-editor ----
     scripts_ctl::tick,
+    addons_ctl::tick,
     // ---- feat/plugins ----
     plugins_ctl::tick,
     // ---- ws:parity-formats ----

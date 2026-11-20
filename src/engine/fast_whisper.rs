@@ -83,7 +83,7 @@ pub fn resolve(asked: Option<Engine>, setting: &str, installed: bool) -> (Engine
     let want = asked.or_else(|| Engine::parse(setting)).unwrap_or(if installed { Engine::Faster } else { Engine::WhisperCpp });
     match want {
         Engine::Faster if !installed => {
-            (Engine::WhisperCpp, Some("faster-whisper is not installed (Settings ▸ General ▸ Transcription), so whisper.cpp ran"))
+            (Engine::WhisperCpp, Some("faster-whisper is not installed (Settings ▸ Add-ons ▸ Transcription), so whisper.cpp ran"))
         }
         e => (e, None),
     }

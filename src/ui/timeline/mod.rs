@@ -1316,6 +1316,7 @@ pub fn show(ui: &mut egui::Ui, state: &mut TimelineState, mut c: TimelineCtx<'_>
                     * clip.scale_x.value.max(clip.scale_y.value),
                 animator_shown: c.animator_shown,
                 every_frame: crate::ui::inspector_footage::every_frame_for(c.project, clip), // ws:mixed-footage
+                keep_pitch: clip.keep_pitch,
             };
             let mut toggle_graph = false;
             let mut rclick = br.secondary_clicked();

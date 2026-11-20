@@ -234,6 +234,8 @@ pub(super) struct ClipMenu<'a> {
     // ---- ws:mixed-footage ----
     /// A clip whose rate is a whole multiple of the project's: the speed that shows each of its frames once.
     pub every_frame: Option<f64>,
+    /// The clip's sound keeps its pitch at other speeds (Audio ▸ Keep Pitch shows the check).
+    pub keep_pitch: bool,
 }
 
 /// The clip body / edge right-click menu. Actions run on the selection (a right-click on an unselected
@@ -342,6 +344,16 @@ pub(super) fn clip_menu(
                         }
                     });
                 }
+                // ---- ws:addon-demucs ---- vocals / instrumental first, one click (the action offers to install
+                // the Stem Separation add-on when it is missing)
+                let tip = "On: a speed change keeps the music's pitch. Off: the pitch follows the speed";
+                if menu::check(ui, m.keep_pitch, "Keep Pitch", "").on_hover_text(tip).clicked() {
+                    menu::queue(ToggleKeepPitch);
+                }
+                ui.separator();
+                menu::action_item_as(ui, KeepOnlyVocals, "Vocals Only");
+                menu::action_item_as(ui, RemoveVocals, "Instrumental Only");
+                acts(ui, &[Some(SeparateStemsToTracks), None]);
                 acts(ui, &[Some(Normalize), Some(MatchLoudness), Some(AutoDuck), None]);
                 // ws:forum-ui: censoring the sound
                 let tip = "Over In to Out when marked, else over the selected clips";
@@ -349,15 +361,19 @@ pub(super) fn clip_menu(
                     *act = Some(Act::Censor(crate::model::ops::findability::Censor::Mute));
                 }
                 acts(ui, &[Some(DetectBeats), Some(SplitAtBeats), None, Some(AutoCut)]);
-                // ---- ws:addon-demucs ---- the optional Demucs add-on (an action offers to install it first)
-                menu::sub(ui, None, "Stems", |ui| {
-                    acts(ui, &[Some(SeparateStems), Some(SeparateStemsToTracks), None, Some(RemoveVocals), Some(KeepOnlyVocals)])
-                });
             });
         }
         // ws:preview-audio-only: top level on a song, where it is found (was under Audio ▸)
         if m.audio {
-            acts(ui, &[Some(AddAudioVisualizer)]);
+            // the styles, as in the player's Audio Visualizer menu: a pick adds one in that style
+            menu::sub(ui, Some(Glyph::Waveform), "Add Audio Visualizer", |ui| {
+                for s in crate::engine::visualizer::styles() {
+                    if menu::row(ui, None, &s.name, "").clicked() {
+                        crate::engine::visualizer::pick_next(s.name);
+                        menu::queue(AddAudioVisualizer);
+                    }
+                }
+            });
         }
         // ws:animator: opens the Animator on the selection, or hides it when it is already shown
         menu::action_item_as(

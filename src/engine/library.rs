@@ -245,6 +245,31 @@ impl Source {
 }
 
 /// `Settings::cache_dir()/library`: the cached `index.json`, thumbnails and item files.
+/// The add-on manifests this build was made with: used when the library has none (not published yet, a
+/// 404) or can't be reached, so an add-on still installs from its own download addresses.
+const BUNDLED: &[(&str, &str)] = &[
+    ("bin/bgremove.json", include_str!("../../library/bin/bgremove.json")),
+    ("bin/deepfilter.json", include_str!("../../library/bin/deepfilter.json")),
+    ("bin/demucs.json", include_str!("../../library/bin/demucs.json")),
+    ("bin/enhancer.json", include_str!("../../library/bin/enhancer.json")),
+    ("bin/sam2.json", include_str!("../../library/bin/sam2.json")),
+];
+
+/// An add-on's manifest (`bin/<name>.json`): from a folder library as is; from the online library, falling
+/// back to the copy built into the app when the library doesn't have it.
+pub fn manifest(src: &Source, rel: &str) -> Result<String, String> {
+    match src {
+        Source::Dir(d) => std::fs::read_to_string(d.join(rel)).map_err(|e| format!("{}: {e}", d.join(rel).display())),
+        Source::Url(_) => {
+            let url = src.url(rel).ok_or("no library address")?;
+            let dest = cache_root().join(rel);
+            let online = crate::engine::blitz::curl(&url, &dest, 30)
+                .and_then(|_| std::fs::read_to_string(&dest).map_err(|e| e.to_string()));
+            online.or_else(|e| BUNDLED.iter().find(|(r, _)| *r == rel).map(|(_, t)| t.to_string()).ok_or(e))
+        }
+    }
+}
+
 pub fn cache_root() -> PathBuf {
     crate::settings::Settings::cache_dir().join("library")
 }

@@ -516,7 +516,11 @@ pub fn show(ui: &mut egui::Ui, state: &mut PreviewState, mut c: PreviewCtx<'_>) 
         state.fs_bar = None;
         // drawn from the frame it is summoned on (its fade-in starts at opacity 0)
         if out.opacity > 0.0 || state.hide.shown() {
-            let mut bar_ui = ui.new_child(egui::UiBuilder::new().id_salt("fs_bar").max_rect(bar_rect));
+            // on a layer above the picture: what the app paints over the frame after this (Audio Only's
+            // visualizer, the now-playing card, the object-mask overlay) must not cover the bar
+            let layer = egui::LayerId::new(egui::Order::Foreground, ui.id().with("fs_bar_layer"));
+            let mut bar_ui =
+                ui.new_child(egui::UiBuilder::new().id_salt("fs_bar").max_rect(bar_rect).layer_id(layer));
             bar_ui.set_opacity(out.opacity);
             bar(&mut bar_ui, state, &mut c, &mut r, bar_rect);
             state.fs_bar = Some(bar_rect);

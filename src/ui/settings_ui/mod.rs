@@ -34,6 +34,8 @@ pub(crate) mod metadata;
 mod stock;
 /// Settings ▸ Stock's tab index (`ui::app::stock_ctl::open_settings`).
 pub const STOCK_TAB: usize = 10;
+/// Settings ▸ Add-ons (the optional downloads).
+pub const ADDONS_TAB: usize = 11;
 
 use crate::hotkeys::{Action, Hotkeys};
 use crate::settings::Settings;
@@ -175,6 +177,7 @@ pub fn show(
     window.show(ctx, |ui| {
         ui.horizontal(|ui| {
             ui.selectable_value(&mut state.tab, 0, "General");
+            ui.selectable_value(&mut state.tab, ADDONS_TAB, "Add-ons");
             ui.selectable_value(&mut state.tab, 1, "Performance");
             ui.selectable_value(&mut state.tab, 2, "Capture");
             ui.selectable_value(&mut state.tab, 3, "Export");
@@ -201,6 +204,7 @@ pub fn show(
                 8 => permissions::permissions_tab(ui, &mut state.perms_search, &mut state.perms_open, settings), // ws:mcp-permissions
                 9 => metadata::metadata_tab(ui, &mut state.meta_sel, settings), // ws:player-metadata
                 STOCK_TAB => stock::stock_tab(ui, settings), // ws:gallery-stock
+                ADDONS_TAB => general::addons_tab(ui, settings),
                 _ => appearance::appearance(ui, settings),
             })
             .inner;
@@ -231,7 +235,7 @@ mod tests {
         let palette = Palette::new(false, egui::Color32::BLACK);
         let mut st = SettingsUi { open: true, ..Default::default() };
         let inputs = vec![("Microphone (USB)".to_string(), false), ("Stereo Mix".to_string(), true)];
-        for tab in [0, 1, 2, 3, 4, 5, 6, 7] {
+        for tab in [0, 1, 2, 3, 4, 5, 6, 7, ADDONS_TAB] {
             st.tab = tab;
             for _ in 0..2 {
                 let _ = ctx.run(egui::RawInput::default(), |ctx| {

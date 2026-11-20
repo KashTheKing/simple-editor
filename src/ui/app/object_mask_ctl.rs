@@ -112,7 +112,7 @@ pub(crate) fn offer_install() {
         "Install object masks?",
         "Object Mask uses SAM 2 (Meta's Segment Anything 2), an optional add-on: about 400 MB, downloaded once, \
          runs on the graphics card through DirectML or on the processor. Download and install it now? \
-         Nothing else is sent anywhere. Uninstall any time in Settings ▸ General.",
+         Nothing else is sent anywhere. Uninstall any time in Settings ▸ Add-ons.",
         |app| {
             sam2::start_install();
             app.toast("Installing object masks - see Jobs; click Object Mask again when it is done");
@@ -124,7 +124,7 @@ pub(crate) fn offer_install() {
 /// loading at once, so the first click does not wait for the model.
 pub(super) fn enter(app: &mut App, clip: Id) -> Result<(), String> {
     if !sam2::available() {
-        return Err("The object-mask add-on is not installed (Settings ▸ General ▸ Object masks, or mask.install)".into());
+        return Err("The object-mask add-on is not installed (Settings ▸ Add-ons ▸ Object masks, or mask.install)".into());
     }
     if let Some(why) = refusal(&app.project, clip) {
         return Err(why);
@@ -238,7 +238,7 @@ pub(super) fn start_track(
     effect: Option<usize>,
 ) -> Result<(Arc<Progress>, PathBuf), String> {
     if !sam2::available() {
-        return Err("The object-mask add-on is not installed (Settings ▸ General ▸ Object masks, or mask.install)".into());
+        return Err("The object-mask add-on is not installed (Settings ▸ Add-ons ▸ Object masks, or mask.install)".into());
     }
     if let Some(why) = refusal(&app.project, clip) {
         return Err(why);

@@ -142,6 +142,20 @@ fn find_in(all: Vec<Style>, name: Option<&str>) -> Result<Style, String> {
 
 /// The last-used style (`Settings::visualizer_style`), falling back to the default when it is unset or
 /// no longer installed.
+thread_local! {
+    /// A style picked in a menu for the next Add Audio Visualizer (`pick_next`).
+    static NEXT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The clip menu's Audio Visualizer ▸ <style>: the next Add Audio Visualizer uses `name`.
+pub fn pick_next(name: String) {
+    NEXT.with(|n| *n.borrow_mut() = Some(name));
+}
+
+pub fn take_next() -> Option<String> {
+    NEXT.with(|n| n.borrow_mut().take())
+}
+
 pub fn last_used(name: &str) -> Style {
     find((!name.is_empty()).then_some(name)).or_else(|_| find(None)).expect("a built-in style")
 }

@@ -110,7 +110,7 @@ pub(super) fn start(app: &mut App, clip: Id, quality: BgQuality, ep: &str) -> Re
     set(app, clip, Some(BgRemoval { quality, ..old }));
     if !bgremove::available(quality) {
         return Err(format!(
-            "Background removal ({}) is not installed (Settings ▸ General ▸ Background removal, or clip.remove_background with install=true)",
+            "Background removal ({}) is not installed (Settings ▸ Add-ons ▸ Background removal, or clip.remove_background with install=true)",
             quality.label()
         ));
     }
@@ -280,7 +280,7 @@ pub(crate) fn offer_install(q: BgQuality) {
         "Install background removal?",
         &format!(
             "Remove Background ({}) uses an optional add-on ({size}: ONNX Runtime and the {} model; runs on the graphics card).\n\
-             Download and install it now? Nothing else is sent anywhere. Uninstall any time in Settings ▸ General.",
+             Download and install it now? Nothing else is sent anywhere. Uninstall any time in Settings ▸ Add-ons.",
             q.label(),
             if q == BgQuality::Fast { "MODNet" } else { "BiRefNet" }
         ),
