@@ -346,6 +346,7 @@ pub fn build_choice(
             overlay: None,
             fps: out_fps(state.fps, project),
             target_bytes: settings.export_target_bytes(),
+            chapters: if settings.export_chapters { crate::engine::export::chapters_from_markers(project) } else { Vec::new() },
         },
         lossless,
         use_project_bg: state.use_project_bg,
@@ -1106,6 +1107,16 @@ fn advanced_section(
         ui.add_enabled(has_range, egui::Checkbox::new(&mut state.range, "Export In/Out range only"))
             .on_disabled_hover_text("Set In/Out points on the timeline first (I / O)")
             .on_hover_text("Only the part between the In and Out points is written.");
+        // ---- ws:parity-editing ----
+        let n = export::chapters_from_markers(project).len();
+        body_save |= ui
+            .checkbox(&mut settings.export_chapters, "Chapters from markers")
+            .on_hover_text(format!(
+                "Each timeline marker starts a chapter in MP4, MOV, MKV and WebM files, named after the marker \
+                 ({n} marker{} now). Review comments are left out.",
+                if n == 1 { "" } else { "s" }
+            ))
+            .changed();
 
         if ui
             .checkbox(&mut state.metadata_on, "Write metadata")

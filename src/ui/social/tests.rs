@@ -760,6 +760,7 @@ fn burnt_in_guide_follows_the_exported_frame() {
         overlay: raster::export_overlay(&st, &p, None),
         fps: None,
         target_bytes: None,
+        chapters: Vec::new(),
     };
     let prog = export::start_export(p, opts, std::sync::Arc::new(std::sync::Mutex::new(crate::engine::text::TextRasterizer::new())));
     for _ in 0..1200 {

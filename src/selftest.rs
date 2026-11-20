@@ -250,6 +250,7 @@ pub fn run(args: &[String]) -> i32 {
         overlay: None,
         fps: None,
         target_bytes: None,
+        chapters: Vec::new(),
     };
     let trimmed = |a: f64, b: f64| -> Result<Project, String> {
         let mut p = Project::from_media(probe()?);

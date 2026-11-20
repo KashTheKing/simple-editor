@@ -106,6 +106,10 @@ pub struct ExportOptions {
     /// Target size: aim the file at about this many bytes (average bitrate, `target_args`) instead
     /// of the constant quality `crf`. None = quality mode.
     pub target_bytes: Option<u64>,
+    // ---- ws:parity-editing ----
+    /// Chapters to embed (MP4/MOV/MKV/WebM), as (timeline seconds, title); empty = none.
+    /// `chapters_from_markers` builds them from the timeline markers.
+    pub chapters: Vec<(f64, String)>,
 }
 
 // ---- ws:pro-schema ----
@@ -784,7 +788,19 @@ fn run_export_with(
     // what ffmpeg is fed: the project's frames, or the overlay's own size
     let fed = opts.overlay.as_ref().and_then(|o| o.1).unwrap_or((w, h));
     let recycle = fed == (w, h);
-    cmd.args(input_args(video, fed, fps, &ports, main_audio));
+    // ws:parity-editing: chapters ride in as one more (stream-less) ffmetadata input
+    let chapters = (CHAPTER_EXTS.contains(&ext.as_str()) && !opts.chapters.is_empty())
+        .then(|| ffmetadata_chapters(&opts.chapters, start, dur))
+        .flatten()
+        .and_then(|text| {
+            let path = tmp.0.with_extension("chapters.txt");
+            std::fs::write(&path, text).ok().map(|_| TempFile(path))
+        });
+    let inputs_args = input_args(video, fed, fps, &ports, main_audio);
+    match &chapters {
+        Some(f) => cmd.args(with_chapters_input(inputs_args, &f.0)),
+        None => cmd.args(inputs_args),
+    };
     let (vf, af) = output_filters(opts, fed, !inputs.is_empty(), &args);
     let (vf, colour_tags) = if hdr { hdr_vf(vf, &args, project.color) } else { rgba_bt709(vf, video == Some(VideoIn::Rgba), &args) };
     let vf = if is_gif {
@@ -1028,6 +1044,83 @@ fn audio_inputs(
 /// ffmpeg's inputs and stream maps: raw video on stdin as input 0 (none for audio-only), then one
 /// `f32le` input per audio port; the first `mapped` of them are mapped (in order) into the main output
 /// (the rest feed the stem outputs).
+// ---- ws:parity-editing ----
+/// Containers that carry chapters.
+const CHAPTER_EXTS: [&str; 5] = ["mp4", "mov", "m4v", "mkv", "webm"];
+
+/// Chapters from the main timeline's markers, by time. Review comments (markers named "Comment" or left
+/// by an agent) are notes, not chapters, and stay out.
+pub fn chapters_from_markers(project: &Project) -> Vec<(f64, String)> {
+    let mut v: Vec<(f64, String)> = project
+        .markers
+        .iter()
+        .filter(|m| m.sequence.is_none() && m.author.is_empty() && m.name != "Comment")
+        .map(|m| (m.t, m.name.trim().to_string()))
+        .collect();
+    v.sort_by(|a, b| a.0.total_cmp(&b.0));
+    v
+}
+
+fn ffmeta_escape(s: &str) -> String {
+    let mut o = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '=' | ';' | '#' | '\\' => {
+                o.push('\\');
+                o.push(c);
+            }
+            '\n' | '\r' => o.push(' '),
+            c => o.push(c),
+        }
+    }
+    o
+}
+
+/// An ffmetadata file with one chapter per marker inside the exported `[start, start + dur)`, in
+/// output time (ms). Each chapter runs to the next one or the end; a chapter starts at 0 when the first
+/// marker is later than half a second. None when there is nothing to write.
+pub fn ffmetadata_chapters(chapters: &[(f64, String)], start: f64, dur: f64) -> Option<String> {
+    let mut list: Vec<(u64, String)> = Vec::new();
+    for (t, name) in chapters {
+        let rel = t - start;
+        if !(0.0..dur).contains(&rel) {
+            continue;
+        }
+        let ms = (rel * 1000.0).round() as u64;
+        if list.last().is_some_and(|l| l.0 == ms) {
+            continue; // two markers on one ms: the first names it
+        }
+        list.push((ms, name.clone()));
+    }
+    if list.is_empty() {
+        return None;
+    }
+    if list[0].0 > 500 {
+        list.insert(0, (0, "Start".into()));
+    } else {
+        list[0].0 = 0;
+    }
+    let end = (dur * 1000.0).round() as u64;
+    let mut s = String::from(";FFMETADATA1\n");
+    for (i, (a, name)) in list.iter().enumerate() {
+        let b = list.get(i + 1).map_or(end, |n| n.0);
+        let title = if name.is_empty() { format!("Chapter {}", i + 1) } else { ffmeta_escape(name) };
+        s.push_str(&format!("[CHAPTER]\nTIMEBASE=1/1000\nSTART={a}\nEND={b}\ntitle={title}\n"));
+    }
+    Some(s)
+}
+
+/// `input_args` plus the chapters file as the last input, inserted before the `-map`s (an option before
+/// `-i` belongs to that input), and `-map_chapters` pointing at it.
+fn with_chapters_input(mut args: Vec<String>, path: &Path) -> Vec<String> {
+    let at = args.iter().position(|a| a == "-map").unwrap_or(args.len());
+    let index = args[..at].iter().filter(|a| *a == "-i").count();
+    let extra = ["-f".to_string(), "ffmetadata".into(), "-i".into(), path.to_string_lossy().into_owned()];
+    args.splice(at..at, extra);
+    args.extend(["-map_chapters".to_string(), index.to_string()]);
+    args
+}
+
 fn input_args(video: Option<VideoIn>, size: (u32, u32), fps: f64, audio_ports: &[u16], mapped: usize) -> Vec<String> {
     let mut a: Vec<String> = Vec::new();
     if let Some(v) = video {
@@ -2364,6 +2457,46 @@ pub(crate) mod tests {
     }
 
     // ---- ws:export-pipeline ----
+    // ---- ws:parity-editing ----
+    #[test]
+    fn chapters_follow_markers_inside_the_exported_range() {
+        let ch = vec![(2.0, "Intro".to_string()), (5.0, "A=B; #1".to_string()), (12.0, "Past the end".to_string())];
+        let m = ffmetadata_chapters(&ch, 1.0, 10.0).unwrap();
+        assert!(m.starts_with(";FFMETADATA1\n"), "{m}");
+        // the first marker is 1 s in: a "Start" chapter covers 0..1 s
+        assert!(m.contains("START=0\nEND=1000\ntitle=Start\n"), "{m}");
+        assert!(m.contains("START=1000\nEND=4000\ntitle=Intro\n"), "{m}");
+        assert!(m.contains("START=4000\nEND=10000\ntitle=A\\=B\\; \\#1\n"), "special characters escaped: {m}");
+        assert!(!m.contains("Past the end"), "markers outside the range are dropped");
+        assert_eq!(ffmetadata_chapters(&ch, 20.0, 5.0), None, "nothing in range, nothing written");
+        // a marker at the very start names the first chapter instead of adding "Start"
+        let m = ffmetadata_chapters(&[(0.2, "Cold open".into())], 0.0, 3.0).unwrap();
+        assert!(m.contains("START=0\nEND=3000\ntitle=Cold open\n") && !m.contains("Start"), "{m}");
+    }
+
+    #[test]
+    fn chapters_input_goes_before_the_maps() {
+        let a = input_args(Some(VideoIn::Rgba), (320, 240), 30.0, &[5000], 1);
+        let s = with_chapters_input(a, Path::new("c.txt")).join(" ");
+        assert_eq!(
+            s,
+            "-f rawvideo -pix_fmt rgba -s 320x240 -r 30 -i pipe:0 \
+             -f f32le -ar 48000 -ac 2 -i tcp://127.0.0.1:5000 -f ffmetadata -i c.txt -map 0:v -map 1:a -map_chapters 2"
+        );
+    }
+
+    #[test]
+    fn review_comments_are_not_chapters() {
+        let mut p = Project::default();
+        p.add_marker(4.0, "Act two");
+        p.add_marker(1.0, "Act one");
+        p.add_marker(2.0, "Comment");
+        let id = p.add_marker(3.0, "Tighten this");
+        p.marker_mut(id).unwrap().author = "assistant".into();
+        let names: Vec<String> = chapters_from_markers(&p).into_iter().map(|c| c.1).collect();
+        assert_eq!(names, ["Act one", "Act two"]);
+    }
+
     #[test]
     fn input_args_video_audio_and_maps() {
         let s = |v: Vec<String>| v.join(" ");
@@ -2585,6 +2718,7 @@ pub(crate) mod tests {
             overlay: None,
             fps: None,
             target_bytes: None,
+            chapters: Vec::new(),
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         assert_eq!(wait_done(&start_export(p, opts, text)), None);
@@ -2627,6 +2761,7 @@ pub(crate) mod tests {
             overlay: None,
             fps: None,
             target_bytes: None,
+            chapters: Vec::new(),
         };
         let text = Arc::new(Mutex::new(TextRasterizer::new()));
         let prog = start_export(p.clone(), opts.clone(), text.clone());
@@ -2790,6 +2925,7 @@ pub(crate) mod tests {
             overlay: None,
             fps: None,
             target_bytes: None,
+            chapters: Vec::new(),
         }
     }
 

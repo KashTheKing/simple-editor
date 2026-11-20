@@ -89,7 +89,7 @@ pub const TOOLS: &[ToolDef] = &[
         kind: ToolKind::Read,
         run: |app, args| linked_bin_tool(app, args),
     },
-    row!("media.list", ToolKind::Read, "Library assets. With no arguments on a library of up to 100 assets: the array of every asset (id, name, path, kind, duration, width, height, tags, label, folder, description, used). Otherwise a page {total, offset, count, next_offset, assets} of the assets matching the filters, each with just `fields` (default id, name, kind, folder, duration, used, tags, label; \"all\" for every field: also path, ext, width, height, fps, codec, size, audio_streams, description, uses, parent, range, proxy). Read media.summary first on a big library.", &["kind:string:false:video | audio | image | html (a list or comma string for several)", "folder:string:false:a bin path; \"\" = the root", "nested:boolean:false:with folder: include sub-bins (default true)", "used:boolean:false:true = on a timeline, false = unused", "query:string:false:words that must all appear in the name, path, tags or description", "tags:array:false:must have all of these", "label:integer:false:0..8", "ext:string:false:file extensions, e.g. \"wav,mp3\"", "untagged:boolean:false:only assets without tags", "ids:array:false:only these", "fields:array:false:field names, or \"all\"", "sort:string:false:id | name | duration | kind | folder | ext | uses | label | size; '-name' = descending", "limit:integer:false:default 100, at most 5000", "offset:integer:false:skip this many"]),
+    row!("media.list", ToolKind::Read, "Library assets. With no arguments on a library of up to 100 assets: the array of every asset (id, name, path, kind, duration, width, height, tags, label, folder, description, used). Otherwise a page {total, offset, count, next_offset, assets} of the assets matching the filters, each with just `fields` (default id, name, kind, folder, duration, used, tags, label; \"all\" for every field: also path, ext, width, height, fps, codec, size, audio_streams, description, uses, parent, range, proxy). Read media.summary first on a big library.", &["kind:string:false:video | audio | image | html (a list or comma string for several)", "folder:string:false:a bin path; \"\" = the root", "nested:boolean:false:with folder: include sub-bins (default true)", "used:boolean:false:true = on a timeline, false = unused", "query:string:false:words that must all appear in the name, path, tags or description", "tags:array:false:must have all of these", "label:integer:false:0..8", "ext:string:false:file extensions, e.g. \"wav,mp3\"", "untagged:boolean:false:only assets without tags", "ids:array:false:only these", "fields:array:false:field names, or \"all\"", "sort:string:false:id | name | duration | kind | folder | ext | uses | label | size | created | recorded; '-name' = descending", "limit:integer:false:default 100, at most 5000", "offset:integer:false:skip this many"]),
     row!("media.set", ToolKind::Mutate, "Edit asset metadata.", &["id:integer:true:", "description:string:false:", "tags:array:false:strings", "label:integer:false:0..8", "folder:string:false:", "proxy:string:false:auto | on | off (per-source proxy; auto builds one only when decoding is too slow for real time)"]),
     // Job-kind: never routed through `dispatch` (they don't mutate the project directly, they write a
     // file) - `App::handle_tool` starts the job via `start_tool_job` and replies when it finishes.
@@ -115,6 +115,7 @@ pub const TOOLS: &[ToolDef] = &[
             "audio:string:false:mix | streams | stems",
             "stem_by:string:false:track | bus | role",
             "overflow:boolean:false:include what runs past the Max length (default: stop at it)",
+            "chapters:boolean:false:embed the timeline markers as chapters (mp4/mov/mkv/webm; default: the Export setting)",
         ],
         kind: ToolKind::Job,
         run: |app, args| app.start_tool_job("export.video", args).map(|(p, o)| ToolOutcome::Job(p, o)),
@@ -338,6 +339,7 @@ pub const TOOLS: &[ToolDef] = &[
                     target_bytes: None,
                     vf_extra: None,
                     af_extra: None,
+                    range: None,
                 };
                 app.convert_jobs.push((crate::engine::convert::start_convert(opts), out.clone()));
                 outputs.push(json!({"id": id, "path": out.to_string_lossy()}));

@@ -298,6 +298,15 @@ impl App {
             overlay: None,
             fps: None,
             target_bytes: self.settings.export_target_bytes(),
+            chapters: self.export_chapters(), // ws:parity-editing
+        }
+    }
+    /// ws:parity-editing: the markers as chapters, when Export ▸ Chapters from markers is on.
+    pub(super) fn export_chapters(&self) -> Vec<(f64, String)> {
+        if self.settings.export_chapters {
+            export::chapters_from_markers(&self.project)
+        } else {
+            Vec::new()
         }
     }
 
@@ -699,6 +708,7 @@ impl App {
             target_bytes: None,
             vf_extra: None,
             af_extra: None,
+            range: None,
         };
         self.toast(format!("Converting to {ext}…"));
         self.convert_jobs.push((crate::engine::convert::start_convert(opts), out));
@@ -802,6 +812,7 @@ impl App {
             target_bytes: c.by_size.then(|| (c.target_mb * 1e6) as u64),
             vf_extra: None,
             af_extra: None,
+            range: None,
         };
         self.toast("Compressing\u{2026}");
         self.convert_jobs.push((crate::engine::convert::start_convert(opts), out));

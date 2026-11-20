@@ -36,6 +36,9 @@ pub struct ConvertOptions {
     /// The source's audio streams to keep (0-based among its audio streams); None = all. A video output
     /// keeps each as its own track, an audio output mixes them into one.
     pub audio_streams: Option<Vec<usize>>,
+    // ---- ws:parity-editing ----
+    /// Only this part of the source, in source seconds `[a, b)` (Save Clip as File); None = all of it.
+    pub range: Option<(f64, f64)>,
 }
 
 /// The `-map` / `-filter_complex` arguments that keep `streams` of the source's audio: one track each
@@ -53,6 +56,15 @@ pub fn audio_map_args(streams: Option<&[usize]>, mix: bool) -> Vec<String> {
             vec![s("-filter_complex"), format!("{ins}amix=inputs={}:normalize=0[a]", v.len()), s("-map"), s("[a]")]
         }
         Some(v) => v.iter().flat_map(|n| [s("-map"), format!("0:a:{n}")]).collect(),
+    }
+}
+
+// ---- ws:parity-editing ----
+/// `-ss` before `-i` for a range: a fast seek that is still frame-accurate when re-encoding.
+pub fn range_input_args(range: Option<(f64, f64)>) -> Vec<String> {
+    match range {
+        Some((a, _)) if a > 0.0 => vec!["-ss".into(), format!("{a:.6}")],
+        _ => Vec::new(),
     }
 }
 
@@ -105,6 +117,7 @@ pub fn bake_filter_opts(
         target_bytes: None,
         vf_extra,
         af_extra,
+        range: None,
     }
 }
 
@@ -147,13 +160,20 @@ fn run_convert(opts: &ConvertOptions, prog: &Progress) -> Result<(), String> {
     let ffmpeg = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
     let ext = export::ext_of(&opts.out);
     let tmp = export::temp_output(&opts.out);
-    let dur = probe_duration(&opts.src).unwrap_or(0.0);
+    let dur = match opts.range {
+        Some((a, b)) => (b - a).max(0.0),
+        None => probe_duration(&opts.src).unwrap_or(0.0),
+    };
     let scaler = if opts.scaler.is_empty() { "lanczos" } else { &opts.scaler };
     let scale = opts.out_size.map(|(w, h)| format!("scale={w}:{h}:flags={scaler}"));
 
     let mut cmd = ffpipe::command(&ffmpeg);
     cmd.args(["-y", "-hide_banner", "-loglevel", "error", "-progress", "pipe:1"]);
+    cmd.args(range_input_args(opts.range));
     cmd.arg("-i").arg(&opts.src);
+    if let Some((a, b)) = opts.range {
+        cmd.args(["-t".to_string(), format!("{:.6}", (b - a).max(0.0))]);
+    }
     if ext == "gif" {
         let fps = opts.gif_fps.max(1);
         let mut chain = format!("fps={fps}");
@@ -323,6 +343,7 @@ mod tests {
             target_bytes: None,
             vf_extra: None,
             af_extra: None,
+            range: None,
         }
     }
 
