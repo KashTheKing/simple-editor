@@ -785,10 +785,9 @@ fn engine_rows(ui: &mut egui::Ui, st: &mut TranscribeState, file: &str) {
         ui.label("Engine");
         let mut pick = shown;
         egui::ComboBox::from_id_salt("transcribe_engine").selected_text(pick.id()).show_ui(ui, |ui| {
-            ui.selectable_value(&mut pick, Engine::WhisperCpp, Engine::WhisperCpp.id())
-                .on_hover_text("Built in: whisper.cpp on the CPU");
-            ui.selectable_value(&mut pick, Engine::Faster, Engine::Faster.id())
-                .on_hover_text("The faster-whisper add-on: faster, with word times pinned to the audio");
+            for e in Engine::ALL {
+                ui.selectable_value(&mut pick, e, e.id()).on_hover_text(e.tip());
+            }
         });
         if pick != shown {
             st.engine_pick = Some(pick);

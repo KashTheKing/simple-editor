@@ -67,6 +67,13 @@ impl Engine {
             Engine::Faster => "faster-whisper",
         }
     }
+    /// The engine pickers' tooltip.
+    pub fn tip(self) -> &'static str {
+        match self {
+            Engine::WhisperCpp => "Built in: whisper.cpp on the CPU",
+            Engine::Faster => "The faster-whisper add-on: faster, with word times pinned to the audio",
+        }
+    }
 }
 
 /// The engine a run uses: `asked` (a tool argument), else `setting` (`Settings.transcribe_engine`; ""
@@ -537,15 +544,17 @@ pub fn start_install(model_file: &str) -> Arc<Progress> {
 
 /// `transcribe.status`'s `addon` block.
 pub fn status_json() -> serde_json::Value {
+    let a = addon();
     serde_json::json!({
-        "name": "faster-whisper",
-        "installed": available(),
-        "version": version(),
+        "name": a.name,
+        "installed": a.installed,
+        "version": a.version,
         "aligner": have_align(),
         "models": manifest().models.keys().filter(|k| have_repo(&manifest().models[*k], &model_dir(k))).collect::<Vec<_>>(),
         "installing": installing().map(|p| serde_json::json!({"fraction": p.fraction(), "status": p.status()})),
         "install_error": install_error(),
-        "disk_mb": if available() { disk_size() / 1_000_000 } else { 0 },
+        "disk_mb": a.bytes / 1_000_000,
+        "license": a.license,
     })
 }
 

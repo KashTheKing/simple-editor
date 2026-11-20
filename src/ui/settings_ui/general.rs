@@ -292,10 +292,9 @@ fn transcription_row(ui: &mut egui::Ui, s: &mut Settings) -> bool {
             let mut pick = Engine::parse(&s.transcribe_engine).unwrap_or(resolved);
             let before = pick;
             egui::ComboBox::from_id_salt("settings_transcribe_engine").selected_text(pick.id()).show_ui(ui, |ui| {
-                ui.selectable_value(&mut pick, Engine::WhisperCpp, Engine::WhisperCpp.id())
-                    .on_hover_text("Built in: whisper.cpp on the CPU");
-                ui.selectable_value(&mut pick, Engine::Faster, Engine::Faster.id())
-                    .on_hover_text("The faster-whisper add-on: faster, with word times pinned to the audio");
+                for e in Engine::ALL {
+                    ui.selectable_value(&mut pick, e, e.id()).on_hover_text(e.tip());
+                }
             });
             if pick != before {
                 s.transcribe_engine = pick.id().to_string();
