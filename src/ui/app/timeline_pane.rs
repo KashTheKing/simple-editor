@@ -164,7 +164,7 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         };
         // labelled like `App::push_undo_labeled` (which needs `&mut self` - the fields are split here)
         let mut push = |p: &Project, label: &'static str| {
-            push_undo_json(undo, redo, p.to_json());
+            push_undo_json(undo, redo, p.clone()); // a Snap: serialised only if read as text
             if !label.is_empty() {
                 if let Some(e) = undo.last_mut() {
                     e.label = label.to_string();

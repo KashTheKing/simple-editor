@@ -51,15 +51,15 @@ impl App {
                         self.redo.push(entry);
                     } else {
                         let redo_at = now_secs();
-                        self.redo.push(UndoEntry {
-                            json: self.project.to_json(),
-                            label: entry.label.clone(),
-                            category: HistoryCategory::Editing,
-                            at: redo_at,
-                        });
-                        if let Ok(mut p) = Project::from_json(&entry.json) {
+                        if let Ok(mut p) = entry.json.project() {
                             p.audio_only_preview = self.project.audio_only_preview; // a view setting, not an edit
-                            self.project = p;
+                            let cur = std::mem::replace(&mut self.project, p);
+                            self.redo.push(UndoEntry {
+                                json: cur.into(),
+                                label: entry.label.clone(),
+                                category: HistoryCategory::Editing,
+                                at: redo_at,
+                            });
                             self.after_edit();
                         }
                     }
@@ -73,15 +73,15 @@ impl App {
                         self.undo.push(entry);
                     } else {
                         let undo_at = now_secs();
-                        self.undo.push(UndoEntry {
-                            json: self.project.to_json(),
-                            label: entry.label.clone(),
-                            category: HistoryCategory::Editing,
-                            at: undo_at,
-                        });
-                        if let Ok(mut p) = Project::from_json(&entry.json) {
+                        if let Ok(mut p) = entry.json.project() {
                             p.audio_only_preview = self.project.audio_only_preview; // a view setting, not an edit
-                            self.project = p;
+                            let cur = std::mem::replace(&mut self.project, p);
+                            self.undo.push(UndoEntry {
+                                json: cur.into(),
+                                label: entry.label.clone(),
+                                category: HistoryCategory::Editing,
+                                at: undo_at,
+                            });
                             self.after_edit();
                         }
                     }

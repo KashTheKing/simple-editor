@@ -617,3 +617,129 @@ fn old_popups_are_gone_or_forwarded_to_panes() {
         assert!(Pane::ALL.contains(&p) && Pane::by_title(p.title()) == Some(p), "{p:?}");
     }
 }
+
+// ---- perf: instant trims ----
+
+/// A realistic heavy project: 10 tracks, ~300 clips (video+audio, HTML layers), transitions, and ~4.7 MB
+/// of embedded HTML sources (the shape of a real 5 MB project, where `assets[].html.src` is 98% of it).
+fn heavy_project(media: &Path) -> Project {
+    let media = media.to_string_lossy().replace('\\', "/");
+    let mut p = Project::new();
+    while p.video_tracks().len() < 5 {
+        p.add_track(TrackKind::Video);
+    }
+    while p.audio_tracks().len() < 5 {
+        p.add_track(TrackKind::Audio);
+    }
+    let asset = |json: String| serde_json::from_str::<Asset>(&json).unwrap();
+    let vids: Vec<Id> = (0..40)
+        .map(|i| {
+            p.add_asset(asset(format!(
+                r#"{{"id":0,"path":"{media}/v{i}.mp4","kind":"Video","duration":30.0,"width":1920,"height":1080,"fps":30.0,"audio_streams":[{{"index":0}}]}}"#
+            )))
+        })
+        .collect();
+    let page = format!("<html><style>{}</style><body>title</body></html>", ".a{color:red;} ".repeat(15_000));
+    let htmls: Vec<Id> = (0..20)
+        .map(|i| {
+            let mut a = asset(format!(
+                r#"{{"id":0,"path":"html:{i}","kind":"Image","duration":5.0,"width":1920,"height":1080,"fps":30.0}}"#
+            ));
+            a.html = Some(crate::model::HtmlSource { name: format!("t{i}"), src: page.clone(), duration: 5.0, ..Default::default() });
+            p.add_asset(a)
+        })
+        .collect();
+    let vt = p.video_tracks();
+    // V1: 100 back-to-back video clips (each with its audio on A1) with cross fades on every cut
+    for i in 0..100 {
+        let at = i as f64 * 4.0;
+        p.insert_asset_clips_ranged(vids[i % vids.len()], at, Some(vt[0]), None, Some((0.0, 4.0)));
+    }
+    let v1: Vec<Id> = p.tracks[vt[0]].clips.iter().map(|c| c.id).collect();
+    for &id in v1.iter().skip(1) {
+        p.add_transition(id, crate::model::TransitionKind::CrossFade, 0.5);
+    }
+    // V2..V4: HTML layers spread over the timeline
+    for i in 0..60 {
+        p.insert_asset_clips_ranged(htmls[i % htmls.len()], i as f64 * 6.5, Some(vt[1 + i % 3]), None, None);
+    }
+    p
+}
+
+/// `cargo test bench_trim_commit -- --ignored --nocapture` times the three simple edits (edge trim,
+/// ripple trim, overwrite drop) on `heavy_project()` through the same steps the timeline runs: press
+/// snapshot, model op, undo push, `after_edit`, then one UI frame.
+/// Fully sandboxed: settings, APPDATA, LOCALAPPDATA and the cache folder all point at a scratch folder
+/// under the temp dir, and the media paths point there too (no file exists, so nothing is decoded and
+/// no proxy, peak or thumbnail can land in the user's real cache). Never point it at a real project.
+#[test]
+#[ignore]
+fn bench_trim_commit() {
+    use std::time::Instant;
+    let scratch = std::env::temp_dir().join(format!("se-bench-trim-{}", std::process::id()));
+    std::env::set_var("APPDATA", scratch.join("appdata"));
+    std::env::set_var("LOCALAPPDATA", scratch.join("localappdata"));
+    crate::settings::Settings::set_cache_folder(&scratch.join("se-cache").to_string_lossy());
+    *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(scratch.join("settings"));
+    assert!(crate::settings::Settings::cache_dir().starts_with(&scratch));
+    let project = heavy_project(&scratch.join("media"));
+    let ctx = egui::Context::default();
+    let mut app = App::build(&ctx, None, None);
+    app.set_project(project, None);
+    let mut frame = eframe::Frame::_new_kittest();
+    let mut run_frame = |app: &mut App| {
+        let t = Instant::now();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| eframe::App::update(app, ctx, &mut frame));
+        t.elapsed()
+    };
+    for _ in 0..3 {
+        run_frame(&mut app);
+    }
+    let ms = |d: std::time::Duration| d.as_secs_f64() * 1000.0;
+    let pick = |p: &Project| {
+        let (ti, _) = p.tracks.iter().enumerate().filter(|(_, t)| t.kind == TrackKind::Video).max_by_key(|(_, t)| t.clips.len()).unwrap();
+        let cl = &p.tracks[ti].clips[p.tracks[ti].clips.len() / 2];
+        (cl.id, cl.end(), cl.asset, ti)
+    };
+    eprintln!("project: {} clips, json {} KB", app.project.tracks.iter().map(|t| t.clips.len()).sum::<usize>(), app.project.to_json().len() / 1024);
+    eprintln!("idle UI frame {:6.2} ms", ms(run_frame(&mut app)));
+    for edit in ["edge trim", "ripple trim", "overwrite"] {
+        let (id, end, asset, ti) = pick(&app.project);
+        let t0 = Instant::now();
+        let before = app.project.clone(); // the gesture's press-time copy (timeline drag)
+        let t_press = t0.elapsed();
+        let t1 = Instant::now();
+        let changed = match edit {
+            "edge trim" => app.project.trim_clip(id, None, Some(end - 0.5)).is_ok(),
+            "ripple trim" => app.project.ripple_trim(id, false, end - 0.5, true),
+            _ => !app.project.overwrite_asset(asset, end - 1.0, Some(ti), None, Some((0.0, 2.0))).is_empty(),
+        };
+        assert!(changed, "{edit} must change the project");
+        let t_op = t1.elapsed();
+        let t2 = Instant::now();
+        push_undo_json(&mut app.undo, &mut app.redo, before); // a lazy Snap, as the timeline pushes it
+        let t_undo = t2.elapsed();
+        let t3 = Instant::now();
+        app.after_edit();
+        let t_after = t3.elapsed();
+        let commit = t0.elapsed();
+        let t_frame = run_frame(&mut app);
+        // after_edit's two main pieces, timed again on their own
+        let t4 = Instant::now();
+        app.player.set_project(&app.project);
+        let t_player = t4.elapsed();
+        let t5 = Instant::now();
+        audio_only::edited(&app.project);
+        let t_mix = t5.elapsed();
+        eprintln!("{:12} (player.set_project {:6.2}, audio_only::edited {:6.2})", "", ms(t_player), ms(t_mix));
+        eprintln!(
+            "{edit:12} press {:6.2} op {:6.2} undo {:6.2} after_edit {:6.2} | commit {:6.2} ms, next UI frame {:6.2} ms",
+            ms(t_press), ms(t_op), ms(t_undo), ms(t_after), ms(commit), ms(t_frame)
+        );
+        for _ in 0..3 {
+            run_frame(&mut app);
+        }
+    }
+    *crate::settings::TEST_DIR.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    let _ = std::fs::remove_dir_all(&scratch);
+}

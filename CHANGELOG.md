@@ -41,6 +41,7 @@
 
 
 ### Timeline
+- **Instant trims and overwrites.** Trimming, ripple trimming or dropping over a clip no longer stalls on big projects: the undo step is kept as-is and only written out if you open it in History, so the edit lands on the next frame.
 - **Max length.** Project settings (and an open sequence's) get a Max length row: on/off, an m:ss field and quick
   picks (0:15, 0:30, 1:00 Shorts/Reels, 1:30, 3:00 TikTok/Shorts, 10:00). The timeline draws a red end line, shades
   and hatches everything past it (clips included) and shows "over by 0:04"; Zoom to Fit and the scrollbar span it.

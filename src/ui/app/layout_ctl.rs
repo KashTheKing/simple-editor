@@ -929,7 +929,7 @@ mod tests {
     }
 
     fn layout_step() -> UndoEntry {
-        UndoEntry { json: LAYOUT_STEP.to_owned(), label: String::new(), at: 0.0, category: HistoryCategory::Layout }
+        UndoEntry { json: LAYOUT_STEP.into(), label: String::new(), at: 0.0, category: HistoryCategory::Layout }
     }
 
     /// Every page keeps its own arrangement through switches: edit A, visit B, come back - A's edit

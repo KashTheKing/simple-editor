@@ -153,12 +153,12 @@ pub(super) fn record_edit(
 /// ponytail: if the 200-entry cap dropped entries meanwhile the slot is off by that many; harmless.
 pub(super) fn push_group_entry(undo: &mut Vec<UndoEntry>, redo: &mut Vec<UndoEntry>, g: &UndoGroup, now: &str) -> bool {
     let at = g.undo_len.min(undo.len());
-    let after = undo.get(at).map_or(now, |e| e.json.as_str());
+    let after = undo.get(at).map_or(now, |e| e.json.text());
     if g.before == after {
         return false;
     }
     let entry =
-        UndoEntry { json: g.before.clone(), label: g.label.clone(), at: now_secs(), category: HistoryCategory::Editing };
+        UndoEntry { json: g.before.clone().into(), label: g.label.clone(), at: now_secs(), category: HistoryCategory::Editing };
     undo.insert(at, entry);
     if undo.len() > 200 {
         undo.remove(0);
@@ -755,7 +755,7 @@ mod tests {
         push_undo_json(&mut undo, &mut redo, after_agent.clone()); // the user's own edit's snapshot
         p.add_marker(2.0, "user");
         assert!(push_group_entry(&mut undo, &mut redo, &g, &p.to_json()));
-        assert_eq!(undo.iter().map(|e| e.json.as_str()).collect::<Vec<_>>(), vec![g.before.as_str(), after_agent.as_str()]);
+        assert_eq!(undo.iter().map(|e| e.json.text()).collect::<Vec<_>>(), vec![g.before.as_str(), after_agent.as_str()]);
     }
 
     /// A failing call stops the batch where it is (later calls never run), names itself, and the
