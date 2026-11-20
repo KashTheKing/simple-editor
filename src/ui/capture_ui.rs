@@ -8,7 +8,9 @@
 //! * Sources: Screen / Window / Region / Application, the pick, the Audio choice (what "All audio"
 //!   mixes), the microphone, and the audio tracks (each its own stream: name, source, on, meter).
 //! * Quality: frame rate, bitrate, scale, encoder.
-//! * Misc: cursor, Hide on Record and its stop hotkey, record-on-blur.
+//! * Webcam (parity-webcam): the camera, its format, mirror, and the bubble (a round webcam picture in a
+//!   corner of screen recordings). "Webcam" is also a source Type: it records the camera alone.
+//! * Misc: cursor, Hide on Record and its stop hotkey, record-on-blur, the Snapshot delay.
 //! * Output: folder, Library bin, file name, add to the library.
 //! The pane only *asks*: the app owns the recording, the preview producers and the meter taps
 //! (`ui::app::recorder_pane`) and imports the file once it is finished and verified.
@@ -19,6 +21,7 @@
 
 use crate::engine::capture::{AudioMode, CaptureSource, ScreenCaptureOptions, TrackKind, TrackSpec, VoiceoverOptions};
 use crate::engine::screen_grab::{FrameSlot, Preview};
+use crate::engine::webcam::{Bubble, CamFormat, CamSpec, Corner};
 use crate::engine::wgc::AppWindow;
 use crate::settings::Settings;
 use crate::theme::Palette;
@@ -34,7 +37,7 @@ pub struct CaptureUi {
     pub elapsed: f64,
     /// Region in desktop pixels (x, y, w, h) - typed in the pane, used in "region" mode.
     pub region: Option<(i32, i32, u32, u32)>,
-    /// "screen:<n>" (a monitor) | "desktop" (all of them) | "window" | "region" | "app"
+    /// "screen:<n>" (a monitor) | "desktop" (all of them) | "window" | "region" | "app" | "webcam"
     pub area: String,
     /// The window to record in "window" mode (its title) and the titles last listed.
     pub window: String,
@@ -80,6 +83,14 @@ pub struct CaptureUi {
     /// The last voiceover take: the timeline time it was started from, and its file. Retake removes its
     /// clips and records again from there.
     pub last_take: Option<(f64, PathBuf)>,
+    // ---- parity-webcam ----
+    /// The camera the settings resolve to (the app fills it: the picked one, else the first found).
+    pub cam: CamSpec,
+    /// The cameras found (None while the probe runs) and the picked camera's formats.
+    pub cams: Option<Vec<String>>,
+    pub cam_formats: Option<Vec<CamFormat>>,
+    /// A Screen Snapshot is being taken (the button waits; a webcam's preview lets go of the camera).
+    pub snapping: bool,
 }
 
 impl CaptureUi {
@@ -109,6 +120,8 @@ pub struct CaptureResponse {
     pub open_folder: bool,
     /// Create this Library bin (the New bin box).
     pub new_bin: Option<String>,
+    /// parity-webcam: take a Screen Snapshot of the source.
+    pub snapshot: bool,
 }
 
 /// What the pane shows that the app knows.
@@ -163,6 +176,7 @@ pub fn source_of(state: &CaptureUi, monitors: &[Monitor]) -> CaptureSource {
     match state.area.as_str() {
         "desktop" => CaptureSource::Desktop,
         "window" if !state.window.is_empty() => CaptureSource::Window(state.window.clone()),
+        "webcam" => CaptureSource::Webcam(state.cam.clone()),
         "app" if state.app.is_some() => {
             let a = state.app.as_ref().expect("checked");
             CaptureSource::App { hwnd: a.hwnd, title: a.title.clone(), pid: a.pid }
@@ -181,6 +195,7 @@ fn source_name(state: &CaptureUi, src: &CaptureSource) -> String {
     match src {
         CaptureSource::App { title, .. } | CaptureSource::Window(title) => title.chars().take(40).collect(),
         CaptureSource::Desktop => "All screens".into(),
+        CaptureSource::Webcam(c) => c.device.chars().take(40).collect(),
         CaptureSource::Region(..) if state.area == "region" => "Region".into(),
         CaptureSource::Region(..) => {
             format!("Screen {}", state.area.strip_prefix("screen:").and_then(|n| n.parse::<usize>().ok()).unwrap_or(0) + 1)
@@ -204,6 +219,41 @@ pub(crate) fn screen_options(settings: &Settings, state: &CaptureUi, monitors: &
         encoder: settings.capture_encoder.clone(),
         // the recording's own frames feed the preview while it runs (cheap: a 480x270 second output)
         preview: true,
+        bubble: bubble(settings, state),
+    }
+}
+
+/// The camera the settings stand for: the picked one, else the first found.
+pub fn cam_spec(settings: &Settings, cams: Option<&[String]>) -> CamSpec {
+    let device = match settings.cam_device.trim() {
+        "" => cams.and_then(|c| c.first().cloned()).unwrap_or_default(),
+        d => d.to_string(),
+    };
+    CamSpec { device, format: CamFormat::from_key(&settings.cam_format), mirror: settings.cam_mirror }
+}
+
+/// The bubble a screen recording gets: on, with a camera, and not when the camera is the source.
+pub(crate) fn bubble(settings: &Settings, state: &CaptureUi) -> Option<Bubble> {
+    (settings.cam_bubble && state.area != "webcam" && !state.cam.device.is_empty()).then(|| Bubble {
+        cam: state.cam.clone(),
+        size: settings.cam_bubble_size.clamp(32, 2048),
+        corner: Corner::from_key(&settings.cam_bubble_corner),
+    })
+}
+
+/// A Screen Snapshot's file: `snapshot-<time>.png` (`photo-` for a webcam) in the capture folder.
+pub(crate) fn snapshot_path(settings: &Settings, state: &CaptureUi) -> PathBuf {
+    let prefix = if state.area == "webcam" { "photo" } else { "snapshot" };
+    out_path(settings, prefix, "png")
+}
+
+/// Why Record / Snapshot can't run with this source yet (None = ready).
+fn not_ready(state: &CaptureUi) -> Option<&'static str> {
+    match state.area.as_str() {
+        "app" if state.app.is_none() => Some("Pick an application under Sources"),
+        "webcam" if state.cams.is_none() && state.cam.device.is_empty() => Some("Looking for webcams…"),
+        "webcam" if state.cam.device.is_empty() => Some("No webcam found"),
+        _ => None,
     }
 }
 
@@ -278,11 +328,21 @@ pub fn screen_pane(ui: &mut egui::Ui, state: &mut CaptureUi, settings: &mut Sett
     } else if state.finishing {
         ui.add_enabled(false, big("Finishing…".into(), c.palette.border));
     } else {
-        let ready = state.area != "app" || state.app.is_some();
-        let b = ui.add_enabled(ready, big("Record".into(), egui::Color32::from_rgb(0xD9, 0x2D, 0x2D)));
-        if b.on_disabled_hover_text("Pick an application under Sources").clicked() {
+        let why = not_ready(state);
+        let b = ui.add_enabled(why.is_none(), big("Record".into(), egui::Color32::from_rgb(0xD9, 0x2D, 0x2D)));
+        if b.on_disabled_hover_text(why.unwrap_or_default()).clicked() {
             r.screen = Some(new_screen_options(settings, state, c.monitors));
         }
+    }
+    // parity-webcam: Screen Snapshot, a still of the same source
+    let snap = egui::Button::new(if state.snapping { "Taking snapshot…" } else { "Snapshot" }).min_size(egui::vec2(w, 26.0));
+    let tip = match settings.snapshot_delay {
+        0 => "A still picture of the source, added to the library".to_string(),
+        d => format!("A still picture of the source after {d} s, added to the library"),
+    };
+    let ok = !busy && !state.snapping && not_ready(state).is_none();
+    if ui.add_enabled(ok, snap).on_hover_text(tip).on_disabled_hover_text(not_ready(state).unwrap_or("Busy")).clicked() {
+        r.snapshot = true;
     }
     ui.weak(if state.finishing {
         "Checking the file, then it goes into the library."
@@ -299,6 +359,9 @@ pub fn screen_pane(ui: &mut egui::Ui, state: &mut CaptureUi, settings: &mut Sett
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         crate::ui::inspector::section(ui, "rec_sources", "Sources", true, &mut folds, None, |ui| {
             ui.add_enabled_ui(!busy, |ui| save |= sources(ui, state, settings, c, mode));
+        });
+        crate::ui::inspector::section(ui, "rec_webcam", "Webcam", state.area == "webcam", &mut folds, None, |ui| {
+            ui.add_enabled_ui(!busy, |ui| save |= webcam(ui, state, settings));
         });
         crate::ui::inspector::section(ui, "rec_quality", "Quality", false, &mut folds, None, |ui| {
             ui.add_enabled_ui(!busy, |ui| save |= quality(ui, settings));
@@ -323,10 +386,10 @@ fn sources(ui: &mut egui::Ui, state: &mut CaptureUi, settings: &mut Settings, c:
     egui::Grid::new("rec_src").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
         ui.label("Type");
         let mut kind = match state.area.as_str() {
-            "window" | "region" | "app" => state.area.clone(),
+            "window" | "region" | "app" | "webcam" => state.area.clone(),
             _ => "screen".to_string(),
         };
-        let kinds = [("screen", "Screen"), ("window", "Window"), ("region", "Region"), ("app", "Application / Game")];
+        let kinds = [("screen", "Screen"), ("window", "Window"), ("region", "Region"), ("app", "Application / Game"), ("webcam", "Webcam")];
         if combo(ui, "rec_kind", &mut kind, &kinds, Some(200.0)) {
             state.area = if kind == "screen" { "screen:0".into() } else { kind.clone() };
             if kind == "window" {
@@ -380,6 +443,11 @@ fn sources(ui: &mut egui::Ui, state: &mut CaptureUi, settings: &mut Settings, c:
                     ui.add(egui::DragValue::new(&mut h).prefix("h ").range(16..=16384).speed(2.0));
                 });
                 state.region = Some((x, y, w, h));
+                ui.end_row();
+            }
+            "webcam" => {
+                ui.label("Camera");
+                save |= camera_pick(ui, state, settings, "rec_cam_src");
                 ui.end_row();
             }
             _ => {
@@ -460,6 +528,89 @@ fn sources(ui: &mut egui::Ui, state: &mut CaptureUi, settings: &mut Settings, c:
     if !is_app && settings.capture_tracks.iter().any(|t| t.on && t.kind == TrackKind::App) {
         ui.weak("App audio tracks record only with an Application source.");
     }
+    save
+}
+
+/// The camera combo and its Refresh. True when the pick changed.
+fn camera_pick(ui: &mut egui::Ui, state: &mut CaptureUi, settings: &mut Settings, id: &str) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        let mut names: Vec<(String, String)> = vec![(String::new(), match state.cams.as_deref() {
+            None => "Looking for webcams…".into(),
+            Some([]) => "No webcam found".into(),
+            Some([first, ..]) => format!("First found ({first})"),
+        })];
+        names.extend(state.cams.iter().flatten().map(|n| (n.clone(), n.clone())));
+        if !settings.cam_device.is_empty() && !names.iter().any(|(k, _)| *k == settings.cam_device) {
+            names.push((settings.cam_device.clone(), format!("{} (not connected)", settings.cam_device)));
+        }
+        let opts: Vec<(&str, &str)> = names.iter().map(|(k, l)| (k.as_str(), l.as_str())).collect();
+        if combo(ui, id, &mut settings.cam_device, &opts, Some(200.0)) {
+            settings.cam_format.clear(); // another camera has other formats
+            state.cam_formats = None;
+            changed = true;
+        }
+        if ui.button("Refresh").on_hover_text("List the webcams again").clicked() {
+            crate::engine::webcam::refresh();
+            state.cams = None;
+            state.cam_formats = None;
+        }
+    });
+    changed
+}
+
+/// The Webcam fold: camera, format, mirror and the bubble.
+fn webcam(ui: &mut egui::Ui, state: &mut CaptureUi, settings: &mut Settings) -> bool {
+    let mut save = false;
+    egui::Grid::new("rec_webcam").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label("Camera");
+        save |= camera_pick(ui, state, settings, "rec_cam");
+        ui.end_row();
+
+        ui.label("Format");
+        let mut names: Vec<(String, String)> = vec![(String::new(), "Camera default".into())];
+        match &state.cam_formats {
+            Some(f) => names.extend(f.iter().map(|f| (f.key(), f.label()))),
+            None if !state.cam.device.is_empty() => names[0].1 = "Camera default (listing formats…)".into(),
+            None => {}
+        }
+        if let Some(f) = CamFormat::from_key(&settings.cam_format) {
+            if !names.iter().any(|(k, _)| *k == settings.cam_format) {
+                names.push((f.key(), f.label()));
+            }
+        }
+        let opts: Vec<(&str, &str)> = names.iter().map(|(k, l)| (k.as_str(), l.as_str())).collect();
+        save |= combo(ui, "rec_cam_format", &mut settings.cam_format, &opts, Some(200.0));
+        ui.end_row();
+
+        ui.label("Mirror");
+        save |= ui.checkbox(&mut settings.cam_mirror, "").on_hover_text("Flip the webcam left-right, like a mirror").changed();
+        ui.end_row();
+
+        ui.label("Bubble");
+        save |= ui
+            .checkbox(&mut settings.cam_bubble, "")
+            .on_hover_text("Put a round webcam picture in a corner of screen recordings (not shown in the preview before recording)")
+            .changed();
+        ui.end_row();
+
+        if settings.cam_bubble {
+            ui.label("Corner");
+            let mut k = Corner::from_key(&settings.cam_bubble_corner).key().to_string();
+            let opts: Vec<(&str, &str)> = Corner::ALL.iter().map(|c| (c.key(), c.label())).collect();
+            if combo(ui, "rec_cam_corner", &mut k, &opts, Some(150.0)) {
+                settings.cam_bubble_corner = k;
+                save = true;
+            }
+            ui.end_row();
+            ui.label("Size");
+            save |= ui
+                .add(egui::DragValue::new(&mut settings.cam_bubble_size).range(64..=1080).suffix(" px"))
+                .on_hover_text("The bubble's width in pixels of the screen (smaller with a lower Scale)")
+                .changed();
+            ui.end_row();
+        }
+    });
     save
 }
 
@@ -559,6 +710,14 @@ fn misc(ui: &mut egui::Ui, state: &mut CaptureUi, settings: &mut Settings, busy:
             ui.colored_label(ui.visuals().error_fg_color, e);
             ui.end_row();
         }
+        ui.label("Snapshot delay");
+        let mut k = settings.snapshot_delay.to_string();
+        let opts = [("0", "None"), ("3", "3 s"), ("5", "5 s"), ("10", "10 s")];
+        if combo(ui, "rec_snap_delay", &mut k, &opts, Some(120.0)) {
+            settings.snapshot_delay = k.parse().unwrap_or(0);
+            save = true;
+        }
+        ui.end_row();
         ui.label("Background");
         save |= ui
             .checkbox(&mut settings.capture_on_blur, "Start recording when the editor loses focus")
@@ -666,6 +825,10 @@ fn preview(ui: &mut egui::Ui, state: &mut CaptureUi, settings: &mut Settings, c:
                 "Pick a window"
             } else if state.area == "app" && state.app.is_none() {
                 "Pick an application"
+            } else if let Some(why) = not_ready(state) {
+                why
+            } else if state.snapping && state.area == "webcam" {
+                "Taking a photo…"
             } else {
                 "Preview"
             };
@@ -801,17 +964,19 @@ mod tests {
     #[test]
     fn assert_no_idle_repaint_screen_recording_pane() {
         let mut s = Settings::default();
-        for id in ["rec_sources", "rec_quality", "rec_misc", "rec_output"] {
+        for id in ["rec_sources", "rec_webcam", "rec_quality", "rec_misc", "rec_output"] {
             s.capture_folds.insert(id.into(), true);
         }
-        for area in ["screen:0", "desktop", "window", "region", "app"] {
+        s.cam_bubble = true; // the bubble's rows too
+        for area in ["screen:0", "desktop", "window", "region", "app", "webcam"] {
             for mode in AudioMode::ALL {
                 s.capture_audio = mode.key().into();
                 for rec in [false, true] {
                     let mut st = CaptureUi { area: area.into(), elapsed: 3.5, windows: vec!["A".into()], ..Default::default() };
                     st.apps = vec![AppWindow { hwnd: 1, title: "Game".into(), exe: "game.exe".into(), pid: 9 }];
+                    st.cams = Some(vec!["Cam".into()]);
                     let (r, repaint) = run(&mut st, &mut s, rec);
-                    assert!(r.screen.is_none() && !r.stop_screen && !r.open_folder && r.new_bin.is_none());
+                    assert!(r.screen.is_none() && !r.stop_screen && !r.open_folder && r.new_bin.is_none() && !r.snapshot);
                     assert!(!repaint, "{area} / {mode:?} / recording {rec} requested a repaint");
                 }
             }
@@ -819,6 +984,48 @@ mod tests {
         let mut st = CaptureUi { area: "region".into(), ..Default::default() };
         run(&mut st, &mut s, false);
         assert!(st.region.is_some(), "region mode always has a concrete region");
+    }
+
+    /// parity-webcam: the Webcam source records the resolved camera alone; any other source gets the
+    /// bubble when it is on and a camera is known; Record waits for a camera.
+    #[test]
+    fn webcam_source_and_bubble_options() {
+        let mut s = Settings::default();
+        let mut st = CaptureUi { area: "webcam".into(), ..Default::default() };
+        assert_eq!(not_ready(&st), Some("Looking for webcams…"));
+        st.cams = Some(Vec::new());
+        assert_eq!(not_ready(&st), Some("No webcam found"));
+        // the first camera found when none is picked; the picked one otherwise
+        st.cams = Some(vec!["Cam A".into(), "Cam B".into()]);
+        st.cam = cam_spec(&s, st.cams.as_deref());
+        assert_eq!(st.cam.device, "Cam A");
+        s.cam_device = "Cam B".into();
+        s.cam_format = "mjpeg 1280x720 30".into();
+        s.cam_mirror = true;
+        st.cam = cam_spec(&s, st.cams.as_deref());
+        assert_eq!((st.cam.device.as_str(), st.cam.mirror), ("Cam B", true));
+        assert_eq!(st.cam.format.as_ref().map(|f| f.w), Some(1280));
+        assert_eq!(not_ready(&st), None);
+        s.cam_bubble = true;
+        let o = new_screen_options(&s, &st, &monitors());
+        assert_eq!(o.source, CaptureSource::Webcam(st.cam.clone()));
+        assert!(o.bubble.is_none(), "no bubble of the camera over itself");
+        let name = o.out.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.contains("Cam B"), "{{source}} is the camera: {name}");
+        assert!(snapshot_path(&s, &st).file_name().unwrap().to_string_lossy().starts_with("photo-"));
+        st.area = "screen:0".into();
+        s.cam_bubble_corner = "tl".into();
+        let o = new_screen_options(&s, &st, &monitors());
+        let b = o.bubble.expect("bubble on a screen recording");
+        assert_eq!((b.cam.device.as_str(), b.corner, b.size), ("Cam B", Corner::TopLeft, 280));
+        assert!(snapshot_path(&s, &st).file_name().unwrap().to_string_lossy().starts_with("snapshot-"));
+        s.cam_bubble = false;
+        assert!(new_screen_options(&s, &st, &monitors()).bubble.is_none());
+        // the pane: Record and Snapshot are offered, nothing is asked for on its own
+        st.area = "webcam".into();
+        s.capture_folds.insert("rec_webcam".into(), true);
+        let (r, _) = run(&mut st, &mut s, false);
+        assert!(r.screen.is_none() && !r.snapshot);
     }
 
     /// The fold state is the settings' (it survives a restart): an opened section stays open.

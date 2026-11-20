@@ -90,6 +90,8 @@ pub enum CaptureSource {
     /// An application / game window through Windows Graphics Capture (`engine::wgc`): its own picture,
     /// covered or not. `pid` is whose sound an "App audio" track records.
     App { hwnd: isize, title: String, pid: u32 },
+    /// parity-webcam: a camera (DirectShow), recorded through the same pipeline as a screen.
+    Webcam(crate::engine::webcam::CamSpec),
 }
 
 /// Where an audio track's sound comes from.
@@ -162,6 +164,8 @@ pub struct ScreenCaptureOptions {
     pub encoder: String,
     /// Also write preview frames (`screen_grab::preview_output_args`) for the live preview.
     pub preview: bool,
+    /// parity-webcam: a round webcam picture composited into a corner (ignored for a webcam source).
+    pub bubble: Option<crate::engine::webcam::Bubble>,
 }
 
 impl Default for ScreenCaptureOptions {
@@ -179,6 +183,7 @@ impl Default for ScreenCaptureOptions {
             scale: 100,
             encoder: "x264".into(),
             preview: false,
+            bubble: None,
         }
     }
 }
@@ -803,9 +808,12 @@ fn s(v: impl Into<String>) -> String {
     v.into()
 }
 
-/// gdigrab input args for a desktop / region / window source (an application source has none: it
-/// comes from `engine::wgc` on stdin).
-pub(crate) fn gdigrab_input(src: &CaptureSource, fps: u32, cursor: bool) -> Vec<String> {
+/// ffmpeg input args for a source: gdigrab for a desktop / region / window, dshow for a webcam (an
+/// application source has none: it comes from `engine::wgc` on stdin).
+pub(crate) fn source_input(src: &CaptureSource, fps: u32, cursor: bool) -> Vec<String> {
+    if let CaptureSource::Webcam(cam) = src {
+        return crate::engine::webcam::input_args(cam, fps);
+    }
     let mut a = vec![s("-f"), s("gdigrab"), s("-framerate"), fps.max(1).to_string()];
     a.extend([s("-draw_mouse"), s(if cursor { "1" } else { "0" })]);
     match src {
@@ -816,7 +824,7 @@ pub(crate) fn gdigrab_input(src: &CaptureSource, fps: u32, cursor: bool) -> Vec<
             a.extend([s("-video_size"), format!("{w}x{h}"), s("-i"), s("desktop")]);
         }
         CaptureSource::Window(t) => a.extend([s("-i"), format!("title={t}")]),
-        CaptureSource::Desktop | CaptureSource::App { .. } => a.extend([s("-i"), s("desktop")]),
+        CaptureSource::Desktop | CaptureSource::App { .. } | CaptureSource::Webcam(_) => a.extend([s("-i"), s("desktop")]),
     }
     a
 }
@@ -862,21 +870,44 @@ pub(crate) fn video_args_with(o: &ScreenCaptureOptions, video: &Path, app: Optio
             s("-i"),
             s("pipe:0"),
         ]),
-        None => a.extend(gdigrab_input(&o.source, o.fps, o.cursor)),
+        None => a.extend(source_input(&o.source, o.fps, o.cursor)),
     }
-    a.extend([s("-map"), s("0:v")]);
     // the GPU path's frames are already NV12 at the output size (BT.709, TV range): no filter, no
     // conversion. gdigrab's: a window's client area can be any size, so trim to even for yuv420p; a
     // scale below 100 % halves etc.
     let gpu = app.is_some();
-    if !gpu {
+    let base = (!gpu).then(|| {
         let scale = o.scale.clamp(10, 100);
         let vf = if scale < 100 {
             format!("scale=trunc(iw*{scale}/200)*2:trunc(ih*{scale}/200)*2")
         } else {
             s("crop=trunc(iw/2)*2:trunc(ih/2)*2")
         };
-        a.extend([s("-vf"), vf]);
+        match &o.source {
+            CaptureSource::Webcam(c) if c.mirror => format!("hflip,{vf}"),
+            _ => vf,
+        }
+    });
+    let bubble = o.bubble.as_ref().filter(|b| !matches!(o.source, CaptureSource::Webcam(_)) && !b.cam.device.trim().is_empty());
+    let preview = o.preview && app.is_none();
+    match bubble {
+        Some(b) => {
+            // the camera is input 1; both inputs keep their wall-clock times so the overlay pairs frames
+            // taken at the same moment (see `webcam::bubble_graph`)
+            a.extend(crate::engine::webcam::input_args(&b.cam, o.fps));
+            a.insert(0, s("-copyts"));
+            let pv = preview.then(crate::engine::screen_grab::preview_filter);
+            // the GPU path's frames are already at the recording's scale, gdigrab's are scaled in `base`: the
+            // bubble follows the same scale either way
+            a.extend([s("-filter_complex"), crate::engine::webcam::bubble_graph(base.as_deref(), b, o.scale, pv.as_deref())]);
+            a.extend([s("-map"), s("[v]")]);
+        }
+        None => {
+            a.extend([s("-map"), s("0:v")]);
+            if let Some(vf) = base {
+                a.extend([s("-vf"), vf]);
+            }
+        }
     }
     let yuv = if gpu { "nv12" } else { "yuv420p" };
     match hw.as_deref() {
@@ -898,10 +929,81 @@ pub(crate) fn video_args_with(o: &ScreenCaptureOptions, video: &Path, app: Optio
     // file loses about a second, never the recording
     a.extend([s("-g"), (o.fps.max(1) * 2).to_string(), s("-cluster_time_limit"), s("1000"), s("-flush_packets"), s("1")]);
     a.extend([s("-f"), s("matroska"), video.to_string_lossy().into_owned()]);
-    if o.preview && app.is_none() {
-        a.extend(crate::engine::screen_grab::preview_output_args());
+    if preview {
+        match bubble {
+            Some(_) => a.extend(crate::engine::screen_grab::preview_pipe_args("[pv]")),
+            None => a.extend(crate::engine::screen_grab::preview_output_args(mirror_of(&o.source))),
+        }
     }
     a
+}
+
+/// "hflip" for a mirrored webcam (its preview flips like the recording).
+pub(crate) fn mirror_of(src: &CaptureSource) -> Option<&'static str> {
+    matches!(src, CaptureSource::Webcam(c) if c.mirror).then_some("hflip")
+}
+
+/// parity-webcam: ffmpeg arguments for Screen Snapshot: one frame of `src` as a PNG. A webcam's first
+/// second is skipped (exposure and white balance settle after it opens).
+pub(crate) fn snapshot_args(src: &CaptureSource, cursor: bool, out: &Path) -> Vec<String> {
+    let mut a: Vec<String> = ["-y", "-hide_banner", "-loglevel", "error"].iter().map(|x| s(*x)).collect();
+    let src = match src {
+        // GDI can grab an application's window by its title (a game drawn by the GPU may come out black)
+        CaptureSource::App { title, .. } => CaptureSource::Window(title.clone()),
+        other => other.clone(),
+    };
+    a.extend(source_input(&src, if matches!(src, CaptureSource::Webcam(_)) { 30 } else { 5 }, cursor));
+    if matches!(src, CaptureSource::Webcam(_)) {
+        a.extend([s("-ss"), s("1")]);
+    }
+    if let Some(m) = mirror_of(&src) {
+        a.extend([s("-vf"), s(m)]);
+    }
+    a.extend([s("-frames:v"), s("1"), s("-update"), s("1"), out.to_string_lossy().into_owned()]);
+    a
+}
+
+/// Take a Screen Snapshot on a background thread: `hide` (our windows) are kept out of the picture and
+/// minimised first, `delay` seconds pass, one frame is written to `out`, the windows come back. The
+/// progress finishes once `out` is a readable picture, or with a plain-language error.
+pub fn snapshot(src: CaptureSource, cursor: bool, out: PathBuf, delay: f64, hide: Vec<isize>) -> Arc<Progress> {
+    let p = Progress::new();
+    let q = p.clone();
+    let job = move || {
+        q.set(0.0, "Snapshot…");
+        if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                return q.finish(Some(format!("{}: {e}", dir.display())));
+            }
+        }
+        if !hide.is_empty() {
+            crate::engine::rec_pill::hide_windows(&hide);
+        }
+        // the minimise animation is over before the grab, and the user had the countdown they asked for
+        let wait = if hide.is_empty() { delay } else { delay.max(0.4) };
+        std::thread::sleep(Duration::from_secs_f64(wait.clamp(0.0, 60.0)));
+        let res = (|| {
+            let exe = ffpipe::ffmpeg_exe().ok_or("ffmpeg.exe not found")?;
+            let o = ffpipe::command(&exe)
+                .args(snapshot_args(&src, cursor, &out))
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|e| format!("ffmpeg: {e}"))?;
+            let ok = std::fs::metadata(&out).map(|m| m.len() > 0).unwrap_or(false);
+            if !o.status.success() || !ok {
+                return Err(format!("Snapshot failed: {}", last_line(&String::from_utf8_lossy(&o.stderr))));
+            }
+            Ok(())
+        })();
+        if !hide.is_empty() {
+            crate::engine::rec_pill::restore_windows(&hide);
+        }
+        q.finish(res.err());
+    };
+    if let Err(e) = std::thread::Builder::new().name("snapshot".into()).spawn(job) {
+        p.finish(Some(format!("could not start the snapshot: {e}")));
+    }
+    p
 }
 
 /// ffmpeg arguments that mux a recording's pieces into its mp4, one audio stream per track in
@@ -1053,8 +1155,15 @@ pub fn audio_devices_nonblocking(wake: fn()) -> Option<Vec<(String, bool)>> {
 /// Audio device names out of ffmpeg's `-list_devices` output (both the modern `"name" (audio)` layout
 /// and the older `DirectShow audio devices` section headers).
 pub(crate) fn parse_devices(stderr: &str) -> Vec<(String, bool)> {
+    parse_dshow(stderr, false)
+}
+
+/// parity-webcam: dshow device names of one kind (audio, or `video` cameras) out of `-list_devices`,
+/// each with whether its name looks like a loopback input (meaningful for audio only).
+pub(crate) fn parse_dshow(stderr: &str, video: bool) -> Vec<(String, bool)> {
     let mut out: Vec<(String, bool)> = Vec::new();
-    let mut in_audio = false;
+    // the older layout's section: Some(true) video, Some(false) audio
+    let mut section: Option<bool> = None;
     for raw in stderr.lines() {
         // strip the "[dshow @ 0000...] " log prefix
         let line = match (raw.trim_start().starts_with('['), raw.find("] ")) {
@@ -1064,11 +1173,11 @@ pub(crate) fn parse_devices(stderr: &str) -> Vec<(String, bool)> {
         .trim();
         let lower = line.to_ascii_lowercase();
         if lower.contains("directshow audio devices") {
-            in_audio = true;
+            section = Some(false);
             continue;
         }
         if lower.contains("directshow video devices") {
-            in_audio = false;
+            section = Some(true);
             continue;
         }
         if lower.starts_with("alternative name") {
@@ -1078,18 +1187,20 @@ pub(crate) fn parse_devices(stderr: &str) -> Vec<(String, bool)> {
         let Some(end) = rest.find('"') else { continue };
         let name = &rest[..end];
         let tail = rest[end + 1..].trim().to_ascii_lowercase();
-        let is_audio = if tail.contains("(audio)") {
-            true
+        let kind = if tail.contains("(audio)") {
+            Some(false)
         } else if tail.contains("(video)") {
-            false
+            Some(true)
+        } else if tail.is_empty() {
+            section
         } else {
-            in_audio
+            None // "(none)": a device ffmpeg can't open
         };
-        if !is_audio || name.is_empty() || out.iter().any(|(n, _)| n == name) {
+        if kind != Some(video) || name.is_empty() || out.iter().any(|(n, _)| n == name) {
             continue;
         }
         let l = name.to_ascii_lowercase();
-        out.push((name.to_string(), LOOPBACK_HINTS.iter().any(|h| l.contains(h))));
+        out.push((name.to_string(), !video && LOOPBACK_HINTS.iter().any(|h| l.contains(h))));
     }
     out
 }
@@ -1245,6 +1356,83 @@ Error opening input file dummy.
         let o = ScreenCaptureOptions { source: CaptureSource::Desktop, ..o };
         assert_eq!(o.effective_tracks().len(), 2);
         assert_eq!(o.sources(), (true, true, None));
+    }
+
+    // ---- parity-webcam ----
+    fn cam(mirror: bool) -> crate::engine::webcam::CamSpec {
+        crate::engine::webcam::CamSpec {
+            device: "HD Webcam".into(),
+            format: crate::engine::webcam::CamFormat::from_key("mjpeg 1280x720 30"),
+            mirror,
+        }
+    }
+
+    #[test]
+    fn cameras_parse_from_the_device_listing() {
+        let v: Vec<String> = parse_dshow(LISTING, true).into_iter().map(|(n, _)| n).collect();
+        assert_eq!(v, ["Integrated Camera", "OBS Virtual Camera"]);
+        assert!(parse_dshow(LISTING, true).iter().all(|(_, lb)| !lb), "loopback is an audio idea");
+        assert_eq!(parse_dshow(OLD_LISTING, true), vec![("Integrated Camera".to_string(), false)]);
+    }
+
+    /// A webcam records through dshow into the same crash-safe MKV, with the wall clock on its frames
+    /// (the mux lines the microphone up with the `start:` line) and no gdigrab options.
+    #[test]
+    fn webcam_source_args() {
+        let o = ScreenCaptureOptions { source: CaptureSource::Webcam(cam(true)), preview: true, ..opts() };
+        let j = joined(&video_args_with(&o, Path::new("v.mkv"), None, None));
+        assert!(j.contains("-f dshow") && j.contains("-use_wallclock_as_timestamps 1"), "{j}");
+        assert!(j.contains("-vcodec mjpeg -video_size 1280x720 -framerate 30 -i video=HD Webcam"), "{j}");
+        assert!(!j.contains("gdigrab") && !j.contains("-draw_mouse"), "{j}");
+        assert!(j.contains("-map 0:v -vf hflip,crop=trunc(iw/2)*2:trunc(ih/2)*2"), "mirrored: {j}");
+        assert!(j.contains("-f matroska v.mkv -map 0:v -vf hflip,scale=480:270"), "the preview mirrors too: {j}");
+        assert!(!j.contains("-copyts"), "{j}");
+        // a bubble on a webcam source is ignored
+        let b = crate::engine::webcam::Bubble { cam: cam(false), size: 200, corner: Default::default() };
+        let o = ScreenCaptureOptions { bubble: Some(b), ..o };
+        let k = joined(&video_args_with(&o, Path::new("v.mkv"), None, None));
+        assert_eq!(j, k);
+        // the idle preview opens the same camera
+        let p = joined(&source_input(&o.source, 30, true));
+        assert!(p.starts_with("-f dshow") && p.ends_with("-i video=HD Webcam"), "{p}");
+    }
+
+    /// The bubble: the camera is input 1 of the screen recording, composited by one filter graph;
+    /// -copyts keeps both on the wall clock; the preview taps the composite.
+    #[test]
+    fn bubble_args_composite_the_camera() {
+        let b = crate::engine::webcam::Bubble { cam: cam(false), size: 300, corner: Default::default() };
+        let o = ScreenCaptureOptions { source: CaptureSource::Desktop, preview: true, scale: 50, bubble: Some(b.clone()), ..opts() };
+        let a = video_args_with(&o, Path::new("v.mkv"), None, None);
+        let j = joined(&a);
+        assert_eq!(a[0], "-copyts");
+        let grab = j.find("-f gdigrab").expect("screen input");
+        let dshow = j.find("-f dshow").expect("camera input");
+        assert!(grab < dshow, "the screen is input 0: {j}");
+        assert!(!j.contains(" -vf "), "the base filter moves into the graph: {j}");
+        let g = &a[a.iter().position(|x| x == "-filter_complex").expect("graph") + 1];
+        assert!(g.starts_with("[0:v]scale=trunc(iw*50/200)*2:trunc(ih*50/200)*2[base]"), "{g}");
+        assert!(g.contains("scale=150:150"), "bubble size follows the recording's scale: {g}");
+        assert!(j.contains("-map [v]") && j.contains("-f matroska v.mkv -map [pv] -fps_mode passthrough"), "{j}");
+        // no camera picked: a plain recording
+        let o = ScreenCaptureOptions {
+            bubble: Some(crate::engine::webcam::Bubble { cam: crate::engine::webcam::CamSpec::default(), ..b }),
+            ..o
+        };
+        let j = joined(&video_args_with(&o, Path::new("v.mkv"), None, None));
+        assert!(!j.contains("dshow") && !j.contains("-copyts") && j.contains("-map 0:v"), "{j}");
+    }
+
+    #[test]
+    fn snapshot_args_take_one_frame() {
+        let j = joined(&snapshot_args(&CaptureSource::Region(10, 20, 641, 480), true, Path::new("s.png")));
+        assert!(j.contains("-f gdigrab") && j.contains("-offset_x 10 -offset_y 20 -video_size 640x480 -i desktop"), "{j}");
+        assert!(j.ends_with("-frames:v 1 -update 1 s.png"), "{j}");
+        let app = CaptureSource::App { hwnd: 1, title: "Notepad".into(), pid: 2 };
+        let j = joined(&snapshot_args(&app, false, Path::new("s.png")));
+        assert!(j.contains("-draw_mouse 0 -i title=Notepad"), "an app is grabbed by its title: {j}");
+        let j = joined(&snapshot_args(&CaptureSource::Webcam(cam(true)), false, Path::new("s.png")));
+        assert!(j.contains("-f dshow") && j.contains("-ss 1 -vf hflip -frames:v 1"), "{j}");
     }
 
     #[test]

@@ -62,18 +62,31 @@ impl FrameSlot {
     }
 }
 
-/// ffmpeg output args for preview frames on stdout (after the inputs; `-map 0:v` picks the capture).
-/// Every captured frame goes straight through (no `fps` filter, timestamps passed through): a rate
-/// filter and constant-rate pacing held ~3 frames back (119 ms measured at 30 fps).
-pub fn preview_output_args() -> Vec<String> {
-    let vf = format!(
+/// The preview frames' filter: letterboxed to `PW`x`PH`, fast bilinear, RGBA.
+pub fn preview_filter() -> String {
+    format!(
         "scale={PW}:{PH}:force_original_aspect_ratio=decrease:flags=fast_bilinear,\
          pad={PW}:{PH}:(ow-iw)/2:(oh-ih)/2,format=rgba"
-    );
-    ["-map", "0:v", "-vf", &vf, "-fps_mode", "passthrough", "-f", "rawvideo", "-flush_packets", "1", "pipe:1"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect()
+    )
+}
+
+/// ffmpeg output args for preview frames on stdout (after the inputs; `-map 0:v` picks the capture).
+/// Every captured frame goes straight through (no `fps` filter, timestamps passed through): a rate
+/// filter and constant-rate pacing held ~3 frames back (119 ms measured at 30 fps). `pre` runs first
+/// (a mirrored webcam's `hflip`).
+pub fn preview_output_args(pre: Option<&str>) -> Vec<String> {
+    let vf = match pre {
+        Some(p) => format!("{p},{}", preview_filter()),
+        None => preview_filter(),
+    };
+    let mut a: Vec<String> = vec!["-map".into(), "0:v".into(), "-vf".into(), vf];
+    a.extend(preview_pipe_args("").into_iter().skip(2));
+    a
+}
+
+/// The preview output for a frame stream already filtered in a `-filter_complex` (`label`, e.g. "[pv]").
+pub fn preview_pipe_args(label: &str) -> Vec<String> {
+    ["-map", label, "-fps_mode", "passthrough", "-f", "rawvideo", "-flush_packets", "1", "pipe:1"].iter().map(|s| s.to_string()).collect()
 }
 
 /// Read `PW`x`PH` RGBA frames from an ffmpeg stdout into `slot` until the pipe closes. Always drains
@@ -120,8 +133,8 @@ impl Preview {
             _ => {
                 let exe = ffpipe::ffmpeg_exe()?;
                 let mut args: Vec<String> = ["-hide_banner", "-nostats", "-loglevel", "error"].iter().map(|s| s.to_string()).collect();
-                args.extend(crate::engine::capture::gdigrab_input(&source, PREVIEW_FPS, cursor));
-                args.extend(preview_output_args());
+                args.extend(crate::engine::capture::source_input(&source, PREVIEW_FPS, cursor));
+                args.extend(preview_output_args(crate::engine::capture::mirror_of(&source)));
                 let mut child = ffpipe::command(&exe)
                     .args(&args)
                     .stdin(Stdio::null())
@@ -203,7 +216,7 @@ mod tests {
 
     #[test]
     fn preview_output_is_fixed_size_raw_rgba() {
-        let j = preview_output_args().join(" ");
+        let j = preview_output_args(None).join(" ");
         assert!(j.starts_with("-map 0:v -vf scale=480:270:force_original_aspect_ratio=decrease"), "{j}");
         assert!(j.contains("pad=480:270") && j.ends_with("-fps_mode passthrough -f rawvideo -flush_packets 1 pipe:1"), "{j}");
     }

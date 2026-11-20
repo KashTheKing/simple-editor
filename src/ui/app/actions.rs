@@ -439,6 +439,14 @@ impl App {
                     recorder_pane::open(self);
                 }
             }
+            // parity-webcam: a still of the Screen Recording pane's source (the main screen until one is picked)
+            ScreenSnapshot => {
+                recorder_pane::sync_cam(self);
+                if self.take_snapshot() {
+                    let d = self.settings.snapshot_delay;
+                    self.toast(if d > 0 { format!("Snapshot in {d} s") } else { "Taking a snapshot".into() });
+                }
+            }
             Voiceover => self.toggle_pane(Pane::Voiceover), // ws:panels-multiscreen: a pane, not a window
             ImportTimeline => self.act_import_timeline(),
             MovieMode => {

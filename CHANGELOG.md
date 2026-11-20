@@ -138,6 +138,10 @@
 - **Audio Scopes**: a spectrum analyser, a vectorscope and a correlation meter of what is playing, in a tab beside the Mixer on the Audio page. MCP: `audio.scopes`.
 - **Auto Fade and Smooth Seams** on an audio track's right-click: short fades at every clip edge, and a seamless cross-fade where clips touch. MCP: `track.audio_edges`.
 - **Tone generator** (Clip ▸ Add ▸ Tone Generator…): sine, square, sawtooth, triangle, white or pink noise as a WAV, placed at the playhead. MCP: `audio.tone`.
+### Webcam and Screen Snapshot
+- **Webcam recording**: the Screen Recording panel has a **Webcam** source with a camera and format pick, Mirror and a live preview. It records with your microphone and audio tracks like a screen recording, is crash-safe the same way, and goes into the Library.
+- **Webcam bubble**: turn on **Webcam ▸ Bubble** to put a round webcam picture in a corner of your screen recordings, in time with the screen and your voice. Pick the corner and the size.
+- **Screen Snapshot**: a **Snapshot** button (and **File ▸ Record ▸ Screen Snapshot**) takes a still of the screen, window, region or app, or a photo from the webcam, into the Library; an optional 3, 5 or 10 second delay. MCP: `capture.screen` gains `snapshot`, `devices`, source `webcam` and `camera` / `format` / `bubble`.
 
 ### Timeline tools and crop
 - **A simpler timeline toolbar**: Select, Ripple / Rolling, Slip / Slide, Blade, Hand / Zoom, then Snapping and a new **Linked Selection** toggle. The Pen (keyframe), Track Select, Rate Stretch, Marker, Spacer, Type, Mask, Shape, Draw and Crop buttons left the row: the Preview's tool rail has the drawing tools and Crop, and the rest still work from their keys. Settings and hotkeys that name them load as before.

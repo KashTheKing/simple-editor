@@ -136,6 +136,7 @@ actions! {
     AddMask => "add_mask", "Add Mask to Selection", sc(CTRL_SHIFT, Key::M);
     ExportFrame => "export_frame", "Export Frame…", sc(CTRL_SHIFT, Key::F);
     ScreenCapture => "screen_capture", "Screen Recording…", None;
+    ScreenSnapshot => "screen_snapshot", "Screen Snapshot", None; // parity-webcam
     Voiceover => "voiceover", "Record Voiceover", sc(CTRL_ALT, Key::R);
     ImportTimeline => "import_timeline", "Import Timeline (Premiere / Resolve XML, EDL)…", None;
     MovieMode => "movie_mode", "Movie Mode (pre-render)", None;
@@ -742,7 +743,7 @@ pub fn group(a: Action) -> &'static str {
     match a {
         NewProject | OpenFile | OpenProject | Save | SaveProjectAs | ImportMedia | ImportFolder | ImportTimeline
         | ExportVideo | QuickExport | ExportLossless | ExportXml | ExportFrame | ExportMarkers | ScreenCapture
-        | Voiceover | RestoreBackup | Settings | GoHome => "File",
+        | ScreenSnapshot | Voiceover | RestoreBackup | Settings | GoHome => "File",
         ExportRetrySoftware | ExportFindProblem | PlayLastExport => "File", // ws:forum-export
         Undo | Redo | CutClips | CopyClips | PasteClips | PasteInsert | PasteAtTop | PasteInPlace | CopyAttributes
         | PasteAttributes | Delete | RippleDelete | SelectAll | Deselect | SelectForward | SelectBackward
