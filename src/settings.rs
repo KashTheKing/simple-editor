@@ -796,6 +796,10 @@ pub struct Settings {
     /// Export ▸ "Chapters from markers": embed the timeline markers as chapters in MP4/MOV/MKV exports.
     #[serde(default = "default_true")]
     pub export_chapters: bool,
+    // ---- ws:parity-formats ----
+    /// Export ▸ Subtitle track: MP4 / MOV / MKV / WebM exports carry the subtitles as a track viewers
+    /// switch on (`engine::formats::embed_subtitles`), whether or not they are burnt in.
+    pub export_subtitle_track: bool,
 }
 
 /// `guide` as stored by builds before the guides became data: the old enum's variant name.
@@ -1129,6 +1133,7 @@ impl Default for Settings {
             // ---- ws:parity-editing ----
             time_format: "smpte".into(),
             export_chapters: true,
+            export_subtitle_track: false, // ws:parity-formats
         }
     }
 }

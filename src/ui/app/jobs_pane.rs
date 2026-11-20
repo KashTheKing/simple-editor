@@ -69,6 +69,7 @@ pub(super) fn progress_jobs(app: &App) -> Vec<ProgJob> {
     }
     v.extend(app.transcript.jobs());
     v.extend(app.html.jobs()); // ws:html-layer: HTML layer renders
+    v.extend(app.formats.jobs()); // ws:parity-formats: subtitle extraction / embedding, made media
     v.extend(enhance_ctl::progress_jobs()); // ws:ai-enhancer
     v.extend(denoise_ctl::progress_jobs()); // ws:addon-deepfilternet: Clean Audio
     v.extend(stems_ctl::progress_jobs()); // ws:addon-demucs

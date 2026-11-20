@@ -80,9 +80,14 @@ hugs it) and **Snapchat Bar** (a band the full width of the frame); see
 
 The **⋯** menu (also on a right-click in the empty part of the list) has:
 
-- **Import…** reads an `.srt` or `.vtt` file.
+- **Import…** reads an `.srt`, `.vtt`, `.ass` or `.ssa` file. ASS styling and positions are dropped: your
+  subtitle style applies.
+- **Import from Media File…** reads the subtitles stored inside a video (MKV, MP4, MOV, WebM). When it has
+  several tracks you pick one. Picture subtitles (Blu-ray, DVD) can't become text.
 - **Export SRT…** / **Export VTT…** save the subtitles as a file for YouTube or a video player, and **Open
   folder** writes one next to your project and shows it.
+- **Embed in Video File…** saves a copy of a video with your subtitles as a track viewers turn on in their
+  player. To do this to every export, tick **Subtitle track** in the [Export](export.mdx) window.
 - **Burn in** draws the subtitles into the picture, in the Preview and in every export.
 - **To text clips** turns subtitles into text clips on a "Subtitles" track, so you can style and animate
   each one.

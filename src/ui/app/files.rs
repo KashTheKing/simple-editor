@@ -88,8 +88,11 @@ impl App {
         let _ = std::fs::write(&lock, std::process::id().to_string());
     }
     pub(super) fn media_dialog() -> rfd::FileDialog {
+        // ws:parity-formats: SVG drawings and Lottie animations import too (converted on the way in)
+        let mut exts = MEDIA_EXTS.to_vec();
+        exts.extend_from_slice(formats_ctl::CONVERTED_EXTS);
         rfd::FileDialog::new()
-            .add_filter("Media", MEDIA_EXTS)
+            .add_filter("Media", &exts)
             .add_filter("Simple Editor project", &[PROJECT_EXT])
             .add_filter("All files", &["*"])
     }
@@ -364,6 +367,7 @@ impl App {
         // ws:export-pipeline: the same frame source every other export gets (GPU when it is on)
         let mut opts = ExportOptions { frames: self.export_frames(), ..choice.opts };
         self.deliver(&mut project, &mut opts, None, None);
+        formats_ctl::export_started(self, &opts.out_path, opts.range); // ws:parity-formats: Subtitle track
         // a burnt-in guide or caption change needs the re-encode a lossless cut skips
         let prog = if choice.lossless && opts.overlay.is_none() && export::lossless_segments(&project).is_some() {
             export::start_lossless_cut(project, opts.out_path)
@@ -549,11 +553,13 @@ impl App {
                 export_fix::failed(self, &prog, &kind, &e); // ws:forum-export: one sentence + its fix
             }
             self.fire_hook("export_done", json!({"path": hook_path.to_string_lossy(), "ok": false}));
+            formats_ctl::export_finished(self, &hook_path, false); // ws:parity-formats
             return;
         }
         self.fire_hook("export_done", json!({"path": hook_path.to_string_lossy(), "ok": true}));
         match kind {
             ExportKind::File { path } => {
+                formats_ctl::export_finished(self, &path, true); // ws:parity-formats: Subtitle track
                 // ws:player-metadata: a preset's Explorer tags, through Windows' own handler (off this thread)
                 let kw = crate::ui::export_ui::export_keywords(self.export_ui.metadata_on, &self.export_ui.metadata);
                 if !kw.is_empty() {

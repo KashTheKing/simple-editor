@@ -31,7 +31,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
             }
             "subtitles.import" => {
                 let path = req(arg_str(args, "path"), "path")?;
-                let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+                let text = crate::engine::subtitles::read_file(std::path::Path::new(path))?;
                 let cues = crate::engine::subtitles::parse(&text);
                 if cues.is_empty() {
                     return Err("no cues found".into());
@@ -280,7 +280,7 @@ macro_rules! row {
 pub const TOOLS: &[ToolDef] = &[
     row!("subtitles.get", ToolKind::Read, "Subtitle cues.", &[]),
     row!("subtitles.set", ToolKind::Mutate, "Replace all cues: [{start,end,text}].", &["cues:array:true:"]),
-    row!("subtitles.import", ToolKind::Mutate, "Import .srt/.vtt (replaces).", &["path:string:true:"]),
+    row!("subtitles.import", ToolKind::Mutate, "Import .srt/.vtt/.ass/.ssa (replaces).", &["path:string:true:"]),
     row!("plan.get", ToolKind::Read, "Planner tree + notes.", &[]),
     row!(
         "plan.add",

@@ -591,6 +591,17 @@ fn project_extras(ui: &mut egui::Ui, state: &mut ExportUi, project: &Project, se
             settings.export_captions = Some(caps);
             save = true;
         }
+        // ---- ws:parity-formats ----
+        if ui
+            .checkbox(&mut settings.export_subtitle_track, "Subtitle track")
+            .on_hover_text(
+                "Adds the subtitles as a track viewers can switch on in their player (MP4, MOV, MKV and WebM), \
+                 with or without burn-in.",
+            )
+            .changed()
+        {
+            save = true;
+        }
     }
     save
 }

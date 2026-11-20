@@ -148,6 +148,13 @@ impl App {
                 if resp.import {
                     timeline_pane::import_subtitles(self);
                 }
+                // ---- ws:parity-formats ----
+                if resp.import_media {
+                    formats_ctl::extract_dialog(self);
+                }
+                if resp.embed {
+                    formats_ctl::embed_dialog(self);
+                }
                 // ws:panels-multiscreen
                 if resp.open_transcript {
                     transcript_pane::open(self, None, false);

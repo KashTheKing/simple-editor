@@ -183,7 +183,9 @@ pub fn probe(path: &str) -> Result<Asset, String> {
             && f64_of(s, "nb_frames") <= 1.0
             && f64_of(&format, "duration") <= 0.0;
         // Animated GIFs are video (is_image_path still routes every GIF to ffmpeg, which is fine).
-        let animated = a.codec == "gif" && f64_of(s, "nb_frames") > 1.0;
+        // ws:parity-formats: so is an animated AVIF (an AV1 image sequence; a still one is one frame)
+        let avif = super::ext(path) == "avif";
+        let animated = (a.codec == "gif" || avif) && (f64_of(s, "nb_frames") > 1.0 || (avif && f64_of(&format, "duration") > 0.1));
         let is_image =
             !animated && (is_image_path(path) || str_of(&format, "format_name").ends_with("_pipe") || single);
         a.kind = if is_image { ClipKind::Image } else { ClipKind::Video };

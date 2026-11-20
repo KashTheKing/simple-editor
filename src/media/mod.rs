@@ -203,7 +203,7 @@ pub fn ext(path: &str) -> String {
 }
 
 pub fn is_image_path(path: &str) -> bool {
-    matches!(ext(path).as_str(), "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" | "tif" | "tiff" | "tga" | "psd")
+    matches!(ext(path).as_str(), "png" | "jpg" | "jpeg" | "bmp" | "gif" | "webp" | "tif" | "tiff" | "tga" | "psd" | "avif")
 }
 
 /// Probe a media file into an Asset (id = 0). ffprobe gives the richest stream metadata, so it is
@@ -215,6 +215,18 @@ pub fn probe(path: &str, backend: Backend) -> Result<Asset, String> {
         return Err(offline::REFUSED.into());
     }
     let _inflight = crate::crashguard::begin(crate::crashguard::Kind::Probe, path, "");
+    // ws:parity-formats: a colour-over-alpha file (`proxy::is_stacked`: a made Lottie / generator clip)
+    // decodes as one picture of half its coded height (`proxy::StackedAlpha`)
+    let stacked = proxy::is_stacked(std::path::Path::new(path));
+    probe_coded(path, backend).map(|mut a| {
+        if stacked && a.height >= 2 {
+            a.height /= 2;
+        }
+        a
+    })
+}
+
+fn probe_coded(path: &str, backend: Backend) -> Result<Asset, String> {
     match backend {
         Backend::Ffmpeg => ffpipe::probe(path),
         Backend::Mf => mf::probe(path),

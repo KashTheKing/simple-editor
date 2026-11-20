@@ -93,3 +93,7 @@ pub mod tags;
 pub mod voice;
 pub mod xmeml;
 pub mod media_dates; // ws:parity-editing: Library ▸ Sort by Date Created / Date Recorded
+// ---- ws:parity-formats ----
+pub mod formats;
+pub mod lottie;
+pub mod synth;

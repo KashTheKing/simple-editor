@@ -210,6 +210,9 @@ pub struct LibraryResponse {
     pub import_url: bool,
     /// feat/reference-clips: "Find a Reference" was picked (the app shows that pane).
     pub find_reference: bool,
+    // ---- ws:parity-formats ----
+    /// Right-click ▸ Generate ▸ a generator: the app draws it into a clip in the Generated bin.
+    pub generate: Option<crate::engine::synth::GenKind>,
     /// "Edit labels…" was picked in a label menu - the app opens the label editor (Inspector).
     pub edit_labels: bool,
     /// An effect kind picked in the reuse sections - the app adds it to every selected visual clip.
@@ -808,7 +811,7 @@ fn delete_sequence(project: &mut Project, id: Id) {
 const VIDEO_EXTS: &[&str] =
     &["mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "ts", "m2ts", "mts", "flv", "3gp", "mpg", "mpeg", "gif"];
 const AUDIO_EXTS: &[&str] = &["mp3", "wav", "m4a", "aac", "flac", "ogg", "opus", "wma"];
-const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff"];
+const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff", "avif", "svg"];
 
 /// 1 video, 2 audio, 3 image, 0 unknown - by extension only.
 fn ext_class(path: &str) -> u8 {
@@ -1887,6 +1890,14 @@ fn empty_menu(
             *op_start = true;
         }
         menu::action_item(ui, Action::AddAdjustment);
+        // ---- ws:parity-formats ----
+        menu::sub(ui, None, "Generate", |ui| {
+            for k in crate::engine::synth::GenKind::ALL {
+                if menu::row(ui, None, k.label(), "").on_hover_text(k.tooltip()).clicked() {
+                    resp.generate = Some(k);
+                }
+            }
+        });
         ui.separator();
         menu::sub(ui, None, "Sort", |ui| sort_items(ui, state));
         if state.view == 0 {

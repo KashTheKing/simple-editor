@@ -186,6 +186,11 @@ pub struct SubtitlesResponse {
     /// ⋯ ▸ Import…: the app runs the one import path the timeline's subtitle lane uses too
     /// (`timeline_pane::import_subtitles` - file dialog, parse, replace-or-confirm).
     pub import: bool,
+    // ---- ws:parity-formats ----
+    /// ⋯ ▸ Import from Media File…: the app picks a video and reads one of its subtitle tracks.
+    pub import_media: bool,
+    /// ⋯ ▸ Embed in Video File…: the app picks a video and writes a copy with a subtitle track.
+    pub embed: bool,
     // ---- ws:panels-multiscreen ----
     /// The header's Transcript button: bring the Transcript pane up.
     pub open_transcript: bool,
@@ -450,7 +455,7 @@ pub fn show(
             }
         }
         if project.subtitles.is_empty() {
-            ui.weak("No subtitles. \"+ Add\" one at the playhead, or right-click to import an .srt / .vtt file.");
+            ui.weak("No subtitles. \"+ Add\" one at the playhead, or right-click to import a subtitle file.");
         }
     });
     menu::context(&bg, |ui| more_menu(ui, state, project, &mut undone, undo, &mut resp));
@@ -520,13 +525,27 @@ fn more_menu(
     resp: &mut SubtitlesResponse,
 ) {
     let any = !project.subtitles.is_empty();
-    if menu::row(ui, Some(Glyph::ImportArrow), "Import…", "").clicked() {
+    if menu::row(ui, Some(Glyph::ImportArrow), "Import…", "").on_hover_text("SRT, VTT, ASS or SSA").clicked() {
         resp.import = true;
+    }
+    // ---- ws:parity-formats ----
+    let r = menu::row(ui, Some(Glyph::ImportArrow), "Import from Media File…", "")
+        .on_hover_text("Reads a subtitle track out of a video (MKV, MP4, MOV, WebM)");
+    if r.clicked() {
+        resp.import_media = true;
     }
     for (label, vtt) in [("Export SRT…", false), ("Export VTT…", true)] {
         if ui.add_enabled_ui(any, |ui| menu::row(ui, Some(Glyph::ExportArrow), label, "")).inner.clicked() {
             export_dialog(project, vtt);
         }
+    }
+    // ---- ws:parity-formats ----
+    let r = ui
+        .add_enabled_ui(any, |ui| menu::row(ui, Some(Glyph::ExportArrow), "Embed in Video File…", ""))
+        .inner
+        .on_hover_text("Saves a copy of a video with these subtitles as a track viewers can switch on");
+    if r.clicked() {
+        resp.embed = true;
     }
     let r = menu::row(ui, Some(Glyph::Folder), "Open folder", "")
         .on_hover_text("Open the project's subtitle folder in Explorer");

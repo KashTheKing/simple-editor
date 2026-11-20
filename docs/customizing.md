@@ -442,9 +442,11 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 | `media.batch_convert` | Read | ext, height, ids, scaler, width | Convert every id with the same options (the scripted batch path — the Convert… window stays single-target); starts one job per asset and returns their output paths at once. |
 | `media.consolidate` | Mutate | dir | Copy every asset from outside dir (default: the project's own folder) into it and repoint the paths — both halves run here, synchronously, as one undo step. |
 | `media.convert` | Job | ext, height, path, scaler, width | Convert a file with ffmpeg (gif/mp4/mov/mkv/webm/mp3/wav…); returns the output path when done (blocks up to 10 min). |
-| `media.import` | Read | paths | Import media files into the library; returns asset ids. A folder among the paths imports as a bin in the background (no ids; use `media.import_folder` for options or to wait). |
+| `media.generate` | Job | kind, duration, width, height, fps, colour, speed, down, start, format, color, background, seed | Generate a clip into the Library's Generated bin: bars (SMPTE colour bars, a still), noise (TV static), plasma, counter (a timer, transparent by default). Replies with the asset id when it is in. |
+| `media.import` | Read | paths | Import media files into the library; returns asset ids. A folder among the paths imports as a bin in the background (no ids; use `media.import_folder` for options or to wait). An .svg is drawn to a PNG and a Lottie .json / .lottie rendered to a clip first (in the background, in `Generated\`), so they add no ids either. |
 | `media.import_folder` | Job | path, bin_name, linked, recursive, extensions | Import a folder as a library bin named after it (`bin_name` overrides). `linked` (default true) links it instantly: nothing scanned or probed, sub-folders show as nested bins, files are listed when a bin opens and become assets when used; the project saves only folder + bin. `linked: false` imports every supported file now, sorted naturally, sub-folders as nested bins (up to 8 deep, `recursive` false = top level only), `extensions` filters (`["wav","mp3"]`), skipping and counting hidden/system/unsupported files, reusing files already in the library; replies when applied ("Imported 84 files into 'SFX' (3 skipped)"). One undo step either way. |
 | `media.linked_bin` | Read | action, bin, path | Linked bins: `list` (default; with `bin` also that folder's sub-bins and files, each with its asset id once used), `unlink` (used files stay as assets), `relink` (to `path`), `refresh`, `convert` (import every file under it and make it a regular bin, in the background). One undo step per change. |
+| `media.import_lottie` | Job | path | Render a Lottie animation (.json / .lottie) to a clip (transparent where it is) in `Generated\` and add it to the Library; replies with the asset id. Masks, mattes, text / image layers, expressions and effects are drawn without. |
 | `media.import_sequence` | Job | fps, path | Detect the numbered still run `path` belongs to (3+ frames, same prefix/extension) and bake it to one video asset in the background; fires the `import` hook once when it lands. |
 | `media.bulk_set` | Mutate | ids, filter, folder, tags, add_tags, remove_tags, label, description | File, tag or label many assets in one undo step: the assets in `ids`, or every asset `filter` matches (media.list's filter keys; `{}` = all). `folder` is a bin path, created when missing. Never deletes. |
 | `media.linked` | Read | bin, sub | Linked folders `{bin, path}`; with `bin`, one level of that folder (`sub` below it): sub-folders and media files with their asset ids. Read only, never outside a linked folder. |
@@ -663,15 +665,18 @@ above — not from `editor.tools()`/`editor.log()`, which is a lossy, auto-expir
 |---|---|---|---|
 | `style.summary` | Read | - | Markdown style summary of the project (how it was edited) — for writing style guides. |
 
-**`subtitles.*`** (5 tools)
+**`subtitles.*`** (8 tools)
 
 | Tool | Kind | Args | Description |
 |---|---|---|---|
 | `subtitles.animation` | Mutate | color, kind | Set how generated captions animate against the transcript: none \| highlight (color [r,g,b,a]) \| pop \| typewriter. |
+| `subtitles.embed` | Job | path, out | Add the project's subtitles to an MP4 / MOV / MKV / WebM as a soft subtitle track; writes '<name> (subtitled).<ext>' unless out is given. |
+| `subtitles.extract` | Job | path, track | Read a text subtitle track out of a media file into the project's subtitles (replaces, one undo step). |
 | `subtitles.get` | Read | - | Subtitle cues. |
-| `subtitles.import` | Mutate | path | Import .srt/.vtt (replaces). |
+| `subtitles.import` | Mutate | path | Import .srt/.vtt/.ass/.ssa (replaces). |
 | `subtitles.set` | Mutate | cues | Replace all cues: [{start,end,text}]. |
 | `subtitles.style_preset` | Mutate | name | Set project.subtitle_style from a named caption style (builtin or Settings.caption_presets). |
+| `subtitles.tracks` | Read | path | List the subtitle tracks of a media file (index, label, picture), side-car files included. |
 
 **`tasks.*`** (5 tools)
 
