@@ -741,6 +741,13 @@ mod tests {
         builtin_blocks().into_iter().find(|b| b.name == name).unwrap()
     }
 
+    /// The keyed Pulse from before procedural blocks (scale 1 -> 1.08 -> 1 over 0.6 s).
+    fn keyed_pulse() -> KeyBlock {
+        let k = |f, v, ease| BlockKey { f, v: BlockVal::Mul(v), ease };
+        let keys = vec![k(0.0, 1.0, Ease::EaseInOut), k(0.5, 1.08, Ease::EaseInOut), k(1.0, 1.0, Ease::Linear)];
+        KeyBlock { name: "Pulse".into(), dur: 0.6, tracks: vec![BlockTrack { prop: "scale".into(), keys }], ..Default::default() }
+    }
+
     #[test]
     fn ships_about_25_unique_blocks_on_real_props() {
         let all = builtin_blocks();
@@ -759,7 +766,7 @@ mod tests {
     #[test]
     fn looping_a_block_grows_it_and_looping_keys_repeats_them() {
         let (mut p, id) = proj();
-        p.apply_key_block(id, &find("Pulse"), Some(1.0), None).unwrap(); // 0.6 s, scale 1 -> 1.08 -> 1
+        p.apply_key_block(id, &keyed_pulse(), Some(1.0), None).unwrap(); // 0.6 s, scale 1 -> 1.08 -> 1
         assert!(p.loop_key_block(id, 0, 3, false));
         let c = p.clip(id).unwrap();
         assert!((c.blocks[0].dur - 1.8).abs() < 1e-9 && c.blocks[0].ctl.as_ref().unwrap().loops == 3);
@@ -977,7 +984,9 @@ mod tests {
         let c = p.clip(id).unwrap();
         assert!((c.x.at(1.0) - w * 0.5).abs() < 1e-6, "now starts half a frame to the right");
         assert_eq!(c.x.keys.len(), 2, "the old keys went");
-        p.apply_key_block(id, &find("Camera Shake"), Some(3.0), Some(1.0));
+        // (the simulated Camera Shake older projects have; the Gallery's is procedural now)
+        let old_shake = KeyBlock { name: "Camera Shake".into(), dur: 1.0, gen: Some(Gen::Shake), ..Default::default() };
+        p.apply_key_block(id, &old_shake, Some(3.0), Some(1.0));
         let n = p.clip(id).unwrap().x.keys.len();
         assert!(p.retime_key_block(id, 1, 3.0, 2.0));
         let c = p.clip(id).unwrap();

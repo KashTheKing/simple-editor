@@ -462,6 +462,31 @@ impl BlockCtl {
         }
     }
 
+    /// What the block looks like as keys, for a picture (a Gallery card): `resolve`, or a procedural block's
+    /// motion sampled 30 times a second (x / y in frame widths / heights, as the keyed blocks).
+    pub fn sampled(&self, dur: f64) -> KeyBlock {
+        let Some(pc) = &self.proc else { return self.resolve(dur) };
+        let layers = pc.layers(0.0, dur, 1.0, 1.0);
+        let n = ((dur * 30.0).ceil() as usize).clamp(8, 900);
+        let tracks = PROC_PROPS
+            .iter()
+            .filter_map(|&p| {
+                let mine: Vec<ProcLayer> = layers.iter().filter(|l| l.0 == p).map(|l| l.1).collect();
+                (!mine.is_empty()).then(|| BlockTrack {
+                    prop: p.into(),
+                    keys: (0..=n)
+                        .map(|k| {
+                            let (f, t) = (k as f64 / n as f64, dur * k as f64 / n as f64);
+                            let v = if p == "scale" { BlockVal::Mul(apply_layers(&mine, 1.0, t)) } else { BlockVal::Add(apply_layers(&mine, 0.0, t)) };
+                            BlockKey { f, v, ease: Ease::Linear }
+                        })
+                        .collect(),
+                })
+            })
+            .collect();
+        KeyBlock { name: self.src.name.clone(), dur, tracks, ..Default::default() }
+    }
+
     fn resolve_one(&self, dur: f64) -> KeyBlock {
         // a procedural block writes no keys
         if self.proc.is_some() {
@@ -1094,6 +1119,13 @@ mod tests {
         find_block(&[], name).unwrap()
     }
 
+    /// The keyed Pulse from before procedural blocks (scale 1 -> 1.08 -> 1 over 0.6 s).
+    fn keyed_pulse() -> KeyBlock {
+        let k = |f, v, ease| BlockKey { f, v: BlockVal::Mul(v), ease };
+        let keys = vec![k(0.0, 1.0, Ease::EaseInOut), k(0.5, 1.08, Ease::EaseInOut), k(1.0, 1.0, Ease::Linear)];
+        KeyBlock { name: "Pulse".into(), dur: 0.6, tracks: vec![BlockTrack { prop: "scale".into(), keys }], ..Default::default() }
+    }
+
     #[test]
     fn controls_at_rest_reproduce_the_preset_exactly() {
         for b in builtin_blocks().into_iter().filter(|b| b.gen.is_none()) {
@@ -1204,7 +1236,7 @@ mod tests {
     #[test]
     fn a_loop_repeats_the_cycle_and_ping_pong_comes_back() {
         // a pulse (ends where it starts): 3 cycles share their seam keys
-        let mut ctl = BlockCtl::new(block("Pulse"));
+        let mut ctl = BlockCtl::new(keyed_pulse());
         ctl.loops = 3;
         let b = ctl.resolve(1.8);
         let k = &b.tracks[0].keys;
@@ -1223,7 +1255,7 @@ mod tests {
         assert_eq!(k.iter().map(|k| k.v).collect::<Vec<_>>(), [-1.0, 0.0, -1.0].map(BlockVal::Add));
         assert_eq!((k[0].ease, k[1].ease), (Ease::EaseOut, Ease::EaseIn));
         // a block that does not loop saves without the loop fields, and loads without them (old projects)
-        let plain = BlockCtl::new(block("Pulse"));
+        let plain = BlockCtl::new(keyed_pulse());
         let json = serde_json::to_string(&plain).unwrap();
         assert!(!json.contains("loops") && !json.contains("pingpong"), "{json}");
         assert_eq!(serde_json::from_str::<BlockCtl>(&json).unwrap(), plain);

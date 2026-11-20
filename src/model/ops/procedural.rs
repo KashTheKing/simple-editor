@@ -228,6 +228,31 @@ mod tests {
         assert!(c.blocks[0].props.contains(&"rotation".to_string()));
     }
 
+    /// Preview and export place a layer through the same `compose::placement` (the GPU path too): a frame with
+    /// a procedural Shake lands where the property sample says, at preview size and at export size alike.
+    #[test]
+    fn export_of_a_shaking_frame_matches_the_preview_sample() {
+        let (mut p, id) = proj();
+        (p.width, p.height) = (1920, 1080);
+        p.apply_key_block(id, &find("Camera Shake"), Some(1.0), Some(2.0)).unwrap();
+        let c = p.clip(id).unwrap().clone();
+        let t = 2.0; // the middle of the block: moving
+        let (sx, sy, sk) = (c.x.at(t), c.y.at(t), c.scale.at(t));
+        assert!(sx.abs() > 1e-6 && sy.abs() > 1e-6 && sk > 1.0, "it moves at {t}: {sx} {sy} {sk}");
+        let export = crate::engine::compose::placement(&p, &c, c.start + t, (1920, 1080), 1920, 1080, true);
+        let preview = crate::engine::compose::placement(&p, &c, c.start + t, (1920, 1080), 960, 540, true);
+        assert!((export.cx as f64 - (960.0 + sx)).abs() < 1e-3, "{} vs {}", export.cx, 960.0 + sx);
+        assert!((export.cy as f64 - (540.0 + sy)).abs() < 1e-3);
+        assert!((export.w as f64 - 1920.0 * sk).abs() < 1e-2);
+        assert!((export.cx - 2.0 * preview.cx).abs() < 1e-3 && (export.cy - 2.0 * preview.cy).abs() < 1e-3);
+        assert!((export.rot - preview.rot).abs() < 1e-6 && (export.w - 2.0 * preview.w).abs() < 1e-2);
+        // at the block's ends the clip is exactly where it was placed
+        for e in [1.0, 3.0] {
+            let pl = crate::engine::compose::placement(&p, &c, c.start + e, (1920, 1080), 1920, 1080, true);
+            assert_eq!((pl.cx, pl.cy, pl.w, pl.rot), (960.0, 540.0, 1920.0, 0.0));
+        }
+    }
+
     #[test]
     fn procedural_blocks_survive_save_and_load() {
         let (mut p, id) = proj();
