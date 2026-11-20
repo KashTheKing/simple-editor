@@ -167,13 +167,13 @@ end
 `draw()` does **not** run every frame. It runs when the panel opens, when the user interacts with it (and once
 more right after, so widgets above a clicked button show the new state), when the project is edited or the
 selection changes, when a `net.get` lands, and when the script file changes on disk (the panel reloads). An
-idle panel costs nothing, and playback never makes it run.
+idle panel costs nothing; while playback runs, only clicks are answered and the rest waits until it stops.
 
 ### Limits
 
 | | |
 |---|---|
-| A panel's `draw()` with nothing to answer | 4 ms |
+| A panel's `draw()` with nothing to answer (never while playback runs) | 16 ms |
 | A panel's `draw()` answering a click or edit (it may run tools) | 250 ms |
 | Loading a panel's file | 250 ms |
 | A script run | 5 s |

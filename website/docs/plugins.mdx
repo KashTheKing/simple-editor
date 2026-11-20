@@ -144,7 +144,7 @@ The widgets: `ui.heading`, `ui.label`, `ui.button` (true when clicked), `ui.slid
 `ui.column(fn)`, `ui.separator()`, `ui.space()` and `ui.image("pic.png")`. Each one that holds a value returns
 the value after the user's change, so store it back in a variable as above.
 
-Keep `draw()` quick: it has a few milliseconds (more when it answers a click). If it takes too long or errors,
+Keep `draw()` quick: it has about one frame, 16 ms (more when it answers a click), and while the video plays it only runs to answer clicks. If it takes too long or errors,
 the panel stops and shows the error with **Retry** and **Edit Script**. Saving the script reloads the panel.
 
 ### A script

@@ -44,6 +44,8 @@ pub(crate) struct PluginsUi {
     open: Vec<String>,
     /// Font files of enabled plugins handed to the text renderer.
     fonts_loaded: Vec<String>,
+    /// `state.json`'s `panel_slots`, read by `refresh` (never per frame).
+    slots: Vec<String>,
 }
 
 impl PluginsUi {
@@ -61,6 +63,7 @@ pub(super) fn refresh(app: &mut App) {
     app.plugins.list = plugins::list(&roots);
     app.plugins.loaded = true;
     let state = roots.load_state();
+    app.plugins.slots = state.panel_slots.clone();
     for (n, key) in state.panel_slots.iter().enumerate() {
         let (pid, panel) = key.split_once('/').unwrap_or((key, ""));
         match app.plugins.plugin(pid).and_then(|p| p.manifest.contents.panels.iter().find(|d| d.id == panel).map(|d| (p, d))) {
@@ -236,8 +239,7 @@ pub(super) fn toggle_panel(app: &mut App, plugin_id: &str, panel_id: &str) {
 
 fn panel_open(app: &App, plugin_id: &str, panel_id: &str) -> bool {
     let key = plugins::panel_key(plugin_id, panel_id);
-    let roots = app.plugins.roots();
-    roots.load_state().panel_slots.iter().position(|k| *k == key).is_some_and(|n| app.layout.is_visible(Pane::Plugin(n as u16)))
+    app.plugins.slots.iter().position(|k| *k == key).is_some_and(|n| app.layout.is_visible(Pane::Plugin(n as u16)))
 }
 
 // ------------------------------------------------------------------ registries
@@ -757,7 +759,8 @@ fn draw_panel(app: &mut App, ui: &mut egui::Ui, n: u16) {
     }
     panel.poll_script(std::time::Instant::now());
     let rev = revision(app);
-    if panel.needs_run(rev) {
+    let playing = app.player.is_playing();
+    if panel.needs_run(rev, playing) {
         let ctx = panel.ctx.clone();
         let label = format!("{}: {}", p.manifest.name, decl.title);
         with_env(app, &ctx, &label, |env| {
@@ -766,7 +769,7 @@ fn draw_panel(app: &mut App, ui: &mut egui::Ui, n: u16) {
         });
         // its own edits changed the revision: don't run again for them
         panel.drawn_for = revision(app);
-        if panel.needs_run(panel.drawn_for) {
+        if panel.needs_run(panel.drawn_for, playing) {
             ui.ctx().request_repaint(); // the one follow-up run after a click
         }
     }

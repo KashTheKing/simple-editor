@@ -15,16 +15,18 @@
 //! slider value, typed text) is handed to the next run as that widget's return value, so the script reads
 //! like immediate-mode code while the Lua never touches egui. `draw()` runs only when something could have
 //! changed (an interaction, an edit to the project, a download landing, a reload), never on idle frames,
-//! and under a strict budget: `IDLE_BUDGET` for a redraw, `ACTION_BUDGET` when it answers a click. Over
-//! budget, the panel stops and shows the error with a Retry button.
+//! and under a strict budget: `IDLE_BUDGET` for a redraw, `ACTION_BUDGET` when it answers a click. While
+//! playback runs only clicks are answered (the rest waits for it to stop). Over budget, the panel stops and
+//! shows the error with a Retry button.
 
 use super::runtime::{Ctx, Env, Vm};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// A redraw that answers no interaction (the project changed, a download landed).
-pub const IDLE_BUDGET: Duration = Duration::from_millis(4);
+/// A redraw that answers no interaction (the project changed, a download landed): one 60 Hz frame. These
+/// never run while playback runs (`needs_run`'s `playing`), so they can't cost a played frame.
+pub const IDLE_BUDGET: Duration = Duration::from_millis(16);
 /// A redraw that answers the user's click or edit (it may run tools).
 pub const ACTION_BUDGET: Duration = Duration::from_millis(250);
 /// Loading the script (its top level runs once).
@@ -142,9 +144,10 @@ impl Panel {
         self.mtime = m;
     }
 
-    /// Should `draw()` run now? Only when something it shows could have changed.
-    pub fn needs_run(&self, revision: u64) -> bool {
-        self.error.is_none() && (self.stale || !self.changes.is_empty() || revision != self.drawn_for)
+    /// Should `draw()` run now? Only when something it shows could have changed; while `playing`, only to
+    /// answer the user's click or edit.
+    pub fn needs_run(&self, revision: u64, playing: bool) -> bool {
+        self.error.is_none() && (!self.changes.is_empty() || !playing && (self.stale || revision != self.drawn_for))
     }
 
     /// Run `draw()` (loading the script first if needed) and keep the tree it records. Errors stop the
@@ -525,6 +528,21 @@ mod tests {
         Panel::new(c, script)
     }
 
+    impl Panel {
+        fn needs_run_t(&self, rev: u64) -> bool {
+            self.needs_run(rev, false)
+        }
+    }
+
+    #[test]
+    fn playback_holds_redraws_but_not_clicks() {
+        let mut p = panel(COUNTER);
+        run(&mut p, 0);
+        assert!(p.needs_run(1, false) && !p.needs_run(1, true), "an edit while playing waits for playback to stop");
+        p.changes.insert("Add".into(), Change::Click);
+        assert!(p.needs_run(0, true), "a click is answered while playing");
+    }
+
     fn run(p: &mut Panel, rev: u64) -> Vec<String> {
         let mut made = Vec::new();
         {
@@ -560,11 +578,11 @@ mod tests {
     #[test]
     fn a_panel_records_widgets_and_answers_clicks_on_the_next_run() {
         let mut p = panel(COUNTER);
-        assert!(p.needs_run(0));
+        assert!(p.needs_run_t(0));
         run(&mut p, 0);
         assert!(p.error.is_none(), "{:?}", p.error);
-        assert!(!p.needs_run(0), "nothing changed: no rerun on idle frames");
-        assert!(p.needs_run(1), "an edit to the project reruns it");
+        assert!(!p.needs_run_t(0), "nothing changed: no rerun on idle frames");
+        assert!(p.needs_run_t(1), "an edit to the project reruns it");
         assert_eq!(p.nodes[0], Node::Label { text: "Counter".into(), heading: true });
         assert_eq!(p.nodes[1], Node::Label { text: "n = 0".into(), heading: false });
         let Node::Row(kids) = &p.nodes[2] else { panic!("{:?}", p.nodes[2]) };
@@ -574,11 +592,11 @@ mod tests {
         // above the button up to date (immediate-mode: it was drawn before the click was handled)
         p.changes.insert("Add".into(), Change::Click);
         p.changes.insert("Name".into(), Change::Text("Bo".into()));
-        assert!(p.needs_run(0));
+        assert!(p.needs_run_t(0));
         run(&mut p, 0);
-        assert!(p.needs_run(0), "one follow-up run after a click");
+        assert!(p.needs_run_t(0), "one follow-up run after a click");
         run(&mut p, 0);
-        assert!(!p.needs_run(0), "and only one");
+        assert!(!p.needs_run_t(0), "and only one");
         assert_eq!(p.nodes[1], Node::Label { text: "n = 1".into(), heading: false });
         assert!(matches!(&p.nodes[3], Node::Text { value, .. } if value == "Bo"));
         // a click on Marker runs the tool, once
@@ -593,9 +611,9 @@ mod tests {
         run(&mut p, 0);
         let e = p.error.clone().unwrap();
         assert!(e.contains("budget"), "{e}");
-        assert!(p.nodes.is_empty() && !p.needs_run(5), "a stopped panel does not rerun on its own");
+        assert!(p.nodes.is_empty() && !p.needs_run_t(5), "a stopped panel does not rerun on its own");
         p.reload();
-        assert!(p.needs_run(5));
+        assert!(p.needs_run_t(5));
         let mut p = panel("local x = 1");
         run(&mut p, 0);
         assert!(p.error.unwrap().contains("draw()"));
@@ -638,7 +656,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut runs = 0;
         for _ in 0..30 {
-            if p.needs_run(0) {
+            if p.needs_run_t(0) {
                 run(&mut p, 0);
                 runs += 1;
             }
