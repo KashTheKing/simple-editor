@@ -914,3 +914,23 @@ A button that opens a panel/pane/window (e.g. the top-right Performance button) 
   SE_MCP_FULL_ACCESS=0 (+ assistant_guard false so `act settings` doesn't wait for an Allow).
 - Pass -Only as an array (`-Command "& .\scripts\docs-shots.ps1 -Only @('a','b')"`); with -File it arrives as one
   string and nothing matches. Windows can keep demo media open after a run: use a fresh -Work if it can't be wiped.
+
+## Page-switch freeze (2026-11-19, claude/fix-page-switch-freeze)
+- User report: clicking a page (Audio) sometimes froze the editor. Three blocking reads on the UI thread:
+  the Voiceover pane's first draw ran `ffmpeg -list_devices -f dshow` (4.7-16 s on this machine), the Export
+  pane's first draw ran `ffmpeg -encoders` (2.4-3.1 s), and the Inspector (Asset section) plus every Library
+  row stat'ed the source file each frame (`proxy::needs_proxy`, 30-90 ms under disk load).
+- Fix: `engine::bg_probe::BgProbe` (answer or start-once-and-None), `capture::audio_devices_nonblocking`,
+  `export::encoders_nonblocking` (+ `forget_encoders` on an ffmpeg folder change), warmed on the first frame
+  (`panes::warm_probes`); `proxy::file_len` = one stat worker + a 30 s cache. Regression test:
+  `audio_page_first_draw_does_no_blocking_probe` (no UI code calls the blocking probes).
+- Also on every switch: `switch_page` wrote settings.json on the UI thread (40-300 ms on a busy disk). It uses
+  `Settings::save_async` now (snapshot, write on a thread, newest save wins by a generation number, one lock
+  around write+rename; `Settings::save_pending` -> a sync `save` when the window closes). The other ~110
+  `settings.save()` callers are still synchronous - a candidate for the same treatment.
+- `SE_FRAME_TRACE=<ms>` (perf.rs): every UI frame slower than <ms> goes to stderr (from a writer thread)
+  with cumulative section marks (@hooks/@pre-layout/@layout/@acts/@windows) and each pane over 1 ms, plus
+  "frame gap" lines with eframe's update+paint for the previous frame. Writing the lines on the UI thread
+  showed up as fake 0.5 s hitches while cargo hammered the disk - keep the writer thread.
+- Measuring through MCP on a loaded machine: `layout.page` round-trips of 1-25 s were idle time (HTTP), not UI
+  work - read the trace, not the call time.

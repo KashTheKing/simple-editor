@@ -617,3 +617,42 @@ fn old_popups_are_gone_or_forwarded_to_panes() {
         assert!(Pane::ALL.contains(&p) && Pane::by_title(p.title()) == Some(p), "{p:?}");
     }
 }
+
+// ---- ws:page-switch-freeze ----
+/// The first visit to the Audio page froze the editor for 5-16 s: the Voiceover pane's first draw ran
+/// `ffmpeg -list_devices` on the UI thread (and the Export page's first draw `ffmpeg -encoders`, 2-3 s).
+/// The UI reads both through `*_nonblocking` (a background `BgProbe`); this pins that no UI code calls
+/// the blocking probes again.
+#[test]
+fn audio_page_first_draw_does_no_blocking_probe() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui"), &mut files);
+    let mut hits = Vec::new();
+    for f in &files {
+        let src = std::fs::read_to_string(f).unwrap();
+        for (i, line) in src.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            if code.contains(".contains(\"") {
+                continue; // this test's own patterns
+            }
+            if code.contains("capture::audio_devices)") || code.contains("capture::audio_devices(")
+                || code.contains("detect_encoders(")
+            {
+                hits.push(format!("{}:{}", f.display(), i + 1));
+            }
+        }
+    }
+    assert!(hits.is_empty(), "blocking ffmpeg probes called from UI code: {hits:?}");
+    // (that the non-blocking path never waits is `bg_probe::tests::get_never_waits_on_the_job`: running
+    // the real probes here would start the hardware-encoder probe for the whole test process)
+}

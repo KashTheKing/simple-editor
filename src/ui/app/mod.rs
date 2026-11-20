@@ -93,6 +93,8 @@ mod source_ctl;
 mod source_pane;
 // every placement call site (drops, library add, recording import, panes) names a DropMode
 pub(crate) use edit_ops::DropMode;
+use panes::wake_ui; // ws:page-switch-freeze
+use panes::warm_probes;
 // ---- ws:inspector-gallery ----: `pub(crate)`, not private, so `ui::gallery` (a sibling of `ui::app`,
 // not a descendant) can name `thumbs::ThumbSource` - gallery.rs owns the actual thumbnail cache
 // (thread-local, mirroring effects_ui.rs's own `THUMBS`), this module only builds the textures.
@@ -1288,6 +1290,7 @@ impl eframe::App for App {
             crate::perf::startup_mark(&format!("update {} start", self.startup_frames));
         }
         let perf_t0 = Instant::now(); // ws:perf-baseline: the HUD's UI frame time
+        crate::perf::frame_trace_start(_frame.info().cpu_usage); // ws:page-switch-freeze
         // shown cloaked, maximised when it should be, and revealed once a frame at its final size is
         // on screen (`winpos::Reveal`): no white flash, no jump
         let just = self.reveal.step(ctx, _frame, !crate::winpos::background());
@@ -1295,6 +1298,7 @@ impl eframe::App for App {
         crate::ui::titlebar::corners(ctx, _frame);
         if !self.window_shown {
             self.window_shown = true;
+            warm_probes(ctx); // ws:page-switch-freeze
             boot::run(self); // ws:forgiveness: offers crash recovery, if any
             self.recover_recordings(); // screen recordings a crash or power cut left unfinished
         }
@@ -1334,6 +1338,7 @@ impl eframe::App for App {
         for f in FRAME_HOOKS {
             f(self, ctx);
         }
+        crate::perf::frame_trace("@hooks", perf_t0); // ws:page-switch-freeze: SE_FRAME_TRACE marks
         // ---- ws:ui-kit ----: this frame's ui::menu snapshot, last frame's menu clicks, ui.screenshot images
         tools_uikit::frame(self, ctx);
         self.poll_panels();
@@ -1400,6 +1405,9 @@ impl eframe::App for App {
         }
         // the window really closes this frame: answer held / parked MCP calls instead of letting them time out
         if self.close_confirmed && ctx.input(|i| i.viewport().close_requested()) {
+            if Settings::save_pending() {
+                self.settings.save(); // ws:page-switch-freeze: a page switch's save_async may not have landed
+            }
             assistant_ctl::deny_held(self, "the app closed");
             tools_context::end_waits(self, "the app closed");
         }
@@ -1608,6 +1616,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title));
         }
 
+        crate::perf::frame_trace("@pre-layout", perf_t0);
         // ---- layout ----
         if self.fullscreen {
             // same pane as the docked preview (it reads self.fullscreen) - no second copy to drift
@@ -1670,6 +1679,7 @@ impl eframe::App for App {
                     },
                 );
                 self.layout = l;
+                crate::perf::frame_trace("@layout", perf_t0);
                 self.layout_dirty |= shown.changed;
                 // ---- ws:panels-multiscreen ----
                 if let Some(p) = shown.drag_out {
@@ -1731,8 +1741,10 @@ impl eframe::App for App {
             }
         }
 
+        crate::perf::frame_trace("@acts", perf_t0);
         // also in fullscreen: an export's progress + Cancel must not disappear behind it
         self.windows(ctx);
+        crate::perf::frame_trace("@windows", perf_t0);
 
         // persist the layout when it changed, debounced to the end of drag gestures
         if self.layout_dirty && !ctx.input(|i| i.pointer.any_down()) {
@@ -1748,6 +1760,7 @@ impl eframe::App for App {
         // toasts: drawn by feedback::draw, a WINDOW_DRAWER (ws:forgiveness) - this used to be an inline
         // block here; see windows() -> WINDOW_DRAWERS.
         let hits = self.player.cache_hits(); // ws:perf-baseline
+        crate::perf::frame_trace_end(perf_t0, &self.settings.page); // ws:page-switch-freeze
         self.hud.end_frame(perf_t0, self.gpu.as_mut(), hits);
     }
 

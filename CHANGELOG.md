@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Opening the Audio or Export page no longer freezes the editor**: the microphone list (Voiceover) and the encoder list (Export) are looked up in the background after launch instead of the first time the page draws (that could take 5-16 seconds).
+- **Switching pages is smoother**: the page switch saves your layout in the background, and the Inspector and the Library no longer read a video's file size from disk on every frame (on a busy or sleeping drive either could hold a page's first frame for a tenth of a second or more).
+
 ## 1.4.0
 
 ### Media player

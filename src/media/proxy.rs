@@ -237,9 +237,51 @@ pub fn decode_heavy(codec: &str, w: u32, h: u32, bits_per_sec: f64) -> bool {
 
 /// `decode_heavy` for a library asset (bit rate from file size over duration).
 pub fn needs_proxy(a: &crate::model::Asset) -> bool {
-    let bytes = std::fs::metadata(&a.path).map_or(0, |m| m.len());
+    let bytes = file_len(&a.path);
     let bps = if a.duration > 0.0 { bytes as f64 * 8.0 / a.duration } else { 0.0 };
     decode_heavy(&a.codec, a.width, a.height, bps)
+}
+
+// ---- ws:page-switch-freeze ----
+/// A source's size in bytes for `needs_proxy`'s bit rate, never read on the caller's thread: the
+/// Inspector, the Library rows and the media sync ask every frame, and one `metadata` call on a busy or
+/// sleeping disk took 30-90 ms (seconds on a spun-down drive) - the first frame of a page showing the
+/// Inspector. Unknown (0, so only size and codec count) until one worker thread has stat'ed it; refreshed
+/// in the background when older than 30 s.
+fn file_len(path: &str) -> u64 {
+    use std::sync::mpsc::{channel, Sender};
+    use std::time::{Duration, Instant};
+    static SIZES: Mutex<BTreeMap<String, (Instant, u64)>> = Mutex::new(BTreeMap::new());
+    static WORKER: std::sync::OnceLock<Mutex<Sender<String>>> = std::sync::OnceLock::new();
+    let ask = |p: &str| {
+        let tx = WORKER.get_or_init(|| {
+            let (tx, rx) = channel::<String>();
+            let _ = std::thread::Builder::new().name("proxy-stat".into()).spawn(move || {
+                for p in rx {
+                    let len = std::fs::metadata(&p).map_or(0, |m| m.len());
+                    lock(&SIZES).insert(p, (Instant::now(), len));
+                }
+            });
+            Mutex::new(tx)
+        });
+        let _ = lock(tx).send(p.to_string());
+    };
+    let mut sizes = lock(&SIZES);
+    match sizes.get_mut(path) {
+        Some((at, len)) => {
+            if at.elapsed() > Duration::from_secs(30) {
+                *at = Instant::now(); // one refresh in flight, not one per frame
+                ask(path);
+            }
+            *len
+        }
+        None => {
+            sizes.insert(path.to_string(), (Instant::now(), 0));
+            drop(sizes);
+            ask(path);
+            0
+        }
+    }
 }
 
 /// The height `a`'s proxy is built at: the proxy height, or the source's own (even) height when that
@@ -709,6 +751,23 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- ws:page-switch-freeze ----
+    /// The Inspector asks `needs_proxy` every frame: the size comes from a cache a worker fills, so the
+    /// first ask answers at once (0 = unknown) and a later one has the real size.
+    #[test]
+    fn file_len_is_read_off_the_callers_thread() {
+        let p = std::env::temp_dir().join(format!("se-flen-{}.bin", std::process::id()));
+        std::fs::write(&p, vec![0u8; 1234]).unwrap();
+        let path = p.to_string_lossy().into_owned();
+        assert_eq!(file_len(&path), 0, "unknown until the worker has stat'ed it");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while file_len(&path) != 1234 {
+            assert!(std::time::Instant::now() < deadline, "the size never landed");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let _ = std::fs::remove_file(&p);
     }
 
     // ---- ws:html-layer ----
