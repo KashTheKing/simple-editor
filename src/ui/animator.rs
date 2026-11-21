@@ -164,6 +164,8 @@ pub struct AnimState {
     blk_edge: i8,
     /// Every block bar drawn last frame (tests find a block's ends with it).
     blk_rects: Vec<((Id, usize), Rect)>,
+    /// Blocks copied with Ctrl+C (or the block menu's Copy).
+    block_clip: Vec<crate::model::ops::CopiedBlock>,
     /// Curves: width of the label column, which holds each clip's channel list; `None` = `CH_W`.
     pub ch_w: Option<f32>,
     /// The last press was in the Animator: Delete / Backspace / Split act on its block or keys, not the clip.
@@ -319,6 +321,40 @@ pub fn prop_label(p: &str) -> &'static str {
         _ => "Volume",
     }
 }
+/// What a block edits, for its bar and tooltip: X and Y together read Position.
+fn edits(props: &[String]) -> Vec<(&'static str, Color32)> {
+    let has = |n: &str| props.iter().any(|p| p == n);
+    let mut out = Vec::new();
+    for p in props {
+        match p.as_str() {
+            "x" | "y" if has("x") && has("y") => {
+                if p == "x" {
+                    out.push(("Position", prop_color("x")));
+                }
+            }
+            p => out.push((prop_label(p), prop_color(p))),
+        }
+    }
+    out
+}
+
+/// The properties a block edits as small labelled chips on its bar, from `x`, as many as fit.
+fn edit_chips(p: &egui::Painter, r: Rect, mut x: f32, props: &[String]) {
+    let font = FontId::proportional(10.0);
+    for (name, col) in edits(props) {
+        let g = p.layout_no_wrap(name.to_string(), font.clone(), Color32::WHITE);
+        let w = g.size().x + 15.0;
+        if x + w > r.right() - 8.0 {
+            break;
+        }
+        let chip = Rect::from_min_size(pos2(x, r.center().y - 7.0), vec2(w, 14.0));
+        p.rect_filled(chip, 7.0, Color32::from_black_alpha(130));
+        p.circle_filled(pos2(chip.left() + 6.0, chip.center().y), 3.0, col);
+        p.galley(pos2(chip.left() + 11.0, chip.center().y - g.size().y / 2.0), g, Color32::WHITE);
+        x += w + 3.0;
+    }
+}
+
 pub(crate) fn prop_color(p: &str) -> Color32 {
     match p {
         "x" => Color32::from_rgb(0x33, 0x66, 0xFF),
@@ -1534,6 +1570,7 @@ fn lanes_view(
         let top = rr.bottom();
         let mut act: Option<Act> = flow_now.then(|| flow_act(picked(st), st.mode));
         let mut rects: Vec<(Rect, (Id, usize))> = Vec::new(); // every block bar drawn, for the selection box
+        let clip_cmd = std::cell::Cell::new(None::<(char, (Id, usize))>); // the block menu's Copy / Paste
         st.blk_rects.clear();
         let mut rects_tr: Vec<Rect> = Vec::new(); // every transition bar drawn (a drag on one is not a box)
         let mut heads: Vec<(Rect, Id, usize)> = Vec::new(); // every clip's label cell and how many blocks it has
@@ -2072,7 +2109,8 @@ fn lanes_view(
                 // a looped block: "×3" after its name and a tick where each cycle starts
                 let cycles = b.ctl.as_ref().map_or(1, |c| c.cycles());
                 let name = if cycles > 1 { format!("{} ×{cycles}", b.name) } else { b.name.clone() };
-                inner.text(pos2(tx0, r.center().y), Align2::LEFT_CENTER, name, FontId::proportional(11.0), Color32::WHITE);
+                let named = inner.text(pos2(tx0, r.center().y), Align2::LEFT_CENTER, name, FontId::proportional(11.0), Color32::WHITE);
+                edit_chips(&inner, r, named.right() + 8.0, &b.props);
                 for j in (1..cycles).filter(|_| r.width() / cycles as f32 > 4.0) {
                     let cx = r.left() + r.width() * j as f32 / cycles as f32;
                     inner.line_segment(
@@ -2117,14 +2155,15 @@ fn lanes_view(
                 });
                 let resp =
                     resp.on_hover_cursor(if edge != 0 { CursorIcon::ResizeHorizontal } else { CursorIcon::Default });
+                let what = edits(&b.props).iter().map(|e| e.0).collect::<Vec<_>>().join(", ");
                 let resp = resp.on_hover_text(if b.is_proc() {
                     format!(
-                        "{} · {:.2} s · procedural: no keys, it fades in and out from where the clip is placed. Drag to move, drag an end to make it longer (same speed), right-click to convert it to keyframes",
+                        "{} · {:.2} s · edits {what} · procedural: no keys, it fades in and out from where the clip is placed. Drag to move, drag an end to make it longer (same speed), right-click to convert it to keyframes",
                         b.name, b.dur
                     )
                 } else {
                     format!(
-                        "{} · {:.2} s · drag to move, drag an end to stretch, click ▸ to shape how it moves, Shift-click to pick more",
+                        "{} · {:.2} s · edits {what} · drag to move, drag an end to stretch, click ▸ to shape how it moves, Shift-click to pick more",
                         b.name, b.dur
                     )
                 });
@@ -2224,6 +2263,13 @@ fn lanes_view(
                 let proc = b.is_proc();
                 let unbake = !proc && b.ctl.as_ref().is_some_and(|c| c.unbaked.is_some()) && project.can_unbake(id, i);
                 menu::context(&resp, |ui| {
+                    if menu::row(ui, None, "Copy", "Ctrl+C").clicked() {
+                        clip_cmd.set(Some(('c', (id, i))));
+                    }
+                    if !st.block_clip.is_empty() && menu::row(ui, None, "Paste at Playhead", "Ctrl+V").clicked() {
+                        clip_cmd.set(Some(('v', (id, i))));
+                    }
+                    ui.separator();
                     if proc && menu::row(ui, None, "Convert to Keyframes", "").on_hover_text("Bake the motion into keys at the project frame rate, to edit them by hand").clicked() {
                         act = Some(bake_act(id, i));
                     }
@@ -2524,9 +2570,89 @@ fn lanes_view(
             f(project, st, out);
             out.edited = true;
         }
+        // copy / cut / paste blocks, with the pointer over the lanes (else the keys are the timeline's)
+        let mut cmd = clip_cmd.get();
+        if cmd.is_none() && view == View::Blocks && !ui.ctx().wants_keyboard_input() && ui.rect_contains_pointer(lanes_rect) {
+            let (any, full) = (!picked(st).is_empty(), !st.block_clip.is_empty());
+            let k = ui.input_mut(|i| {
+                let c = egui::Modifiers::COMMAND;
+                if i.modifiers.shift || i.modifiers.alt {
+                    None
+                } else if any && i.consume_key(c, egui::Key::C) {
+                    Some('c')
+                } else if any && i.consume_key(c, egui::Key::X) {
+                    Some('x')
+                } else if full && i.consume_key(c, egui::Key::V) {
+                    Some('v')
+                } else {
+                    None
+                }
+            });
+            cmd = k.map(|k| (k, picked(st).first().copied().unwrap_or((0, 0))));
+        }
+        if let Some((k, on)) = cmd {
+            block_clipboard(k, on, st, project, ids, ph, undo, out);
+        }
     });
     let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), SCROLL_H), Sense::hover());
     time_scrollbar(ui, Rect::from_min_max(pos2(bar.left() + head_w, bar.top()), bar.max), &mut st.win, fit);
+}
+
+/// Copy (`c`), cut (`x`) or paste (`v`) blocks. Copy and cut take the picked blocks, or `on` when the menu was
+/// opened on a block outside them; paste lands at the playhead on the selected clips, one undo step.
+#[allow(clippy::too_many_arguments)]
+fn block_clipboard(
+    k: char,
+    on: (Id, usize),
+    st: &mut AnimState,
+    project: &mut Project,
+    ids: &[Id],
+    ph: f64,
+    undo: &mut dyn FnMut(&Project),
+    out: &mut AnimResp,
+) {
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    if k == 'v' {
+        let spots = project.paste_spots(&st.block_clip, ids, ph);
+        if spots.is_empty() {
+            out.toast = Some("Move the playhead over the clip to paste there".into());
+            return;
+        }
+        undo(project);
+        let done = project.paste_key_blocks(&st.block_clip, &spots);
+        let at = |&(id, t): &(Id, f64)| {
+            let i = project.clip(id)?.blocks.iter().position(|b| (b.t - t).abs() < 1e-9)?;
+            Some((id, i))
+        };
+        let placed: Vec<(Id, usize)> = done.iter().filter_map(at).collect();
+        (st.sel, st.multi) = (placed.first().copied(), placed.iter().skip(1).copied().collect());
+        st.spans.clear();
+        out.edited = true;
+        out.toast = Some(format!("Pasted {} block{}", done.len(), plural(done.len())));
+        return;
+    }
+    let mut picks = picked(st);
+    if !picks.contains(&on) {
+        picks = vec![on];
+    }
+    let copied = project.copy_key_blocks(&picks);
+    if copied.is_empty() {
+        return;
+    }
+    let n = copied.len();
+    st.block_clip = copied;
+    if k == 'x' {
+        undo(project);
+        picks.sort_by(|a, b| b.1.cmp(&a.1)); // last first: the earlier indexes stay right
+        for (id, i) in picks {
+            project.remove_key_block(id, i);
+        }
+        (st.sel, st.multi) = (None, Vec::new());
+        out.edited = true;
+        out.toast = Some(format!("Cut {n} block{}", plural(n)));
+    } else {
+        out.toast = Some(format!("Copied {n} block{}", plural(n)));
+    }
 }
 
 /// What a Gallery card dropped at timeline time `t` on lane `on` (a clip's; None = the Timeline lane) does:
@@ -4140,7 +4266,12 @@ fn block_card(ui: &mut Ui, project: &mut Project, pal: &Palette, undo: &mut dyn 
             return;
         }
         ui.label(
-            egui::RichText::new(format!("on {cname} · {:.2} – {:.2} s", b.t, b.end())).size(11.5).color(look::MUTED),
+            egui::RichText::new(format!(
+                "on {cname} · {:.2} – {:.2} s · edits {}",
+                b.t,
+                b.end(),
+                edits(&b.props).iter().map(|e| e.0).collect::<Vec<_>>().join(", ")
+            )).size(11.5).color(look::MUTED),
         );
         ui.add_space(6.0);
         let mut toast = None;
@@ -4373,9 +4504,7 @@ fn path_controls(
         }
         ui.end_row();
         let r = slider(ui, "Duration", &mut dur, 0.05, 10.0, " s");
-        if r.changed() {
-            gesture |= r.drag_started() || !r.dragged();
-        }
+        gesture |= r.drag_started() || (r.changed() && !r.dragged());
         let r = slider(ui, "Smoothing", &mut path.smoothing, 0.0, 1.0, "")
             .on_hover_text("0: the points as you drew them. 1: a heavily smoothed curve. The two ends stay where they are");
         note(&r, &mut changed, &mut gesture);
@@ -4448,9 +4577,7 @@ fn proc_controls(
             .on_hover_text("Cycles per second. Making the block longer keeps this speed: the motion just lasts longer");
         note(&r, &mut changed, &mut gesture);
         let r = slider(ui, "Duration", &mut dur, 0.05, 30.0, " s");
-        if r.changed() {
-            gesture |= r.drag_started() || !r.dragged();
-        }
+        gesture |= r.drag_started() || (r.changed() && !r.dragged());
         let (mut fi, mut fo) = (pc.fade_in * 100.0, pc.fade_out * 100.0);
         let r = slider(ui, "Fade In", &mut fi, 1.0, 100.0, "%")
             .on_hover_text("How long the motion takes to build up from the clip's placed position, as a share of the block");
@@ -4637,9 +4764,7 @@ fn block_controls(
         changed |= r.changed();
         gesture |= r.drag_started() || (r.changed() && !r.dragged());
         let r = slider(ui, "Duration", &mut dur, 0.05, 10.0, " s");
-        if r.changed() {
-            gesture |= r.drag_started() || !r.dragged();
-        }
+        gesture |= r.drag_started() || (r.changed() && !r.dragged());
         field(ui, "Loop");
         ui.horizontal(|ui| {
             let (mut n, mut back) = (ctl.cycles(), ctl.pingpong);
@@ -4647,10 +4772,10 @@ fn block_controls(
                 .add(egui::DragValue::new(&mut n).range(1..=50).speed(0.1).suffix("×"))
                 .on_hover_text("How many times the block plays (1 = once): it grows to that many times its length");
             let r2 = ui.checkbox(&mut back, "ping-pong").on_hover_text("Every other time runs backwards: there and back");
+            gesture |= r.drag_started() || ((r.changed() || r2.changed()) && !r.dragged());
             if r.changed() || r2.changed() {
                 // back and forth needs a way back
                 looped = Some((if back && n < 2 { 2 } else { n }, back));
-                gesture |= r.drag_started() || !r.dragged();
             }
         });
         ui.end_row();

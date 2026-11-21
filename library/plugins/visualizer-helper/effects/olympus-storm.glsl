@@ -12,10 +12,10 @@
 // @param wave 0 0 1
 // @param lyric 0 0 1
 // @param vib 0 -1 1
-// @param kick 1.2 0 3
+// @param kick 1.4 0 3
 // @param screech 1.2 0 3
 // @param fx 1 0 1
-// @param beam 1 0 3
+// @param beam 0.2 0 3
 //
 // Keyed by hand (the app's own beat detection misses most hardstyle hits):
 // `kclock` one key per beat hit (value = hit number, linear between): fract() is the phase since the

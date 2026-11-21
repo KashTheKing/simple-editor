@@ -3,6 +3,18 @@
 
 use crate::model::*;
 
+/// A block on the Animator's clipboard (`Project::copy_key_blocks`).
+#[derive(Clone, Debug)]
+pub struct CopiedBlock {
+    pub clip: Id,
+    /// Its start on the timeline, so several keep their spacing.
+    pub at: f64,
+    pub dur: f64,
+    pub ctl: Option<BlockCtl>,
+    /// Its keys, for a block edited by hand (its controls no longer describe it).
+    pub keys: Option<KeyBlock>,
+}
+
 impl Project {
     /// Apply `block` to clip `id`. `at` = clip-local start; `None` chains after the clip's last block
     /// (or starts at 0). A start inside an existing block snaps to that block's end, so repeated clicks
@@ -449,6 +461,78 @@ impl Project {
     }
 
     /// Delete applied block `i` and the keys it wrote (a seam key shared with a chained neighbour stays).
+    /// The Animator's Ctrl+C: blocks as they are. Live controls while they still describe the keys, else the keys.
+    pub fn copy_key_blocks(&self, picks: &[(Id, usize)]) -> Vec<CopiedBlock> {
+        let (w, h) = (self.width as f64, self.height as f64);
+        let mut out: Vec<CopiedBlock> = picks
+            .iter()
+            .filter_map(|&(id, i)| {
+                let c = self.clip(id)?;
+                let b = c.blocks.get(i)?;
+                let ctl = b.ctl.clone().filter(|x| !x.edited);
+                let keys = if ctl.is_some() {
+                    None
+                } else {
+                    let mut k = c.capture_block(&b.name, b.t, b.end(), w, h)?;
+                    k.tracks.retain(|t| b.props.contains(&t.prop));
+                    Some(k)
+                };
+                Some(CopiedBlock { clip: id, at: c.start + b.t, dur: b.dur, ctl, keys })
+            })
+            .collect();
+        out.sort_by(|a, b| a.at.total_cmp(&b.at));
+        out
+    }
+
+    /// Where a paste at timeline time `ph` lands: (clip, clip-local start, index into `blocks`). The earliest
+    /// block starts at `ph` and the others keep their distance. Blocks from one clip go on every clip in
+    /// `targets` (none: back on their own); from several clips, each stays on its own. Skips a clip
+    /// the playhead-relative time falls outside of.
+    pub fn paste_spots(&self, blocks: &[CopiedBlock], targets: &[Id], ph: f64) -> Vec<(Id, f64, usize)> {
+        let Some(first) = blocks.first().map(|b| b.at) else { return Vec::new() };
+        let one_clip = blocks.iter().all(|b| b.clip == blocks[0].clip);
+        let mut out = Vec::new();
+        for (k, b) in blocks.iter().enumerate() {
+            let on: Vec<Id> = if one_clip && !targets.is_empty() { targets.to_vec() } else { vec![b.clip] };
+            for id in on {
+                let Some(c) = self.clip(id) else { continue };
+                let t = ph + (b.at - first) - c.start;
+                if t >= -1e-9 && t < c.duration - 0.01 {
+                    out.push((id, t.max(0.0), k));
+                }
+            }
+        }
+        out
+    }
+
+    /// Place `blocks` at `spots` (`paste_spots`). Returns where each one landed (clip, clip-local start).
+    pub fn paste_key_blocks(&mut self, blocks: &[CopiedBlock], spots: &[(Id, f64, usize)]) -> Vec<(Id, f64)> {
+        let (w, h) = (self.width as f64, self.height as f64);
+        let mut out = Vec::new();
+        for &(id, t, k) in spots {
+            let b = &blocks[k];
+            let at = match (&b.ctl, &b.keys) {
+                (Some(ctl), _) => {
+                    let at = self.clip_mut(id).and_then(|c| c.place_ctl(ctl.clone(), t, Some(b.dur), w, h));
+                    // a simulation with walls measures this clip's room in the frame
+                    if let (Some(a), true) = (at, ctl.src.gen.is_some_and(|g| g.walls())) {
+                        let i = self.clip(id).and_then(|c| c.blocks.iter().position(|x| (x.t - a.0).abs() < 1e-9));
+                        if let Some(i) = i {
+                            self.set_block_ctl(id, i, ctl.clone());
+                        }
+                    }
+                    at
+                }
+                (None, Some(keys)) => self.place_key_block(id, keys, t, Some(b.dur)),
+                _ => None,
+            };
+            if let Some((t, _)) = at {
+                out.push((id, t));
+            }
+        }
+        out
+    }
+
     pub fn remove_key_block(&mut self, id: Id, i: usize) -> bool {
         let Some(c) = self.clip_mut(id) else { return false };
         if i >= c.blocks.len() {
@@ -1245,6 +1329,50 @@ mod tests {
         assert!(p.retime_key_block(1, i, -1.0, 7.0));
         let x = &p.clip(1).unwrap().blocks[i];
         assert!((x.t - 0.0).abs() < 1e-9 && (x.end() - 6.0).abs() < 1e-9, "{} {}", x.t, x.dur);
+    }
+
+    /// Copy and paste: a copy lands at the playhead with its properties and leaves the original; a procedural
+    /// block gets its own motion; a hand-edited block keeps its edited keys.
+    #[test]
+    fn blocks_copy_and_paste() {
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "a", 0.0, 6.0));
+        p.tracks[0].clips.push(Clip::new(2, ClipKind::Video, "b", 6.0, 6.0));
+        let find = |n: &str| builtin_blocks().into_iter().find(|b| b.name == n).unwrap();
+        p.place_key_block(1, &find("Zoom Punch"), 1.0, Some(0.5)).unwrap();
+        let copied = p.copy_key_blocks(&[(1, 0)]);
+        let spots = p.paste_spots(&copied, &[2], 8.0);
+        assert_eq!(spots, vec![(2, 2.0, 0)]);
+        assert_eq!(p.paste_key_blocks(&copied, &spots), vec![(2, 2.0)]);
+        assert_eq!(p.clip(1).unwrap().blocks.len(), 1, "the original stays");
+        let b = &p.clip(2).unwrap().blocks[0];
+        assert_eq!((b.t, b.dur, b.props.clone()), (2.0, 0.5, p.clip(1).unwrap().blocks[0].props.clone()));
+        assert!(p.clip(2).unwrap().scale.keys.iter().any(|k| (k.t - 2.0).abs() < 1e-9));
+        assert!(p.paste_spots(&copied, &[2], 1.0).is_empty(), "the playhead is not over that clip");
+
+        p.place_key_block(1, &find("Camera Shake"), 3.0, Some(1.0)).unwrap();
+        let i = p.clip(1).unwrap().blocks.iter().position(|b| b.is_proc()).unwrap();
+        let copied = p.copy_key_blocks(&[(1, i)]);
+        let spots = p.paste_spots(&copied, &[], 4.5);
+        p.paste_key_blocks(&copied, &spots);
+        let c = p.clip(1).unwrap();
+        let pids: Vec<_> = c.blocks.iter().filter_map(|b| b.proc().map(|x| x.pid)).collect();
+        assert!(pids.len() == 2 && pids[0] != pids[1], "{pids:?}");
+
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "a", 0.0, 6.0));
+        p.place_key_block(1, &find("Zoom Punch"), 1.0, Some(0.5)).unwrap();
+        let c = p.clip_mut(1).unwrap();
+        c.blocks[0].ctl.as_mut().unwrap().edited = true;
+        let peak = c.scale.keys.iter().map(|k| k.v).fold(0.0, f64::max) + 0.5;
+        let j = c.scale.keys.len() / 2;
+        c.scale.keys[j].v = peak;
+        let copied = p.copy_key_blocks(&[(1, 0)]);
+        assert!(copied[0].ctl.is_none() && copied[0].keys.is_some());
+        let spots = p.paste_spots(&copied, &[], 3.0);
+        p.paste_key_blocks(&copied, &spots);
+        let max = p.clip(1).unwrap().scale.keys.iter().filter(|k| k.t >= 3.0).map(|k| k.v).fold(0.0, f64::max);
+        assert!((max - peak).abs() < 1e-6, "{max} vs {peak}");
     }
 
 }
