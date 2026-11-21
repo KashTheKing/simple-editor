@@ -105,3 +105,4 @@ pub mod gpu_pick; // Settings ▸ Performance ▸ GPU
 pub mod media_info; // Media Properties: streams, colour, bitrate graph
 pub mod netstream; // Open Network Stream: probe, preview, record
 pub mod shuttle; // Contour ShuttlePRO / ShuttleXpress
+pub mod vizhelp; // ws:visualizer-helper: song analysis, lyric timing, template keys

@@ -756,6 +756,7 @@ mod timemap;
 mod track;
 mod transition;
 mod zone; // ws:zones-markers
+mod vizhelp; // ws:visualizer-helper
 
 #[cfg(test)]
 mod tests;
@@ -783,6 +784,7 @@ pub use timemap::*;
 pub use track::*;
 pub use transition::*;
 pub use zone::*; // ws:zones-markers
+pub use vizhelp::{SongViz, VizMade}; // ws:visualizer-helper
 
 thread_local! {
     // ponytail: on in unit tests, where `set_at` on an animated property has always meant "key it here"
