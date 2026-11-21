@@ -717,7 +717,7 @@ impl Player {
         self.send_render(Cmd::RenderOnce(t, max_w, tx)).ok()?;
         rx.recv_timeout(Duration::from_secs(3)).ok()
     }
-    /// Synchronously decode the layers at `t` (at most `max_w` px wide) on the render thread, for a
+    /// Synchronously decode the layers at `t` (at most `max_w` px wide, up to `ONCE_MAX_W`) on the render thread, for a
     /// one-off GPU render on the UI thread (export-frame, MCP tools). None if it takes longer than 3 s.
     pub fn layers_once(&self, t: f64, max_w: u32) -> Option<Arc<LayerSet>> {
         let (tx, rx) = mpsc::sync_channel(1);
@@ -1107,7 +1107,8 @@ fn render_thread(
                 }
                 Cmd::LayersOnce(t, max_w, reply) => {
                     let (pw, ph) = (full.width.max(1), full.height.max(1));
-                    let w = pw.min(max_w.max(16));
+                    // up to `ONCE_MAX_W`: an image export bigger than the project renders natively
+                    let w = max_w.clamp(16, ONCE_MAX_W.max(pw));
                     let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
                     let mut set = LayerSet::default();
                     let text = &mut TextRef::Shared(&text);
@@ -1134,7 +1135,8 @@ fn render_thread(
                 }
                 Cmd::RenderOnce(t, max_w, reply) => {
                     let (pw, ph) = (full.width.max(1), full.height.max(1));
-                    let w = pw.min(max_w.max(16));
+                    // up to `ONCE_MAX_W`: an image export bigger than the project renders natively
+                    let w = max_w.clamp(16, ONCE_MAX_W.max(pw));
                     let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
                     let mut f = Frame::default();
                     guarded(&mut pool, |pool| comp.render(&full, t, w, h, pool, &mut lock(&text), &mut f));
@@ -2346,15 +2348,23 @@ fn layer_for<'p>(
             let lt = clip.local(t);
             // a caption bar spans the frame at the drawn (boosted) size: `sv / s` canvases wide
             let fw = crate::engine::compose::text_frame_w(clip, lt, w as f32 * sv / s.max(1e-6));
-            let img = text.with(|tx| tx.render_in(style, sv, lt, fw));
+            // and at the clip's own on-screen magnification (`compose::raster_zoom`): gpu::draw_clip
+            // places it at its size divided by `LayerSet::zoom`
+            let rz = crate::engine::compose::raster_zoom(clip, lt);
+            let (img, z) = text.with(|tx| tx.render_zoomed(style, sv, rz, lt, fw));
             if img.width > 1 || img.height > 1 {
+                set.zoom.push((clip.id, z * sv / s.max(1e-6)));
                 set.layers.push((clip.id, img));
             }
         }
         ClipKind::Shape => {
             let Some(style) = &clip.shape else { return };
-            let img = shapes.render(style, sv, clip.local(t));
+            let lt = clip.local(t);
+            let img = shapes.render(style, sv * crate::engine::compose::raster_zoom(clip, lt), lt);
             if !img.is_empty() {
+                // placed by the shape's own size, as compose does (the rasteriser may clamp the bitmap)
+                let sw = (ShapeRasterizer::size(style, lt).0 * s).round().max(1.0);
+                set.zoom.push((clip.id, img.width as f32 / sw));
                 set.layers.push((clip.id, img));
             }
         }
@@ -2410,6 +2420,9 @@ fn layer_for<'p>(
         ClipKind::Audio | ClipKind::Adjustment => {}
     }
 }
+
+/// Widest one-shot render (`Player::render_once` / `layers_once`): an 8K image export.
+pub const ONCE_MAX_W: u32 = 7680;
 
 /// One decode into a recycled buffer. None when the decoder or the frame is unavailable.
 fn decode_one(
@@ -2939,6 +2952,37 @@ mod tests {
     use super::*;
     use crate::media;
     use std::thread::sleep;
+
+    /// GPU path: a Scale-3 text or shape clip's bitmap arrives about 3x bigger, with `LayerSet::zoom`
+    /// saying so, so `gpu::draw_clip` places it at the same size as the zoom-1 bitmap stretched.
+    #[test]
+    fn scaled_text_and_shape_layers_carry_their_zoom() {
+        let mut project = Project::new();
+        (project.width, project.height) = (320, 240);
+        let tid = project.add_text_clip(0.0, 2.0);
+        let sid = project.add_shape_clip(crate::model::ShapeKind::Rect, 0.0, 2.0);
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        let (mut text, mut shapes, mut comp) = (TextRasterizer::new(), ShapeRasterizer::new(), Compositor::new());
+        let size = |set: &LayerSet, id| {
+            let f = set.get(id).expect("a layer");
+            let z = set.zoom.iter().find(|z| z.0 == id).map_or(1.0, |z| z.1);
+            (f.width, f.width as f32 / z)
+        };
+        let one = decode_layers(&project, 0.5, 640, 480, &mut pool, &mut Vec::new(), &mut text, &mut shapes, &mut comp);
+        if text.families().is_empty() {
+            return; // no system fonts: nothing to rasterise
+        }
+        for id in [tid, sid] {
+            project.clip_mut(id).unwrap().scale = crate::model::Animated::new(3.0);
+        }
+        let three = decode_layers(&project, 0.5, 640, 480, &mut pool, &mut Vec::new(), &mut text, &mut shapes, &mut comp);
+        for id in [tid, sid] {
+            let ((w1, shown1), (w3, shown3)) = (size(&one, id), size(&three, id));
+            let k = w3 as f32 / w1 as f32;
+            assert!((2.5..=3.2).contains(&k), "clip {id}: {w3} px at Scale 3 vs {w1} px at Scale 1");
+            assert!((shown3 - shown1).abs() <= 2.0 + 0.03 * shown1, "clip {id} placed at {shown3} vs {shown1}");
+        }
+    }
 
     /// Newest frame rendered for exactly `t` at `size` (earlier renders may still be in flight).
     fn wait_frame(p: &mut Player, t: f64, size: (u32, u32)) -> Arc<Frame> {

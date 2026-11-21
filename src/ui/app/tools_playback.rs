@@ -95,7 +95,7 @@ pub(super) fn dispatch(app: &mut App, name: &str, args: &Value) -> Option<Result
                     quality: arg_u64(args, "quality").map(|q| q as u32).unwrap_or(app.settings.frame_quality),
                 };
                 let (rw, _) = frame_render_size((pw, ph), opts.size);
-                let frame = app.render_frame_now(t, rw).ok_or("render timed out")?;
+                let frame = app.render_frame_sized(t, rw).ok_or("render timed out")?;
                 write_image(&frame, &opts)?;
                 Ok(json!({"ok": true, "path": out.to_string_lossy(), "width": w, "height": h}))
             }

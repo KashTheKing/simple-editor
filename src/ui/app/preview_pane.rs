@@ -154,9 +154,10 @@ pub(super) fn draw(app: &mut App, ui: &mut egui::Ui) {
         auto_res(app);
         crate::playback::set_audio_delay_ms(app.settings.audio_delay_ms); // an atomic store: cheap each frame
         let (cw, ch) = preview_canvas(resp.canvas, effective_quality(app));
-        app.player.set_canvas(cw, ch, app.settings.preview_max_width);
+        let cap = preview_cap(app);
+        app.player.set_canvas(cw, ch, cap);
         // same clamp the player applies, so the GPU renders at the aspect the player decodes at
-        app.canvas = clamp_canvas(cw, ch, app.settings.preview_max_width);
+        app.canvas = clamp_canvas(cw, ch, cap);
         if let Some(t) = resp.seek {
             app.seek(t);
         }
@@ -311,6 +312,36 @@ pub(crate) struct AutoRes {
     window: Option<(Instant, u64)>,
     dropped: bool,
     playing: bool,
+    /// Has a play run smooth at full resolution (`preview_cap`)? None = not yet; Some(true) = plays run
+    /// past `preview_max_width` too; Some(false) = one dropped frames there, so plays keep the cap.
+    smooth: Option<bool>,
+}
+
+/// Widest preview a still frame is drawn at in fullscreen or with Playback Resolution on Auto.
+pub(crate) const PRISTINE_MAX_W: u32 = 3840;
+
+/// The width the preview canvas is capped at now. `preview_max_width` as set, except in fullscreen or
+/// with Playback Resolution on Auto: a paused frame is drawn up to the pane's own pixel size (at most
+/// `PRISTINE_MAX_W`) so it is sharp, and on Auto a play runs that big too once a play has been smooth.
+pub(super) fn preview_cap(app: &App) -> u32 {
+    let s = &app.settings;
+    let smooth = app.auto_res.smooth == Some(true);
+    preview_cap_for(s.preview_max_width, s.preview_quality, app.fullscreen, app.player.is_playing(), smooth)
+}
+
+/// `preview_cap` from its inputs: the set cap, the Playback Resolution (0 = Auto), fullscreen,
+/// playing, and whether Auto has found a full-size play smooth. 0 = no cap, as `Player::set_canvas`.
+pub(crate) fn preview_cap_for(max_w: u32, quality: u32, fullscreen: bool, playing: bool, smooth: bool) -> u32 {
+    let auto = quality == 0;
+    if max_w == 0 || !(fullscreen || auto) {
+        return max_w;
+    }
+    let pristine = !playing || (auto && smooth);
+    if pristine {
+        max_w.max(PRISTINE_MAX_W)
+    } else {
+        max_w
+    }
 }
 
 /// The render scale in use now: the setting, or with Auto the play's level while playing, full while paused.
@@ -334,6 +365,9 @@ pub(super) fn auto_res(app: &mut App) {
     if app.settings.preview_quality != 0 || !playing {
         if a.playing && !a.dropped && a.level < 100 {
             a.level = step(a.level, true);
+        } else if a.playing && !a.dropped && a.smooth.is_none() {
+            // a clean play at full resolution: the next ones may run past `preview_max_width`
+            a.smooth = Some(true);
         }
         (a.playing, a.window, a.dropped) = (false, None, false);
         return;
@@ -345,7 +379,12 @@ pub(super) fn auto_res(app: &mut App) {
         Some((t0, d0)) if now.duration_since(t0).as_secs_f32() >= 1.5 => {
             if d.saturating_sub(d0) >= 3 {
                 a.dropped = true;
-                a.level = step(a.level, false);
+                if a.smooth == Some(true) {
+                    // too big uncapped: back under `preview_max_width` for good, at the same level
+                    a.smooth = Some(false);
+                } else {
+                    a.level = step(a.level, false);
+                }
             }
             a.window = Some((now, d));
         }
@@ -368,5 +407,19 @@ mod auto_res_tests {
         assert_eq!(super::step(25, false), 25);
         assert_eq!(super::step(50, true), 75);
         assert_eq!(super::step(100, true), 100);
+    }
+
+    #[test]
+    fn paused_frames_are_drawn_at_the_pane_size_in_fullscreen_or_on_auto() {
+        use super::{preview_cap_for as cap, PRISTINE_MAX_W as P};
+        // (max_w, quality, fullscreen, playing, smooth)
+        assert_eq!(cap(1280, 0, false, false, false), P, "Auto, paused: up to 4K");
+        assert_eq!(cap(1280, 100, true, false, false), P, "fullscreen, paused: up to 4K");
+        assert_eq!(cap(1280, 0, false, true, false), 1280, "playing keeps the cap");
+        assert_eq!(cap(1280, 100, true, true, true), 1280, "a fixed resolution plays capped, fullscreen too");
+        assert_eq!(cap(1280, 0, false, true, true), P, "Auto found a full play smooth: uncapped");
+        assert_eq!(cap(1280, 50, false, false, false), 1280, "a fixed resolution, windowed: unchanged");
+        assert_eq!(cap(0, 0, true, false, false), 0, "no cap stays no cap");
+        assert_eq!(cap(3840, 0, false, false, false), 3840);
     }
 }

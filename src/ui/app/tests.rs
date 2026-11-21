@@ -330,9 +330,13 @@ fn frame_export_and_preview_sizes() {
     // downscale: render straight at the target
     assert_eq!(frame_render_size((1920, 1080), (960, 540)), (960, 540));
     assert_eq!(frame_render_size((1920, 1080), (1920, 1080)), (1920, 1080));
-    // upscale (2x / 4x buttons): render at project size, ffmpeg enlarges with the chosen flag
-    assert_eq!(frame_render_size((1920, 1080), (3840, 2160)), (1920, 1080));
+    // upscale (2x / 4x buttons) of the same shape: rendered natively at the target, so text, shapes
+    // and shaders are drawn at 4K rather than a 1080p render enlarged
+    assert_eq!(frame_render_size((1920, 1080), (3840, 2160)), (3840, 2160));
+    assert_eq!(frame_render_size((1920, 1080), (7680, 4320)), (7680, 4320));
+    // an upscale of another shape stays at project size, ffmpeg enlarges with the chosen flag;
     // mixed (wider but shorter) counts as an upscale, and degenerate sizes are clamped
+    assert_eq!(frame_render_size((1920, 1080), (3840, 3840)), (1920, 1080));
     assert_eq!(frame_render_size((1920, 1080), (4000, 100)), (1920, 1080));
     assert_eq!(frame_render_size((0, 0), (0, 0)), (16, 16));
     // preview quality scales the canvas, keeps zero at zero and never goes below 16 px

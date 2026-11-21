@@ -916,12 +916,14 @@ fn clamp_canvas(w: u32, h: u32, max_width: u32) -> (u32, u32) {
 }
 
 /// Render size for an image export: downscales are rendered straight at the target (the compositor's
-/// `Scaler` does the filtering), upscales are rendered at project size and enlarged by ffmpeg with the
-/// chosen resize flag - rendering a 4K frame from a 1080p timeline gains nothing but time.
+/// `Scaler` does the filtering), and so is an upscale of the project's shape: text, shapes and shaders
+/// are drawn at the full size and footage is decoded as big as it is needed, so a 4K frame from a 1080p
+/// timeline is sharp, not a 1080p render enlarged. An upscale of another shape is rendered at project
+/// size and enlarged by ffmpeg with the chosen resize flag.
 fn frame_render_size(project: (u32, u32), target: (u32, u32)) -> (u32, u32) {
     let (pw, ph) = (project.0.max(16), project.1.max(16));
     let (tw, th) = (target.0.max(16), target.1.max(16));
-    if tw <= pw && th <= ph {
+    if (tw <= pw && th <= ph) || crate::engine::export::same_aspect((pw, ph), (tw, th)) {
         (tw, th)
     } else {
         (pw, ph)

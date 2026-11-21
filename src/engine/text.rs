@@ -29,6 +29,10 @@ pub const BUNDLED_FONTS: [&[u8]; 3] = [
 
 /// Largest rendered text image side - keeps silly sizes from allocating gigabytes.
 const MAX_SIDE: u32 = 8192;
+/// Largest side a zoomed text bitmap (`render_zoomed`) may reach.
+const ZOOM_MAX_SIDE: f32 = 8192.0;
+/// Most pixels a zoomed text bitmap may hold (64 MB of RGBA), as `shapes::MAX_PIXELS`.
+const ZOOM_MAX_PIXELS: f32 = 16.0e6;
 /// Reveal/wave time quantisation for the cache (mirrors engine::shapes::REVEAL_HZ).
 const REVEAL_HZ: f64 = 30.0;
 /// Per-glyph wave oscillation rate (full cycles per second) and phase step between neighbouring glyphs.
@@ -155,6 +159,30 @@ impl TextRasterizer {
         }
         self.cache.insert(key, frame.clone());
         frame
+    }
+
+    /// `render_in` drawn `zoom` times bigger, for a clip shown at that magnification
+    /// (`compose::raster_zoom`, a half-octave step), so a scaled-up title is rasterised at its
+    /// on-screen size instead of stretched. The zoom steps down by half octaves while the bitmap would
+    /// pass `ZOOM_MAX_SIDE` px a side or `ZOOM_MAX_PIXELS` (judged from the zoom-1 bitmap, which stays
+    /// cached beside it). `frame_w` is at zoom 1. Returns the bitmap and the zoom it was drawn at: its
+    /// on-screen size is its own size divided by that zoom.
+    pub fn render_zoomed(&mut self, style: &TextStyle, scale: f32, zoom: f32, t: f64, frame_w: f32) -> (Arc<Frame>, f32) {
+        let base = self.render_in(style, scale, t, frame_w);
+        if !(zoom > 1.0 && zoom.is_finite()) || (base.width <= 1 && base.height <= 1) {
+            return (base, 1.0);
+        }
+        let (bw, bh) = (base.width.max(1) as f32, base.height.max(1) as f32);
+        // margins and outlines grow with the scale too, so the bitmap is about `z` times the base
+        let fit = (ZOOM_MAX_SIDE / bw.max(bh)).min((ZOOM_MAX_PIXELS / (bw * bh)).sqrt()) * 0.97;
+        let mut z = crate::engine::compose::half_octave(zoom);
+        while z > 1.0 && z > fit {
+            z = crate::engine::compose::half_octave(z / std::f32::consts::SQRT_2);
+        }
+        if z <= 1.0 {
+            return (base, 1.0);
+        }
+        (self.render_in(style, scale * z, t, frame_w * z), z)
     }
 
     /// Resolve a font by family name + weight/style (used for the base style and for any span that
@@ -742,6 +770,44 @@ mod tests {
         s.align = 0;
         s.size = Animated::new(48.0);
         s
+    }
+
+    #[test]
+    fn zoomed_text_reuses_half_octave_steps() {
+        let mut tr = TextRasterizer::new();
+        let style = ten_char_style();
+        let (base, z1) = tr.render_zoomed(&style, 0.5, 1.0, 0.0, 0.0);
+        if tr.families().is_empty() {
+            eprintln!("no system fonts - skipping");
+            return;
+        }
+        assert_eq!(z1, 1.0);
+        // a scale animating 1 -> 3 over 2 s at 60 fps: a handful of rasters, not 120
+        for i in 0..=120 {
+            let k = 1.0 + 2.0 * i as f32 / 120.0;
+            let (img, z) = tr.render_zoomed(&style, 0.5, crate::engine::compose::half_octave(k), 0.0, 0.0);
+            assert!(z >= k / 1.1 && z <= k * 1.5, "scale {k} drawn at {z}");
+            // the bitmap is z times the zoom-1 one, so its on-screen size (its size / z) is unchanged
+            let shown = img.width as f32 / z;
+            assert!((shown - base.width as f32).abs() <= 2.0 + 0.03 * base.width as f32, "{shown} vs {}", base.width);
+        }
+        assert!(tr.cache.len() <= 4, "half-octave steps: {} rasters for a 1 -> 3 zoom", tr.cache.len());
+    }
+
+    #[test]
+    fn zoomed_text_stays_under_the_size_cap() {
+        let mut tr = TextRasterizer::new();
+        let mut style = ten_char_style();
+        style.size = Animated::new(400.0);
+        let (base, _) = tr.render_zoomed(&style, 1.0, 1.0, 0.0, 0.0);
+        if tr.families().is_empty() {
+            return;
+        }
+        let (img, z) = tr.render_zoomed(&style, 1.0, 64.0, 0.0, 0.0);
+        assert!(z < 64.0 && z >= 1.0, "stepped down: {z}");
+        assert!(img.width < MAX_SIDE && img.height < MAX_SIDE, "{}x{}", img.width, img.height);
+        assert!((img.width as f32) * (img.height as f32) <= ZOOM_MAX_PIXELS * 1.1);
+        assert!(img.width > base.width, "still drawn bigger than zoom 1");
     }
 
     #[test]

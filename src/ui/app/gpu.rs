@@ -273,9 +273,15 @@ impl App {
     /// One frame at `t`, `w` px wide, through the same path the preview uses (GPU when it is on, the
     /// player's compositor otherwise) - export-frame and the MCP tools.
     pub(super) fn render_frame_now(&mut self, t: f64, w: u32) -> Option<Arc<Frame>> {
+        self.render_frame_sized(t, w.min(self.project.width.max(16)))
+    }
+
+    /// `render_frame_now` that may be bigger than the project (up to `playback::ONCE_MAX_W`): an image
+    /// export at 4K from a 1080p timeline renders text, shapes and shaders at 4K.
+    pub(super) fn render_frame_sized(&mut self, t: f64, w: u32) -> Option<Arc<Frame>> {
         if self.gpu.is_some() {
             let (pw, ph) = (self.project.width.max(16), self.project.height.max(16));
-            let w = w.clamp(16, pw);
+            let w = w.clamp(16, crate::playback::ONCE_MAX_W.max(pw));
             let h = ((ph as u64 * w as u64) / pw as u64).max(1) as u32;
             if let Some(layers) = self.player.layers_once(t, w) {
                 if let Some(f) = self.gpu_frame(&layers, t, w, h) {
@@ -326,7 +332,7 @@ impl App {
         let scaler_before = self.project.scaler;
         self.project.scaler = opts.scaler;
         let frame = if opts.with_effects {
-            self.render_frame_now(self.playhead, rw)
+            self.render_frame_sized(self.playhead, rw)
         } else {
             self.source_frame(self.playhead, rw, rh)
         };

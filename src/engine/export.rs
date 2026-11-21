@@ -80,8 +80,9 @@ pub struct ExportOptions {
     pub crf: u32,
     pub preset: String,
     pub backend: Backend,
-    /// Output size when it differs from the project (frames are rendered at project size and scaled by
-    /// ffmpeg `-vf scale=W:H:flags=<scaler>`); None = project size.
+    /// Output size when it differs from the project; None = project size. A bigger size of the same
+    /// shape is rendered natively (`render_size`); anything else is rendered at project size and scaled
+    /// by ffmpeg `-vf scale=W:H:flags=<scaler>`.
     pub out_size: Option<(u32, u32)>,
     /// ffmpeg scale flags: "neighbor" | "bilinear" | "bicubic" | "lanczos" | "area" | "spline".
     pub scaler: String,
@@ -431,6 +432,25 @@ pub fn scale_vf(src: (u32, u32), out: (u32, u32), scaler: &str, letterbox: bool)
         )
     } else {
         format!("scale={ow}:{oh}:flags={flags}")
+    }
+}
+
+/// Does `out` have the shape of `project`, to within a pixel of rounding?
+pub fn same_aspect(project: (u32, u32), out: (u32, u32)) -> bool {
+    let (pw, ph) = (project.0.max(1) as f64, project.1.max(1) as f64);
+    (out.0 as f64 * ph / pw - out.1 as f64).abs() <= 1.0
+}
+
+/// The size an export's frames are rendered at. An `out_size` bigger than the project with the same
+/// shape is rendered natively at that size, so text, shapes and shaders are drawn at full resolution
+/// and footage is decoded as big as it is needed, instead of a project-size render enlarged by ffmpeg.
+/// A downscale, another shape (stretch or letterbox) and an `overlay` (drawn at project size) keep the
+/// project size and ffmpeg's `scale` filter.
+fn render_size(project: (u32, u32), out_size: Option<(u32, u32)>, overlay: bool) -> (u32, u32) {
+    let p = (project.0.max(1), project.1.max(1));
+    match out_size {
+        Some(o) if !overlay && o.0 > p.0 && o.1 >= p.1 && same_aspect(p, o) => o,
+        _ => p,
     }
 }
 
@@ -910,7 +930,8 @@ fn run_export_with(
     } else {
         project
     };
-    let (w, h) = (project.width.max(1), project.height.max(1));
+    // an enlarged output of the same shape is rendered at its own size, not upscaled by ffmpeg
+    let (w, h) = render_size((project.width, project.height), opts.out_size, opts.overlay.is_some());
     let mut pool = DecoderPool::new(opts.backend);
     let backend = opts.backend;
 
@@ -3466,6 +3487,32 @@ pub(crate) mod tests {
             output_filters(&odd, (320, 240), false, &args).0,
             "scale=161:121:flags=bicubic,pad=ceil(iw/2)*2:ceil(ih/2)*2"
         );
+    }
+
+    #[test]
+    fn upscaled_export_renders_natively_without_a_scale_filter() {
+        let args = codec_args("mp4", "auto", 23, "medium", &[]);
+        let uhd = ExportOptions { out_size: Some((3840, 2160)), ..opts_for("x.mp4".into()) };
+        // a 1080p project exported at 4K: frames are rendered at 3840x2160 and ffmpeg is fed that size
+        let fed = render_size((1920, 1080), uhd.out_size, false);
+        assert_eq!(fed, (3840, 2160));
+        let (vf, _) = output_filters(&uhd, fed, true, &args);
+        assert!(!vf.contains("scale="), "no ffmpeg upscale: {vf}");
+        // a portrait project at a portrait 4K the same
+        assert_eq!(render_size((1080, 1920), Some((2160, 3840)), false), (2160, 3840));
+        // a downscale keeps the project-size render and ffmpeg's scale filter
+        let hd = ExportOptions { out_size: Some((1280, 720)), ..opts_for("x.mp4".into()) };
+        let fed = render_size((1920, 1080), hd.out_size, false);
+        assert_eq!(fed, (1920, 1080));
+        assert_eq!(output_filters(&hd, fed, true, &args).0, "scale=1280:720:flags=bicubic");
+        // another shape (stretch / letterbox) and an overlay drawn at project size keep the old path
+        assert_eq!(render_size((1920, 1080), Some((2160, 3840)), false), (1920, 1080));
+        assert_eq!(render_size((1920, 1080), Some((3840, 2160)), true), (1920, 1080));
+        assert_eq!(render_size((1920, 1080), None, false), (1920, 1080));
+        // a pixel of rounding still counts as the same shape
+        assert!(same_aspect((1280, 720), (1281, 720)));
+        assert!(same_aspect((1920, 1080), (2560, 1440)));
+        assert!(!same_aspect((1920, 1080), (1920, 1200)));
     }
 
     #[test]

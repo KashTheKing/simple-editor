@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Pristine 4K text and graphics
+- **Scaled-up text and shapes are sharp**: a clip at Scale 3 is drawn at its on-screen size instead of a small bitmap stretched, in the preview, on the GPU and in exports. A scale animation reuses a few cached sizes, so playback stays smooth.
+- **A 4K export of a 1080p project renders at 4K**: text, shapes and shaders are drawn at 3840x2160 instead of a 1080p render enlarged by ffmpeg. The same for Export Frame at 2x or 4x. Downscales and other shapes (stretch, letterbox) are unchanged.
+- **Paused frames are drawn at the preview's real size** (up to 4K) in fullscreen and with Playback Resolution on Auto. Playback keeps the Preview Max Width cap, unless Auto has found full-size playback smooth.
+
 ### Scripts are plain Luau
 - **`tool(name, args)` and `tools()` are globals**, and a hook's payload is the global `event`, in your scripts, hooks, Assistant scripts and plugins alike. The `editor` table is gone from the docs and completion.
 - **`print` shows up in the app**: in a script or hook it is what `editor.log` was (a toast, and the run's log), in an Assistant script or plugin it is the output, as before. Tables print as compact JSON.

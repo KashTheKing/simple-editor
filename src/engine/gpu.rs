@@ -1974,11 +1974,16 @@ impl GpuRenderer {
         if !(p.w.is_finite() && p.h.is_finite() && p.w > 0.0 && p.h > 0.0) {
             return canvas;
         }
+        // text and shapes arrive drawn bigger than canvas scale (`LayerSet::zoom`): under a zoomed
+        // browser (ws:browser-layer) and by the clip's own scale (`compose::raster_zoom`), so they
+        // are sharp once enlarged
+        let mut zoom = 1.0;
         if !contain {
-            // ws:browser-layer: text and shapes under a zoomed browser arrive drawn that much bigger
-            // (`playback::layer_for`), so they are sharp once the view enlarges them
-            let q = crate::engine::browser::draw_boost(&project.tracks, t, project.width, project.height);
-            (p.w, p.h) = (p.w / q, p.h / q);
+            zoom = match layers.zoom.iter().find(|z| z.0 == clip.id) {
+                Some(&(_, z)) if z.is_finite() && z > 0.0 => z,
+                _ => crate::engine::browser::draw_boost(&project.tracks, t, project.width, project.height),
+            };
+            (p.w, p.h) = (p.w / zoom, p.h / zoom);
         }
         // geometric effects move the layer instead of touching pixels
         let (mut focal, mut z0) = (cw as f32, 0.0f32);
@@ -2039,8 +2044,8 @@ impl GpuRenderer {
         let tex = keyed.as_ref().map_or(tex, |k| k.tex);
 
         // effect scale: layer px per project px (matches compose::apply_effects' img_scale - footage
-        // is decoded at roughly the placed size, text/shape bitmaps arrive at canvas scale already)
-        let img_scale = if contain { s * (lsize.0 as f32 / p.w.max(1e-3)) } else { s };
+        // is decoded at roughly the placed size, text/shape bitmaps arrive `zoom` times canvas scale)
+        let img_scale = if contain { s * (lsize.0 as f32 / p.w.max(1e-3)) } else { s * zoom };
         let processed = {
             let _s = crate::perf::span("effects"); // ws:perf-window
             self.run_chain(project, clip, t, project.fps, layers, tex, lsize, img_scale)
@@ -2549,6 +2554,10 @@ pub struct LayerSet {
     /// Cached background-removal mattes (`engine::bgremove::matte_frame`, grey: white = keep), by clip
     /// id. A clip with none draws unkeyed.
     pub mattes: Vec<(crate::model::Id, Arc<Frame>)>,
+    /// How much bigger than canvas scale a text or shape bitmap in `layers` was drawn, by clip id: the
+    /// browser zoom boost times the clip's own `compose::raster_zoom` (`playback::layer_for`). The
+    /// drawer places it at its size divided by this. A clip with none (a hand-made set) uses the boost.
+    pub zoom: Vec<(crate::model::Id, f32)>,
 }
 
 /// ws:nested-gpu: one nested sequence clip's layers (`playback::layer_for`), drawn by the same

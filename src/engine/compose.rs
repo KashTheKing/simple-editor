@@ -7,8 +7,9 @@
 //! For each active (`project.active(track)`), enabled, visual clip containing t:
 //!   * Video/Image: `pool.video(asset.path).frame_at(clip.src_time(t), dw, dh, ..)` where (dw,dh) is the
 //!     placement size (clamped to native size, min 1) - decoders scale for us.
-//!   * Text / Shape: `text.render(style, canvas_w / project.width)` / `shapes.render(style, s, local_t)`
-//!     (already at canvas scale) - contain=false.
+//!   * Text / Shape: `text.render_zoomed(style, s, raster_zoom(clip), ..)` / `shapes.render(style, s *
+//!     raster_zoom(clip), local_t)` with s = canvas_w / project.width: drawn at canvas scale times the
+//!     clip's on-screen magnification (a half-octave step), placed at their zoom-1 size - contain=false.
 //!   * Sequence: the nested timeline is rendered recursively at `clip.src_time(t)` into its own canvas
 //!     (the sequence's size, fit like a video layer), depth ≤ 8.
 //!   * Adjustment: no layer of its own - the effect stack re-runs over the canvas below it.
@@ -135,6 +136,16 @@ fn placement_w(pw: u32, clip: &Clip, t: f64, native: (u32, u32), cw: u32, ch: u3
     }
 }
 
+/// `placement_w` for a rasterised layer `bitmap` px big whose size before the clip's scale is
+/// `native` canvas px (a zoomed bitmap is bigger than that, a clamped shape smaller).
+fn bitmap_placement(pw: u32, clip: &Clip, t: f64, bitmap: (u32, u32), native: (f32, f32), cw: u32, ch: u32) -> Placement {
+    let (bw, bh) = (bitmap.0.max(1), bitmap.1.max(1));
+    let mut p = placement_w(pw, clip, t, (bw, bh), cw, ch, false);
+    p.w *= native.0 / bw as f32;
+    p.h *= native.1 / bh as f32;
+    p
+}
+
 /// A Text clip drawn as a full-width caption bar (`TextStyle::is_bar`).
 pub fn is_bar(clip: &Clip) -> bool {
     clip.kind == ClipKind::Text && clip.text.as_ref().is_some_and(|s| s.is_bar())
@@ -153,6 +164,26 @@ pub fn text_frame_w(clip: &Clip, lt: f64, cw: f32) -> f32 {
     } else {
         cw
     }
+}
+
+/// `z` as a half-octave step (2^(k/2)): the smallest step at least `z / 2^(1/8)`, so a bitmap drawn at
+/// it is enlarged by at most 9 % (invisible) and usually not at all. Never under 1 (NaN, infinity: 1).
+/// A step itself maps to itself.
+pub fn half_octave(z: f32) -> f32 {
+    if !(z.is_finite() && z > 1.0) {
+        return 1.0;
+    }
+    2f32.powf((z.log2() * 2.0 - 0.25).ceil().max(0.0) / 2.0)
+}
+
+/// How much bigger than canvas scale a text or shape clip's bitmap is rasterised at clip-local `lt`:
+/// its on-screen magnification (`|scale| × max(|scale_x|, |scale_y|)`) as a `half_octave` step, at
+/// least 1 and at most 64 (the rasterisers also cap the bitmap's size). A Scale-3 title is then drawn
+/// at 2.83 times the pixels instead of a small bitmap stretched 3 times, and a scale animation from 1
+/// to 3 reuses four cached steps instead of rasterising every frame.
+pub fn raster_zoom(clip: &Clip, lt: f64) -> f32 {
+    let k = clip.scale.at(lt).abs() * clip.scale_x.at(lt).abs().max(clip.scale_y.at(lt).abs());
+    half_octave(k as f32).min(64.0)
 }
 
 /// The size a layer is decoded at:the smallest of a few fixed fractions of the decoder's own
@@ -571,13 +602,14 @@ impl Compositor {
             }
             ClipKind::Shape => {
                 let Some(style) = &clip.shape else { return };
-                let img = self.shapes.render(style, s, lt);
+                // drawn at its on-screen magnification (`raster_zoom`)
+                let img = self.shapes.render(style, s * raster_zoom(clip, lt), lt);
                 if img.is_empty() {
                     return;
                 }
                 // place by the shape's own project size (the rasteriser may clamp very large layers)
                 let (sw, sh) = ShapeRasterizer::size(style, lt);
-                let native = ((sw * s).round().max(1.0) as u32, (sh * s).round().max(1.0) as u32);
+                let native = ((sw * s).round().max(1.0), (sh * s).round().max(1.0));
                 self.draw_bitmap(project, pw, clip, &img, native, t, w, h, out, extra, opacity);
             }
             ClipKind::Adjustment => {
@@ -604,7 +636,7 @@ impl Compositor {
                     };
                     let img = text.render(&style, s, lt);
                     if img.width > 1 || img.height > 1 {
-                        let native = (img.width, img.height);
+                        let native = (img.width as f32, img.height as f32);
                         self.draw_bitmap(project, pw, clip, &img, native, t, w, h, out, extra, opacity);
                     }
                     return;
@@ -679,8 +711,9 @@ impl Compositor {
             }
             ClipKind::Text => {
                 let Some(style) = &clip.text else { return };
-                let img = text.render_in(style, s, lt, text_frame_w(clip, lt, w as f32));
-                let native = (img.width, img.height);
+                // drawn at its on-screen magnification, then placed at its zoom-1 size
+                let (img, z) = text.render_zoomed(style, s, raster_zoom(clip, lt), lt, text_frame_w(clip, lt, w as f32));
+                let native = (img.width as f32 / z, img.height as f32 / z);
                 self.draw_bitmap(project, pw, clip, &img, native, t, w, h, out, extra, opacity);
             }
             ClipKind::Sequence => {
@@ -743,7 +776,8 @@ impl Compositor {
     }
 
     /// Draw an already-rasterised layer bitmap (text / shape): effects, fade-to-colour, clip mask.
-    /// `native` is the layer size in canvas px (the bitmap itself may be rasterised smaller).
+    /// `native` is the layer size in canvas px before the clip's scale; the bitmap itself may be
+    /// rasterised bigger (`raster_zoom`) or smaller (a clamped shape), and effects see its own px.
     #[allow(clippy::too_many_arguments)]
     fn draw_bitmap(
         &mut self,
@@ -751,7 +785,7 @@ impl Compositor {
         pw: u32,
         clip: &Clip,
         img: &Frame,
-        native: (u32, u32),
+        native: (f32, f32),
         t: f64,
         w: u32,
         h: u32,
@@ -761,14 +795,16 @@ impl Compositor {
     ) {
         let lt = clip.local(t);
         let s = w as f32 / pw.max(1) as f32;
-        let mut p = placement_w(pw, clip, t, native, w, h, false);
+        let mut p = bitmap_placement(pw, clip, t, (img.width, img.height), native, w, h);
+        // effect radii are in the bitmap's own px: canvas scale times how much bigger it was drawn
+        let s_img = s * img.width.max(1) as f32 / native.0.max(1e-3);
         self.view.apply(&mut p); // ws:browser-layer
         // a fade also needs the copy path - fade_to writes into the layer, and the cached bitmap is
         // shared with the rasteriser's cache
         if effects::effects_for(project, clip).iter().any(|e| e.on_at(lt)) || extra.fade > 0.0 {
             self.src.resize(img.width, img.height);
             self.src.rgba.copy_from_slice(&img.rgba);
-            apply_effects(project, clip, lt, s, s, &mut self.src, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
+            apply_effects(project, clip, lt, s, s_img, &mut self.src, &mut self.fx, &mut self.pre, &mut self.cov, &mut p);
             fade_to(&mut self.src, extra.color, extra.fade);
             p.cx += extra.dx;
             p.cy += extra.dy;
@@ -1868,6 +1904,85 @@ mod tests {
         comp.render(&project, 2.0, 64, 48, &mut pool, &mut text, &mut out);
         let c = px(&out, 32, 24);
         assert!((120..=135).contains(&c[0]) && (120..=135).contains(&c[2]), "{c:?}");
+    }
+
+    /// Bounding box (x0, y0, x1, y1), exclusive end, of the pixels `hit` picks; None when there are none.
+    fn bbox(f: &Frame, hit: impl Fn([u8; 4]) -> bool) -> Option<(u32, u32, u32, u32)> {
+        let mut b: Option<(u32, u32, u32, u32)> = None;
+        for y in 0..f.height {
+            for x in 0..f.width {
+                if hit(px(f, x, y)) {
+                    let (x0, y0, x1, y1) = b.unwrap_or((x, y, x + 1, y + 1));
+                    b = Some((x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)));
+                }
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn half_octave_steps() {
+        assert_eq!(half_octave(1.0), 1.0);
+        assert_eq!(half_octave(0.3), 1.0);
+        assert_eq!(half_octave(f32::NAN), 1.0);
+        assert_eq!(half_octave(f32::INFINITY), 1.0);
+        assert!((half_octave(1.3) - std::f32::consts::SQRT_2).abs() < 1e-4);
+        assert!((half_octave(2.0) - 2.0).abs() < 1e-4, "a step maps to itself");
+        assert!((half_octave(3.0) - 2.0 * std::f32::consts::SQRT_2).abs() < 1e-3, "Scale 3 draws at 2.83");
+        assert!((half_octave(3.2) - 4.0).abs() < 1e-3);
+        // a 1 -> 3 zoom uses four steps
+        let mut steps: Vec<u32> = (0..=300).map(|i| (half_octave(1.0 + i as f32 / 150.0) * 1000.0).round() as u32).collect();
+        steps.dedup();
+        assert_eq!(steps.len(), 4, "{steps:?}");
+    }
+
+    #[test]
+    fn scaled_text_is_rasterised_at_its_on_screen_size() {
+        // A small title at Scale 3: drawn at about 3x the pixels instead of a zoom-1 bitmap stretched,
+        // and placed exactly where the stretched one was.
+        let mut project = Project::new();
+        (project.width, project.height) = (320, 240);
+        let id = project.add_text_clip(0.0, 2.0);
+        {
+            let st = project.clip_mut(id).unwrap().text.as_mut().expect("text style");
+            st.text = "Hi".into();
+            st.size = crate::model::Animated::new(16.0);
+            st.color = [255, 0, 0, 255];
+            st.box_color = [255, 0, 0, 255];
+        }
+        let (cw, ch) = (640, 480);
+        let s = cw as f32 / project.width as f32;
+        let mut text = TextRasterizer::new();
+        let style = project.clip(id).unwrap().text.clone().unwrap();
+        let (base, z1) = text.render_zoomed(&style, s, 1.0, 0.0, 0.0);
+        if text.families().is_empty() {
+            eprintln!("no system fonts - skipping");
+            return;
+        }
+        assert_eq!(z1, 1.0);
+        project.clip_mut(id).unwrap().scale = crate::model::Animated::new(3.0);
+        let clip = project.clip(id).unwrap().clone();
+        let z = raster_zoom(&clip, 0.0);
+        assert!((2.5..=3.1).contains(&z), "Scale 3 rasterises at {z}");
+        let (img, zd) = text.render_zoomed(&style, s, z, 0.0, 0.0);
+        assert_eq!(zd, z);
+        for (big, small) in [(img.width, base.width), (img.height, base.height)] {
+            let k = big as f32 / small as f32;
+            assert!((2.5..=3.2).contains(&k), "bitmap {big} px vs {small} px at zoom 1: x{k}");
+        }
+        // on screen: the same box a zoom-1 bitmap stretched 3x would cover
+        let mut comp = Compositor::new();
+        let mut pool = DecoderPool::new(Backend::Ffmpeg);
+        let mut out = Frame::default();
+        comp.render(&project, 1.0, cw, ch, &mut pool, &mut text, &mut out);
+        let got = bbox(&out, |p| p[0] > 128).expect("the title is drawn");
+        let (bx0, by0, bx1, by1) = bbox(&base, |p| p[3] > 128).expect("the zoom-1 box");
+        let p = placement(&project, &clip, 1.0, (base.width, base.height), cw, ch, false);
+        let (left, top) = (p.cx - p.w / 2.0, p.cy - p.h / 2.0);
+        let want = (left + bx0 as f32 * 3.0, top + by0 as f32 * 3.0, left + bx1 as f32 * 3.0, top + by1 as f32 * 3.0);
+        for (g, w) in [(got.0, want.0), (got.1, want.1), (got.2, want.2), (got.3, want.3)] {
+            assert!((g as f32 - w).abs() <= 3.0, "drawn box {got:?}, a stretched zoom-1 bitmap covers {want:?}");
+        }
     }
 
     #[test]
