@@ -192,6 +192,52 @@ impl TextRasterizer {
         self.db.face(id)?.families.first().map(|(n, _)| n.clone())
     }
 
+    // ---- ws:visualizer-helper ----
+    /// Where each character boundary of a one-line `style` falls in its rendered bitmap (at scale 1, t 0):
+    /// `chars + 1` x positions in bitmap pixels, and the bitmap's width. The same layout and margins as
+    /// `rasterize` (base font, kerning, letter spacing; spans ignored), so a karaoke fill can stop exactly
+    /// at a word's edge.
+    pub fn char_edges(&mut self, style: &TextStyle) -> Option<(Vec<f32>, f32)> {
+        self.load_system_fonts();
+        let sz = style.size.at(0.0) as f32;
+        let ls = style.letter_spacing.at(0.0) as f32;
+        if style.text.trim().is_empty() || !(sz >= 1.0) {
+            return None;
+        }
+        let font = self.font_for(&style.font, style.bold, style.italic)?;
+        let upm = font.units_per_em().unwrap_or(font.height_unscaled());
+        let sf = font.as_scaled(PxScale::from(sz * font.height_unscaled() / upm));
+        let ps = sf.scale();
+        let mut edges = Vec::new();
+        let (mut x, mut prev, mut last_ls) = (0.0f32, None::<GlyphId>, 0.0f32);
+        let (mut bx0, mut bx1) = (0.0f32, 0.0f32);
+        for c in style.text.chars().filter(|&c| c != '\r' && c != '\n') {
+            let id = sf.glyph_id(c);
+            if let Some(p) = prev {
+                x += sf.kern(p, id);
+            }
+            edges.push(x);
+            if let Some(og) = font.outline_glyph(id.with_scale_and_position(ps, point(x, sf.ascent()))) {
+                let b = og.px_bounds();
+                bx0 = bx0.min(b.min.x);
+                bx1 = bx1.max(b.max.x);
+            }
+            x += sf.h_advance(id) + ls;
+            last_ls = ls;
+            prev = Some(id);
+        }
+        x -= last_ls;
+        edges.push(x);
+        bx1 = bx1.max(x.ceil());
+        let r = style.outline_width.at(0.0).max(0.0) as f32;
+        let r = if r < 0.5 { 0.0 } else { r };
+        let (shx, shy, blur) = if style.shadow { (style.shadow_x.round(), style.shadow_y.round(), style.shadow_blur.max(0.0).round()) } else { (0.0, 0.0, 0.0) };
+        let pad = if style.box_color[3] > 0 { style.box_padding.max(0.0) } else { 0.0 };
+        let m = (r + shx.abs().max(shy.abs()) + blur * 2.0).max(pad).ceil() + 1.0;
+        let w = ((bx1 - bx0).ceil() + 2.0 * m).max(1.0);
+        Some((edges.into_iter().map(|e| e - bx0 + m).collect(), w))
+    }
+
     fn rasterize(&mut self, style: &TextStyle, scale: f32, t: f64, bar_w: f32) -> Option<Frame> {
         // ---- ws:text-titles: sample the now-Animated fields once at this clip-local `t` ----
         let sz = style.size.at(t) as f32;

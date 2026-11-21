@@ -90,6 +90,30 @@ const fn v(name: &'static str, ty: &'static str, doc: &'static str, ctx: Ctx) ->
     ApiItem { name, kind: ItemKind::Value, params: ty, ret: "", doc, ctx }
 }
 
+// ---- ws:visualizer-helper ----
+/// App tools made for a plugin (the Visualizer Helper add-on), called with `tool(name, args)` like every
+/// tool: (name, arguments, what it does). Listed so the API page names them; a test checks each exists.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const PLUGIN_TOOLS: &[(&str, &str, &str)] = &[
+    (
+        "audio.analyze_song",
+        "{clip?, action = \"status\" | \"start\" | \"stems\", tempo_min?, tempo_max?, gate?, drops?, after?}",
+        "Analyse a song in the background (stems through the Stem Separation add-on when installed): hits, drops, the calm part, the vocal envelope, onsets and vibrato, stored on the project with markers. `status` returns the state and the summary; `stems` opens Settings ▸ Add-ons",
+    ),
+    (
+        "visualizer.template",
+        "{clip?, template?, palette?, colors?, spikes?, sensitivity?, smoothing?, harder?, ball?, wave?, bolts?, beam?}",
+        "Give the song's visualizer a template (Olympus Storm, Chrome Waveform, Storm Lightning) keyed from the analysis; the same inputs give the same keys",
+    ),
+    (
+        "lyrics.karaoke",
+        "{lyrics, clip?, font?, size?, y?, look?, giant?}",
+        "The exact lyrics as timed Lyric Chrome text clips, each word filling on its sung syllable",
+    ),
+    ("visualizer.drop_fx", "{clip?, flash?, invert?, shatter?, build?, grade?}", "Flash and invert at each drop, the shatter into the biggest drop, the background grade"),
+    ("media.loop", "{clip?, action = \"status\" | \"start\", seconds?}", "A GIF, picture or clip as a seamless 60 fps ping-pong loop under the song (ffmpeg, in the background)"),
+];
+
 /// Luau's reserved words (`continue`, `type` and `export` are contextual, but a script reads them so).
 pub const KEYWORDS: &[&str] = &[
     "and", "break", "continue", "do", "else", "elseif", "end", "export", "false", "for", "function", "if", "in",
@@ -237,6 +261,8 @@ pub const API: &[ApiItem] = &[
     f("ui.separator", "", "", "A dividing line", PLUGIN),
     f("ui.space", "px: number?", "", "Empty space (8 px unless given)", PLUGIN),
     f("ui.image", "file: string, w: number?, h: number?", "", "A .png from the plugin's folder", PLUGIN),
+    // ---- ws:visualizer-helper ----
+    f("ui.tip", "text: any", "", "Hover text for the widget drawn just before it (labels stay plain, explanations go here)", PLUGIN),
     // ---- std:begin (Luau's standard library, as the sandboxes keep it) ----
     v("_G", "table", "The global environment", ALL),
     v("_VERSION", "string", "The Luau version", ALL),
@@ -596,6 +622,12 @@ pub fn markdown() -> String {
         }
         s.push('\n');
     }
+    // ---- ws:visualizer-helper ----
+    s.push_str("## Tools for plugins\n\nApp tools made for a plugin (the Visualizer Helper add-on). Call them with `tool(name, args)`.\n\n| Tool | Arguments | Description |\n|---|---|---|\n");
+    for (name, args, doc) in PLUGIN_TOOLS {
+        s.push_str(&format!("| `{name}` | `{}` | {} |\n", args.replace('|', "\\|"), doc.replace('|', "\\|")));
+    }
+    s.push('\n');
     s.push_str("## Keywords\n\n");
     s.push_str(&KEYWORDS.iter().map(|k| format!("`{k}`")).collect::<Vec<_>>().join(" "));
     s.push_str("\n\n## Types\n\n");
@@ -608,6 +640,14 @@ pub fn markdown() -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    // ---- ws:visualizer-helper ----
+    #[test]
+    fn plugin_tools_are_real_tools() {
+        for (name, _, _) in PLUGIN_TOOLS {
+            assert!(crate::mcp::tools::find(name).is_some(), "{name} is not a tool");
+        }
+    }
 
     /// Lists every global of the VM it runs in and every string key of each global table. `pairs(_G)` sees
     /// the frozen globals; what a runner adds after `sandbox(true)` lives in the script's own environment,

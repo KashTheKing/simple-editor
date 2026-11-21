@@ -85,6 +85,8 @@ impl Project {
             references: Vec::new(),
             // ---- ws:parity-io ----
             media_io: Default::default(),
+            // ---- ws:visualizer-helper ----
+            viz: Vec::new(),
         };
         p.add_track(TrackKind::Video);
         p.add_track(TrackKind::Audio);

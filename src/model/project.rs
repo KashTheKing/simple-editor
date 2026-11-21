@@ -152,6 +152,11 @@ pub struct Project {
     /// `media.set_io`. The decoders follow it through `media::io_override::sync`.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub media_io: std::collections::BTreeMap<String, crate::media::io_override::MediaIo>,
+    // ---- ws:visualizer-helper ----
+    /// Visualizer Helper's song analyses (hits, drops, vocal envelope, ...), one per analysed song asset,
+    /// plus the clips each step made from it (`model::vizhelp`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub viz: Vec<SongViz>,
 }
 
 // ---- ws:project-color-fps ----

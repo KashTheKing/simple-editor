@@ -169,6 +169,7 @@ mod tools_social;
 mod enhance_ctl;
 mod denoise_ctl; // ws:addon-deepfilternet
 mod stems_ctl; // ws:addon-demucs
+mod vizhelp_ctl; // ws:visualizer-helper
 mod object_mask_ctl; // ws:addon-sam2: Object Mask (the SAM 2 add-on)
 pub(crate) use object_mask_ctl::active_clip as object_mask_clip; // ws:addon-sam2: the Inspector lights its button
 pub(crate) mod bgremove_ctl; // ws:addon-bg-removal
@@ -2146,6 +2147,8 @@ pub(crate) const TOOL_TABLES: &[&[mcp::tools::ToolDef]] = &[
     denoise_ctl::TOOLS,
     // ---- ws:addon-demucs ----
     stems_ctl::TOOLS,
+    // ---- ws:visualizer-helper ----
+    vizhelp_ctl::TOOLS,
     // ---- ws:addon-sam2 ----
     object_mask_ctl::TOOLS,
     // ---- ws:addon-bg-removal ----
@@ -2413,6 +2416,8 @@ pub(crate) const FRAME_HOOKS: &[fn(&mut App, &egui::Context)] = &[
     denoise_ctl::tick,
     // ---- ws:addon-demucs ----
     stems_ctl::tick,
+    // ---- ws:visualizer-helper ----
+    vizhelp_ctl::tick,
     // ---- ws:addon-sam2 ----
     object_mask_ctl::tick,
     // ---- ws:addon-bg-removal ----

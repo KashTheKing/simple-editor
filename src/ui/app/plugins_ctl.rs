@@ -331,6 +331,27 @@ pub(super) fn start_install(app: &mut App, url: &str, ctx: Option<&egui::Context
     Ok(what)
 }
 
+// ---- ws:visualizer-helper ----
+/// Fetch a plugin the app's library ships (`library/plugins/<id>/`) for the same install confirm.
+pub(super) fn start_library_install(app: &mut App, id: &str, ctx: Option<&egui::Context>) -> Result<String, String> {
+    if app.plugins.job.is_some() {
+        return Err("another plugin is still downloading".into());
+    }
+    let name = plugins::LIBRARY.iter().find(|l| l.0 == id).map(|l| l.1).ok_or_else(|| format!("the library has no plugin '{id}'"))?;
+    let what = format!("Getting {name}…");
+    let slot: Pending<Staged> = Arc::default();
+    let (roots, src, id, s2, ctx) = (app.plugins.roots(), crate::engine::library::Source::of(&app.settings), id.to_string(), slot.clone(), ctx.cloned());
+    std::thread::spawn(move || {
+        let r = plugins::stage_library(&roots, &src, &id);
+        *s2.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+        if let Some(c) = ctx {
+            c.request_repaint();
+        }
+    });
+    app.plugins.job = Some((what.clone(), slot));
+    Ok(what)
+}
+
 /// Stage a local plugin folder or zip (an author testing their plugin) for the same confirm.
 fn stage_local(app: &mut App, path: &Path) {
     let roots = app.plugins.roots();
@@ -555,6 +576,9 @@ struct Asked {
     ctrl: Option<(usize, usize)>,
     /// A row's arrow: open / close its details.
     toggle: Option<String>,
+    // ---- ws:visualizer-helper ----
+    /// From the Library ▸ <plugin>: install a plugin the app's library ships.
+    library: Option<String>,
 }
 
 /// The Plugins pane without the app: the buttons, then one aligned row per plugin; `body` draws an opened
@@ -566,6 +590,21 @@ fn manager_ui(ui: &mut egui::Ui, list: &[Plugin], open: &[String], url_open: boo
         a.folder = ui.button("Install from Folder…").on_hover_text("Install a plugin folder from this PC (for plugin authors)").clicked();
         a.zip = ui.button("Install from Zip…").on_hover_text("Install a plugin .zip from this PC").clicked();
         a.reload = ui.button("Reload").on_hover_text("Read the plugins folder again and restart open plugin panels").clicked();
+        // ---- ws:visualizer-helper ----
+        let r = crate::ui::menu::button(ui, "From the Library", |ui| {
+            let mut pick = None;
+            for (id, name, desc) in plugins::LIBRARY {
+                let have = list.iter().any(|p| p.manifest.id == *id);
+                let label = if have { format!("{name} (installed)") } else { name.to_string() };
+                if ui.button(label).on_hover_text(*desc).clicked() {
+                    pick = Some(id.to_string());
+                    ui.close();
+                }
+            }
+            pick
+        });
+        r.response.on_hover_text("Plugins that come with the app's library");
+        a.library = r.inner.flatten();
     });
     if let Some(what) = busy {
         ui.horizontal(|ui| {
@@ -624,6 +663,11 @@ fn manager(app: &mut App, ui: &mut egui::Ui) {
     if asked.reload {
         app.plugins.panels.clear();
         refresh(app);
+    }
+    if let Some(id) = asked.library {
+        if let Err(e) = start_library_install(app, &id, Some(ui.ctx())) {
+            app.toast(e);
+        }
     }
     if let Some(id) = asked.toggle {
         if let Some(i) = app.plugins.open.iter().position(|x| *x == id) {
