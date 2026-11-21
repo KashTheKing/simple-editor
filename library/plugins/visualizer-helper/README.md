@@ -15,7 +15,7 @@ A Simple Editor plugin (MIT) that turns the way the hardstyle music video was bu
 5. **Background Loop**: a low-fps GIF or a still as a seamless 60 fps ping-pong loop (ffmpeg minterpolate).
 
 Each step is one undo step and replaces only what it made before. The heavy work runs in the app in the background
-(`audio.analyze`, `visualizer.template`, `lyrics.karaoke`, `visualizer.drop_fx`, `media.loop`; see
+(`audio.analyze_song`, `visualizer.template`, `lyrics.karaoke`, `visualizer.drop_fx`, `media.loop`; see
 `docs/scripting-api.md`), so playback never stutters and no Python is needed.
 
 Contents: `panels/visualizer-helper.luau` (the panel), `effects/olympus-storm.glsl` and `effects/lyric-chrome.glsl`

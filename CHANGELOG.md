@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Visualizer Helper
+- **A new add-on that builds a music visualizer in five steps**, from the Plugins pane's **From the Library**: Analyse Song, Visualizer Templates, Lyrics Karaoke, Drop FX and Background Loop, one button each, one undo step each. Running a step again replaces only what it made.
+- **Analyse Song** separates the stems with the Stem Separation add-on when it is installed, then finds every hit with its strength and the bar's downbeats (a kick gate stops hats and claps popping the visualizer), the drops, the calm part, the screeches, the vocal envelope (held when sung, small when talked), its syllable onsets and vibrato. It runs in the background (Jobs shows it), is stored with the project and puts markers at the drops. No Python needed.
+- **Visualizer Templates**: Olympus Storm (the spiky chrome ball, waveform and lightning), Chrome Waveform and Storm Lightning, keyed from the analysis with colours, spikes, sensitivity, smoothing and "go harder" knobs. The same knobs always give the same keys; the ray-marched ball keeps its cost fixes (bounded march, 48 steps, no spike search when no spike is out).
+- **Lyrics Karaoke**: paste the exact lyrics and each word fills on its sung syllable (Lyric Chrome shader), lines slide in with a 3D turn and leave when the voice stops, and the line into the biggest drop wraps round a cylinder. Text is drawn at its font size and never scaled up.
+- **Drop FX**: a flash and a one-beat Invert at each drop, the glass shatter into the biggest drop, and a golden-hour grade on the background loop.
+- **Background Loop**: a low-fps GIF or a still as a seamless 60 fps ping-pong loop under the song.
+- Plugins: `ui.tip(text)` gives the widget before it hover text. MCP / Luau: `audio.analyze_song`, `visualizer.template`, `lyrics.karaoke`, `visualizer.drop_fx` and `media.loop`.
+
 ### Scripts are plain Luau
 - **`tool(name, args)` and `tools()` are globals**, and a hook's payload is the global `event`, in your scripts, hooks, Assistant scripts and plugins alike. The `editor` table is gone from the docs and completion.
 - **`print` shows up in the app**: in a script or hook it is what `editor.log` was (a toast, and the run's log), in an Assistant script or plugin it is the output, as before. Tables print as compact JSON.

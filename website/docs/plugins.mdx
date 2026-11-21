@@ -53,7 +53,31 @@ Open a row with its arrow to see the description, buttons for its panels (lit wh
 scripts, what it is allowed to do, and **Edit** links that open its Luau in the Script Editor.
 
 **Install from Folder…** and **Install from Zip…** install a plugin from your PC, which is handy while you make
-one.
+one. **From the Library** lists the plugins that come with Simple Editor's library, such as Visualizer Helper.
+
+## Visualizer Helper
+
+**Visualizer Helper** builds a music visualizer in five steps. Install it from the Plugins pane's **From the
+Library ▸ Visualizer Helper**, then open **Window ▸ Plugins ▸ Visualizer Helper**. Put your song on the timeline
+(select it if there are several) and go down the panel, one button per step. Each click is one undo step, and
+running a step again replaces only what it made before.
+
+1. **Analyse Song** finds every hit and how hard it is, the drops, the calm part at the end and the voice. With
+   the **Stem Separation** add-on installed it separates the song first, which makes the vocals and kicks far more
+   exact (**Get Stem Separation** takes you to it). It runs in the background, with its progress in **Jobs**, and
+   puts markers at the drops. If a drop is found in the wrong place, type the right times in **Drop times** and
+   analyse again.
+2. **Visualizer Templates** makes the song's visualizer (or reuses it) and keys it from the analysis:
+   **Olympus Storm** (a spiky chrome ball that pops on every kick, a waveform and lightning on the screeches),
+   **Chrome Waveform** or **Storm Lightning**. Pick the colours, the spikes per hit, the sensitivity, the smoothing
+   and how much harder it hits after the second drop.
+3. **Lyrics Karaoke**: paste the lyrics exactly as sung, one on-screen line per line. Each word fills silver
+   (gold after the first drop) as it is sung, each line slides in with a 3D turn, and the line that runs into the
+   biggest drop wraps round a cylinder. A `[Drop]` header in the lyrics tells it where the drop is.
+4. **Drop FX** adds a flash and a one-beat colour invert at each drop and, before the biggest drop, the shatter:
+   the light is sucked into the ball while glass shards invert on every hit. It also grades the background loop.
+5. **Background Loop**: select a GIF, a picture or a clip and press **Make Loop**. It is smoothed to 60 fps and
+   played forward then back, so the loop point never jumps, and tiled under the song.
 
 ## Making a plugin
 
@@ -142,7 +166,8 @@ end
 The widgets: `ui.heading`, `ui.label`, `ui.button` (true when clicked), `ui.slider(label, value, min, max)`,
 `ui.text(label, value)`, `ui.checkbox(label, value)`, `ui.dropdown(label, value, {options})`, `ui.row(fn)`,
 `ui.column(fn)`, `ui.separator()`, `ui.space()` and `ui.image("pic.png")`. Each one that holds a value returns
-the value after the user's change, so store it back in a variable as above.
+the value after the user's change, so store it back in a variable as above. `ui.tip("…")` right after a widget
+gives it hover text: keep the label short and put the explanation there.
 
 Keep `draw()` quick: it has about one frame, 16 ms (more when it answers a click), and while the video plays it only runs to answer clicks. If it takes too long or errors,
 the panel stops and shows the error with **Retry** and **Edit Script**. Saving the script reloads the panel.

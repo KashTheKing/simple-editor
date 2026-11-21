@@ -2,7 +2,7 @@
 //! The App side of the Visualizer Helper plugin (`library/plugins/visualizer-helper/`): the five tools its
 //! panel calls through `tool()`, the background jobs they start and the FRAME_HOOK that lands them.
 //!
-//! - `audio.analyze`: Analyse Song. Separates stems with the Stem Separation add-on when it is installed
+//! - `audio.analyze_song`: Analyse Song. Separates stems with the Stem Separation add-on when it is installed
 //!   (cached stems are reused), decodes them and the mix off the UI thread, runs `engine::vizhelp::analyze`
 //!   and lands the result on the project (`Project::viz`) plus drop / calm / first-vocal markers, as ONE
 //!   undo step. It also warms the visualizer's own analysis cache, so the template step never decodes on
@@ -488,6 +488,11 @@ fn vis_window(p: &Project, s: &Song, vis: Id) -> Option<(f64, f64, f64)> {
     Some((s.from + (c.start - s.start) * s.speed, c.duration, s.speed))
 }
 
+/// The shatter build in `vis`'s own seconds (its shader's `u_time` is clip-local).
+fn shatter_of(v: &SongViz, from: f64, len: f64, speed: f64, build: f64) -> Option<shader::Shatter> {
+    shader::Shatter::of(v, from, len * speed, build).map(|sh| shader::Shatter { big: sh.big / speed, rift0: sh.rift0 / speed, ..sh })
+}
+
 /// The lyric lines a step made, as clip-local spans of `vis`.
 fn lyric_spans(p: &Project, ids: &[Id], vis: Id) -> Vec<(f64, f64)> {
     let Some(v) = p.clip(vis) else { return Vec::new() };
@@ -511,7 +516,7 @@ fn template(app: &mut App, args: &Value) -> Result<Value, String> {
         }
     };
     let (from, len, speed) = vis_window(&app.project, &s, vis).ok_or("the visualizer vanished")?;
-    let sh = (v.made.shatter > 0.0).then(|| shader::Shatter::of(&v, from, len * speed, v.made.shatter)).flatten();
+    let sh = (v.made.shatter > 0.0).then(|| shatter_of(&v, from, len, speed, v.made.shatter)).flatten();
     let src = shader::specialize(&lib, &k, sh);
     // the same style: swap the source only (params keep their places, the baked audio stays); another
     // style: restyle, which re-bakes the audio under it
@@ -698,7 +703,7 @@ fn drop_fx(app: &mut App, args: &Value) -> Result<Value, String> {
     let mut used_build = 0.0;
     if let Some(vis) = vis {
         let (from, len, speed) = vis_window(&app.project, &s, vis).ok_or("the visualizer vanished")?;
-        let sh = shatter.then(|| shader::Shatter::of(&v, from, len * speed, build)).flatten();
+        let sh = shatter.then(|| shatter_of(&v, from, len, speed, build)).flatten();
         let c = app.project.clip(vis).ok_or("no visualizer")?.clone();
         let e = c.effects.iter().find(|e| crate::engine::visualizer::style_of(e).is_some()).ok_or("no visualizer effect")?;
         let is_storm = e.shader.contains("const float BIGDROP");
@@ -712,19 +717,19 @@ fn drop_fx(app: &mut App, args: &Value) -> Result<Value, String> {
                 let mask = shader::invert_layer(&src)?;
                 // a copy of the visualizer's clip (its shape size: the shards must line up), on top, from the
                 // build to the drop, Difference blend, keys shifted to its start
-                let span = (sh.big - sh.rift0) / speed;
+                let span = sh.big - sh.rift0;
                 let mut layer = c.clone();
                 layer.id = app.project.new_id();
                 layer.link = 0;
                 layer.name = "Shatter".into();
-                layer.start = c.start + sh.rift0 / speed;
+                layer.start = c.start + sh.rift0;
                 layer.duration = span;
                 layer.blend = BlendMode::Difference;
                 let mut le = e.clone();
                 le.set_shader(&mask);
                 for a in le.params.iter_mut() {
                     if !a.keys.is_empty() {
-                        a.keys = keys::window(&a.keys, sh.rift0 / speed, span, 1.0);
+                        a.keys = keys::window(&a.keys, sh.rift0, span, 1.0);
                     }
                 }
                 layer.effects = vec![le];
@@ -904,7 +909,7 @@ fn loop_status(app: &App, args: &Value) -> Value {
 
 pub(crate) const TOOLS: &[ToolDef] = &[
     ToolDef {
-        name: "audio.analyze",
+        name: "audio.analyze_song",
         desc: "Visualizer Helper ▸ Analyse Song. action=start analyses a song clip in the background: stems through the Stem Separation add-on when installed (cached stems reused; else the mix alone), hits with strengths and downbeats (tempo search tempo_min..tempo_max BPM, kick gate `gate` dB), drops (or the `drops` you give, none before `after` s), the calm part, screeches, the vocal envelope, vibrato and syllable onsets. It lands on the project (one undo step) with markers at the drops, the calm part and the first vocal. action=status (default): {state none|running|done|failed, progress, step, analysis, made, stems}. action=stems opens Settings ▸ Add-ons (Stem Separation). clip: an audio clip, a video with sound or a visualizer; default the selection's song, else the analysed one, else the longest audio clip.",
         args: &[
             "action:string:false:status (default) | start | stems",
@@ -938,9 +943,9 @@ pub(crate) const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "visualizer.template",
-        desc: "Visualizer Helper ▸ Visualizer Templates: give a song's visualizer (made when it has none) a template keyed from its audio.analyze result. template: Olympus Storm (spiky chrome ball, waveform, lightning, beams) | Chrome Waveform | Storm Lightning. Knobs: palette (Silver to Gold | Ice to Fire | Neon | Mono) or colors {metal_pre, metal_post, elec_pre, elec_post: \"#rrggbb\" or [r,g,b]}, spikes 1..6 (spines per hit), sensitivity 0.25..2 (how readily hits pop), smoothing 0..1 (voice and synth curves), harder 0..3 (kick level from the second drop to the calm part, 1.2 = no change), ball / wave / bolts / beam on-off. Writes named keys (kclock, kpow, sclock, vox, vib, kick, screech, fx, beam, lyric); the baked level / band / wave keys stay. Same inputs, same keys.",
+        desc: "Visualizer Helper ▸ Visualizer Templates: give a song's visualizer (made when it has none) a template keyed from its audio.analyze_song result. template: Olympus Storm (spiky chrome ball, waveform, lightning, beams) | Chrome Waveform | Storm Lightning. Knobs: palette (Silver to Gold | Ice to Fire | Neon | Mono) or colors {metal_pre, metal_post, elec_pre, elec_post: \"#rrggbb\" or [r,g,b]}, spikes 1..6 (spines per hit), sensitivity 0.25..2 (how readily hits pop), smoothing 0..1 (voice and synth curves), harder 0..3 (kick level from the second drop to the calm part, 1.2 = no change), ball / wave / bolts / beam on-off. Writes named keys (kclock, kpow, sclock, vox, vib, kick, screech, fx, beam, lyric); the baked level / band / wave keys stay. Same inputs, same keys.",
         args: &[
-            "clip:integer:false:the song (or its visualizer); default as audio.analyze",
+            "clip:integer:false:the song (or its visualizer); default as audio.analyze_song",
             "template:string:false:Olympus Storm (default) | Chrome Waveform | Storm Lightning",
             "palette:string:false:colour set",
             "colors:object:false:{metal_pre, metal_post, elec_pre, elec_post}",
@@ -959,10 +964,10 @@ pub(crate) const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "lyrics.karaoke",
-        desc: "Visualizer Helper ▸ Lyrics Karaoke: the exact lyrics (one on-screen line per line; [SECTION] headers and blank lines skipped, a [DROP] header marks the drop) as timed text clips on a \"Lyrics\" track, each word filling silver (gold from the first drop) on its sung syllable: words are put on the vocal stem's onsets (anchored on the song's transcript when it has one). Lines slide in from the right with a 3D turn and motion blur, appear 0.35 s before their first word and leave when the voice stops; the line ending into the biggest drop wraps round a cylinder (giant). Text size comes from the font size (the clip only scales down). Uses the Lyric Chrome library effect. Replaces the lines it made before; flattens the visualizer's waveform under each line. Needs audio.analyze first.",
+        desc: "Visualizer Helper ▸ Lyrics Karaoke: the exact lyrics (one on-screen line per line; [SECTION] headers and blank lines skipped, a [DROP] header marks the drop) as timed text clips on a \"Lyrics\" track, each word filling silver (gold from the first drop) on its sung syllable: words are put on the vocal stem's onsets (anchored on the song's transcript when it has one). Lines slide in from the right with a 3D turn and motion blur, appear 0.35 s before their first word and leave when the voice stops; the line ending into the biggest drop wraps round a cylinder (giant). Text size comes from the font size (the clip only scales down). Uses the Lyric Chrome library effect. Replaces the lines it made before; flattens the visualizer's waveform under each line. Needs audio.analyze_song first.",
         args: &[
             "lyrics:string:true:the lyrics, exactly as sung",
-            "clip:integer:false:the song; default as audio.analyze",
+            "clip:integer:false:the song; default as audio.analyze_song",
             "font:string:false:default Palatino Linotype",
             "size:number:false:font size px, default 58",
             "y:number:false:vertical offset px (default 330 at 1080p)",
@@ -975,9 +980,9 @@ pub(crate) const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "visualizer.drop_fx",
-        desc: "Visualizer Helper ▸ Drop FX at the drops audio.analyze found, on a \"Drop FX\" track on top: flash (a brightness flash) and invert (the Invert effect for one beat) as one Adjustment clip per drop; shatter: the Olympus Storm visualizer gets sucked in for `build` s (default 12.7) before the biggest drop while glass shards invert on every hit (a Difference-blend layer cut from the same shader); grade: the Background Loop clips get the golden-hour LUT, black until the first drop and a gold duotone through the biggest drop. Replaces the clips it made before.",
+        desc: "Visualizer Helper ▸ Drop FX at the drops audio.analyze_song found, on a \"Drop FX\" track on top: flash (a brightness flash) and invert (the Invert effect for one beat) as one Adjustment clip per drop; shatter: the Olympus Storm visualizer gets sucked in for `build` s (default 12.7) before the biggest drop while glass shards invert on every hit (a Difference-blend layer cut from the same shader); grade: the Background Loop clips get the golden-hour LUT, black until the first drop and a gold duotone through the biggest drop. Replaces the clips it made before.",
         args: &[
-            "clip:integer:false:the song; default as audio.analyze",
+            "clip:integer:false:the song; default as audio.analyze_song",
             "flash:boolean:false:default true",
             "invert:boolean:false:default true",
             "shatter:boolean:false:default true",

@@ -20,6 +20,11 @@ my-plugin/
   fonts/MyFont-Bold.ttf     (+ its OFL licence text, recommended)
 ```
 
+Plugins the app's own library ships live in `library/plugins/<id>/` (for example `visualizer-helper`, the
+Visualizer Helper add-on) and are listed in `engine::plugins::LIBRARY`. The Plugins pane's **From the Library**
+menu installs one: from a library folder as it is, or from the online library file by file (`plugin.json`, then
+each file it lists), through the same confirm as any other install.
+
 Paths in `plugin.json` are relative to the folder, use `/`, and must stay inside it (no `..`, no drive or root).
 
 ## plugin.json
@@ -154,6 +159,7 @@ The panel's file runs once when the panel opens (its top level sets up state), a
 | `ui.row(fn)`, `ui.column(fn)` | lay out the widgets `fn` makes side by side / stacked |
 | `ui.separator()`, `ui.space(px?)` | |
 | `ui.image(file, w?, h?)` | a `.png` inside the plugin (decoded once) |
+| `ui.tip(text)` | hover text for the widget drawn just before it (keep labels plain; explanations go here) |
 
 Widgets are identified by their label; repeats get `#2`, `#3`, and `"Label##key"` shows `Label` with the id
 `##key` (as in Dear ImGui). Keep values in Luau locals and pass them back in, immediate-mode style:

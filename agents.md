@@ -166,6 +166,7 @@ Read this before searching the tree. Longer map: [ARCHITECTURE.md](ARCHITECTURE.
 | Help menu / bug reports | `src/ui/app/menus.rs`, `.github/ISSUE_TEMPLATE/` | Help ▸ Report a Bug… opens the issue form with the version filled in |
 | Background removal add-on | `src/engine/bgremove.rs`, `src/ui/app/bgremove_ctl.rs`, `src/ui/bgremove_ui.rs`, `tools/se-matte/` | optional download (`library/bin/bgremove.json`); matte cache format in notes.md "bg-removal" |
 | Plugins (plugin.json, install from GitHub, Luau panels, sandbox) | `src/engine/plugins/`, `src/ui/app/plugins_ctl.rs`, `examples/plugins/` | format and runtime spec: `docs/plugins.md` |
+| Visualizer Helper add-on | `library/plugins/visualizer-helper/`, `src/engine/vizhelp/`, `src/ui/app/vizhelp_ctl.rs`, `Project::viz` | a library plugin (From the Library); the hand build it automates: `plans/visualizer-helper.md` |
 | User guide | `website/docs/*.mdx` | Docusaurus; published by `.github/workflows/docs.yml` on pushes to `main` |
 
 ### If you are an AI agent driving the running app

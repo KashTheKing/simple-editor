@@ -1016,3 +1016,27 @@ A button that opens a panel/pane/window (e.g. the top-right Performance button) 
 - One entry point for "make proxies?": `App::offer_proxies` (footage_ctl). Other slow-footage checks call it.
 - Wine 9 in the cloud container crashes on any exe (`free(): invalid pointer`), so windows-gnu test binaries can't run
   there; pure modules can be tested by pasting them into a scratch crate.
+
+## 2026-11-21 Visualizer Helper add-on (claude/feat-visualizer-helper)
+- The hardstyle visualizer hand build (`plans/visualizer-helper.md`, Python in `plans/visualizer-helper/`) is now a
+  library plugin, `library/plugins/visualizer-helper/` (panel + Olympus Storm / Lyric Chrome effects + golden-hour
+  LUT), installed from the Plugins pane's From the Library (`plugins::LIBRARY`, `stage_library`: a library folder as
+  is, or the online library file by file through `library::fetch_fresh`).
+- The Python is ported to Rust in `engine::vizhelp` (dsp, analyze, lyrics, keys, shader, loopbg). STFT frames are
+  centred like scipy's (without it every hit came out ~40 ms early). Pitch runs on the 80-1200 Hz band decimated to
+  8 kHz (the full-rate autocorrelation was ~5 G multiply-adds for a 3 min song).
+- Lyrics without a transcript: words are put on vocal onsets by a monotonic DP whose cost is the distance from a
+  syllable-spread estimate plus half the onset-index distance from the word's syllable position (one onset per
+  syllable). Letter-count spreading (the Python's fallback) put long words on the wrong syllable.
+- The Olympus Storm library copy compiles as it is: the per-song `{{...}}` placeholders became `const` lines
+  (`shader::set_const`), defaults = no shatter, every layer on. Drop FX rewrites only the six shatter consts
+  (`with_shatter`), so a template's colours survive it. Shader times are clip-local: divide song seconds by the
+  song clip's speed.
+- Every tool a plugin calls must be Read or Mutate (`script_ctl::script_may_call`): the analysis and the loop are
+  started by Read tools that spawn `export::spawn_job` jobs, landed by `vizhelp_ctl::tick` as one labelled undo
+  step. The analysis job also warms `visualizer::analysis`, so the template step never decodes on the UI thread
+  (a panel click has 250 ms).
+- `audio.analyze` already existed (peak/RMS per clip): the song analysis is `audio.analyze_song`.
+- Linux checks: the app's test binary can't run in the cloud container, so the engine modules were tested in a
+  scratch crate that `#[path]`-includes them with a stub `model`, and the panel Luau in a scratch mlua harness.
+

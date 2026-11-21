@@ -96,7 +96,7 @@ const fn v(name: &'static str, ty: &'static str, doc: &'static str, ctx: Ctx) ->
 #[cfg_attr(not(test), allow(dead_code))]
 pub const PLUGIN_TOOLS: &[(&str, &str, &str)] = &[
     (
-        "audio.analyze",
+        "audio.analyze_song",
         "{clip?, action = \"status\" | \"start\" | \"stems\", tempo_min?, tempo_max?, gate?, drops?, after?}",
         "Analyse a song in the background (stems through the Stem Separation add-on when installed): hits, drops, the calm part, the vocal envelope, onsets and vibrato, stored on the project with markers. `status` returns the state and the summary; `stems` opens Settings ▸ Add-ons",
     ),

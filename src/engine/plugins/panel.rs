@@ -739,7 +739,7 @@ mod tests {
                 let mut call = |n: &str, a: &Value| -> Result<Value, String> {
                     made.push((n.to_string(), a.clone()));
                     Ok(match n {
-                        "audio.analyze" => status.clone(),
+                        "audio.analyze_song" => status.clone(),
                         "visualizer.template" => serde_json::json!({"ok": true, "template": "Olympus Storm"}),
                         "lyrics.karaoke" => serde_json::json!({"ok": true, "lines": [{}, {}], "transcript": false, "drop_after": 50.0}),
                         "visualizer.drop_fx" => serde_json::json!({"ok": true, "drops": [26.389, 52.68], "shatter": true}),
@@ -751,7 +751,7 @@ mod tests {
                 let env = Env::new(&ctx, None, &base, &mut call);
                 p.run(&env, 0);
             }
-            made.retain(|(n, a)| !(n == "audio.analyze" && a.get("action").is_none()));
+            made.retain(|(n, a)| !(n == "audio.analyze_song" && a.get("action").is_none()));
             made
         };
         assert!(go(&mut p).is_empty(), "an idle draw only reads the status");
@@ -768,7 +768,7 @@ mod tests {
                 assert!(def.args.iter().any(|d| d.split(':').next() == Some(k.as_str())), "{n} has no argument {k}");
             }
         };
-        for (button, tool) in [("Analyse Song", "audio.analyze"), ("Apply Template", "visualizer.template"), ("Make Lyrics", "lyrics.karaoke"), ("Add Drop FX", "visualizer.drop_fx"), ("Make Loop", "media.loop")] {
+        for (button, tool) in [("Analyse Song", "audio.analyze_song"), ("Apply Template", "visualizer.template"), ("Make Lyrics", "lyrics.karaoke"), ("Add Drop FX", "visualizer.drop_fx"), ("Make Loop", "media.loop")] {
             p.changes.insert(button.into(), Change::Click);
             let made = go(&mut p);
             assert!(p.error.is_none(), "{button}: {:?}", p.error);
@@ -778,7 +778,7 @@ mod tests {
         // the stems add-on is missing: a button takes you to it
         p.changes.insert("Get Stem Separation".into(), Change::Click);
         let made = go(&mut p);
-        assert!(made.iter().any(|(n, a)| n == "audio.analyze" && a["action"] == "stems"), "{made:?}");
+        assert!(made.iter().any(|(n, a)| n == "audio.analyze_song" && a["action"] == "stems"), "{made:?}");
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {

@@ -2,7 +2,7 @@
 -- The heavy work (stem separation, analysis, keys, the background loop) runs in the app, in the background;
 -- this panel only calls its tools with tool(). Every click is one undo step.
 --
---   1. Analyse Song          audio.analyze        hits, drops, the calm part, the voice (stored on the project)
+--   1. Analyse Song          audio.analyze_song        hits, drops, the calm part, the voice (stored on the project)
 --   2. Visualizer Templates  visualizer.template  the spiky chrome ball / waveform / lightning, keyed from it
 --   3. Lyrics Karaoke        lyrics.karaoke       the exact lyrics, each word filling on its sung syllable
 --   4. Drop FX               visualizer.drop_fx   flash + invert at the drops, the shatter into the biggest one
@@ -51,7 +51,7 @@ local function drops()
 end
 
 function draw()
-  local good, st = pcall(tool, "audio.analyze", {})
+  local good, st = pcall(tool, "audio.analyze_song", {})
   ui.heading("Visualizer Helper")
   if not good then
     ui.label(string.gsub(tostring(st), "^.-:%d+: ", ""))
@@ -77,7 +77,7 @@ function draw()
     local args = { action = "start", tempo_min = tempo_min, tempo_max = tempo_max, gate = gate, after = after }
     local d = drops()
     if #d > 0 then args.drops = d end
-    step(1, "audio.analyze", args, function() return "Analysing in the background (Jobs shows the progress)" end)
+    step(1, "audio.analyze_song", args, function() return "Analysing in the background (Jobs shows the progress)" end)
   end
   ui.tip("Separates the stems (when Stem Separation is installed), then finds the hits, drops, the calm part and the voice. Runs in the background; the song stays playable")
   if st.state == "running" then
@@ -93,7 +93,7 @@ function draw()
     ui.label(said[1] or "Not analysed")
   end
   if not st.stems.installed then
-    if ui.button("Get Stem Separation") then tool("audio.analyze", { action = "stems" }) end
+    if ui.button("Get Stem Separation") then tool("audio.analyze_song", { action = "stems" }) end
     ui.tip("Opens Settings ▸ Add-ons. With the stems, the voice and the kicks are found far more exactly")
   end
 
