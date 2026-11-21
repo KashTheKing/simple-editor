@@ -80,6 +80,9 @@ pub enum AnimTool {
     Path,
 }
 
+/// A held value range: (clip, property, velocity view, clip-local window it was fitted to, low, high).
+type YHold = (Id, &'static str, bool, (f64, f64), f64, f64);
+
 #[derive(Default)]
 pub struct AnimState {
     pub tool: AnimTool,
@@ -103,7 +106,9 @@ pub struct AnimState {
     orig: Option<Clip>,
     guide: Option<f64>,
     boxsel: Option<(Pos2, Pos2)>,
-    ranges: Option<Vec<(&'static str, f64, f64)>>,
+    /// Curves: each graph's value range, kept across edits so adjusting a curve never rescales the view.
+    /// Refit when the time window changes (not during a drag) or on Frame all / F.
+    y_held: Vec<YHold>,
     /// Speed: the picked point, as (clip, key index).
     speed_sel: Option<(Id, usize)>,
     /// Onion-skin ghosts each side (`onion`); `None` = the default, off.
@@ -139,6 +144,17 @@ pub struct AnimState {
     #[cfg(test)]
     key_pos: Vec<(Id, &'static str, usize, Pos2)>,
     ctx_t: Option<f64>,
+    /// Where the last right-click on empty graph space landed, in the focused property's value.
+    ctx_v: Option<f64>,
+    /// The key the last right-click landed on.
+    ctx_key: Option<(&'static str, usize)>,
+    /// The "Set Keyframe" window: (clip, property, key, timeline seconds, value as shown).
+    key_edit: Option<(Id, &'static str, usize, f64, f64)>,
+    /// Copied keys, their times relative to the earliest.
+    key_copy: Vec<(&'static str, Keyframe)>,
+    /// Where each property's key button was drawn last frame.
+    #[cfg(test)]
+    key_slots: Vec<(&'static str, Pos2)>,
     /// The time window shown (timeline seconds) after a zoom / pan; `None` = fit.
     pub win: Option<(f64, f64)>,
     /// The clips `win` was framed for: another selection frames its own blocks again.
@@ -798,6 +814,8 @@ pub fn show(
     st.key_pos.clear();
     #[cfg(test)]
     st.ch_rows.clear();
+    #[cfg(test)]
+    st.key_slots.clear();
     let main = st.sel;
     st.multi.retain(|&(id, i)| Some((id, i)) != main && project.clip(id).is_some_and(|c| i < c.blocks.len()));
     SEL.with(|s| s.set(st.sel));
@@ -1292,7 +1310,7 @@ fn ruler(ui: &mut Ui, rect: Rect, t0: f64, t1: f64, playhead: &mut f64, pal: &Pa
 
 /// The lanes' zoom, like the timeline's: − slider + and fit. Zooms around the playhead while it is in view.
 /// Left of it, the range toggle (Selected clips / Whole timeline): true when it was switched.
-fn zoom_bar(ui: &mut Ui, pal: &Palette, win: &mut Option<(f64, f64)>, fit: (f64, f64), playhead: f64, whole: &mut bool) -> bool {
+fn zoom_bar(ui: &mut Ui, pal: &Palette, win: &mut Option<(f64, f64)>, fit: (f64, f64), playhead: f64, whole: &mut bool, y_held: &mut Vec<YHold>) -> bool {
     use crate::ui::tools::{icon_button, Glyph};
     let mut switched = false;
     let (t0, t1) = win.unwrap_or(fit);
@@ -1318,6 +1336,9 @@ fn zoom_bar(ui: &mut Ui, pal: &Palette, win: &mut Option<(f64, f64)>, fit: (f64,
     });
     if switched {
         return true;
+    }
+    if fitted {
+        y_held.clear(); // the explicit reframe: values too, even when the time window is already the fit
     }
     if fitted || z <= 1.0 + 1e-6 && z != z0 {
         *win = Some(fit); // the whole range, kept (None would frame the blocks again)
@@ -1484,7 +1505,7 @@ fn lanes_view(
                     st.tool = t;
                 }
             }
-            let tip = "Snapping (S): a dragged block snaps to the playhead, other blocks and clip edges";
+            let tip = "Snapping (S): dragged blocks and keyframes snap to the playhead, other keyframes or blocks, and clip edges";
             if icon_button(ui, pal, ui.id().with("an_snap"), Glyph::Magnet, tip, st.snap).clicked() {
                 st.no_snap = !st.no_snap;
             }
@@ -1531,7 +1552,7 @@ fn lanes_view(
         }
         st.last_ph = Some(*playhead);
         // on the right: the range toggle, then the zoom
-        if zoom_bar(ui, pal, &mut st.win, fit, *playhead, &mut st.whole) {
+        if zoom_bar(ui, pal, &mut st.win, fit, *playhead, &mut st.whole, &mut st.y_held) {
             fit = range_of(st.whole, project);
         st.range = fit;
             st.win = Some(fit); // switching shows the whole of the new range
@@ -2481,6 +2502,7 @@ fn lanes_view(
         }
         if ui.rect_contains_pointer(lanes_rect) && ui.input(|i| i.key_pressed(egui::Key::F) || i.key_pressed(egui::Key::Home)) {
             st.win = None;
+            st.y_held.clear();
         }
         // a drag that starts on empty lane space is a selection box, like the timeline's: every block it
         // touches is picked
@@ -2691,6 +2713,53 @@ fn curve_span(c: &Clip, sel: Option<usize>) -> (f64, f64) {
     }
 }
 
+/// Key `k` of `p` to clip-local time `t` (kept between its neighbours, so keys never swap) and value `v`.
+fn set_key(cm: &mut Clip, p: &str, k: usize, t: f64, v: f64) -> bool {
+    let dur = cm.duration;
+    let Some(a) = prop_mut(cm, p) else { return false };
+    if k >= a.keys.len() {
+        return false;
+    }
+    let lo = k.checked_sub(1).map_or(0.0, |j| a.keys[j].t + 1e-3);
+    let hi = a.keys.get(k + 1).map_or(dur, |n| n.t - 1e-3);
+    let old = a.keys[k].t;
+    (a.keys[k].t, a.keys[k].v) = (t.clamp(lo, hi.max(lo)), v);
+    touch_blocks(cm, p, old);
+    true
+}
+
+/// A list row's key slot: the same control as the Inspector's (ring = not keyed, hollow = keyed but no key at
+/// the playhead, filled = a key at the playhead). True when clicked.
+fn key_slot(ui: &Ui, r: &crate::ui::list_rows::RowResp, salt: impl std::hash::Hash, keyed: bool, here: bool, pal: &Palette) -> bool {
+    let rect = r.slot(1);
+    let tip = match (here, keyed) {
+        (true, _) => "Remove the keyframe at the playhead",
+        (_, true) => "Add a keyframe at the playhead",
+        _ => "Start keyframing: capture a keyframe at the playhead",
+    };
+    let resp = ui.interact(rect, ui.id().with(("an-key", salt)), Sense::click()).on_hover_text(tip);
+    crate::ui::paint_key_state(ui.painter(), rect, keyed, here, resp.hovered(), pal);
+    resp.clicked()
+}
+
+/// Where a dragged time `t` snaps: the nearest of `edges` and the keys of `props` within `SNAP_PX`. Properties
+/// with a key in `moving` are left out: a key landing on its own neighbour would make a vertical jump.
+fn snap_time(t: f64, pps: f64, edges: &[f64], c: &Clip, props: &[&'static str], moving: &[(&'static str, usize)]) -> Option<f64> {
+    let keys = props
+        .iter()
+        .filter(|p| !moving.iter().any(|m| m.0 == **p))
+        .filter_map(|p| prop_ref(c, *p))
+        .flat_map(|a| a.keys.iter().map(|k| k.t));
+    edges
+        .iter()
+        .copied()
+        .chain(keys)
+        .map(|s| (s, (s - t).abs()))
+        .filter(|&(_, d)| d * pps < SNAP_PX as f64)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(s, _)| s)
+}
+
 /// The channel list: the properties a clip can animate, in groups (Blender's dope / graph sidebar).
 const CHANNELS: [(&str, &[&str]); 4] = [
     ("Transform", &["x", "y", "scale", "scale_x", "scale_y", "rotation"]),
@@ -2807,8 +2876,12 @@ enum KeyAct {
     Loop(u32),
     SelectProp(&'static str),
     SelectAll,
-    AddAt(&'static str, f64),
+    AddAt(&'static str, f64, Option<f64>),
     Fit,
+    Edit,
+    Copy,
+    Cut,
+    Paste,
 }
 
 /// What Curves shows of a clip: the picked block (None = every key of the clip), its span, the properties the
@@ -2994,7 +3067,7 @@ fn curve_row(
     let focus = st.focus.filter(|f| cx.channels.contains(f)).or(cx.shown.first().copied()).or(cx.channels.first().copied());
     // the selected keys belong to one clip (`key_clip`): another clip's row sees none, and becomes that clip
     // the moment a key of its own is picked
-    let stash = (st.key_clip != Some(id)).then(|| (std::mem::take(&mut st.keys), st.ranges.take()));
+    let stash = (st.key_clip != Some(id)).then(|| std::mem::take(&mut st.keys));
     // what the row is, then the clip: the picked block, else the clip's properties
     let what = cx.bi.map_or("Properties", |i| c.blocks[i].name.as_str());
     let folded = st.clip_folded.contains(&id);
@@ -3010,7 +3083,7 @@ fn curve_row(
         let mut hui =
             ui.new_child(egui::UiBuilder::new().id_salt(("an-head", id)).max_rect(list.shrink2(vec2(2.0, 1.0))));
         hui.set_clip_rect(list.intersect(ui.clip_rect()));
-        channel_list(&mut hui, st, project, id, &cx.channels, playhead, undo, out);
+        channel_list(&mut hui, st, project, id, &cx.channels, playhead, pal, undo, out);
         let resp = ui.interact(body, ui.id().with(("an-graph", id)), Sense::click_and_drag());
         let c = project.clip(id).cloned().unwrap_or_else(|| c.clone());
         graph(ui, st, project, &c, cx.span, &cx.shown, focus, body, resp, win, playhead, pal, undo, out);
@@ -3018,9 +3091,9 @@ fn curve_row(
     // a right-click anywhere in the label cell (the title, a group, a property): which properties show
     let c = project.clip(id).cloned().unwrap_or_else(|| c.clone());
     menu::context_area(ui, ui.id().with(("an-view", id)), head, |ui| view_menu(ui, st, &c, &cx.channels));
-    if let Some((keys, ranges)) = stash {
+    if let Some(keys) = stash {
         if st.keys.is_empty() {
-            (st.keys, st.ranges) = (keys, ranges);
+            st.keys = keys;
         } else {
             st.key_clip = Some(id);
         }
@@ -3076,6 +3149,7 @@ fn channel_list(
     id: Id,
     channels: &[&'static str],
     playhead: &mut f64,
+    pal: &Palette,
     undo: &mut dyn FnMut(&Project),
     out: &mut AnimResp,
 ) {
@@ -3105,7 +3179,14 @@ fn channel_list(
             }
             let open = !st.folded.iter().any(|x| x == g);
             let any_keyed = list.iter().any(|p| prop_ref(&c, p).is_some_and(|a| a.is_animated()));
-            let r = group_row(ui, &mut rows, n, g, open, !any_keyed, 0);
+            let r = group_row(ui, &mut rows, n, g, open, !any_keyed, 0b10);
+            let has = |p: &&'static str| prop_ref(&c, p).is_some_and(|a| a.has_key_at(lt));
+            let all_here = list.iter().all(has);
+            // the group's key button: filled when every property has a key here; a click fills the gaps,
+            // or clears a full group
+            if key_slot(ui, &r, ("g", id, g), any_keyed, all_here, pal) {
+                todo.extend(list.iter().filter(|p| all_here || !has(p)).map(|&p| (p, 1)));
+            }
             n += 1;
             drawn.push((gi, None));
             if r.toggled {
@@ -3125,7 +3206,12 @@ fn channel_list(
                 let Some(a) = prop_ref(&c, p) else { continue };
                 let v = format!("{:.1}{}", shown(p, a.at(lt)), unit(p));
                 let hidden = st.hidden.contains(&p);
-                let (r, lr) = prop_list_row(ui, &mut rows, n, id, p, prop_label(p), &v, 1, hidden || !a.is_animated(), 0);
+                let (r, lr) = prop_list_row(ui, &mut rows, n, id, p, prop_label(p), &v, 1, hidden || !a.is_animated(), 0b10);
+                #[cfg(test)]
+                st.key_slots.push((p, r.slot(1).center()));
+                if key_slot(ui, &r, ("p", id, p), a.is_animated(), a.has_key_at(lt), pal) {
+                    todo.push((p, 1));
+                }
                 n += 1;
                 drawn.push((gi, Some(p)));
                 #[cfg(test)]
@@ -3276,6 +3362,66 @@ fn view_menu(ui: &mut Ui, st: &mut AnimState, c: &Clip, channels: &[&'static str
 }
 
 impl AnimState {
+    /// Curves has keys picked (Ctrl+C / Ctrl+X take them instead of the timeline's clips).
+    pub fn has_keys(&self) -> bool {
+        self.view == View::Curves && self.key_clip.is_some() && !self.keys.is_empty()
+    }
+    /// Curves has copied keys to paste (Ctrl+V lands them instead of the timeline's clips).
+    pub fn has_copied_keys(&self) -> bool {
+        self.view == View::Curves && !self.key_copy.is_empty()
+    }
+    pub fn key_clip(&self) -> Option<Id> {
+        self.key_clip
+    }
+    /// Copy the picked keys of clip `id`.
+    pub fn copy_keys(&mut self, project: &Project, id: Id) {
+        let Some(c) = project.clip(id) else { return };
+        let picked: Vec<(&'static str, Keyframe)> =
+            self.keys.iter().filter_map(|&(p, k)| prop_ref(c, p)?.keys.get(k).map(|x| (p, *x))).collect();
+        let t0 = picked.iter().map(|k| k.1.t).fold(f64::MAX, f64::min);
+        self.key_copy = picked.into_iter().map(|(p, k)| (p, Keyframe { t: k.t - t0, ..k })).collect();
+    }
+    /// Remove the picked keys of clip `id` (a property losing its last key keeps that value).
+    pub fn remove_keys(&mut self, project: &mut Project, id: Id) {
+        if let Some(cm) = project.clip_mut(id) {
+            let mut sel = std::mem::take(&mut self.keys);
+            sel.sort_by(|a, b| b.1.cmp(&a.1));
+            for (p, k) in sel {
+                let Some(a) = prop_mut(cm, p) else { continue };
+                if k < a.keys.len() {
+                    let key = a.keys.remove(k);
+                    if a.keys.is_empty() {
+                        a.value = key.v;
+                    }
+                    touch_blocks(cm, p, key.t);
+                }
+            }
+        }
+        self.keys.clear();
+    }
+    /// Paste the copied keys on clip `id` from the playhead, keeping their spacing, and pick them. Keys that
+    /// would land past the clip's end are left out. Returns how many landed.
+    pub fn paste_keys(&mut self, project: &mut Project, id: Id, playhead: f64) -> usize {
+        let Some(cm) = project.clip_mut(id) else { return 0 };
+        let dur = cm.duration;
+        let t0 = (playhead - cm.start).clamp(0.0, dur);
+        let mut at: Vec<(&'static str, f64)> = Vec::new();
+        for &(p, k) in &self.key_copy {
+            let t = t0 + k.t;
+            if t > dur + 1e-4 {
+                continue;
+            }
+            let t = t.min(dur);
+            let Some(a) = prop_mut(cm, p) else { continue };
+            a.key_at(t, k.v);
+            a.set_ease_at(t, k.ease);
+            touch_blocks(cm, p, t);
+            at.push((p, t));
+        }
+        self.keys = at.iter().filter_map(|&(p, t)| Some((p, prop_ref(cm, p)?.key_index_at(t)?))).collect();
+        self.key_clip = Some(id);
+        at.len()
+    }
     /// The channel list as it first was: every property shown, nothing folded, the built-in order.
     pub fn reset_view(&mut self) {
         self.props_off.clear();
@@ -3329,43 +3475,53 @@ fn graph(
         let e = 1.0 / 600.0;
         (a.at(t + e) - a.at(t - e)) / (2.0 * e)
     };
-    // per-property y range (frozen while a drag runs so the curve doesn't swim under the pointer)
-    let ranges: Vec<(&'static str, f64, f64)> = st.ranges.clone().unwrap_or_else(|| {
-        props
+    // per-property y range: fitted once for this time window, then held, so an edit never rescales the view
+    let velocity = st.velocity;
+    let dragging = st.grab.is_some();
+    let mut ranges: Vec<(&'static str, f64, f64)> = Vec::with_capacity(props.len());
+    for &p in props {
+        let held = st
+            .y_held
             .iter()
-            .map(|&p| {
-                let a = prop_ref(c, p).unwrap();
-                // what is on screen, sampled as finely as it is drawn, plus the keys themselves (a shake's
-                // peaks fall between coarse samples)
-                let (q0, q1) = (f0, f1);
-                let n = if a.procs.is_empty() { 240 } else { 960 };
-                let mut vs: Vec<f64> = (0..=n)
-                    .map(|i| {
-                        let t = q0 + (q1 - q0) * i as f64 / n as f64;
-                        if st.velocity {
-                            vel(a, t)
-                        } else {
-                            a.at(t)
-                        }
-                    })
-                    .collect();
-                if !st.velocity {
-                    vs.extend(a.keys.iter().filter(|k| k.t >= q0 && k.t <= q1).map(|k| k.v));
-                }
-                let (mut lo, mut hi) = vs.iter().fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
-                if st.velocity {
-                    let m = lo.abs().max(hi.abs()).max(1e-3);
-                    (lo, hi) = (-m, m);
-                }
-                if hi - lo < 1e-6 {
-                    lo -= 1.0;
-                    hi += 1.0;
-                }
-                let g = (hi - lo) * 0.12;
-                (p, lo - g, hi + g)
-            })
-            .collect()
-    });
+            .find(|h| h.0 == id && h.1 == p && h.2 == velocity && (dragging || h.3 == (f0, f1)))
+            .map(|h| (h.4, h.5));
+        let (lo, hi) = held.unwrap_or_else(|| {
+            let a = prop_ref(c, p).unwrap();
+            // what is on screen, sampled as finely as it is drawn, plus the keys themselves (a shake's
+            // peaks fall between coarse samples)
+            let (q0, q1) = (f0, f1);
+            let n = if a.procs.is_empty() { 240 } else { 960 };
+            let mut vs: Vec<f64> = (0..=n)
+                .map(|i| {
+                    let t = q0 + (q1 - q0) * i as f64 / n as f64;
+                    if velocity {
+                        vel(a, t)
+                    } else {
+                        a.at(t)
+                    }
+                })
+                .collect();
+            if !velocity {
+                vs.extend(a.keys.iter().filter(|k| k.t >= q0 && k.t <= q1).map(|k| k.v));
+            }
+            let (mut lo, mut hi) = vs.iter().fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
+            if velocity {
+                let m = lo.abs().max(hi.abs()).max(1e-3);
+                (lo, hi) = (-m, m);
+            }
+            if hi - lo < 1e-6 {
+                lo -= 1.0;
+                hi += 1.0;
+            }
+            let g = (hi - lo) * 0.12;
+            (lo - g, hi + g)
+        });
+        if held.is_none() {
+            st.y_held.retain(|h| !(h.0 == id && h.1 == p && h.2 == velocity));
+            st.y_held.push((id, p, velocity, (f0, f1), lo, hi));
+        }
+        ranges.push((p, lo, hi));
+    }
     let rng = |p: &str| ranges.iter().find(|r| r.0 == p).map_or((0.0, 1.0), |r| (r.1, r.2));
     let y = |p: &str, v: f64| {
         let (lo, hi) = rng(p);
@@ -3500,7 +3656,6 @@ fn graph(
                 st.focus = Some(p);
                 undo(project);
                 st.orig = Some(c.clone());
-                st.ranges = Some(ranges.clone());
             }
             _ => {
                 st.grab = None;
@@ -3518,6 +3673,9 @@ fn graph(
             b.1 = cur;
         } else if let (Some(orig), Some(cur), Some(pp), Some((hp, hk, side))) = (st.orig.clone(), cur, press, st.grab) {
             let mut cm = orig.clone();
+            let pps = plot.width() as f64 / (f1 - f0);
+            let edges = [ph, 0.0, orig.duration, s0, s1];
+            let mut snapped = None;
             if side == 0 {
                 // the selected keys move together in time (frames, the playhead snaps) and in value, each on its
                 // own property's scale; Ctrl = time only. Shift locks the drag to one axis: the way the pointer
@@ -3531,8 +3689,9 @@ fn graph(
                 let lead = prop_ref(&orig, hp).and_then(|a| a.keys.get(hk)).map_or(0.0, |k| k.t);
                 let fps = project.fps.max(1.0);
                 let mut to = ((lead + tx(cur.x) - tx(pp.x)) * fps).round() / fps;
-                if ((ph - to) * plot.width() as f64 / (f1 - f0)).abs() < SNAP_PX as f64 {
-                    to = ph;
+                if st.snap && move_t {
+                    snapped = snap_time(to, pps, &edges, &orig, props, &st.keys);
+                    to = snapped.unwrap_or(to);
                 }
                 let dt = if move_t { to - lead } else { 0.0 };
                 let ctrl = ui.input(|i| i.modifiers.ctrl) || !move_v;
@@ -3554,7 +3713,11 @@ fn graph(
             } else if let (Some(oa), Some(a)) = (prop_ref(&orig, hp), prop_mut(&mut cm, hp)) {
                 // a handle: rewrite the segment's bezier (Alt = this handle alone; else the key stays smooth)
                 let alt = ui.input(|i| i.modifiers.alt);
-                let (t, v) = (tx(cur.x), vy(hp, cur.y));
+                let (mut t, v) = (tx(cur.x), vy(hp, cur.y));
+                if st.snap {
+                    snapped = snap_time(t, pps, &edges, &orig, props, &[]);
+                    t = snapped.unwrap_or(t);
+                }
                 let seg = if side > 0 { hk } else { hk - 1 };
                 let (k0, k1) = (oa.keys[seg], oa.keys[seg + 1]);
                 let (dt, dv) = (k1.t - k0.t, k1.v - k0.v);
@@ -3577,6 +3740,9 @@ fn graph(
                 }
                 touch_blocks(&mut cm, hp, k0.t);
             }
+            if let Some(s) = snapped {
+                painter.line_segment([pos2(x(s), rect.top()), pos2(x(s), rect.bottom())], Stroke::new(1.0, pal.accent));
+            }
             if let Some(slot) = project.clip_mut(id) {
                 *slot = cm;
             }
@@ -3593,7 +3759,6 @@ fn graph(
             }
         }
         st.orig = None;
-        st.ranges = None;
         st.grab = None;
         st.axis = None;
     }
@@ -3606,8 +3771,13 @@ fn graph(
                         st.keys = vec![(p, k)];
                     }
                     st.focus = Some(p);
+                    (st.ctx_t, st.ctx_v, st.ctx_key) = (None, None, Some((p, k)));
                 }
-                _ => st.ctx_t = Some(tx(pos.x).clamp(0.0, c.duration)),
+                _ => {
+                    st.ctx_t = Some(tx(pos.x).clamp(0.0, c.duration));
+                    st.ctx_v = focus.filter(|f| props.contains(f)).map(|f| vy(f, pos.y));
+                    st.ctx_key = None;
+                }
             }
         }
     }
@@ -3615,6 +3785,24 @@ fn graph(
     let n = st.keys.len();
     let fname = focus.map_or("", prop_label);
     menu::context(&resp, |ui| {
+        if let (Some(f), Some(t)) = (focus, st.ctx_t.filter(|_| !st.velocity)) {
+            if menu::row(ui, Some(crate::ui::tools::Glyph::Diamond), &format!("Add {fname} Keyframe"), "").clicked() {
+                act = Some(KeyAct::AddAt(f, t, st.ctx_v));
+            }
+        }
+        if st.ctx_key.is_some() && menu::row(ui, None, "Set Value and Time…", "").clicked() {
+            act = Some(KeyAct::Edit);
+        }
+        if n > 0 && menu::row(ui, None, "Cut", "Ctrl+X").clicked() {
+            act = Some(KeyAct::Cut);
+        }
+        if n > 0 && menu::row(ui, None, "Copy", "Ctrl+C").clicked() {
+            act = Some(KeyAct::Copy);
+        }
+        if !st.key_copy.is_empty() && menu::row(ui, None, "Paste at Playhead", "Ctrl+V").clicked() {
+            act = Some(KeyAct::Paste);
+        }
+        ui.separator();
         if n > 0 {
             ui.label(egui::RichText::new(format!("{n} key{}", if n == 1 { "" } else { "s" })).size(11.0).color(look::MUTED));
             menu::sub(ui, Some(crate::ui::tools::Glyph::CurveIcon), "Interpolation", |ui| {
@@ -3640,11 +3828,6 @@ fn graph(
             if menu::row(ui, None, &format!("Select {fname} keys"), "").clicked() {
                 act = Some(KeyAct::SelectProp(f));
             }
-            if let Some(t) = st.ctx_t.filter(|_| n == 0 && !st.velocity) {
-                if menu::row(ui, Some(crate::ui::tools::Glyph::Diamond), &format!("Add a {fname} key here"), "").clicked() {
-                    act = Some(KeyAct::AddAt(f, t));
-                }
-            }
         }
         if menu::row(ui, None, "Select all", "").clicked() {
             act = Some(KeyAct::SelectAll);
@@ -3660,20 +3843,76 @@ fn graph(
     // double-click on the graph adds a key on the focused property there
     if resp.double_clicked() && !st.velocity {
         if let (Some(f), Some(pp)) = (focus, resp.interact_pointer_pos()) {
-            if at(pp).is_none() {
-                act = Some(KeyAct::AddAt(f, tx(pp.x).clamp(0.0, c.duration)));
+            match at(pp) {
+                None => act = Some(KeyAct::AddAt(f, tx(pp.x).clamp(0.0, c.duration), None)),
+                Some((_, p, k, 0)) => {
+                    st.ctx_key = Some((p, k));
+                    act = Some(KeyAct::Edit);
+                }
+                _ => {}
             }
+        }
+    }
+    // "Set Keyframe": type a key's exact value and time, applied as one undo step
+    if let Some((eid, p, k, mut et, mut ev)) = st.key_edit.filter(|e| e.0 == id) {
+        let (mut open, mut apply, mut cancel) = (true, false, false);
+        egui::Window::new("Set Keyframe")
+            .id(ui.id().with(("an-key-edit", id)))
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                egui::Grid::new("an-key-edit-grid").num_columns(2).show(ui, |ui| {
+                    ui.label(prop_label(p));
+                    let a = ui.add(egui::DragValue::new(&mut ev).speed(0.1).suffix(unit(p)));
+                    ui.end_row();
+                    ui.label("Time");
+                    let b = ui.add(egui::DragValue::new(&mut et).speed(0.01).range(c.start..=c.start + c.duration).suffix(" s"));
+                    ui.end_row();
+                    apply = (a.lost_focus() || b.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                });
+                ui.horizontal(|ui| {
+                    apply |= ui.button("Apply").clicked();
+                    cancel = ui.button("Cancel").clicked();
+                });
+            });
+        st.key_edit = (!apply && !cancel && open).then_some((eid, p, k, et, ev));
+        if apply {
+            undo(project);
+            let v = ev / shown(p, 1.0);
+            out.edited |= project.clip_mut(id).is_some_and(|cm| set_key(cm, p, k, et - c.start, v));
         }
     }
     let Some(act) = act else { return };
     match act {
+        KeyAct::Edit => {
+            if let Some((p, k)) = st.ctx_key {
+                let key = prop_ref(c, p).and_then(|a| a.keys.get(k));
+                st.key_edit = key.map(|kf| (id, p, k, c.start + kf.t, shown(p, kf.v)));
+            }
+        }
+        KeyAct::Copy => st.copy_keys(project, id),
+        KeyAct::Cut => {
+            undo(project);
+            st.copy_keys(project, id);
+            st.remove_keys(project, id);
+            out.edited = true;
+        }
+        KeyAct::Paste => {
+            undo(project);
+            st.paste_keys(project, id, *playhead);
+            out.edited = true;
+        }
         KeyAct::SelectProp(p) => {
             st.keys = (0..prop_ref(c, p).map_or(0, |a| a.keys.len())).map(|k| (p, k)).collect();
         }
         KeyAct::SelectAll => {
             st.keys = props.iter().flat_map(|&p| (0..prop_ref(c, p).map_or(0, |a| a.keys.len())).map(move |k| (p, k))).collect();
         }
-        KeyAct::Fit => st.win = None,
+        KeyAct::Fit => {
+            st.win = None;
+            st.y_held.clear();
+        }
         KeyAct::Loop(k) => {
             undo(project);
             out.toast = Some(loop_sel_keys(project, st, id, k));
@@ -3697,33 +3936,23 @@ fn graph(
         }
         KeyAct::Delete => {
             undo(project);
-            if let Some(cm) = project.clip_mut(id) {
-                let mut sel = st.keys.clone();
-                sel.sort_by(|a, b| b.1.cmp(&a.1));
-                for (p, k) in sel {
-                    let Some(a) = prop_mut(cm, p) else { continue };
-                    if k < a.keys.len() {
-                        let key = a.keys.remove(k);
-                        if a.keys.is_empty() {
-                            a.value = key.v;
-                        }
-                        touch_blocks(cm, p, key.t);
-                    }
-                }
-            }
-            st.keys.clear();
+            st.remove_keys(project, id);
             out.edited = true;
         }
-        KeyAct::AddAt(p, t) => {
+        KeyAct::AddAt(p, t, v) => {
             undo(project);
             if let Some(cm) = project.clip_mut(id) {
                 if let Some(a) = prop_mut(cm, p) {
-                    if a.is_animated() {
-                        let v = a.at(t);
-                        a.key_at(t, v);
-                    } else {
-                        a.toggle_key(t);
+                    match v {
+                        Some(v) => a.key_at(t, v),
+                        None if a.is_animated() => {
+                            let v = a.at(t);
+                            a.key_at(t, v);
+                        }
+                        None => a.toggle_key(t),
                     }
+                    // the new key is the selection: the indices of any picked before it just shifted
+                    st.keys = a.key_index_at(t).map(|k| (p, k)).into_iter().collect();
                 }
                 touch_blocks(cm, p, t);
             }
@@ -5519,6 +5748,87 @@ mod tests {
         h.frame();
         assert_eq!(h.st.keys, vec![("x", 1), ("x", 0)]);
         assert_eq!(x_keys(&h), before, "a click moves nothing");
+    }
+
+    /// The report: keys did not snap to the ends of the curve editor or to other keys.
+    #[test]
+    fn snap_time_finds_edges_and_other_properties_keys() {
+        let mut c = Clip::new(9, ClipKind::Video, "c", 0.0, 6.0);
+        c.x.keys = vec![Keyframe { t: 2.0, v: 0.0, ease: Ease::Linear }];
+        c.y.keys = vec![Keyframe { t: 3.0, v: 0.0, ease: Ease::Linear }];
+        let (props, edges) = (["x", "y"], [0.0, 6.0]);
+        assert_eq!(snap_time(5.95, 100.0, &edges, &c, &props, &[]), Some(6.0), "the end");
+        assert_eq!(snap_time(0.04, 100.0, &edges, &c, &props, &[]), Some(0.0), "the start");
+        assert_eq!(snap_time(3.03, 100.0, &edges, &c, &props, &[("x", 0)]), Some(3.0), "another property's key");
+        assert_eq!(snap_time(2.03, 100.0, &edges, &c, &props, &[("x", 0)]), None, "not the dragged property's own");
+        assert_eq!(snap_time(4.5, 100.0, &edges, &c, &props, &[]), None, "nothing near");
+    }
+
+    /// The report: adjusting a curve rescaled the whole view. A key dragged to a new value and to the clip's
+    /// end snaps there, and the key left alone stays at the same place on screen after the release.
+    #[test]
+    fn a_key_drag_snaps_to_the_end_and_never_rescales_the_view() {
+        let mut h = H::new(1100.0);
+        let cl = h.p.clip_mut(1).unwrap();
+        cl.blocks.clear();
+        cl.x.keys = vec![Keyframe { t: 1.0, v: 0.0, ease: Ease::Linear }, Keyframe { t: 3.0, v: 100.0, ease: Ease::Linear }];
+        (h.st.view, h.st.sel, h.sel, h.ph) = (View::Curves, None, vec![1], 0.0);
+        h.frame();
+        h.frame();
+        let pos = |h: &H, k: usize| h.st.key_pos.iter().rev().find(|p| (p.0, p.1, p.2) == (1, "x", k)).expect("drawn").3;
+        let (k0, k1) = (pos(&h, 0), pos(&h, 1));
+        let px_per_s = (k1.x - k0.x) / 2.0;
+        // 3 px short of the clip's end, and well above the key's value
+        let to = k1 + vec2(3.0 * px_per_s - 3.0, -40.0);
+        h.frame_with(vec![egui::Event::PointerMoved(k1)], false);
+        h.frame_with(vec![button(k1, true)], false);
+        h.frame_with(vec![egui::Event::PointerMoved(k1 + (to - k1) * 0.5)], false);
+        h.frame_with(vec![egui::Event::PointerMoved(to)], false);
+        h.frame_with(vec![button(to, false)], false);
+        h.frame();
+        h.frame();
+        let after = x_keys(&h);
+        assert_eq!(after[1].0, 6.0, "snapped to the clip's end: {after:?}");
+        assert!(after[1].1 > 100.0, "the value moved too: {after:?}");
+        let k0_after = pos(&h, 0);
+        assert!((k0_after.y - k0.y).abs() < 0.01, "the view held: {} -> {}", k0.y, k0_after.y);
+    }
+
+    /// The report: keys could not be copied, cut or pasted, or typed in exactly.
+    #[test]
+    fn keys_copy_cut_paste_and_take_a_typed_value() {
+        let mut h = H::new(1100.0);
+        let cl = h.p.clip_mut(1).unwrap();
+        cl.blocks.clear();
+        cl.x.keys = vec![Keyframe { t: 1.0, v: 10.0, ease: Ease::Linear }, Keyframe { t: 2.0, v: 20.0, ease: Ease::Hold }];
+        (h.st.view, h.st.keys, h.st.key_clip) = (View::Curves, vec![("x", 0), ("x", 1)], Some(1));
+        h.st.copy_keys(&h.p, 1);
+        assert_eq!(h.st.paste_keys(&mut h.p, 1, 4.0), 2);
+        assert_eq!(x_keys(&h), vec![(1.0, 10.0), (2.0, 20.0), (4.0, 10.0), (5.0, 20.0)], "spacing kept from the playhead");
+        assert_eq!(h.p.clip(1).unwrap().x.keys[3].ease, Ease::Hold, "the ease comes along");
+        assert_eq!(h.st.keys, vec![("x", 2), ("x", 3)], "the pasted keys are picked");
+        h.st.remove_keys(&mut h.p, 1);
+        assert_eq!(x_keys(&h), vec![(1.0, 10.0), (2.0, 20.0)], "cut takes the picked keys");
+        assert_eq!(h.st.paste_keys(&mut h.p, 1, 5.5), 1, "what falls past the clip's end is left out");
+        let cm = h.p.clip_mut(1).unwrap();
+        assert!(set_key(cm, "x", 1, 9.0, 42.0), "typed value and time");
+        let (t, v) = x_keys(&h)[1];
+        assert!(v == 42.0 && t < 5.5, "kept before its next key: {t}");
+    }
+
+    /// The report: the list's key button did not say whether a key is at the playhead. It adds, then removes.
+    #[test]
+    fn the_list_key_button_toggles_the_key_at_the_playhead() {
+        let (mut h, _) = curves_on_x(None, 1);
+        let lt = 2.345;
+        h.ph = lt;
+        h.frame();
+        assert!(!h.p.clip(1).unwrap().x.has_key_at(lt));
+        let at = h.st.key_slots.iter().find(|s| s.0 == "x").expect("the row is drawn").1;
+        h.press(at, egui::PointerButton::Primary);
+        assert!(h.p.clip(1).unwrap().x.has_key_at(lt), "the click added a key");
+        h.press(at, egui::PointerButton::Primary);
+        assert!(!h.p.clip(1).unwrap().x.has_key_at(lt), "the second click removed it");
     }
 
     /// Dragging a row of the channel list reorders it: a property inside its group, a group among the groups;

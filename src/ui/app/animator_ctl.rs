@@ -272,6 +272,38 @@ pub(super) fn act(app: &mut App, a: Action) -> bool {
         }
         _ => {}
     }
+    // Curves: Ctrl+C / X / V are about the picked keys while there are any (else they stay the clips')
+    if app.animator.here && app.pane_drawn(Pane::Animator) {
+        let on_keys = app.animator.key_clip().filter(|_| app.animator.has_keys());
+        match (a, on_keys) {
+            (Action::CopyClips, Some(id)) => {
+                app.animator.copy_keys(&app.project, id);
+                return true;
+            }
+            (Action::CutClips, Some(id)) => {
+                let snap = app.project.to_json();
+                app.animator.copy_keys(&app.project, id);
+                app.animator.remove_keys(&mut app.project, id);
+                push_undo_json(&mut app.undo, &mut app.redo, snap);
+                app.after_edit();
+                return true;
+            }
+            (Action::PasteClips, _) if app.animator.has_copied_keys() => {
+                let first = app.selection.iter().copied().find(|&c| app.project.clip(c).is_some());
+                if let Some(id) = app.animator.key_clip().or(first) {
+                    let snap = app.project.to_json();
+                    if app.animator.paste_keys(&mut app.project, id, app.playhead) > 0 {
+                        push_undo_json(&mut app.undo, &mut app.redo, snap);
+                        app.after_edit();
+                    } else {
+                        app.toast("The copied keys would land past the end of this clip");
+                    }
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
     // the timeline's tool keys drive the Animator's own tools while it is the panel in use
     if app.animator.here && app.pane_drawn(Pane::Animator) {
         match a {

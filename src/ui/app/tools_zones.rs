@@ -97,15 +97,18 @@ pub(super) fn sections_row(app: &mut App, ui: &mut egui::Ui) {
     } else {
         sections::sections(&app.export_project()).len()
     };
-    ui.add_space(4.0);
+    if n == 0 {
+        return; // no markers to cut by: nothing to offer
+    }
     let r = ui
-        .add_enabled_ui(n > 0 && app.export.is_none(), |ui| ui.button(format!("Export each section ({n})")))
+        .add_enabled_ui(app.export.is_none(), |ui| ui.button(format!("Export each section ({n})")))
         .inner
         .on_hover_text("One file per section between markers, named after the project and the marker, on the render queue")
-        .on_disabled_hover_text("Add markers to cut the timeline into sections");
+        .on_disabled_hover_text("An export is running");
     if r.clicked() {
         app.act(Action::ExportSections);
     }
+    ui.add_space(4.0);
 }
 
 // ---------- export between markers ----------

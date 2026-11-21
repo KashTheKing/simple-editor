@@ -349,6 +349,27 @@ pub(crate) fn key_step(ui: &egui::Ui, a: &Animated, lt: f64, next: bool) {
     }
 }
 
+/// The keyframe state, the same everywhere: a record ring = not keyed, a hollow diamond = keyed but no key at
+/// the playhead, a filled diamond = a key at the playhead.
+pub(crate) fn paint_key_state(p: &egui::Painter, rect: egui::Rect, keyed: bool, here: bool, hovered: bool, palette: &Palette) {
+    let color = if hovered {
+        palette.text
+    } else if keyed {
+        palette.accent
+    } else {
+        palette.text_dim
+    };
+    if keyed {
+        let fill = if here { color } else { egui::Color32::TRANSPARENT };
+        p.add(crate::ui::tools::diamond(rect.center(), 5.0, fill, egui::Stroke::new(1.3, color)));
+    } else {
+        // nothing keyed yet: a record ring (red under the pointer)
+        let c = if hovered { egui::Color32::from_rgb(0xEF, 0x55, 0x50) } else { color };
+        p.circle_stroke(rect.center(), 5.0, egui::Stroke::new(1.3, c));
+        p.circle_filled(rect.center(), 2.2, c);
+    }
+}
+
 /// `key_buttons`' key control in `rect` (a list row's slot).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn key_button_at(
@@ -363,18 +384,11 @@ pub(crate) fn key_button_at(
 ) -> Response {
     let r = ui.interact(rect, ui.id().with(("kf", label)), egui::Sense::click());
     let here = a.has_key_at(lt);
-    let color = if a.is_animated() || !a.link.is_none() { palette.accent } else { palette.text_dim };
-    let color = if r.hovered() { palette.text } else { color };
     let p = ui.painter();
-    if a.link.is_none() && !a.is_animated() {
-        // nothing keyed yet: a record ring (red under the pointer)
-        let c = if r.hovered() { egui::Color32::from_rgb(0xEF, 0x55, 0x50) } else { color };
-        p.circle_stroke(rect.center(), 5.0, egui::Stroke::new(1.3, c));
-        p.circle_filled(rect.center(), 2.2, c);
-    } else if a.link.is_none() {
-        let fill = if here { color } else { egui::Color32::TRANSPARENT };
-        p.add(crate::ui::tools::diamond(rect.center(), 5.0, fill, egui::Stroke::new(1.3, color)));
+    if a.link.is_none() {
+        paint_key_state(p, rect, a.is_animated(), here, r.hovered(), palette);
     } else {
+        let color = if r.hovered() { palette.text } else { palette.accent };
         p.text(rect.center(), egui::Align2::CENTER_CENTER, "∿", egui::FontId::proportional(15.0), color);
     }
     let tip = match &a.link {

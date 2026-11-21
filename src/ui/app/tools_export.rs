@@ -820,6 +820,8 @@ pub(super) fn draw_pane(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     app.detect_encoders_once();
     // the export always renders the MAIN timeline - show its size/lossless state, not the open sequence's
     let main = app.project.editing.is_some().then(|| app.export_project());
+    // ws:zones-markers: Export each section, above the body (which fills whatever is left of the pane)
+    super::tools_zones::sections_row(app, ui);
     let (choice, edited) = {
         let App { project, settings, export_ui: st, encoders, export, undo, redo, .. } = app;
         // the project settings form edits the live project (one undo step per change, like the Inspector)
@@ -829,7 +831,6 @@ pub(super) fn draw_pane(app: &mut App, ui: &mut egui::Ui, pane: Pane) -> bool {
     if edited {
         app.after_edit();
     }
-    super::tools_zones::sections_row(app, ui); // ws:zones-markers: Export each section
     size_probe_tick(app, main);
     match choice {
         Some((c, false)) => {
