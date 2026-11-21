@@ -302,6 +302,22 @@ pub fn run(args: &[String]) -> i32 {
         Ok(())
     });
 
+    // 7b. ws:smart-render: the same media trimmed mid-GOP to [0.5, 3.5) - copies the whole GOPs,
+    // re-encodes only the frames around the cuts, and lands on exactly 90 frames.
+    step(&mut fails, "smart-render", || {
+        let p = trimmed(0.5, 3.5)?;
+        let out = dir.join("smart.mp4");
+        let _ = std::fs::remove_file(&out);
+        let o = opts(&out);
+        check!(export::smart_segments(&p, &o).is_some(), "smart_segments returned None for a plain cut");
+        let prog = export::start_best_export(p, o, Arc::new(Mutex::new(TextRasterizer::new())));
+        wait_done(&prog, Duration::from_secs(60))?;
+        check!(prog.note().is_none(), "fell back: {:?}", prog.note());
+        let d = ffprobe_duration(&out.to_string_lossy())?;
+        check!(near(d, 3.0, 0.06), "duration {d}, expected 3.0");
+        Ok(())
+    });
+
     // 8. xmeml.
     step(&mut fails, "xmeml", || {
         let xml = xmeml::export_xmeml(&Project::from_media(probe()?));

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Saving a trim is nearly instant
+- **Smart render**: saving a plain cut over the original (or exporting it at the source's size, frame rate and codec) copies every whole keyframe group straight from the source and re-encodes only the few frames around each cut, so cuts stay frame-accurate. A 132 s 1080p60 recording trimmed at both ends saves in seconds instead of re-encoding every frame.
+- The result is checked (frame count, length, picture format, and a decode of every join); if anything doesn't match, the whole video is re-encoded as before and a toast says so.
+- The progress shows what is happening: Copying…, Encoding the cut…, Joining…, Checking the result….
+- The Save setting and the Export checkbox are now **Lossless (keyframe cuts)**: even faster, but each cut moves to a keyframe. Off (the default) uses the smart render.
+
 ### Scripts are plain Luau
 - **`tool(name, args)` and `tools()` are globals**, and a hook's payload is the global `event`, in your scripts, hooks, Assistant scripts and plugins alike. The `editor` table is gone from the docs and completion.
 - **`print` shows up in the app**: in a script or hook it is what `editor.log` was (a toast, and the run's log), in an Assistant script or plugin it is the output, as before. Tables print as compact JSON.

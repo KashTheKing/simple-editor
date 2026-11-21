@@ -1016,3 +1016,21 @@ A button that opens a panel/pane/window (e.g. the top-right Performance button) 
 - One entry point for "make proxies?": `App::offer_proxies` (footage_ctl). Other slow-footage checks call it.
 - Wine 9 in the cloud container crashes on any exe (`free(): invalid pointer`), so windows-gnu test binaries can't run
   there; pure modules can be tested by pasting them into a scratch crate.
+
+## 2026-11-21 smart render (claude/feat-smart-render)
+- `engine::smart_render::run` executes `export::smart_spans`: packets probed once per file version (size + mtime) with
+  `ffprobe -show_entries packet=pts_time,dts_time,flags` (no decode; gives every frame time plus the keyframe flags).
+  A keyframe followed in decode order by a frame shown before it (open GOP / leading pictures) is not a copy entry point.
+  The end of the last frame counts as a boundary, so a piece running to the end of the file copies its last GOP.
+- Parts are MPEG-TS (Annex B: each part carries its own SPS/PPS in-band; x264 gets `sps-id=1` so its sets never
+  overwrite the source's id 0). Parts are cut by frame count (`-frames:v`), never `-t`: with B-frames a copy cut on time
+  can pull in the next IDR. Copy seeks a quarter frame past its keyframe, encode a quarter frame before its first frame.
+- Join: concat demuxer with a `duration` per part (exact frame times), audio stream-copied for one piece, re-encoded
+  (atrim + concat, same codec) for several, so sync holds at every join.
+- Verify: packet count, video duration within one frame, codec/size/pix_fmt, audio stream count, and a 0.5 s decode at
+  every join with `-v error` (any line = fail). Any Err except a cancel re-runs the job as `run_export` on the same
+  progress, with `Progress::note` for the toast; `Progress::shortcut` keeps the smart time out of the speed estimate.
+- Eligibility: `export::smart_segments`; entry point `export::start_best_export` (Save over original, Export, MCP
+  `export`). Bakes and the emulator still call `start_export` directly on purpose.
+- Measured on a 4-core Linux box: 132 s 1080p60 trimmed at both ends, 3.9 s (120 frames encoded) vs 102 s for an
+  ffmpeg-only full re-encode.
