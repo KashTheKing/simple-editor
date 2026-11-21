@@ -1,0 +1,17 @@
+{
+  "id": "visualizer-helper",
+  "name": "Visualizer Helper",
+  "version": "1.0.0",
+  "author": "Simple Editor",
+  "description": "Build a music visualizer in five steps: analyse the song (hits, drops, the voice), a spiky chrome ball / waveform / lightning template keyed from it, karaoke lyrics that fill word by word, flash, invert and shatter at the drops, and a seamless background loop.",
+  "min_app_version": "1.4.0",
+  "icon": "waveform",
+  "contents": {
+    "panels": [
+      { "id": "main", "title": "Visualizer Helper", "script": "panels/visualizer-helper.luau", "icon": "waveform" }
+    ],
+    "effects": ["effects/olympus-storm.glsl", "effects/lyric-chrome.glsl"],
+    "luts": ["luts/golden-hour.cube"]
+  },
+  "permissions": {}
+}

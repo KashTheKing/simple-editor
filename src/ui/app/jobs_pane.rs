@@ -73,6 +73,7 @@ pub(super) fn progress_jobs(app: &App) -> Vec<ProgJob> {
     v.extend(enhance_ctl::progress_jobs()); // ws:ai-enhancer
     v.extend(denoise_ctl::progress_jobs()); // ws:addon-deepfilternet: Clean Audio
     v.extend(stems_ctl::progress_jobs()); // ws:addon-demucs
+    v.extend(vizhelp_ctl::progress_jobs()); // ws:visualizer-helper
     v.extend(object_mask_ctl::progress_jobs()); // ws:addon-sam2
     v.extend(bgremove_ctl::progress_jobs()); // ws:addon-bg-removal
     v.extend(speech_ctl::install_jobs()); // ws:addon-voice

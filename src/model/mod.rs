@@ -784,7 +784,7 @@ pub use timemap::*;
 pub use track::*;
 pub use transition::*;
 pub use zone::*; // ws:zones-markers
-pub use vizhelp::{SongViz, VizMade}; // ws:visualizer-helper
+pub use vizhelp::SongViz; // ws:visualizer-helper
 
 thread_local! {
     // ponytail: on in unit tests, where `set_at` on an animated property has always meant "key it here"

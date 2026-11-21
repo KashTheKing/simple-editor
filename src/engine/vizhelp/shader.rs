@@ -68,21 +68,25 @@ fn rgb(c: [u8; 3]) -> String {
     format!("vec3({}, {}, {})", f(c[0] as f64 / 255.0), f(c[1] as f64 / 255.0), f(c[2] as f64 / 255.0))
 }
 
-/// The template with this song's shatter times (None = no shatter) and the knobs' colours, spines and
-/// layers.
-pub fn specialize(src: &str, k: &Knobs, sh: Option<Shatter>) -> String {
-    let mut s = src.to_string();
+/// `src` with only the shatter times set (None = no shatter): what Drop FX changes on a visualizer the
+/// template already made, keeping its colours and layers.
+pub fn with_shatter(src: &str, sh: Option<Shatter>) -> String {
     let (big, rift0, hit0, hits) = match sh {
         Some(x) => (x.big, x.rift0, x.hit0, x.hits),
         None => (1_000_000.0, 999_999.0, 0.0, 1.0),
     };
+    let mut s = src.to_string();
+    for (n, v) in [("BIGDROP", big), ("RIFT0", rift0), ("SUCK0", rift0 - 2.0), ("SUCK1", rift0 + 6.0), ("RIFTHIT0", hit0), ("RIFTHITS", hits)] {
+        s = set_const(&s, n, &f(v));
+    }
+    s
+}
+
+/// The template with this song's shatter times (None = no shatter) and the knobs' colours, spines and
+/// layers.
+pub fn specialize(src: &str, k: &Knobs, sh: Option<Shatter>) -> String {
+    let mut s = with_shatter(src, sh);
     for (n, v) in [
-        ("BIGDROP", big),
-        ("RIFT0", rift0),
-        ("SUCK0", rift0 - 2.0),
-        ("SUCK1", rift0 + 6.0),
-        ("RIFTHIT0", hit0),
-        ("RIFTHITS", hits),
         ("SPINES", k.spikes.clamp(1.0, 6.0)),
         ("SHOW_BALL", k.ball as u8 as f64),
         ("SHOW_WAVE", k.wave as u8 as f64),

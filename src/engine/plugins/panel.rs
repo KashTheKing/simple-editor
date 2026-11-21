@@ -49,6 +49,9 @@ pub enum Node {
     Image { path: PathBuf, w: f32, h: f32 },
     Row(Vec<Node>),
     Column(Vec<Node>),
+    // ---- ws:visualizer-helper ----
+    /// A widget with hover text (`ui.tip` after it): labels stay plain, the explanation goes here.
+    Tip { tip: String, node: Box<Node> },
 }
 
 /// What the user did to a widget since the last run.
@@ -288,6 +291,17 @@ fn bind_ui<'s, 'r>(
             Ok(value)
         })?,
     )?;
+    // ---- ws:visualizer-helper ----
+    host.set(
+        "ui.tip",
+        scope.create_function(move |_, text: mlua::Value| {
+            let mut r = rec.borrow_mut();
+            let list = r.stack.last_mut().expect("root");
+            let last = list.pop().ok_or_else(|| mlua::Error::runtime("ui.tip goes right after the widget it explains"))?;
+            list.push(Node::Tip { tip: crate::scripting::show(&text), node: Box::new(last) });
+            Ok(())
+        })?,
+    )?;
     host.set("ui.separator", scope.create_function(move |_, ()| rec.borrow_mut().push(Node::Separator))?)?;
     host.set(
         "ui.space",
@@ -375,7 +389,18 @@ use eframe::egui;
 const LABEL_W: f32 = 110.0;
 
 fn is_form(n: &Node) -> bool {
-    matches!(n, Node::Slider { .. } | Node::Text { .. } | Node::Check { .. } | Node::Dropdown { .. })
+    match n {
+        Node::Tip { node, .. } => is_form(node),
+        n => matches!(n, Node::Slider { .. } | Node::Text { .. } | Node::Check { .. } | Node::Dropdown { .. }),
+    }
+}
+
+/// A node and its hover text (None without `ui.tip`).
+fn untip(n: &Node) -> (&Node, Option<&str>) {
+    match n {
+        Node::Tip { tip, node } => (node, Some(tip.as_str())),
+        n => (n, None),
+    }
 }
 
 /// Draw a recorded tree. Interactions land in `changes` (the next run reads them); true = something was
@@ -397,27 +422,34 @@ fn draw_list(ui: &mut egui::Ui, nodes: &[Node], changes: &mut HashMap<String, Ch
             }
             egui::Grid::new((salt, start)).num_columns(2).spacing([8.0, 4.0]).min_col_width(LABEL_W).show(ui, |ui| {
                 for n in &nodes[start..i] {
+                    let (n, tip) = untip(n);
                     let label = form_label(n);
-                    ui.add_sized([LABEL_W, 18.0], egui::Label::new(label).truncate()).on_hover_text(label);
-                    form_input(ui, n, changes, false);
+                    ui.add_sized([LABEL_W, 18.0], egui::Label::new(label).truncate()).on_hover_text(tip.unwrap_or(label));
+                    let r = form_input(ui, n, changes, false);
+                    if let (Some(r), Some(t)) = (r, tip) {
+                        r.on_hover_text(t);
+                    }
                     ui.end_row();
                 }
             });
             continue;
         }
-        let n = &nodes[i];
+        let (n, tip) = untip(&nodes[i]);
         i += 1;
+        let hover = |r: egui::Response| {
+            if let Some(t) = tip {
+                r.on_hover_text(t);
+            }
+        };
         match n {
-            Node::Label { text, heading: false } => {
-                ui.label(text);
-            }
-            Node::Label { text, heading: true } => {
-                ui.heading(text);
-            }
+            Node::Label { text, heading: false } => hover(ui.label(text)),
+            Node::Label { text, heading: true } => hover(ui.heading(text)),
             Node::Button { id, label } => {
-                if ui.button(label).clicked() {
+                let r = ui.button(label);
+                if r.clicked() {
                     changes.insert(id.clone(), Change::Click);
                 }
+                hover(r);
             }
             Node::Separator => {
                 ui.separator();
@@ -452,10 +484,13 @@ fn draw_list(ui: &mut egui::Ui, nodes: &[Node], changes: &mut HashMap<String, Ch
             Node::Column(kids) => {
                 ui.vertical(|ui| draw_list(ui, kids, changes, images, &format!("{salt}/c{i}"), false));
             }
+            Node::Tip { node, .. } => draw_list(ui, std::slice::from_ref(&**node), changes, images, &format!("{salt}/t{i}"), in_row),
             form => {
                 // a form widget inside a row: its label in front of it
-                ui.label(form_label(form));
-                form_input(ui, form, changes, true);
+                hover(ui.label(form_label(form)));
+                if let Some(r) = form_input(ui, form, changes, true) {
+                    hover(r);
+                }
             }
         }
     }
@@ -468,13 +503,16 @@ fn form_label(n: &Node) -> &str {
     }
 }
 
-fn form_input(ui: &mut egui::Ui, n: &Node, changes: &mut HashMap<String, Change>, compact: bool) {
-    match n {
+/// Draw a form widget's input; its response (for hover text).
+fn form_input(ui: &mut egui::Ui, n: &Node, changes: &mut HashMap<String, Change>, compact: bool) -> Option<egui::Response> {
+    Some(match n {
         Node::Slider { id, value, min, max, .. } => {
             let mut v = *value;
-            if ui.add(egui::Slider::new(&mut v, *min..=*max)).changed() {
+            let r = ui.add(egui::Slider::new(&mut v, *min..=*max));
+            if r.changed() {
                 changes.insert(id.clone(), Change::Num(v));
             }
+            r
         }
         Node::Text { id, value, multiline, .. } => {
             let mut v = value.clone();
@@ -487,16 +525,19 @@ fn form_input(ui: &mut egui::Ui, n: &Node, changes: &mut HashMap<String, Change>
             if r.changed() {
                 changes.insert(id.clone(), Change::Text(v));
             }
+            r
         }
         Node::Check { id, value, .. } => {
             let mut v = *value;
-            if ui.checkbox(&mut v, "").changed() {
+            let r = ui.checkbox(&mut v, "");
+            if r.changed() {
                 changes.insert(id.clone(), Change::Bool(v));
             }
+            r
         }
         Node::Dropdown { id, value, options, .. } => {
             let mut pick = None;
-            egui::ComboBox::from_id_salt(("plugin_dd", id.as_str())).selected_text(value.as_str()).show_ui(ui, |ui| {
+            let r = egui::ComboBox::from_id_salt(("plugin_dd", id.as_str())).selected_text(value.as_str()).show_ui(ui, |ui| {
                 for o in options {
                     if ui.selectable_label(o == value, o).clicked() {
                         pick = Some(o.clone());
@@ -506,9 +547,10 @@ fn form_input(ui: &mut egui::Ui, n: &Node, changes: &mut HashMap<String, Change>
             if let Some(o) = pick.filter(|o| o != value) {
                 changes.insert(id.clone(), Change::Text(o));
             }
+            r.response
         }
-        _ => {}
-    }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -672,6 +714,95 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let _ = draw(ui, &p.nodes, &mut p.changes, &mut p.images);
+            });
+        });
+    }
+
+    // ---- ws:visualizer-helper ----
+    /// The Visualizer Helper panel the library ships draws its five steps, and each step's one button calls
+    /// its tool with arguments that tool declares.
+    #[test]
+    fn the_visualizer_helper_panel_draws_five_steps_and_calls_its_tools() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("library/plugins/visualizer-helper");
+        let mut c = ctx(Permissions::default(), Permissions::default());
+        c.dir = dir.clone();
+        let mut p = Panel::new(c, dir.join("panels/visualizer-helper.luau"));
+        let status = serde_json::json!({
+            "song": 4, "name": "olympus", "state": "done", "stems": {"installed": false, "separated": false},
+            "analysis": {"bpm": 151.0, "hits": 483, "drops": [26.389, 52.68], "calm": 78.1, "first_vocal": 6.2, "from_stems": true},
+            "made": {"visualizer": 9, "template": "Olympus Storm", "lyrics": 0, "fx": 0, "background": 0, "shatter": 0.0},
+            "loops": [], "templates": ["Olympus Storm", "Chrome Waveform", "Storm Lightning"], "palettes": ["Silver to Gold", "Neon"],
+        });
+        let go = |p: &mut Panel| -> Vec<(String, Value)> {
+            let mut made = Vec::new();
+            {
+                let mut call = |n: &str, a: &Value| -> Result<Value, String> {
+                    made.push((n.to_string(), a.clone()));
+                    Ok(match n {
+                        "audio.analyze" => status.clone(),
+                        "visualizer.template" => serde_json::json!({"ok": true, "template": "Olympus Storm"}),
+                        "lyrics.karaoke" => serde_json::json!({"ok": true, "lines": [{}, {}], "transcript": false, "drop_after": 50.0}),
+                        "visualizer.drop_fx" => serde_json::json!({"ok": true, "drops": [26.389, 52.68], "shatter": true}),
+                        _ => serde_json::json!({"running": [], "clips": []}),
+                    })
+                };
+                let base = |_: &str| true;
+                let ctx = p.ctx.clone();
+                let env = Env::new(&ctx, None, &base, &mut call);
+                p.run(&env, 0);
+            }
+            made.retain(|(n, a)| !(n == "audio.analyze" && a.get("action").is_none()));
+            made
+        };
+        assert!(go(&mut p).is_empty(), "an idle draw only reads the status");
+        assert!(p.error.is_none(), "{:?}", p.error);
+        let labels: Vec<String> = p.nodes.iter().filter_map(|n| if let (Node::Label { text, .. }, _) = untip(n) { Some(text.clone()) } else { None }).collect();
+        for s in ["1. Analyse Song", "2. Visualizer Templates", "3. Lyrics Karaoke", "4. Drop FX", "5. Background Loop"] {
+            assert!(labels.iter().any(|l| l == s), "{s} missing: {labels:?}");
+        }
+        assert!(labels.iter().any(|l| l.starts_with("151 BPM")), "{labels:?}");
+        let check = |made: &[(String, Value)], tool: &str| {
+            let (n, a) = made.iter().find(|(n, _)| n == tool).unwrap_or_else(|| panic!("{tool} not called: {made:?}"));
+            let def = crate::mcp::tools::find(n).unwrap_or_else(|| panic!("{n} is not a tool"));
+            for k in a.as_object().unwrap().keys() {
+                assert!(def.args.iter().any(|d| d.split(':').next() == Some(k.as_str())), "{n} has no argument {k}");
+            }
+        };
+        for (button, tool) in [("Analyse Song", "audio.analyze"), ("Apply Template", "visualizer.template"), ("Make Lyrics", "lyrics.karaoke"), ("Add Drop FX", "visualizer.drop_fx"), ("Make Loop", "media.loop")] {
+            p.changes.insert(button.into(), Change::Click);
+            let made = go(&mut p);
+            assert!(p.error.is_none(), "{button}: {:?}", p.error);
+            check(&made, tool);
+            go(&mut p);
+        }
+        // the stems add-on is missing: a button takes you to it
+        p.changes.insert("Get Stem Separation".into(), Change::Click);
+        let made = go(&mut p);
+        assert!(made.iter().any(|(n, a)| n == "audio.analyze" && a["action"] == "stems"), "{made:?}");
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = draw(ui, &p.nodes, &mut p.changes, &mut p.images);
+            });
+        });
+    }
+
+    #[test]
+    fn a_tip_explains_the_widget_before_it() {
+        let mut p = panel(r#"function draw() ui.button("Go") ui.tip("Runs it") local v = ui.slider("S", 1, 0, 2) ui.tip("Size") end"#);
+        run(&mut p, 0);
+        assert!(p.error.is_none(), "{:?}", p.error);
+        assert_eq!(p.nodes[0], Node::Tip { tip: "Runs it".into(), node: Box::new(Node::Button { id: "Go".into(), label: "Go".into() }) });
+        assert!(is_form(&p.nodes[1]));
+        let mut p = panel(r#"function draw() ui.tip("nothing") end"#);
+        run(&mut p, 0);
+        assert!(p.error.unwrap().contains("ui.tip"));
+        let ctx = egui::Context::default();
+        let mut p2 = panel(r#"function draw() ui.button("Go") ui.tip("Runs it") ui.row(function() ui.checkbox("On", true) ui.tip("x") end) end"#);
+        run(&mut p2, 0);
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                assert!(!draw(ui, &p2.nodes, &mut p2.changes, &mut p2.images));
             });
         });
     }

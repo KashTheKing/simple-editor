@@ -371,6 +371,12 @@ pub fn fetch_file(src: &Source, rel: &str) -> Result<PathBuf, String> {
     fetch(src, rel, true).map(|_| src.local(rel))
 }
 
+// ---- ws:visualizer-helper ----
+/// `fetch_file` that always downloads again (a library plugin's files, which change between versions).
+pub fn fetch_fresh(src: &Source, rel: &str) -> Result<PathBuf, String> {
+    fetch(src, rel, false).map(|_| src.local(rel))
+}
+
 /// Every installed item, as full ids.
 pub fn installed_ids() -> std::collections::HashSet<String> {
     installed_ids_in(&root())

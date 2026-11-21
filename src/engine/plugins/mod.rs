@@ -476,6 +476,35 @@ pub fn stage_zip(roots: &Roots, bytes: &[u8], subpath: &str, source: &str, tag: 
     stage_dir(roots, scratch, dir, source, tag)
 }
 
+// ---- ws:visualizer-helper ----
+/// The plugins the app's own library ships (`library/plugins/<id>/`): (id, name, what it does). The Plugins
+/// pane offers them under From the Library.
+pub const LIBRARY: &[(&str, &str, &str)] = &[(
+    "visualizer-helper",
+    "Visualizer Helper",
+    "Build a music visualizer in five steps: analyse the song, a template keyed from it, karaoke lyrics, drop effects and a background loop",
+)];
+
+/// Stage a library plugin for the install confirm: from a library folder as it is, or from the online library
+/// file by file (its plugin.json, then every file it lists). Blocking: background threads only.
+pub fn stage_library(roots: &Roots, src: &crate::engine::library::Source, id: &str) -> Result<Staged, String> {
+    if !LIBRARY.iter().any(|l| l.0 == id) {
+        return Err(format!("the library has no plugin '{id}'"));
+    }
+    let fetch = |rel: &str| crate::engine::library::fetch_fresh(src, &format!("plugins/{id}/{rel}"));
+    let path = fetch(MANIFEST)?;
+    let m = Manifest::parse(&std::fs::read_to_string(&path).map_err(|e| format!("{MANIFEST}: {e}"))?)?;
+    for (_, _, files) in content_lists(&m.contents) {
+        for f in files {
+            fetch(f)?;
+        }
+    }
+    let dir = path.parent().ok_or("no plugin folder")?;
+    let mut staged = stage_folder(roots, dir)?;
+    staged.source = format!("library:{id}");
+    Ok(staged)
+}
+
 /// Stage a plugin folder on disk (an author's working copy): it is copied, never moved.
 pub fn stage_folder(roots: &Roots, folder: &Path) -> Result<Staged, String> {
     let scratch = scratch_dir(roots);
@@ -845,6 +874,25 @@ pub(crate) mod tests {
         assert!(download(&roots, url, &|_: &str, _: bool| Err("offline".to_string())).is_err());
         assert_eq!(list(&roots).len(), 1);
         uninstall(&roots, "hello-panel").unwrap();
+    }
+
+    // ---- ws:visualizer-helper ----
+    #[test]
+    fn the_library_plugins_validate_and_stage_from_a_library_folder() {
+        let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("library");
+        for (id, name, _) in LIBRARY {
+            let dir = lib.join("plugins").join(id);
+            let m = Manifest::parse(&std::fs::read_to_string(dir.join(MANIFEST)).unwrap()).unwrap();
+            assert_eq!((m.id.as_str(), m.name.as_str()), (*id, *name));
+            assert_eq!(m.validate(&dir).unwrap(), Vec::<String>::new(), "{id} warns");
+            let roots = scratch(&format!("lib-{id}"));
+            let st = stage_library(&roots, &crate::engine::library::Source::Dir(lib.clone()), id).unwrap();
+            assert_eq!(st.manifest.id, *id);
+            assert_eq!(st.source, format!("library:{id}"));
+            st.discard();
+        }
+        let roots = scratch("lib-none");
+        assert!(stage_library(&roots, &crate::engine::library::Source::Dir(lib), "nope").is_err());
     }
 
     #[test]

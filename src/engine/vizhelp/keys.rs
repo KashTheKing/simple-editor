@@ -63,8 +63,37 @@ pub const TEMPLATES: &[(&str, [bool; 4])] = &[
     ("Storm Lightning", [false, false, true, true]),
 ];
 
-/// The params the template writes (in the shader's header order).
-pub const PARAMS: [&str; 10] = ["kclock", "kpow", "sclock", "vox", "vib", "kick", "screech", "fx", "beam", "lyric"];
+/// Colour sets: (name, [metal before the drop, metal from it, electricity before, electricity from it]).
+pub const PALETTES: &[(&str, [[u8; 3]; 4])] = &[
+    ("Silver to Gold", [[158, 163, 173], [255, 184, 77], [115, 191, 255], [255, 199, 89]]),
+    ("Ice to Fire", [[170, 205, 240], [255, 110, 50], [120, 200, 255], [255, 150, 60]]),
+    ("Neon", [[175, 120, 255], [60, 245, 200], [255, 80, 220], [80, 255, 240]]),
+    ("Mono", [[190, 190, 195], [245, 245, 250], [220, 220, 230], [255, 255, 255]]),
+];
+
+impl Knobs {
+    /// Use a colour set by name (case-insensitive); false when there is none by that name.
+    pub fn set_palette(&mut self, name: &str) -> bool {
+        match PALETTES.iter().find(|(n, _)| n.eq_ignore_ascii_case(name.trim())) {
+            Some((_, [a, b, c, d])) => {
+                (self.metal_pre, self.metal_post, self.elec_pre, self.elec_post) = (*a, *b, *c, *d);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Show a template's layers by name; false when there is none by that name.
+    pub fn set_template(&mut self, name: &str) -> bool {
+        match TEMPLATES.iter().find(|(n, _)| n.eq_ignore_ascii_case(name.trim())) {
+            Some((_, [a, b, c, d])) => {
+                (self.ball, self.wave, self.bolts, self.beam) = (*a, *b, *c, *d);
+                true
+            }
+            None => false,
+        }
+    }
+}
 
 fn key(t: f64, v: f64, ease: Ease) -> Keyframe {
     Keyframe { t: dsp::r3(t), v: dsp::r3(v), ease }

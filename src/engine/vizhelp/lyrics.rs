@@ -75,7 +75,6 @@ pub fn syllables(w: &str) -> usize {
 pub struct Said {
     pub text: String,
     pub start: f64,
-    pub end: f64,
 }
 
 /// One timed line (source seconds).
@@ -420,7 +419,7 @@ mod tests {
         let lines = vec!["RISE UP NOW".to_string(), "FEEL THE THUNDER ROLL ON".to_string()];
         let said: Vec<Said> = [("rise", 6.02), ("up", 6.48), ("now", 7.03), ("feel", 7.46), ("the", 8.02), ("thunder", 8.49), ("roll", 9.01), ("on", 9.52)]
             .iter()
-            .map(|&(w, t)| Said { text: w.into(), start: t, end: t + 0.3 })
+            .map(|&(w, t)| Said { text: w.into(), start: t })
             .collect();
         let t = time(&lines, &song(&onsets), &said);
         let all: Vec<f64> = t.iter().flat_map(|l| l.starts.clone()).collect();

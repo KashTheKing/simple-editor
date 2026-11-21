@@ -155,6 +155,7 @@ table. The *Where* column says which scripts have a name:
 | `ui.separator()` | Plugin | A dividing line |
 | `ui.space(px: number?)` | Plugin | Empty space (8 px unless given) |
 | `ui.image(file: string, w: number?, h: number?)` | Plugin | A .png from the plugin's folder |
+| `ui.tip(text: any)` | Plugin | Hover text for the widget drawn just before it (labels stay plain, explanations go here) |
 
 ## `package`
 
@@ -370,6 +371,18 @@ table. The *Where* column says which scripts have a name:
 | `vector.clamp(v: vector, min: vector, max: vector) -> vector` | all | Each part kept between min and max |
 | `vector.max(...: vector) -> vector` | all | The largest of each part |
 | `vector.min(...: vector) -> vector` | all | The smallest of each part |
+
+## Tools for plugins
+
+App tools made for a plugin (the Visualizer Helper add-on). Call them with `tool(name, args)`.
+
+| Tool | Arguments | Description |
+|---|---|---|
+| `audio.analyze` | `{clip?, action = "status" \| "start" \| "stems", tempo_min?, tempo_max?, gate?, drops?, after?}` | Analyse a song in the background (stems through the Stem Separation add-on when installed): hits, drops, the calm part, the vocal envelope, onsets and vibrato, stored on the project with markers. `status` returns the state and the summary; `stems` opens Settings ▸ Add-ons |
+| `visualizer.template` | `{clip?, template?, palette?, colors?, spikes?, sensitivity?, smoothing?, harder?, ball?, wave?, bolts?, beam?}` | Give the song's visualizer a template (Olympus Storm, Chrome Waveform, Storm Lightning) keyed from the analysis; the same inputs give the same keys |
+| `lyrics.karaoke` | `{lyrics, clip?, font?, size?, y?, look?, giant?}` | The exact lyrics as timed Lyric Chrome text clips, each word filling on its sung syllable |
+| `visualizer.drop_fx` | `{clip?, flash?, invert?, shatter?, build?, grade?}` | Flash and invert at each drop, the shatter into the biggest drop, the background grade |
+| `media.loop` | `{clip?, action = "status" \| "start", seconds?}` | A GIF, picture or clip as a seamless 60 fps ping-pong loop under the song (ffmpeg, in the background) |
 
 ## Keywords
 

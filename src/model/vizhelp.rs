@@ -51,6 +51,10 @@ pub struct VizMade {
     /// Drop FX clips (flashes, invert layers, the shatter layer).
     pub fx: Vec<Id>,
     pub background: Vec<Id>,
+    /// Markers Analyse Song placed (drops, calm, first vocal).
+    pub markers: Vec<Id>,
+    /// The shatter build into the biggest drop (seconds; 0 = off), so a re-applied template keeps it.
+    pub shatter: f64,
 }
 
 impl SongViz {
