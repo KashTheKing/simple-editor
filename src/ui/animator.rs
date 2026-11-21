@@ -159,6 +159,11 @@ pub struct AnimState {
     pub multi: Vec<(Id, usize)>,
     /// `!no_snap`, set each frame: off = a dragged block snaps to nothing.
     pub snap: bool,
+    /// The block end held by the running drag (-1 left, 1 right, 0 the body), from where the press was:
+    /// a snap that holds the end still must not turn a stretch into a move.
+    blk_edge: i8,
+    /// Every block bar drawn last frame (tests find a block's ends with it).
+    blk_rects: Vec<((Id, usize), Rect)>,
     /// Curves: width of the label column, which holds each clip's channel list; `None` = `CH_W`.
     pub ch_w: Option<f32>,
     /// The last press was in the Animator: Delete / Backspace / Split act on its block or keys, not the clip.
@@ -1529,6 +1534,7 @@ fn lanes_view(
         let top = rr.bottom();
         let mut act: Option<Act> = flow_now.then(|| flow_act(picked(st), st.mode));
         let mut rects: Vec<(Rect, (Id, usize))> = Vec::new(); // every block bar drawn, for the selection box
+        st.blk_rects.clear();
         let mut rects_tr: Vec<Rect> = Vec::new(); // every transition bar drawn (a drag on one is not a box)
         let mut heads: Vec<(Rect, Id, usize)> = Vec::new(); // every clip's label cell and how many blocks it has
         let mut drops: Vec<(Rect, Option<Id>)> = Vec::new(); // where a Gallery card lands: a clip's lane, None = Timeline
@@ -2078,6 +2084,7 @@ fn lanes_view(
                     inner.circle_filled(pos2(r.right() - 8.0, r.center().y), 3.0, look::HANDLE);
                 }
                 rects.push((r.intersect(body), (id, i)));
+                st.blk_rects.push(((id, i), r.intersect(body)));
                 if st.tool == AnimTool::Cut {
                     let resp = ui
                         .interact(r.intersect(body), ui.id().with(("ablk-cut", id, i)), Sense::click())
@@ -2147,6 +2154,12 @@ fn lanes_view(
                     st.sel = Some((id, i));
                     undo(project);
                     st.orig = Some(c.clone());
+                    let at = ui.input(|i| i.pointer.press_origin()).map(|p| p.x);
+                    st.blk_edge = match at {
+                        Some(x) if x < r.left() + 6.0 => -1,
+                        Some(x) if x > r.right() - 6.0 => 1,
+                        _ => 0,
+                    };
                 }
                 if resp.dragged() {
                     if let (Some(orig), Some(pos), Some(press)) =
@@ -2172,7 +2185,7 @@ fn lanes_view(
                                 .min_by(|a, b| (a - t).abs().total_cmp(&(b - t).abs()))
                         };
                         st.guide = None;
-                        match edge {
+                        match st.blk_edge {
                             0 => {
                                 bt = ob.t + dt;
                                 if let Some(s) = snap(bt).or_else(|| snap(bt + bd).map(|s| s - bd)) {
@@ -5523,4 +5536,29 @@ mod tests {
         let s = h.p.block_seams();
         assert!(s.iter().any(|s| s.left.0 == 1 && s.right.0 == 2), "{s:?}");
     }
+    /// User report: a block's end could be dragged out but not back in, and snapping did nothing. The
+    /// stretch re-read which end was held every frame: a snap holding the end still let the pointer leave
+    /// it, and the drag turned into a move. The end held is where the press was.
+    #[test]
+    fn a_block_end_drags_in_as_well_as_out() {
+        let mut h = H::new(1100.0);
+        h.sel = vec![1];
+        h.frame();
+        h.frame();
+        let (k, r) = *h.st.blk_rects.iter().find(|(k, _)| k.0 == 1).expect("a block of clip 1 is drawn");
+        let before = h.p.clip(1).unwrap().blocks[k.1].dur;
+        let from = pos2(r.right() - 2.0, r.center().y);
+        let primary = egui::PointerButton::Primary;
+        let btn = |pos, pressed| egui::Event::PointerButton { pos, button: primary, pressed, modifiers: egui::Modifiers::NONE };
+        h.frame_with(vec![egui::Event::PointerMoved(from)], false);
+        h.frame_with(vec![btn(from, true)], false);
+        for dx in [4.0, 10.0, 20.0, 40.0, 60.0] {
+            h.frame_with(vec![egui::Event::PointerMoved(from - vec2(dx, 0.0))], false);
+        }
+        h.frame_with(vec![btn(from - vec2(60.0, 0.0), false)], false);
+        let after = h.p.clip(1).unwrap().blocks[k.1].dur;
+        assert!(after < before - 0.05, "the end dragged in shortens it: {before} -> {after}");
+        assert!((h.p.clip(1).unwrap().blocks[k.1].t - 0.0).abs() < 1e-9, "its start stays put");
+    }
+
 }

@@ -381,7 +381,7 @@ fn canvas(
             f = (-scroll.y as f64 / 400.0).exp();
         }
         if f != 1.0 {
-            let span = ((v1 - v0) * f).clamp(0.5, dur);
+            let span = ((v1 - v0) * f).clamp(0.5f64.min(dur), dur); // (a song under 0.5 s: all of it)
             let k = (at - v0) / (v1 - v0);
             v0 = at - k * span;
             v1 = v0 + span;
@@ -401,7 +401,7 @@ fn canvas(
             v1 = v0 + span;
         }
     }
-    let span = (v1 - v0).clamp(0.5, dur);
+    let span = (v1 - v0).clamp(0.5f64.min(dur), dur);
     v0 = v0.clamp(0.0, (dur - span).max(0.0));
     v1 = v0 + span;
     st.view = (span < dur - 1e-6).then_some((v0, v1));

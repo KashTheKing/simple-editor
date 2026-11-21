@@ -3,7 +3,7 @@ use super::*;
 impl App {
     pub(super) fn draw_pane(&mut self, ui: &mut egui::Ui, pane: Pane) {
         if self.failed_panes.contains(&pane) {
-            ui.weak(format!("{} is unavailable in this build.", pane.title()));
+            ui.weak(format!("{} hit an error and is off until Simple Editor is restarted.", pane.title()));
             return;
         }
         self.panes_drawing.push(pane);
@@ -14,7 +14,7 @@ impl App {
         }
         if !ok {
             self.failed_panes.push(pane);
-            self.toast(format!("{} failed to draw - the pane is disabled for this session", pane.title()));
+            error_popup(self);
         }
     }
 
@@ -366,4 +366,36 @@ pub(super) fn warm_probes(ctx: &egui::Context) {
     }
     let _ = crate::engine::capture::audio_devices_nonblocking(wake_ui);
     let _ = export::encoders_nonblocking(wake_ui);
+}
+
+/// "Simple Editor encountered an error and these features will not work in this session until the
+/// program is restarted: Inspector, Animator".
+fn error_text(app: &App) -> String {
+    let names: Vec<&str> = app.failed_panes.iter().map(|p| p.title()).collect();
+    format!(
+        "Simple Editor encountered an error and these features will not work in this session until the program is restarted: {}",
+        names.join(", ")
+    )
+}
+
+/// The popup a pane's failure brings up (and the warning icon's click brings back).
+fn error_popup(app: &App) {
+    let ok: Box<dyn FnOnce(&mut App)> = Box::new(|_| {});
+    crate::ui::confirm::ask_many("Something went wrong", error_text(app), vec![("OK", "", ok)]);
+}
+
+/// The title bar's warning icon, right of the tool buttons, while a pane is off: hover lists them, a click
+/// shows the popup again.
+pub(super) fn error_icon(app: &mut App, ui: &mut egui::Ui) {
+    if app.failed_panes.is_empty() {
+        return;
+    }
+    let tip = error_text(app);
+    let r = crate::ui::titlebar::icon_button(ui, &app.palette, egui::Id::new("pane_error_icon"), crate::ui::tools::Glyph::Warning, &tip);
+    // the warning colour over the icon, so it reads as a problem
+    let c = ui.visuals().warn_fg_color;
+    ui.painter().rect_stroke(r.rect.shrink(3.0), 4.0, egui::Stroke::new(1.5, c), egui::StrokeKind::Inside);
+    if r.clicked() {
+        error_popup(app);
+    }
 }

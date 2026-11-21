@@ -180,6 +180,8 @@ impl App {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(caption_w); // clear of the window buttons
+                // a pane that crashed this session: the warning sits right-most, next to the window buttons
+                panes::error_icon(self, ui);
                 // right to left: Quick Export (right-most), Performance, then Jobs on its left (always shown)
                 // ---- ws:quick-export ----
                 quick_export::button(self, ui);

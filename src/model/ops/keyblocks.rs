@@ -354,8 +354,18 @@ impl Project {
     pub fn retime_key_block(&mut self, id: Id, i: usize, t: f64, dur: f64) -> bool {
         let Some(c) = self.clip_mut(id) else { return false };
         let Some(b) = c.blocks.get(i).cloned() else { return false };
-        let dur = dur.clamp(0.05, c.duration.max(0.05));
-        let t = t.clamp(0.0, (c.duration - dur).max(0.0));
+        // whichever end the caller kept stays put: a longer block stops at the clip's end rather than
+        // sliding back (the right end / the Inspector's duration), a shorter left end stops at 0
+        let room = c.duration.max(0.05);
+        let (t, dur) = if (t - b.t).abs() < 1e-9 {
+            (t, dur.clamp(0.05, (room - t).max(0.05)))
+        } else if (t + dur - b.end()).abs() < 1e-9 {
+            let t = t.clamp(0.0, (b.end() - 0.05).max(0.0));
+            (t, b.end() - t)
+        } else {
+            let dur = dur.clamp(0.05, room);
+            (t.clamp(0.0, (room - dur).max(0.0)), dur)
+        };
         if (t - b.t).abs() < 1e-9 && (dur - b.dur).abs() < 1e-9 {
             return false;
         }
@@ -1219,4 +1229,22 @@ mod tests {
         let c = Clip::new(1, ClipKind::Video, "v", 0.0, 1.0);
         assert!(!serde_json::to_string(&c).unwrap().contains("blocks"));
     }
+    /// User report: changing a block's duration also moved it. Longer than the clip has room for, it now
+    /// stops at the clip's end with its start where it was.
+    #[test]
+    fn a_longer_duration_never_moves_the_block() {
+        let mut p = Project::new();
+        p.tracks[0].clips.push(Clip::new(1, ClipKind::Video, "v", 0.0, 6.0));
+        let b = builtin_blocks().into_iter().find(|b| !b.tracks.is_empty()).unwrap();
+        p.place_key_block(1, &b, 4.0, Some(1.0)).unwrap();
+        let i = p.clip(1).unwrap().blocks.iter().position(|x| (x.t - 4.0).abs() < 1e-9).unwrap();
+        assert!(p.retime_key_block(1, i, 4.0, 5.0));
+        let x = &p.clip(1).unwrap().blocks[i];
+        assert!((x.t - 4.0).abs() < 1e-9 && (x.dur - 2.0).abs() < 1e-9, "start kept, stops at the end: {} {}", x.t, x.dur);
+        // the left end dragged past 0: the right end stays
+        assert!(p.retime_key_block(1, i, -1.0, 7.0));
+        let x = &p.clip(1).unwrap().blocks[i];
+        assert!((x.t - 0.0).abs() < 1e-9 && (x.end() - 6.0).abs() < 1e-9, "{} {}", x.t, x.dur);
+    }
+
 }

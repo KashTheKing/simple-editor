@@ -431,6 +431,7 @@ pub struct App {
     /// dshow audio inputs, listed once when the Settings / capture windows first need them.
     audio_inputs: Option<Vec<(String, bool)>>,
     /// Panes whose draw panicked: shown as a message instead of taking the whole editor down.
+    /// Panes whose draw panicked: off until a restart, listed by the title bar's warning (`panes::error_icon`).
     failed_panes: Vec<Pane>,
     // ---- ws:registries-schema-hooks ----
     // ---- ws:canvas-handles-monitor ----
