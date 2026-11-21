@@ -1016,3 +1016,13 @@ A button that opens a panel/pane/window (e.g. the top-right Performance button) 
 - One entry point for "make proxies?": `App::offer_proxies` (footage_ctl). Other slow-footage checks call it.
 - Wine 9 in the cloud container crashes on any exe (`free(): invalid pointer`), so windows-gnu test binaries can't run
   there; pure modules can be tested by pasting them into a scratch crate.
+
+## 2026-11-21 pristine 4K (claude/feat-pristine-4k)
+- Text and shape bitmaps are rasterised at the clip's on-screen magnification: `compose::raster_zoom` (half-octave
+  `half_octave`, up to 9 % under, 1..64), `TextRasterizer::render_zoomed` (caps at 8192 px / 16 Mpx, judged from the
+  zoom-1 bitmap, returns the zoom used). CPU places by the zoom-1 size (`draw_bitmap` native is f32); GPU reads
+  `LayerSet::zoom` (falls back to `browser::draw_boost`). Effects on a text/shape layer get `img_scale = s × zoom`.
+- A same-shape upscaled export renders natively (`export::render_size`); Export Frame too (`frame_render_size`,
+  `App::render_frame_sized`, one-shots up to `playback::ONCE_MAX_W`). `render_frame_now` keeps the project clamp.
+- Preview cap: `preview_pane::preview_cap` lifts `preview_max_width` to 3840 for paused frames in fullscreen or on
+  Auto, and for plays on Auto once `AutoRes::smooth` (one drop there = capped for the session).
