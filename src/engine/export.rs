@@ -632,6 +632,13 @@ pub struct Progress {
     // ---- ws:forum-export ----
     /// When `fraction` last changed (the stuck-job watchdog, `idle_for`).
     moved: Mutex<std::time::Instant>,
+    // ---- ws:smart-render ----
+    /// Something the user should hear about once the job is done (shown as a toast), e.g. that the
+    /// smart render fell back to a full re-encode.
+    note: Mutex<Option<String>>,
+    /// The job finished without rendering every frame (smart render): its time says nothing about
+    /// this PC's export speed.
+    pub shortcut: AtomicBool,
 }
 
 impl Progress {
@@ -644,7 +651,16 @@ impl Progress {
             done: AtomicBool::new(false),
             started: std::time::Instant::now(),
             moved: Mutex::new(std::time::Instant::now()),
+            note: Mutex::new(None), // ws:smart-render
+            shortcut: AtomicBool::new(false),
         })
+    }
+    // ---- ws:smart-render ----
+    pub fn set_note(&self, note: impl Into<String>) {
+        *self.note.lock().unwrap() = Some(note.into());
+    }
+    pub fn note(&self) -> Option<String> {
+        self.note.lock().unwrap().clone()
     }
     // ---- ws:export-deliver ----
     /// Time since the job started.
@@ -1867,8 +1883,7 @@ pub fn lossless_segments(project: &Project) -> Option<Vec<(f64, f64)>> {
 }
 
 // ---- ws:export-encoders ----
-/// One stretch of a smart render, in SOURCE seconds `[a, b)`.
-#[allow(dead_code)] // planning only: the copy/encode/concat/verify runner is not written yet
+/// One stretch of a smart render, in SOURCE seconds `[a, b)` (`engine::smart_render` runs the plan).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum SmartSpan {
     /// Whole GOPs (`a` is a keyframe, `b` is the next keyframe or the segment end on one) - stream copy.
@@ -1881,7 +1896,6 @@ pub enum SmartSpan {
 /// `ffprobe -skip_frame nokey -show_entries frame=pts_time` listing). Each segment copies from its
 /// first keyframe at/after the in point to the last keyframe at/before the out point, and re-encodes
 /// the head and tail around that. A segment with no whole GOP inside is re-encoded entirely.
-#[allow(dead_code)]
 pub fn smart_spans(segs: &[(f64, f64)], keyframes: &[f64]) -> Vec<SmartSpan> {
     const EPS: f64 = 1e-4;
     let mut out = Vec::new();
@@ -1907,6 +1921,116 @@ pub fn smart_spans(segs: &[(f64, f64)], keyframes: &[f64]) -> Vec<SmartSpan> {
     out
 }
 
+// ---- ws:smart-render ----
+/// The segments to smart-render when `opts` would write what the source already is: a plain cut
+/// (`lossless_segments`) of an H.264 / HEVC video into MP4 / MOV / M4V / MKV, at the source's size and
+/// frame rate, with no range, overlay, loudness pass, target size, alpha, stems or chapters, and no
+/// effect zone or browser layer drawn over it. The encoder setting only disqualifies when it names
+/// another codec family ("auto" means "whatever fits", so it keeps the source's codec). None = full
+/// re-encode.
+pub fn smart_segments(project: &Project, opts: &ExportOptions) -> Option<Vec<(f64, f64)>> {
+    let segs = lossless_segments(project)?;
+    let (_, clip) = project.all_clips().next()?;
+    let a = project.asset(clip.asset)?;
+    let family = |c: &str| match c {
+        "h264" | "avc" | "avc1" => Some("h264"),
+        "hevc" | "h265" => Some("hevc"),
+        _ => None,
+    };
+    let src = family(&a.codec.to_ascii_lowercase())?;
+    let enc = opts.encoder.to_ascii_lowercase();
+    let wants = if enc.is_empty() || enc == "auto" {
+        src
+    } else if enc.contains("264") {
+        "h264"
+    } else if enc.contains("265") || enc.contains("hevc") {
+        "hevc"
+    } else {
+        return None;
+    };
+    let same_rate = |f: f64| (f - a.fps).abs() < 0.01;
+    let ok = wants == src
+        && crate::engine::smart_render::CONTAINERS.contains(&ext_of(&opts.out_path).as_str())
+        && (project.width, project.height) == (a.width, a.height)
+        && opts.out_size.is_none_or(|s| s == (a.width, a.height))
+        && same_rate(project.fps)
+        && opts.fps.is_none_or(same_rate)
+        && opts.range.is_none()
+        && opts.overlay.is_none()
+        && !opts.loudnorm
+        && opts.target_bytes.is_none()
+        && !opts.alpha
+        && opts.audio != AudioLayout::Stems
+        && opts.chapters.is_empty()
+        && matches!(crate::engine::zones::render_view(project), std::borrow::Cow::Borrowed(_))
+        && matches!(crate::engine::browser::render_view(project), std::borrow::Cow::Borrowed(_));
+    ok.then_some(segs)
+}
+
+/// The audio streams a plain cut keeps: those on active (unmuted) audio tracks, in stream order.
+fn cut_audio_streams(project: &Project) -> Vec<usize> {
+    let mut streams: Vec<usize> = project
+        .audio_tracks()
+        .into_iter()
+        .filter(|&i| project.active(i))
+        .flat_map(|i| project.tracks[i].clips.iter().map(|c| c.audio_stream))
+        .collect();
+    streams.sort_unstable();
+    streams.dedup();
+    streams
+}
+
+/// The export Save / Export / MCP use: a smart render when `smart_segments` allows one, else the full
+/// re-encode (`start_export`).
+pub fn start_best_export(project: Project, opts: ExportOptions, text: Arc<Mutex<TextRasterizer>>) -> Arc<Progress> {
+    match smart_segments(&project, &opts) {
+        Some(segs) => start_smart_export(project, opts, segs, text),
+        None => start_export(project, opts, text),
+    }
+}
+
+/// Smart render (`engine::smart_render::run`): copy the whole GOPs, re-encode only the frames around
+/// each cut. Any failure other than a cancel re-runs the job as the full re-encode, on the same
+/// progress, and leaves a note saying so.
+pub fn start_smart_export(
+    project: Project,
+    opts: ExportOptions,
+    segs: Vec<(f64, f64)>,
+    text: Arc<Mutex<TextRasterizer>>,
+) -> Arc<Progress> {
+    let src = project.all_clips().next().and_then(|(_, c)| project.asset(c.asset)).map(|a| PathBuf::from(&a.path));
+    let streams = cut_audio_streams(&project);
+    let prog = spawn_job("export", {
+        let (project, opts) = (project.clone(), opts.clone());
+        move |prog| {
+            let r = match &src {
+                Some(src) => crate::engine::smart_render::run(src, &segs, &streams, &opts.out_path, &opts.metadata, prog),
+                None => Err("missing source".into()),
+            };
+            match r {
+                Ok(_) => {
+                    prog.shortcut.store(true, Ordering::SeqCst);
+                    Ok(())
+                }
+                Err(e) if e == CANCELLED || prog.is_cancelled() => Err(CANCELLED.into()),
+                Err(e) => {
+                    prog.set_note(smart_fallback_note(&e));
+                    prog.set(0.0, "Re-encoding…");
+                    run_export(&crate::engine::zones::drawn(&project), &opts, &text, prog)
+                }
+            }
+        }
+    });
+    crate::engine::export_doctor::remember(&prog, project, opts); // Retry in Software / Find the Problem
+    prog
+}
+
+/// The toast after a smart render fell back to the full re-encode.
+pub fn smart_fallback_note(why: &str) -> String {
+    let why = why.lines().next().unwrap_or("").trim();
+    format!("Couldn't keep the original frames ({why}), so the whole video was re-encoded")
+}
+
 /// Lossless cut: `ffmpeg -ss in -t dur -i src -c copy -avoid_negative_ts make_zero` per segment (with
 /// `-map` dropping muted audio streams), then concat demuxer when there is more than one segment.
 /// Cuts land on keyframes (not frame-accurate) - that's the trade for being instant.
@@ -1919,14 +2043,7 @@ fn run_lossless(project: &Project, out: &Path, prog: &Progress) -> Result<(), St
     let segs = lossless_segments(project).ok_or("Project is not a plain cut of one video")?;
     let (_, first) = project.all_clips().next().ok_or("Project is empty")?;
     let src = project.asset(first.asset).ok_or("Missing asset")?.path.clone();
-    let mut streams: Vec<usize> = project
-        .audio_tracks()
-        .into_iter()
-        .filter(|&i| project.active(i))
-        .flat_map(|i| project.tracks[i].clips.iter().map(|c| c.audio_stream))
-        .collect();
-    streams.sort_unstable();
-    streams.dedup();
+    let streams = cut_audio_streams(project);
 
     let ext = ext_of(out);
     let stem = out.file_stem().unwrap_or_default().to_string_lossy().into_owned();
@@ -3019,6 +3136,127 @@ pub(crate) mod tests {
             "{:?}",
             std::fs::read_dir(&dir).unwrap().collect::<Vec<_>>()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- ws:smart-render ----
+    #[test]
+    fn smart_segments_only_when_the_output_is_the_source_as_is() {
+        let p = cut_project("C:/v/a.mp4");
+        let base = || opts_for(PathBuf::from("C:/v/out.mp4"));
+        assert_eq!(smart_segments(&p, &base()).map(|s| s.len()), Some(2));
+        let with = |f: &dyn Fn(&mut ExportOptions)| {
+            let mut o = base();
+            f(&mut o);
+            smart_segments(&p, &o)
+        };
+        // each of these changes the picture, sound or file, so only the full re-encode can write it
+        assert!(with(&|o| o.out_size = Some((640, 480))).is_none(), "size");
+        assert!(with(&|o| o.fps = Some(60.0)).is_none(), "frame rate");
+        assert!(with(&|o| o.loudnorm = true).is_none(), "loudness");
+        assert!(with(&|o| o.range = Some((0.0, 1.0))).is_none(), "range");
+        assert!(with(&|o| o.target_bytes = Some(1_000_000)).is_none(), "target size");
+        assert!(with(&|o| o.alpha = true).is_none(), "alpha");
+        assert!(with(&|o| o.audio = AudioLayout::Stems).is_none(), "stems");
+        assert!(with(&|o| o.chapters = vec![(0.0, "A".into())]).is_none(), "chapters");
+        assert!(with(&|o| o.encoder = "libx265".into()).is_none(), "another codec family");
+        assert!(with(&|o| o.encoder = "libsvtav1".into()).is_none(), "another codec family");
+        assert!(with(&|o| o.out_path = "C:/v/out.webm".into()).is_none(), "container");
+        assert!(with(&|o| o.out_path = "C:/v/out.gif".into()).is_none(), "container");
+        // the source's own size, rate and family, in another container, is still the source as-is
+        let same = |o: &mut ExportOptions| {
+            o.out_size = Some((320, 240));
+            o.fps = Some(30.0);
+            o.encoder = "h264_nvenc".into();
+            o.out_path = "C:/v/out.mkv".into();
+            o.audio = AudioLayout::Streams;
+        };
+        assert!(with(&same).is_some());
+        // the source itself: a codec it can't match, or a project at another size
+        let mut q = cut_project("C:/v/a.mp4");
+        q.assets[0].codec = "vp9".into();
+        assert!(smart_segments(&q, &base()).is_none());
+        let mut q = cut_project("C:/v/a.mp4");
+        q.width = 640;
+        assert!(smart_segments(&q, &base()).is_none());
+        // an HEVC source with "auto" keeps HEVC; naming an H.264 encoder asks for H.264
+        let mut q = cut_project("C:/v/a.mp4");
+        q.assets[0].codec = "hevc".into();
+        assert!(smart_segments(&q, &base()).is_some());
+        assert!(smart_segments(&q, &ExportOptions { encoder: "libx264".into(), ..base() }).is_none());
+        // not a plain cut at all
+        let mut q = cut_project("C:/v/a.mp4");
+        q.tracks[0].clips[0].volume.value = 0.5;
+        assert!(smart_segments(&q, &base()).is_none());
+    }
+
+    /// `gen_media` (30 fps, keyframe every second), smart-rendered through `start_best_export`.
+    #[test]
+    fn smart_export_real() {
+        let dir = temp_dir("smart");
+        let Some(src) = gen_media(&dir) else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        let text = Arc::new(Mutex::new(TextRasterizer::new()));
+        let video_frames = |p: &Path| {
+            let o = ffpipe::command(&ffpipe::ffprobe_exe().unwrap())
+                .args(["-v", "error", "-count_packets", "-select_streams", "v:0"])
+                .args(["-show_entries", "stream=nb_read_packets", "-of", "csv=p=0"])
+                .arg(p)
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&o.stdout).trim().parse::<u64>().unwrap_or(0)
+        };
+        // [0,1) + [3,4): whole GOPs only (the last one runs to the end of the file) - nothing re-encoded
+        let out = dir.join("cut.mp4");
+        let prog = start_best_export(cut_project(&src.to_string_lossy()), opts_for(out.clone()), text.clone());
+        assert_eq!(wait_done(&prog), None);
+        assert!(prog.shortcut.load(Ordering::SeqCst), "smart render ran");
+        assert_eq!(prog.note(), None);
+        assert_eq!(video_frames(&out), 60);
+        // mid-GOP at both ends: 0.5 s to 3.5 s, frame-accurate
+        let mut p = Project::from_media(asset(&src.to_string_lossy(), 2));
+        p.trim_to_range(0.5, 3.5);
+        let out = dir.join("trim.mp4");
+        let prog = start_best_export(p, opts_for(out.clone()), text.clone());
+        assert_eq!(wait_done(&prog), None);
+        assert!(prog.shortcut.load(Ordering::SeqCst) && prog.note().is_none());
+        assert_eq!(video_frames(&out), 90);
+        let d = probe_duration(&out).unwrap();
+        assert!((d - 3.0).abs() < 0.05, "duration {d}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The asset says H.264 but the file is MPEG-4 Part 2: no encoder matches it, so the same job
+    /// re-encodes the whole video instead and says so.
+    #[test]
+    fn smart_export_falls_back_to_the_full_reencode() {
+        let dir = temp_dir("smart-fallback");
+        let Some(exe) = ffpipe::ffmpeg_exe() else {
+            eprintln!("ffmpeg missing - skipped");
+            return;
+        };
+        let src = dir.join("mpeg4.mp4");
+        let st = ffpipe::command(&exe)
+            .args(["-y", "-hide_banner", "-loglevel", "error"])
+            .args(["-f", "lavfi", "-i", "testsrc=s=320x240:r=30:d=4", "-f", "lavfi", "-i", "sine=duration=4"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=880:duration=4"])
+            .args(["-map", "0:v", "-map", "1:a", "-map", "2:a", "-c:v", "mpeg4", "-g", "30", "-c:a", "aac"])
+            .arg(&src)
+            .status()
+            .unwrap();
+        assert!(st.success());
+        let p = cut_project(&src.to_string_lossy());
+        let out = dir.join("out.mp4");
+        assert!(smart_segments(&p, &opts_for(out.clone())).is_some(), "eligible by the project's own record");
+        let prog = start_best_export(p, opts_for(out.clone()), Arc::new(Mutex::new(TextRasterizer::new())));
+        assert_eq!(wait_done(&prog), None);
+        assert!(!prog.shortcut.load(Ordering::SeqCst));
+        let note = prog.note().expect("a note for the toast");
+        assert!(note.contains("re-encoded") && note.contains("mpeg4"), "{note}");
+        let d = probe_duration(&out).unwrap();
+        assert!((d - 2.0).abs() < 0.1, "duration {d}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

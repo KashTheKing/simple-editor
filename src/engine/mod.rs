@@ -29,6 +29,7 @@ pub mod encoders;
 pub mod size_probe; // ws:export-size
 pub mod export_doctor; // ws:forum-export
 pub mod export;
+pub mod smart_render; // ws:smart-render: frame-accurate cuts that copy whole GOPs
 pub mod gallery;
 pub mod gallery_sync;
 pub mod gpu;

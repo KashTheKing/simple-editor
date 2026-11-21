@@ -372,7 +372,8 @@ impl App {
         let prog = if choice.lossless && opts.overlay.is_none() && export::lossless_segments(&project).is_some() {
             export::start_lossless_cut(project, opts.out_path)
         } else {
-            export::start_export(project, opts, self.text.clone())
+            // ws:smart-render: a plain cut written as the source already is copies whole GOPs
+            export::start_best_export(project, opts, self.text.clone())
         };
         note_export(&prog, &path); // forum-crash
         self.export = Some((prog.clone(), ExportKind::File { path }));
@@ -512,7 +513,8 @@ impl App {
         // no background checkbox on this path - always render on black, like every export did before
         // `preview_bg` existed (a checkerboard preview aid must never bake into the overwritten original)
         project.preview_bg = crate::model::BackgroundMode::Black;
-        // opt-in: a plain cut can be saved instantly with `-c copy` (keyframe-accurate) instead of re-encoding
+        // opt-in: a plain cut can be saved instantly with `-c copy` (cuts snap to keyframes); otherwise
+        // ws:smart-render re-encodes only the frames around each cut, and anything else re-encodes
         let lossless = self.settings.lossless_save && export::lossless_segments(&project).is_some();
         let prog = if lossless {
             export::start_lossless_cut(project, temp.clone())
@@ -523,7 +525,7 @@ impl App {
             if opts.audio == export::AudioLayout::Stems {
                 opts.audio = export::AudioLayout::Mix;
             }
-            export::start_export(project, opts, self.text.clone())
+            export::start_best_export(project, opts, self.text.clone())
         };
         note_export(&prog, &original); // forum-crash
         self.export = Some((prog, ExportKind::Overwrite { original, temp }));
@@ -557,6 +559,10 @@ impl App {
             return;
         }
         self.fire_hook("export_done", json!({"path": hook_path.to_string_lossy(), "ok": true}));
+        // ws:smart-render: e.g. the smart render fell back to the full re-encode
+        if let Some(note) = prog.note() {
+            self.toast(note);
+        }
         match kind {
             ExportKind::File { path } => {
                 formats_ctl::export_finished(self, &path, true); // ws:parity-formats: Subtitle track

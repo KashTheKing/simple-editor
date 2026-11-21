@@ -215,8 +215,9 @@ pub struct Settings {
     /// x264/x265 preset ("ultrafast".."veryslow"); NVENC/QSV/AMF map to their own presets.
     pub preset: String,
     pub confirm_overwrite: bool,
-    /// Save (Ctrl+S) over the opened video uses the instant `-c copy` cut when the project is a plain cut
-    /// (cuts snap to keyframes) instead of re-encoding.
+    /// "Lossless (keyframe cuts)": Save (Ctrl+S) over the opened video uses the instant `-c copy` cut when
+    /// the project is a plain cut (cuts snap to keyframes). Off (default): the frame-accurate smart render
+    /// (`export::start_best_export`), which re-encodes only the frames around each cut.
     pub lossless_save: bool,
     /// Register "Edit with Simple Editor" in the Explorer context menu for videos.
     pub context_menu: bool,

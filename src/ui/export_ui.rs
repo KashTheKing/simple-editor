@@ -1071,8 +1071,8 @@ fn video_section(ui: &mut egui::Ui, state: &mut ExportUi, project: &Project, set
             if state.range {
                 state.lossless = false;
             }
-            ui.add_enabled(!state.range, egui::Checkbox::new(&mut state.lossless, "Fast lossless cut"))
-                .on_hover_text("Instant, no quality loss; cuts snap to keyframes (may shift up to a few frames). Saves in the source's own format.")
+            ui.add_enabled(!state.range, egui::Checkbox::new(&mut state.lossless, "Lossless (keyframe cuts)"))
+                .on_hover_text("Instant, no quality loss; cuts snap to keyframes (may shift up to a few frames). Saves in the source's own format.\nOff: a plain cut saved at the source's size, rate and codec re-encodes only the frames around each cut.")
                 .on_disabled_hover_text("Not with a range: cuts on keyframes can't honour In/Out points");
         } else {
             state.lossless = false;

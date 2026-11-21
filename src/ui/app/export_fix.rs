@@ -66,7 +66,9 @@ pub(super) fn retrying(app: &App) -> bool {
 
 /// `finish_export`'s success path: learn this PC's export speed and offer Play on the toast.
 pub(super) fn succeeded(app: &mut App, prog: &Arc<Progress>, path: &Path, t: feedback::Toast) -> feedback::Toast {
-    if let Some((p, o)) = doctor::recall(prog) {
+    // ws:smart-render: a smart render copied most frames, so its time isn't this PC's render speed
+    let shortcut = prog.shortcut.load(std::sync::atomic::Ordering::SeqCst);
+    if let Some((p, o)) = doctor::recall(prog).filter(|_| !shortcut) {
         let (w, h) = o.out_size.unwrap_or((p.width, p.height));
         let fps = o.fps.unwrap_or(p.fps);
         let dur = o.range.map(|(a, b)| b - a).unwrap_or_else(|| p.duration());

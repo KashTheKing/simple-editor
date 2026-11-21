@@ -194,9 +194,13 @@ pub(super) fn general(ui: &mut egui::Ui, state: &mut SettingsUi, s: &mut Setting
         k if k.is_empty() => "Save".to_string(),
         k => format!("Save ({k})"),
     };
-    let lossless =
-        format!("{save} uses the instant lossless cut when the project is a plain cut (cuts snap to keyframes)");
-    changed |= ui.checkbox(&mut s.lossless_save, lossless).changed();
+    // ws:smart-render: off (default) = smart render, frame-accurate; on = the keyframe-only copy
+    let tip = format!(
+        "{save} over the original copies whole keyframe groups only: even faster, but each cut moves to a \
+         keyframe (up to a few frames off).\nOff: only the frames around each cut are re-encoded, so cuts \
+         land on the exact frame."
+    );
+    changed |= ui.checkbox(&mut s.lossless_save, "Lossless (keyframe cuts)").on_hover_text(tip).changed();
     ui.horizontal(|ui| {
         changed |= ui
             .checkbox(&mut s.context_menu, "Add 'Edit with Simple Editor' to the right-click menu of video files")

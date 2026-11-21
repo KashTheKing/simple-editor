@@ -353,7 +353,7 @@ impl App {
                 opts.range = project.limit_range(opts.range);
             }
             self.deliver(&mut project, &mut opts, arg_bool(args, "captions"), arg_bool(args, "guide"));
-            let prog = export::start_export(project, opts, self.text.clone());
+            let prog = export::start_best_export(project, opts, self.text.clone()); // ws:smart-render
             // same slot the UI uses: exclusion, the progress/Cancel window and the close guard all key off it
             self.export = Some((prog.clone(), ExportKind::File { path: out.clone() }));
             Ok((prog, out))
