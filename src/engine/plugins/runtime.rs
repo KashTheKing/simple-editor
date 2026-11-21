@@ -264,7 +264,7 @@ editor = {tool = core.tool, tools = core.tools, log = core.print, json = core.js
 net = ns("net", {"get"})
 fs = ns("fs", {"read", "write", "list", "exists"})
 programs = ns("programs", {"run"})
-ui = ns("ui", {"label", "heading", "button", "slider", "text", "checkbox", "dropdown", "row", "column", "separator", "space", "image"})
+ui = ns("ui", {"tip", "label", "heading", "button", "slider", "text", "checkbox", "dropdown", "row", "column", "separator", "space", "image"})
 plugin = info
 return function(h) host = h end
 "#;

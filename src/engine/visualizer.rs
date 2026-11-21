@@ -7,7 +7,7 @@
 //! keyframed params, no audio analysis on the playback path.
 
 use crate::media::{AudioSource, Backend, SAMPLE_RATE};
-use crate::model::{Animated, ClipKind, Effect, Id, Keyframe, Project, TrackKind};
+use crate::model::{Animated, ClipKind, Ease, Effect, Id, Keyframe, Project, TrackKind};
 
 /// The audio inputs a visualizer shader may declare: overall loudness, then six log-spaced bands
 /// (about 60 Hz to 8 kHz). Each is baked as 0..1 mapped onto the param's own range.
@@ -21,11 +21,12 @@ pub const BEAT_PARAMS: [&str; 3] = ["beat", "beats", "bpm"];
 
 /// (name, source) of the built-in styles, the first is the default. "Spectrum Bars" is the Source
 /// monitor's original noa-style bar field, ported to a shader.
-pub const BUILTIN: [(&str, &str); 4] = [
+pub const BUILTIN: [(&str, &str); 5] = [
     ("Neon Orb", include_str!("../../library/effects/neon-orb.glsl")),
     ("Waveform", include_str!("../../library/effects/waveform.glsl")),
     ("Spectrum Bars", include_str!("../../library/effects/spectrum-bars.glsl")),
     ("Voxel Blocks", include_str!("../../library/effects/voxel-blocks.glsl")),
+    ("Olympus Storm", include_str!("../../library/plugins/visualizer-helper/effects/olympus-storm.glsl")),
 ];
 
 /// The waveform input (`// @param wave 0 0 1`): the song's peaks (0..1 of its loudest) baked one key per
@@ -583,6 +584,24 @@ pub fn bake(e: &mut Effect, an: &Analysis, fps: f64) -> usize {
             e.params[pi] = Animated::new(an.bpm.unwrap_or(p.default).clamp(p.min, p.max));
             n += 1;
             continue;
+        } else if matches!(p.id.as_str(), "kclock" | "kpow" | "vox") && e.params[pi].keys.is_empty() && !an.beats.is_empty() {
+            // Olympus Storm added in one click. Keys already there are Visualizer Helper's or the user's: kept.
+            // ponytail: not re-timed when the clip is trimmed; Visualizer Helper's Analyse Song is the exact version
+            match p.id.as_str() {
+                // hit number, linear between hits: fract() is the phase since the last one
+                "kclock" => {
+                    let mut k: Vec<Keyframe> = an.beats.iter().enumerate().map(|(i, &b)| key(b, (i + 1) as f64)).collect();
+                    let last = an.beats.len() - 1;
+                    k.push(key(next(last), (last + 2) as f64));
+                    k
+                }
+                // full strength on each bar's downbeat
+                "kpow" => an.beats.iter().enumerate()
+                    .map(|(i, &b)| Keyframe { t: b, v: if i % 4 == 0 { 1.0 } else { 0.6 }, ease: Ease::Hold })
+                    .collect(),
+                // the mids stand in for the held vocal without a stem
+                _ => an.frames.iter().enumerate().map(|(i, f)| key(i as f64 / fps, p.max * f[2] as f64)).collect(),
+            }
         } else {
             continue;
         };
@@ -966,6 +985,27 @@ pub(crate) mod tests {
         assert!(find(Some("nope")).unwrap_err().contains("Neon Orb"));
     }
 
+    /// Olympus Storm ships built in, and one click gives its ball real hits; keys already there are kept.
+    #[test]
+    fn olympus_storm_is_built_in_and_bakes_its_hits() {
+        let style = find(Some("olympus storm")).unwrap();
+        assert!(!style.custom);
+        let at = |e: &Effect, id: &str| {
+            crate::engine::shaderlib::parse_meta(&e.shader).params.iter().position(|p| p.id == id).unwrap()
+        };
+        let an = Analysis { frames: vec![[0.5; 7]; 10], beats: vec![1.0, 1.5, 2.0], bpm: Some(120.0), ..Default::default() };
+        let mut e = Effect::from_shader(&style.src);
+        bake(&mut e, &an, 30.0);
+        let k = &e.params[at(&e, "kclock")];
+        assert_eq!(k.keys.iter().map(|x| x.v).collect::<Vec<_>>(), [1.0, 2.0, 3.0, 4.0]);
+        assert!((k.at(1.25) - 1.5).abs() < 1e-9, "the phase runs between hits");
+        assert_eq!(e.params[at(&e, "kpow")].keys[1].v, 0.6);
+        let i = at(&e, "kclock");
+        e.params[i].keys.truncate(1);
+        bake(&mut e, &an, 30.0);
+        assert_eq!(e.params[i].keys.len(), 1, "hand keys survive a re-bake");
+    }
+
     /// Waveform is a built-in, second in the pickers, and Neon Orb stays the default.
     #[test]
     fn waveform_is_the_second_style() {
@@ -1043,8 +1083,8 @@ vec4 effect(vec4 s, vec2 uv) { return vec4(level); }
         ];
         let all = styles_from(lib);
         let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["Neon Orb", "Waveform", "Spectrum Bars", "Voxel Blocks", "Pulse Rings", "my-viz"]);
-        assert!(!all[0].custom && all[4].custom);
+        assert_eq!(names, ["Neon Orb", "Waveform", "Spectrum Bars", "Voxel Blocks", "Olympus Storm", "Pulse Rings", "my-viz"]);
+        assert!(!all[4].custom && all[5].custom);
         assert_eq!(find_in(all.clone(), Some("PULSE RINGS")).unwrap().src, RINGS);
         assert!(crate::engine::shaderlib::lint(RINGS, false).is_empty(), "{:?}", crate::engine::shaderlib::lint(RINGS, false));
     }
