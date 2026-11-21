@@ -31,7 +31,8 @@ vec4 effect(vec4 src, vec2 uv) {
         q = vec2(0.5 + xl, 0.5 + (q.y - 0.5) * (1.0 + 0.7 * xl * sn));
         if (q.x < 0.0 || q.x > 1.0 || q.y < 0.0 || q.y > 1.0) return vec4(0.0);
     }
-    vec2 tx = 1.0 / u_res;
+    // edge / bevel / halo widths scale with the text, not the texture's pixel count: the same look at any raster size
+    vec2 tx = vec2(u_res.y / 94.0) / u_res;
     vec3 metal = mix(vec3(0.86, 0.88, 0.92), vec3(1.0, 0.78, 0.38), gold);
     vec3 shine = mix(vec3(1.0), vec3(1.0, 0.94, 0.75), gold);
     float a0 = aAt(q);

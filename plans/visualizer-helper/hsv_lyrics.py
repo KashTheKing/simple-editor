@@ -13,6 +13,7 @@
 # Word times: each lyric word is matched in order to the transcript (fuzzy), unmatched words are spread by
 # letter count between matched neighbours, then every start is snapped to the nearest syllable onset on the
 # vocal stem; the last word of a line is held until the voice actually stops (so "NOWWWW" fills slowly).
+# Text is rasterised at its final size (font size), the clip only ever scales down: sharp at any res.
 # Line clips: on screen 0.35 s before the first word, off when the voice stops (+0.3 s), never overlapping.
 import argparse, difflib, json, os, re, subprocess
 import numpy as np, scipy.signal as sg
@@ -32,36 +33,16 @@ A = ap.parse_args()
 os.makedirs(A.out, exist_ok=True)
 
 # ---------------------------------------------------------------- lyrics
-lines = []
+lines = []; drop_before = None      # index of the first line after a [... DROP ...] header
 for raw in open(A.lyrics, encoding='utf8'):
     s = raw.strip().strip('"“”').strip()
-    if not s or re.fullmatch(r'\[.*\]', s): continue
+    if re.fullmatch(r'\[.*\]', s):
+        if 'DROP' in s.upper() and drop_before is None and lines: drop_before = len(lines)
+        continue
+    if not s: continue
     lines.append(s.upper())
 norm = lambda t: re.sub(r'[^A-Z0-9]', '', t.upper())
 LW = [(li, w) for li, ln in enumerate(lines) for w in ln.split()]
-
-# ---------------------------------------------------------------- transcript + fuzzy in-order match
-TW = [w for w in json.load(open(A.transcript, encoding='utf8'))['words'] if norm(w['text'])]
-a = [norm(w) for _, w in LW]; b = [norm(w['text']) for w in TW]
-st = [None] * len(LW); en = [None] * len(LW)
-sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
-for tag, i1, i2, j1, j2 in sm.get_opcodes():
-    if tag == 'equal' or (tag == 'replace' and i2 - i1 == j2 - j1):
-        for k in range(i2 - i1):
-            if tag == 'equal' or difflib.SequenceMatcher(None, a[i1 + k], b[j1 + k]).ratio() >= 0.5:
-                st[i1 + k] = TW[j1 + k]['start']; en[i1 + k] = TW[j1 + k]['end']
-# fill gaps between matched words by letter count
-k = 0
-while k < len(LW):
-    if st[k] is not None: k += 1; continue
-    j = k
-    while j < len(LW) and st[j] is None: j += 1
-    t0 = en[k - 1] if k > 0 else (st[j] - 0.4 * (j - k) if j < len(LW) else 0.5)
-    t1 = st[j] if j < len(LW) else t0 + 0.4 * (j - k)
-    wts = [len(a[q]) + 1 for q in range(k, j)]; acc = t0
-    for q, wv in zip(range(k, j), wts):
-        d = (t1 - t0) * wv / sum(wts); st[q] = acc; en[q] = acc + d * 0.95; acc += d
-    k = j
 
 # ---------------------------------------------------------------- vocal stem: onsets and voiced
 SR = 22050
@@ -83,6 +64,78 @@ def voiced_end(t0, lim):
         if gap > 15: return (i - 15) * 0.01
         i += 1
     return lim
+
+def sung(t0, t1):
+    i0, i1 = int(t0 * 100), max(int(t1 * 100), int(t0 * 100) + 1)
+    seg = voiced[max(i0 - 10, 0):min(i1 + 10, n)]
+    return bool(len(seg)) and seg.mean() >= 0.3
+# voiced segments (gaps under 0.6 s bridged, at least 0.3 s long): where unmatched words can go
+segs = []; i = 0
+while i < n:
+    if voiced[i]:
+        j = i
+        while j < n and (voiced[j] or (j + 60 < n and voiced[j:j + 60].any())): j += 1
+        if j - i >= 30: segs.append((i * 0.01, j * 0.01))
+        i = j
+    else: i += 1
+
+# ---------------------------------------------------------------- transcript + fuzzy in-order match
+# (whisper invents repeated lines over instrumentals: words where the vocal stem is silent are dropped)
+TW = [w for w in json.load(open(A.transcript, encoding='utf8'))['words'] if norm(w['text']) and sung(w['start'], w['end'])]
+a = [norm(w) for _, w in LW]; b = [norm(w['text']) for w in TW]
+st = [None] * len(LW); en = [None] * len(LW)
+sm = difflib.SequenceMatcher(None, a, b, autojunk=False)
+for tag, i1, i2, j1, j2 in sm.get_opcodes():
+    if tag == 'equal' or (tag == 'replace' and i2 - i1 == j2 - j1):
+        for k in range(i2 - i1):
+            if tag == 'equal' or difflib.SequenceMatcher(None, a[i1 + k], b[j1 + k]).ratio() >= 0.5:
+                st[i1 + k] = TW[j1 + k]['start']; en[i1 + k] = TW[j1 + k]['end']
+# a sung line never pauses more than 4 s between words: a match that would is a wrong one (a repeat)
+for k in range(1, len(LW)):
+    if LW[k][0] == LW[k - 1][0] and st[k] is not None:
+        prev = max((en[q] for q in range(k) if LW[q][0] == LW[k][0] and en[q] is not None), default=None)
+        if prev is not None and st[k] - prev > 4.0: st[k] = en[k] = None
+def seg_of(t):
+    return next(((x0, x1) for x0, x1 in segs if x0 - 0.2 <= t <= x1 + 0.2), None)
+def spread(ids, spans):
+    spans = [(x0, x1) for x0, x1 in spans if x1 - x0 > 0.05] or [spans[0]]
+    total = sum(x1 - x0 for x0, x1 in spans)
+    wts = [len(a[q]) + 1 for q in ids]; pos = 0.0
+    def at(u):
+        for x0, x1 in spans:
+            if u <= x1 - x0: return x0 + u
+            u -= x1 - x0
+        return spans[-1][1]
+    for q, wv in zip(ids, wts):
+        d = total * wv / sum(wts); st[q] = at(pos); en[q] = at(pos + d * 0.95); pos += d
+# fill each run of unmatched words: the ones in the line before keep to that line's singing (right after its
+# last matched word), the ones in the line after keep just before its first matched word, whole unmatched
+# lines go into the sung stretches in between, by letter count
+k = 0
+while k < len(LW):
+    if st[k] is not None: k += 1; continue
+    j = k
+    while j < len(LW) and st[j] is None: j += 1
+    t0 = en[k - 1] if k > 0 else 0.0
+    t1 = st[j] if j < len(LW) else 1e9
+    run = list(range(k, j))
+    A_ = [q for q in run if k > 0 and LW[q][0] == LW[k - 1][0]]
+    C_ = [q for q in run if j < len(LW) and LW[q][0] == LW[j][0] and q not in A_]
+    B_ = [q for q in run if q not in A_ and q not in C_]
+    lo_, hi_ = t0, t1
+    if A_:
+        sg_ = seg_of(t0); room = (sg_[1] - t0) if sg_ else 0.0
+        end_ = t0 + (room if room >= 0.2 * len(A_) else 0.3 * len(A_))
+        spread(A_, [(t0, min(end_, t1))]); lo_ = en[A_[-1]] + 0.05
+    if C_:
+        sg_ = seg_of(t1); room = (t1 - sg_[0]) if sg_ else 0.0
+        beg_ = t1 - (room if room >= 0.2 * len(C_) else 0.3 * len(C_))
+        spread(C_, [(max(beg_, lo_), t1)]); hi_ = st[C_[0]] - 0.05
+    if B_:
+        inside = [(max(x0, lo_), min(x1, hi_)) for x0, x1 in segs if min(x1, hi_) - max(x0, lo_) >= 0.5]
+        if hi_ - lo_ > 3.0: inside = [(x0, x1) for x0, x1 in inside if x0 >= lo_ + 0.3] or inside
+        spread(B_, inside or [(lo_, min(hi_, lo_ + 0.4 * len(B_)))])
+    k = j
 
 # ---------------------------------------------------------------- per line: snapped words, clip span
 info = json.load(open(A.analysis)) ['info'] if A.analysis else {'drops': []}
@@ -132,6 +185,9 @@ for p in plan:
     p['fill'] = keys
 
 json.dump(plan, open(os.path.join(A.out, 'lyrics.json'), 'w', encoding='utf8'), ensure_ascii=False, indent=1)
+# the song's structure from the lyrics: a [DROP] header means no drop before the line ahead of it has ended
+json.dump({'drop_after': plan[drop_before - 1]['clip_end'] if drop_before else None},
+          open(os.path.join(A.out, 'structure.json'), 'w'))
 for p in plan:
     print(f"{p['clip_start']:7.2f}-{p['clip_end']:7.2f} {'G' if p['gold'] else ' '}{'*' if p['giant'] else ' '} "
           + ' '.join(f"{w}@{s:.2f}" for w, s in zip(p['words'], p['starts'])))
@@ -159,7 +215,12 @@ for _, ln in ipairs(LINES) do
   local id = r.clip_id or r.id or (r.clip_ids and r.clip_ids[1])
   assert(id, "no clip id for " .. ln.t)
   local giant = ln.giant
-  editor.tool("clip.set", {clip_id = id, fields = {font = FONT, size = giant and math.floor(SIZE * 1.8) or SIZE,
+  -- pristine text: the size comes from the font size, never from a clip scale above 1 (that stretches the
+  -- bitmap). The box needs an inner margin (1.08 x 1.25, matched in the shader) and the giant line is 2.3x
+  -- taller, so the font is rasterised that much bigger and the clip is only ever scaled DOWN.
+  local M = giant and 2.3 * 1.25 or 1.25
+  local SX = 1.08 / M
+  editor.tool("clip.set", {clip_id = id, fields = {font = FONT, size = math.floor((giant and SIZE * 1.8 or SIZE) * M + 0.5),
     color = {255, 255, 255, 255}, outline_width = 0}})
   editor.tool("clip.set", {clip_id = id, fields = {y = giant and 0 or Y}})
   local rs = editor.tool("clip.set_shader", {clip = id, src = SRC})
@@ -169,9 +230,9 @@ for _, ln in ipairs(LINES) do
   key(id, P .. "gold", 0, ln.gold, "Hold")
   local io = math.min(0.4, d * 0.22)
   -- the box has a margin inside (curves and the shadow never clip): scale up to match
-  key(id, "height", 0, giant and 2.3 * 1.25 or 1.25)
+  key(id, "height", 0, 1)
+  key(id, "width", 0, SX)
   if giant then
-    key(id, "width", 0, 1.08)
     key(id, P .. "curve", 0, 0.4)
     key(id, P .. "roll", 0, 1.0, "EaseOut"); key(id, P .. "roll", io, 0.025)
     key(id, P .. "roll", d - io, -0.025, "EaseIn"); key(id, P .. "roll", d, -1.0)
@@ -181,8 +242,6 @@ for _, ln in ipairs(LINES) do
     key(id, "x", 0, 1500, "EaseOut"); key(id, "x", io, g); key(id, "x", d - io, -g, "EaseIn"); key(id, "x", d, -450)
     key(id, P .. "yaw", 0, -1, "EaseOut"); key(id, P .. "yaw", io, -g / 1500)
     key(id, P .. "yaw", d - io, g / 1500, "EaseIn"); key(id, P .. "yaw", d, 0.6)
-    key(id, "width", 0, 1.5 * 1.08, "EaseOut"); key(id, "width", io, 1.08)
-    key(id, "width", d - io, 1.08, "EaseIn"); key(id, "width", d, 1.5 * 1.08)
     key(id, P .. "smear", 0, 1, "EaseOut"); key(id, P .. "smear", io, 0)
     key(id, P .. "smear", d - io, 0, "EaseIn"); key(id, P .. "smear", d, 0.45)
   end
